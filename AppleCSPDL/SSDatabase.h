@@ -23,6 +23,7 @@
 #define _H_SSDATABASE_
 
 #include <Security/dlclient.h>
+#include <Security/unix++.h>
 #include <Security/SecurityServerClient.h>
 
 class SSCSPDLSession;
@@ -49,6 +50,8 @@ public:
 	SSUniqueRecord insert(CSSM_DB_RECORDTYPE recordType,
 						  const CSSM_DB_RECORD_ATTRIBUTE_DATA *attributes,
 						  const CSSM_DATA *data, bool);
+	void authenticate(CSSM_DB_ACCESS_TYPE inAccessRequest,
+						const CSSM_ACCESS_CREDENTIALS *inAccessCredentials);
 
 	// Passthrough functions (only implemented by AppleCSPDL).
 	void lock();
@@ -65,16 +68,21 @@ public:
 	// New methods not inherited from DbImpl
 	SecurityServer::DbHandle dbHandle();
 
+protected:
+	CssmClient::DbUniqueRecord getDbBlobId(CssmDataContainer *dbb);
+
 private:
 	enum
 	{
 		kDefaultIdleTimeout		= 5 * 60, // 5 minute default autolock time
 		kDefaultLockOnSleep		= true
 	};
-
+	
+	DLDbIdentifier mIdentifier;
+	UnixPlusPlus::ForkMonitor mForked;
+	
 	SecurityServer::ClientSession &mClientSession;
 	SecurityServer::DbHandle mSSDbHandle;
-	CssmClient::DbUniqueRecord mDbBlobId;
 };
 
 

@@ -47,7 +47,7 @@ extern	"C" {
  *		publicExponent INTEGER -- e }
  */
  
-SSLErr sslDecodeRsaBlob(
+OSStatus sslDecodeRsaBlob(
 	const SSLBuffer	*blob,			/* PKCS-1 encoded */
 	SSLBuffer		*modulus,		/* data mallocd and RETURNED */
 	SSLBuffer		*exponent);		/* data mallocd and RETURNED */
@@ -57,9 +57,26 @@ SSLErr sslDecodeRsaBlob(
  * BER-encoded RSA public key blob.
  */
  
-SSLErr sslEncodeRsaBlob(
+OSStatus sslEncodeRsaBlob(
 	const SSLBuffer	*modulus,		
 	const SSLBuffer	*exponent,		
+	SSLBuffer		*blob);			/* data mallocd and RETURNED */
+
+/*
+ * Given a DER encoded DHParameter, extract the prime and generator. 
+ * modulus and public exponent.
+ */
+OSStatus sslDecodeDhParams(
+	const SSLBuffer	*blob,			/* PKCS-1 encoded */
+	SSLBuffer		*prime,			/* data mallocd and RETURNED */
+	SSLBuffer		*generator);	/* data mallocd and RETURNED */
+
+/*
+ * Given a prime and generator, cook up a BER-encoded DHParameter blob.
+ */
+OSStatus sslEncodeDhParams(
+	const SSLBuffer	*prime,		
+	const SSLBuffer	*generator,		
 	SSLBuffer		*blob);			/* data mallocd and RETURNED */
 
 #ifdef __cplusplus

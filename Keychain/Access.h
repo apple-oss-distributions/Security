@@ -39,6 +39,8 @@ using CssmClient::AclBearer;
 class Access : public SecCFObject {
 	NOCOPY(Access)
 public:
+	SECCFFUNCTIONS(Access, SecAccessRef, errSecInvalidItemRef)
+
 	class Maker {
 		NOCOPY(Maker)
 		static const size_t keySize = 16;	// number of (random) bytes
@@ -60,12 +62,22 @@ public:
 	};
 
 public:
+	// make default forms
     Access(const string &description);
     Access(const string &description, const ACL::ApplicationList &trusted);
+    Access(const string &description, const ACL::ApplicationList &trusted,
+		const AclAuthorizationSet &limitedRights, const AclAuthorizationSet &freeRights);
+	
+	// make a completely open Access (anyone can do anything)
+	Access();
+	
+	// retrieve from an existing AclBearer
 	Access(AclBearer &source);
+	
+	// make from CSSM layer information (presumably retrieved by caller)
 	Access(const CSSM_ACL_OWNER_PROTOTYPE &owner,
 		uint32 aclCount, const CSSM_ACL_ENTRY_INFO *acls);
-    virtual ~Access();
+    virtual ~Access() throw();
 
 public:
 	CFArrayRef copySecACLs() const;
@@ -76,7 +88,7 @@ public:
 	
 	void setAccess(AclBearer &target, bool update = false);
 	void setAccess(AclBearer &target, Maker &maker);
-	
+
 	template <class Container>
 	void findAclsForRight(AclAuthorization right, Container &cont)
 	{
@@ -86,10 +98,17 @@ public:
 				cont.push_back(it->second);
 	}
 	
+	std::string promptDescription() const;	// from any one of the ACLs contained
+	
 	void addApplicationToRight(AclAuthorization right, TrustedApplication *app);
 	
+	void copyOwnerAndAcl(CSSM_ACL_OWNER_PROTOTYPE * &owner,
+		uint32 &aclCount, CSSM_ACL_ENTRY_INFO * &acls);
+	
 protected:
-    void makeStandard(const string &description, const ACL::ApplicationList &trusted);
+    void makeStandard(const string &description, const ACL::ApplicationList &trusted,
+		const AclAuthorizationSet &limitedRights = AclAuthorizationSet(),
+		const AclAuthorizationSet &freeRights = AclAuthorizationSet());
     void compile(const CSSM_ACL_OWNER_PROTOTYPE &owner,
         uint32 aclCount, const CSSM_ACL_ENTRY_INFO *acls);
 	
@@ -97,7 +116,7 @@ protected:
 
 private:
 	static const CSSM_ACL_HANDLE ownerHandle = ACL::ownerHandle;
-	typedef map<CSSM_ACL_HANDLE, RefPointer<ACL> > Map;
+	typedef map<CSSM_ACL_HANDLE, SecPointer<ACL> > Map;
 
 	Map mAcls;			// set of ACL entries
 };

@@ -37,7 +37,7 @@ SecureTransportCore::SecureTransportCore() : mAtEnd(false)
     try {
     	MacOSError::check(SSLSetIOFuncs(mContext, sslReadFunc, sslWriteFunc));
         MacOSError::check(SSLSetConnection(mContext, this));
-        debug("ssl", "%p constructed", this);
+        secdebug("ssl", "%p constructed", this);
     } catch (...) {
         SSLDisposeContext(mContext);
         throw;
@@ -51,14 +51,14 @@ SecureTransportCore::SecureTransportCore() : mAtEnd(false)
 SecureTransportCore::~SecureTransportCore()
 {
     SSLDisposeContext(mContext);	// ignore error (can't do anything if error)
-    debug("ssl", "%p destroyed", this);
+    secdebug("ssl", "%p destroyed", this);
 }
 
 
 //
 // Open initiates or continues the SSL handshake.
 // In nonblocking mode, open may return while handshake is still in
-// progress. Keep calling open until state() != errSSLWouldBlock, or
+// Progress. Keep calling open until state() != errSSLWouldBlock, or
 // go directly to I/O.
 //
 void SecureTransportCore::open()
@@ -66,7 +66,7 @@ void SecureTransportCore::open()
     switch (OSStatus err = SSLHandshake(mContext)) {
     case noErr:
     case errSSLWouldBlock:
-        debug("ssl", "%p open, state=%d", this, state());
+        secdebug("ssl", "%p open, state=%d", this, state());
         return;
     default:
         MacOSError::throwMe(err);
@@ -83,7 +83,7 @@ void SecureTransportCore::close()
     switch (state()) {
     case kSSLHandshake:
     case kSSLConnected:
-        debug("ssl", "%p closed", this);
+        secdebug("ssl", "%p closed", this);
         SSLClose(mContext);
         break;
     default:
@@ -141,13 +141,13 @@ size_t SecureTransportCore::write(const void *data, size_t length)
 
 //
 // Continue handshake processing if necessary.
-// Returns true if handshake is in progress and not yet complete.
+// Returns true if handshake is in Progress and not yet complete.
 //
 bool SecureTransportCore::continueHandshake()
 {
     if (state() == kSSLHandshake) {
         // still in handshake mode; prod it along
-        debug("ssl", "%p continuing handshake", this);
+        secdebug("ssl", "%p continuing handshake", this);
         switch (OSStatus err = SSLHandshake(mContext)) {
         case noErr:
         case errSSLWouldBlock:
@@ -155,7 +155,7 @@ bool SecureTransportCore::continueHandshake()
         default:
             MacOSError::throwMe(err);
         }
-        IFDEBUG(if (state() != kSSLHandshake) debug("ssl", "%p handshake complete", this));
+        IFDEBUG(if (state() != kSSLHandshake) secdebug("ssl", "%p handshake complete", this));
         return state() == kSSLHandshake;
     } else
         return false;
@@ -261,11 +261,11 @@ OSStatus SecureTransportCore::sslReadFunc(SSLConnectionRef connection,
     try {
         size_t lengthRequested = *length;
         *length = stc->ioRead(data, lengthRequested);
-        debug("sslconio", "%p read %ld of %ld bytes", stc, *length, lengthRequested);
+        secdebug("sslconio", "%p read %ld of %ld bytes", stc, *length, lengthRequested);
         if (*length == lengthRequested)	// full deck
             return noErr;
         else if (stc->ioAtEnd()) {
-            debug("sslconio", "%p end of source input, returning %ld bytes",
+            secdebug("sslconio", "%p end of source input, returning %ld bytes",
                 stc, *length);
             return errSSLClosedGraceful;
         } else
@@ -291,7 +291,7 @@ OSStatus SecureTransportCore::sslWriteFunc(SSLConnectionRef connection,
     try {
         size_t lengthRequested = *length;
         *length = stc->ioWrite(data, lengthRequested);
-        debug("sslconio", "%p wrote %ld of %ld bytes", stc, *length, lengthRequested);
+        secdebug("sslconio", "%p wrote %ld of %ld bytes", stc, *length, lengthRequested);
         return *length == lengthRequested ? OSStatus(noErr) : OSStatus(errSSLWouldBlock);
     } catch (const CssmCommonError &err) {
         *length = 0;

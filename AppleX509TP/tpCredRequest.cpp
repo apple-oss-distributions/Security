@@ -35,7 +35,7 @@
 #include <Security/cssmapple.h>
 #include <assert.h>
 
-#define tpCredDebug(args...)	debug("tpCred", ## args)
+#define tpCredDebug(args...)	secdebug("tpCred", ## args)
 
 /*
  * Build up a CSSM_X509_NAME from an arbitrary list of name/OID pairs. 
@@ -47,6 +47,11 @@ CSSM_X509_NAME * AppleTPSession::buildX509Name(
 {
 	CSSM_X509_NAME *top = (CSSM_X509_NAME *)malloc(sizeof(CSSM_X509_NAME));
 	top->numberOfRDNs = numNames;
+	if(numNames == 0) {
+		/* legal! */
+		top->RelativeDistinguishedName = NULL;
+		return top;
+	}
 	top->RelativeDistinguishedName = 
 		(CSSM_X509_RDN_PTR)malloc(sizeof(CSSM_X509_RDN) * numNames);
 	CSSM_X509_RDN_PTR rdn;
@@ -211,6 +216,7 @@ void AppleTPSession::refKeyToRaw(
 		tpCredDebug("AppleTPSession::refKeyToRaw: context err");
 		CssmError::throwMe(crtn);
 	}
+	
 	crtn = CSSM_WrapKey(ccHand,
 		&creds,
 		refKey,
@@ -444,10 +450,6 @@ void AppleTPSession::SubmitCsrRequest(
 	   (certReq->signatureOid.Data == NULL)) {
 		CssmError::throwMe(CSSMERR_TP_INVALID_REQUEST_INPUTS);
 	}
-	if((certReq->subjectNames == NULL) ||
-	   (certReq->numSubjectNames == 0)) {
-		CssmError::throwMe(CSSMERR_TP_INVALID_NAME);
-	}
 	
 	/* convert ref public key to raw per CL requirements */
 	const CSSM_KEY *subjectPubKey = certReq->certPublicKey;
@@ -590,10 +592,6 @@ void AppleTPSession::SubmitCredRequest(
 	   (certReq->issuerPrivateKey == NULL)) {
 		CssmError::throwMe(CSSMERR_TP_INVALID_REQUEST_INPUTS);
 	}
-	if((certReq->subjectNames == NULL) ||
-	   (certReq->numSubjectNames == 0)) {
-		CssmError::throwMe(CSSMERR_TP_INVALID_NAME);
-	}
 	if((certReq->numExtensions != 0) & (certReq->extensions == NULL)) {
 		CssmError::throwMe(CSSMERR_TP_INVALID_POINTER);
 	}
@@ -696,7 +694,7 @@ void AppleTPSession::SubmitCredRequest(
 		/* create signature context */		
 		ourRtn = CSSM_CSP_CreateSignatureContext(certReq->cspHand,
 				certReq->signatureAlg,
-				NULL,			// AccessCred
+				(CallerAuthContext ? CallerAuthContext->CallerCredentials : NULL),
 				certReq->issuerPrivateKey,
 				&sigContext);
 		if(ourRtn) {

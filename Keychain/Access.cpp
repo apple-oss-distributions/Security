@@ -23,9 +23,27 @@
 #include "SecBridge.h"
 #include <Security/devrandom.h>
 #include <Security/uniformrandom.h>
+#include <Security/aclclient.h>
 #include <vector>
 
 using namespace KeychainCore;
+using namespace CssmClient;
+
+
+//
+// Create a completely open Access (anyone can do anything)
+// Note that this means anyone can *change* the ACL at will, too.
+// These ACL entries contain no descriptor names.
+//
+Access::Access()
+{
+	SecPointer<ACL> owner = new ACL(*this);
+	owner->setAuthorization(CSSM_ACL_AUTHORIZATION_CHANGE_ACL);
+	addOwner(owner);
+	
+	SecPointer<ACL> any = new ACL(*this);
+	add(any);
+}
 
 
 //
@@ -45,24 +63,44 @@ Access::Access(const string &descriptor)
 	makeStandard(descriptor, trusted);
 }
 
-void Access::makeStandard(const string &descriptor, const ACL::ApplicationList &trusted)
+Access::Access(const string &descriptor, const ACL::ApplicationList &trusted,
+	const AclAuthorizationSet &limitedRights, const AclAuthorizationSet &freeRights)
+{
+	makeStandard(descriptor, trusted, limitedRights, freeRights);
+}
+
+void Access::makeStandard(const string &descriptor, const ACL::ApplicationList &trusted,
+	const AclAuthorizationSet &limitedRights, const AclAuthorizationSet &freeRights)
 {
 	// owner "entry"
-	RefPointer<ACL> owner = new ACL(*this, descriptor, ACL::defaultSelector);
+	SecPointer<ACL> owner = new ACL(*this, descriptor, ACL::defaultSelector);
 	owner->setAuthorization(CSSM_ACL_AUTHORIZATION_CHANGE_ACL);
 	addOwner(owner);
 
-	// encrypt entry
-	RefPointer<ACL> encrypt = new ACL(*this, descriptor, ACL::defaultSelector);
-	encrypt->setAuthorization(CSSM_ACL_AUTHORIZATION_ENCRYPT);
-	encrypt->form(ACL::allowAllForm);
-	add(encrypt);
+	// unlimited entry
+	SecPointer<ACL> unlimited = new ACL(*this, descriptor, ACL::defaultSelector);
+	if (freeRights.empty()) {
+		unlimited->authorizations().clear();
+		unlimited->authorizations().insert(CSSM_ACL_AUTHORIZATION_ENCRYPT);
+	} else
+		unlimited->authorizations() = freeRights;
+	unlimited->form(ACL::allowAllForm);
+	add(unlimited);
 
-	// decrypt entry
-	RefPointer<ACL> decrypt = new ACL(*this, descriptor, ACL::defaultSelector);
-	decrypt->setAuthorization(CSSM_ACL_AUTHORIZATION_DECRYPT);
-	decrypt->applications() = trusted;
-	add(decrypt);
+	// limited entry
+	SecPointer<ACL> limited = new ACL(*this, descriptor, ACL::defaultSelector);
+	if (limitedRights.empty()) {
+		limited->authorizations().clear();
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_DECRYPT);
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_SIGN);
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_MAC);
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_DERIVE);
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_EXPORT_CLEAR);
+		limited->authorizations().insert(CSSM_ACL_AUTHORIZATION_EXPORT_WRAPPED);
+	} else
+		limited->authorizations() = limitedRights;
+	limited->applications() = trusted;
+	add(limited);
 }
 
 
@@ -91,26 +129,33 @@ Access::Access(const CSSM_ACL_OWNER_PROTOTYPE &owner,
 }
 
 
-Access::~Access()
+Access::~Access() throw()
 {
 }
 
+
+// Convert a SecPointer to a SecACLRef.
+static SecACLRef
+convert(const SecPointer<ACL> &acl)
+{
+	return *acl;
+}
 
 //
 // Return all ACL components in a newly-made CFArray.
 //
 CFArrayRef Access::copySecACLs() const
 {
-	return makeCFArray(gTypes().acl, mAcls);
+	return makeCFArray(convert, mAcls);
 }
 
 CFArrayRef Access::copySecACLs(CSSM_ACL_AUTHORIZATION_TAG action) const
 {
 	list<ACL *> choices;
 	for (Map::const_iterator it = mAcls.begin(); it != mAcls.end(); it++)
-		if (it->second->authorizations().find(action) != it->second->authorizations().end())
+		if (it->second->authorizes(action))
 			choices.push_back(it->second);
-	return choices.empty() ? NULL : makeCFArray(gTypes().acl, choices);
+	return choices.empty() ? NULL : makeCFArray(convert, choices);
 }
 
 
@@ -119,7 +164,7 @@ CFArrayRef Access::copySecACLs(CSSM_ACL_AUTHORIZATION_TAG action) const
 // If update, skip any part marked unchanged. (If not update, skip
 // any part marked deleted.)
 //
-void Access::setAccess(AclBearer &target, bool update = false)
+void Access::setAccess(AclBearer &target, bool update /* = false */)
 {
 	AclFactory factory;
 	editAccess(target, update, factory.promptCred());
@@ -165,6 +210,64 @@ void Access::addApplicationToRight(AclAuthorization right, TrustedApplication *a
 
 
 //
+// Yield new (copied) CSSM level owner and acls values, presumably
+// for use at CSSM layer operations.
+// Caller is responsible for releasing the beasties when done.
+//
+void Access::copyOwnerAndAcl(CSSM_ACL_OWNER_PROTOTYPE * &ownerResult,
+	uint32 &aclCount, CSSM_ACL_ENTRY_INFO * &aclsResult)
+{
+	CssmAllocator& alloc = CssmAllocator::standard();
+	int count = mAcls.size() - 1;	// one will be owner, others are acls
+	AclOwnerPrototype owner;
+	CssmAutoPtr<AclEntryInfo> acls = new(alloc) AclEntryInfo[count];
+	AclEntryInfo *aclp = acls;	// -> next unfilled acl element
+	for (Map::const_iterator it = mAcls.begin(); it != mAcls.end(); it++) {
+		SecPointer<ACL> acl = it->second;
+		if (acl->isOwner()) {
+			acl->copyAclOwner(owner, alloc);
+		} else {
+			aclp->handle() = acl->entryHandle();
+			acl->copyAclEntry(*aclp, alloc);
+			++aclp;
+		}
+	}
+	assert((aclp - acls) == count);	// all ACL elements filled
+
+	// commit output
+	ownerResult = new(alloc) AclOwnerPrototype(owner);
+	aclCount = count;
+	aclsResult = acls.release();
+}
+
+
+//
+// Retrieve the description from a randomly chosen ACL within this Access.
+// In the conventional case where all ACLs have the same descriptor, this
+// is deterministic. But you have been warned.
+//
+string Access::promptDescription() const
+{
+	for (Map::const_iterator it = mAcls.begin(); it != mAcls.end(); it++) {
+		ACL *acl = it->second;
+		switch (acl->form()) {
+		case ACL::allowAllForm:
+		case ACL::appListForm:
+			{
+				string descr = acl->promptDescription();
+				if (!descr.empty())
+					return descr;
+			}
+		default:
+			break;
+		}
+	}
+	// couldn't find suitable ACL (no description anywhere)
+	CssmError::throwMe(errSecACLNotSimple);
+}
+
+
+//
 // Add a new ACL to the resident set. The ACL must have been
 // newly made for this Access.
 //
@@ -203,10 +306,10 @@ void Access::compile(const CSSM_ACL_OWNER_PROTOTYPE &owner,
 	// add acl entries
 	const AclEntryInfo *acl = AclEntryInfo::overlay(acls);
 	for (uint32 n = 0; n < aclCount; n++) {
-		debug("SecAccess", "%p compiling entry %ld", this, acl[n].handle());
+		secdebug("SecAccess", "%p compiling entry %ld", this, acl[n].handle());
 		mAcls[acl[n].handle()] = new ACL(*this, acl[n]);
 	}
-	debug("SecAccess", "%p %ld entries compiled", this, mAcls.size());
+	secdebug("SecAccess", "%p %ld entries compiled", this, mAcls.size());
 }
 
 

@@ -28,10 +28,6 @@
 #include <Security/x509defs.h>
 #include <Security/cssmalloc.h>
 #include "TPCertInfo.h"
-/*
- * Cheetah version of TP doesn't work with DLs. 
- */
-#define TP_DL_ENABLE		1
 
 #ifdef	__cplusplus
 extern "C" {
@@ -56,9 +52,16 @@ void tpFreeCssmData(
 CSSM_BOOL tpCompareCssmData(
 	const CSSM_DATA *data1,
 	const CSSM_DATA *data2);
-CSSM_BOOL tpCompareOids(
-	const CSSM_OID *oid1,
-	const CSSM_OID *oid2);
+	
+/*
+ * This should break if/when CSSM_OID is not the same as
+ * CSSM_DATA, which is exactly what we want.
+ */
+#define tpCompareOids(oid1, oid2)	tpCompareCssmData(oid1, oid2)
+
+void tpFreePluginMemory(
+	CSSM_HANDLE	hand,
+	void 		*p);
 
 CSSM_DATA_PTR tp_CertGetPublicKey( 
 	TPCertInfo 		*cert,
@@ -74,31 +77,6 @@ void tp_CertFreeAlgId(
 	CSSM_CL_HANDLE	clHand,
 	CSSM_DATA_PTR	value);
 
-#if	 TP_DL_ENABLE
-TPCertInfo *tpFindIssuer(
-	CssmAllocator 			&alloc,
-	CSSM_CL_HANDLE			clHand,
-	CSSM_CSP_HANDLE			cspHand,
-	TPCertInfo				*subjectCert,
-	const CSSM_DATA			*issuerName,		// passed for convenience
-	const CSSM_DL_DB_LIST	*dbList,
-	const char 				*cssmTimeStr,		// may be NULL
-	CSSM_RETURN				*issuerExpired);	// RETURNED
-
-#endif	/* TP_DL_ENABLE*/
-
-CSSM_BOOL tpIsSameName( 
-	const CSSM_DATA *pName1,
-	const CSSM_DATA *pName2);
-
-CSSM_RETURN tp_VerifyCert(
-	CSSM_CL_HANDLE			clHand,
-	CSSM_CSP_HANDLE			cspHand,
-	TPCertInfo				*subjectCert,
-	TPCertInfo				*issuerCert,
-	CSSM_BOOL				checkIssuerCurrent,
-	CSSM_BOOL				allowExpired);
-
 CSSM_BOOL tp_CompareCerts(
 	const CSSM_DATA			*cert1,
 	const CSSM_DATA			*cert2);
@@ -109,6 +87,26 @@ CSSM_BOOL tp_CompareCerts(
 CSSM_ALGORITHMS tpOidToAldId(
 	const CSSM_OID *oid,
 	CSSM_ALGORITHMS *keyAlg);			// RETURNED
+
+void tpToLower(
+	char *str,
+	unsigned strLen);
+
+void tpNormalizeAddrSpec(
+	char		*addr,
+	unsigned	addrLen);
+
+CSSM_BOOL tpCompareHostNames(
+	const char	 	*hostName,			// spec'd by app, tpToLower'd
+	uint32			hostNameLen,
+	char			*certName,			// from cert, we tpToLower
+	uint32			certNameLen);
+
+CSSM_BOOL tpCompareEmailAddr(
+	const char	 	*appEmail,		// spec'd by app, tpToLower'd
+	uint32			appEmailLen,
+	char			*certEmail,		// from cert, we tpToLower
+	uint32			certEmailLen);
 
 #ifdef	__cplusplus
 }
