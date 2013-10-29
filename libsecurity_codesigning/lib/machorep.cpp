@@ -47,7 +47,7 @@ MachORep::MachORep(const char *path, const Context *ctx)
 {
 	if (ctx)
 		if (ctx->offset)
-			mExecutable = new Universal(fd(), ctx->offset);
+			mExecutable = new Universal(fd(), (size_t)ctx->offset);
 		else if (ctx->arch) {
 			auto_ptr<Universal> full(new Universal(fd()));
 			mExecutable = new Universal(fd(), full->archOffset(ctx->arch));
@@ -76,6 +76,7 @@ bool MachORep::candidate(FileDesc &fd)
 	case MH_DYLIB:
 	case MH_DYLINKER:
 	case MH_BUNDLE:
+	case MH_KEXT_BUNDLE:
 	case MH_PRELOAD:
 		return true;		// dynamic image; supported
 	case MH_OBJECT:
@@ -203,7 +204,7 @@ CFDataRef MachORep::infoPlist()
 		if (const section *sect = macho->findSection("__TEXT", "__info_plist")) {
 			if (macho->is64()) {
 				const section_64 *sect64 = reinterpret_cast<const section_64 *>(sect);
-				info.take(macho->dataAt(macho->flip(sect64->offset), macho->flip(sect64->size)));
+				info.take(macho->dataAt(macho->flip(sect64->offset), (size_t)macho->flip(sect64->size)));
 			} else {
 				info.take(macho->dataAt(macho->flip(sect->offset), macho->flip(sect->size)));
 			}
