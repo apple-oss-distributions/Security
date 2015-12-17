@@ -306,6 +306,13 @@
 /* Apple Pay Issuer Encryption */
 #define APPLE_CERT_EXT_CRYPTO_SERVICES_EXT_ENCRYPTION   APPLE_CERT_EXT, 39
 
+/* Apple OS X Provisioning Profile Signing */
+/* (note this OID is unfortunately used as a cert extension even though it's under the EKU arc) */
+#define APPLE_CERT_EXT_OSX_PROVISIONING_PROFILE_SIGNING APPLE_EKU_OID, 11
+
+/* AppleTV VPN Profile Signing 1.2.840.113635.100.6.43 */
+#define APPLE_CERT_EXT_APPLE_ATV_VPN_PROFILE_SIGNING    APPLE_CERT_EXT, 43
+
 /*
  * Netscape OIDs.
  */
@@ -511,6 +518,7 @@ __unused static const DERByte
     _oidApplePolicyTestMobileStore[] = { APPLE_CERT_POLICY_TEST_MOBILE_STORE },
     _oidApplePolicyEscrowService[] = { APPLE_ESCROW_POLICY_OID },
     _oidAppleCertExtensionAppleIDRecordValidationSigning[] = { APPLE_CERT_EXT_APPLE_ID_VALIDATION_RECORD_SIGNING },
+    _oidAppleCertExtOSXProvisioningProfileSigning[] = { APPLE_CERT_EXT_OSX_PROVISIONING_PROFILE_SIGNING },
     _oidAppleIntmMarkerAppleSystemIntg2[] =  {APPLE_CERT_EXT_INTERMEDIATE_MARKER_APPLEID_SYSTEM_INTEGRATION_2},
     _oidAppleIntmMarkerAppleSystemIntgG3[] =  {APPLE_CERT_EXT_INTERMEDIATE_MARKER_APPLEID_SYSTEM_INTEGRATION_G3},
     _oidAppleCertExtAppleSMPEncryption[] = {APPLE_CERT_EXT_APPLE_SMP_ENCRYPTION},
@@ -529,6 +537,7 @@ __unused static const DERByte
     _oidGoogleOCSPSignedCertificateTimestamp[] = {GOOGLE_OCSP_SCT_OID},
     _oidAppleCertExtATVAppSigningTest[] = {APPLE_ATV_APP_SIGNING_OID_TEST},
     _oidAppleCertExtATVAppSigningProd[] = {APPLE_ATV_APP_SIGNING_OID},
+    _oidAppleCertExtATVVPNProfileSigning[] = {APPLE_CERT_EXT_APPLE_ATV_VPN_PROFILE_SIGNING},
     _oidAppleCertExtCryptoServicesExtEncryption[] = {APPLE_CERT_EXT_CRYPTO_SERVICES_EXT_ENCRYPTION};
 
 __unused const DERItem
@@ -664,6 +673,8 @@ __unused const DERItem
                                         sizeof(_oidApplePolicyEscrowService)},
     oidAppleCertExtensionAppleIDRecordValidationSigning = { (DERByte *)_oidAppleCertExtensionAppleIDRecordValidationSigning,
                                         sizeof(_oidAppleCertExtensionAppleIDRecordValidationSigning)},
+    oidAppleCertExtOSXProvisioningProfileSigning = { (DERByte *)_oidAppleCertExtOSXProvisioningProfileSigning,
+                                        sizeof(_oidAppleCertExtOSXProvisioningProfileSigning) },
     oidAppleIntmMarkerAppleSystemIntg2 = { (DERByte *) _oidAppleIntmMarkerAppleSystemIntg2,
                                         sizeof(_oidAppleIntmMarkerAppleSystemIntg2)},
     oidAppleIntmMarkerAppleSystemIntgG3 = { (DERByte *) _oidAppleIntmMarkerAppleSystemIntgG3,
@@ -711,6 +722,8 @@ __unused const DERItem
                                         sizeof(_oidAppleCertExtATVAppSigningProd)},
     oidAppleCertExtATVAppSigningTest = { (DERByte *)_oidAppleCertExtATVAppSigningTest,
                                         sizeof(_oidAppleCertExtATVAppSigningTest)},
+    oidAppleCertExtATVVPNProfileSigning = { (DERByte *) _oidAppleCertExtATVVPNProfileSigning,
+                                        sizeof(_oidAppleCertExtATVVPNProfileSigning)},
     oidAppleCertExtCryptoServicesExtEncryption  = { (DERByte *)_oidAppleCertExtCryptoServicesExtEncryption,
                                         sizeof(_oidAppleCertExtCryptoServicesExtEncryption)};
 

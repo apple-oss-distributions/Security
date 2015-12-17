@@ -34,6 +34,8 @@
 #include <Security/SecureObjectSync/SOSKVSKeys.h>
 #include <SOSPeerInfoDER.h>
 
+#include <Security/SecureObjectSync/SOSTransport.h>
+
 #include <Security/SecureObjectSync/SOSPeerInfoCollections.h>
 
 
@@ -318,11 +320,13 @@ SOSAccountRef SOSAccountCreateFromDER(CFAllocatorRef allocator,
         // if we were syncing legacy keychain, ensure we include those legacy views.
         bool wasSyncingLegacy = !SOSPeerInfoVersionIsCurrent(myPI) && SOSAccountIsInCircle(account, NULL);
         CFSetRef viewsToEnsure = SOSViewsCreateDefault(wasSyncingLegacy, NULL);
-        SOSAccountUpdateFullPeerInfo(account, viewsToEnsure);
+        SOSAccountUpdateFullPeerInfo(account, viewsToEnsure, SOSViewsGetV0ViewSet()); // We don't permit V0 view proper, only sub-views
         CFReleaseNull(viewsToEnsure);
     }
 
     SOSAccountCheckHasBeenInSync(account);
+
+    SOSUpdateKeyInterest(account);
 
     result = CFRetainSafe(account);
 

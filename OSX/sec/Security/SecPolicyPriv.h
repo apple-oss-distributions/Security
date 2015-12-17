@@ -56,8 +56,9 @@ __BEGIN_DECLS
 	@constant kSecPolicyApplePCSEscrowService
 	@constant kSecPolicyAppleSWUpdateSigning
 	@constant kSecPolicyApplePackageSigning
-    @constant kSecPolicyAppleATVAppSigning
-    @constant kSecPolicyAppleTestATVAppSigning
+	@constant kSecPolicyAppleATVAppSigning
+	@constant kSecPolicyAppleTestATVAppSigning
+	@constant kSecPolicyAppleOSXProvisioningProfileSigning
 */
 extern const CFStringRef kSecPolicyApplePassbookSigning
     __OSX_AVAILABLE_STARTING(__MAC_10_9, __IPHONE_7_0);
@@ -94,6 +95,8 @@ extern const CFStringRef kSecPolicyApplePackageSigning
 extern const CFStringRef kSecPolicyAppleATVAppSigning
     __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
 extern const CFStringRef kSecPolicyAppleTestATVAppSigning
+    __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
+extern const CFStringRef kSecPolicyAppleOSXProvisioningProfileSigning
     __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
 
 
@@ -387,6 +390,14 @@ SecPolicyRef SecPolicyCreatePCSEscrowServiceSigner(void);
 SecCertificateRef SecPolicyCopyEscrowRootCertificate(void);
 
 /*!
+ @function SecPolicyCreateOSXProvisioningProfileSigning
+ @abstract Check for leaf marker OID 1.2.840.113635.100.4.11,
+	 intermediate marker OID 1.2.840.113635.100.6.2.1,
+	 chains to Apple Root CA
+*/
+SecPolicyRef SecPolicyCreateOSXProvisioningProfileSigning(void);
+
+/*!
  @function SecPolicyCreateConfigurationProfileSigner
  @abstract Check for key usage of digital signature, has a EKU OID of
      1.2.840.113635.100.4.16 and
@@ -552,6 +563,16 @@ SecPolicyRef SecPolicyCreateTestAppleATVAppSigning(void)
  */
 SecPolicyRef SecPolicyCreateApplePayIssuerEncryption(void)
     __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
+
+
+/*!
+ @function SecPolicyCreateAppleATVVPNProfileSigning
+ @abstract Check for leaf marker OID 1.2.840.113635.100.6.43,
+ intermediate marker OID 1.2.840.113635.100.6.2.10,
+ chains to Apple Root CA, path length 3
+ */
+SecPolicyRef SecPolicyCreateAppleATVVPNProfileSigning(void)
+__OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
 
 __END_DECLS
 

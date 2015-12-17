@@ -429,11 +429,27 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "sc_30_peerinfo"
+            argument = "si_84_atv_appsigning"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_84_atv_appsigning"
+            argument = "si_85_sectrust_ssl_policy"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_86_sectrust_eap_tls"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_87_sectrust_name_constraints"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_88_sectrust_vpnprofile"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "sc_30_peerinfo"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument

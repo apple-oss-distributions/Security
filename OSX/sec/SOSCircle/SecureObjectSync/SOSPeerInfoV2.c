@@ -26,6 +26,7 @@ CFStringRef sSecurityPropertiesKey      = CFSTR("SecurityProperties");
 CFStringRef kSOSHsaCrKeyDictionary      = CFSTR("HSADictionary");
 CFStringRef sRingState                  = CFSTR("RingState");
 CFStringRef sBackupKeyKey               = CFSTR("BackupKey");
+CFStringRef sEscrowRecord               = CFSTR("EscrowRecord");
 
 #if TARGET_OS_IPHONE
 
@@ -169,7 +170,7 @@ bool SOSPeerInfoUpdateToV2(SOSPeerInfoRef pi, CFErrorRef *error) {
     }
     require_action_quiet((v2data = SOSCreateDERFromDictionary(v2Dictionary, error)), out, SOSCreateError(kSOSErrorAllocationFailure, CFSTR("No Memory"), NULL, error));
     CFDictionaryAddValue(pi->description, sV2DictionaryKey, v2data);
-    SOSPeerInfoExpandV2Data(pi, error);
+    //SOSPeerInfoExpandV2Data(pi, error);
     retval = true;
 out:
     CFReleaseNull(views);
@@ -192,18 +193,15 @@ errOut:
 
 bool SOSPeerInfoExpandV2Data(SOSPeerInfoRef pi, CFErrorRef *error) {
     CFDataRef v2data = NULL;
-    CFMutableDictionaryRef v2Dictionary = NULL;
+    bool retval = false;
 
-    require_action_quiet((v2data = SOSPeerInfoGetV2Data(pi)), out, SOSCreateError(kSOSErrorDecodeFailure, CFSTR("No V2 Data in description"), NULL, error));
-    require_action_quiet((v2Dictionary = SOSCreateDictionaryFromDER(v2data, error)), out, SOSCreateError(kSOSErrorDecodeFailure, CFSTR("Can't expand V2 Dictionary"), NULL, error));
+    require_quiet(pi, out);
     CFReleaseNull(pi->v2Dictionary);
-    pi->v2Dictionary = v2Dictionary;
-    return true;
-
+    require_action_quiet((v2data = SOSPeerInfoGetV2Data(pi)), out, SOSCreateError(kSOSErrorDecodeFailure, CFSTR("No V2 Data in description"), NULL, error));
+    require_action_quiet((pi->v2Dictionary = SOSCreateDictionaryFromDER(v2data, error)), out, SOSCreateError(kSOSErrorDecodeFailure, CFSTR("Can't expand V2 Dictionary"), NULL, error));
+    retval = true;
 out:
-    CFReleaseNull(v2Dictionary);
-    return false;
-
+    return retval;
 }
 
 void SOSPeerInfoV2DictionarySetValue(SOSPeerInfoRef pi, const void *key, const void *value) {
@@ -335,3 +333,11 @@ errOut:
     return NULL;
 }
 
+const CFMutableDictionaryRef SOSPeerInfoV2DictionaryCopyDictionary(SOSPeerInfoRef pi, const void *key) {
+    require_quiet(SOSPeerInfoExpandV2Data(pi, NULL), errOut);
+    CFDictionaryRef value = asDictionary(CFDictionaryGetValue(pi->v2Dictionary, key), NULL);
+    if(value != NULL)
+        return CFDictionaryCreateMutableCopy(kCFAllocatorDefault, CFDictionaryGetCount(value), value);
+errOut:
+    return NULL;
+}

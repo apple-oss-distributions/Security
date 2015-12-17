@@ -59,6 +59,7 @@ extern const DERItem
     oidApplePolicyTestMobileStore,
     oidApplePolicyEscrowService,
     oidAppleCertExtensionAppleIDRecordValidationSigning,
+    oidAppleCertExtOSXProvisioningProfileSigning,
     oidAppleIntmMarkerAppleSystemIntg2,
     oidAppleIntmMarkerAppleSystemIntgG3,
     oidAppleCertExtAppleSMPEncryption,
@@ -75,6 +76,7 @@ extern const DERItem
     oidAppleCertExtApplePPQSigningTest,
     oidAppleCertExtATVAppSigningProd,
     oidAppleCertExtATVAppSigningTest,
+    oidAppleCertExtATVVPNProfileSigning,
     oidAppleCertExtCryptoServicesExtEncryption;
 
     /* Compare two decoded OIDs.  Returns true iff they are equivalent. */

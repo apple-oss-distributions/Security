@@ -33,6 +33,36 @@
 #include <libDER/asn1Types.h>
 
 /* RFC 5280 Section 4.2.1.10:
+ DNS name restrictions are expressed as host.example.com.  Any DNS
+ name that can be constructed by simply adding zero or more labels to
+ the left-hand side of the name satisfies the name constraint.  For
+ example, www.host.example.com would satisfy the constraint but
+ host1.example.com would not.
+*/
+static bool SecDNSNameConstraintsMatch(CFStringRef DNSName, CFStringRef constraint) {
+    CFIndex clength = CFStringGetLength(constraint);
+    CFIndex dlength = CFStringGetLength(DNSName);
+
+    if (dlength < clength) return false;
+
+    /* Ensure that character to the left of the constraint in the DNSName is a '.'
+     so that badexample.com does not match example.com, but good.example.com does.
+     */
+    if ((dlength != clength) && ('.' != CFStringGetCharacterAtIndex(constraint, 0)) &&
+        ('.' != CFStringGetCharacterAtIndex(DNSName, dlength - clength -1))) {
+        return false;
+    }
+
+    CFRange compareRange = { dlength - clength, clength};
+
+    if (!CFStringCompareWithOptions(DNSName, constraint, compareRange, kCFCompareCaseInsensitive)) {
+        return true;
+    }
+
+    return false;
+}
+
+/* RFC 5280 Section 4.2.1.10:
  For URIs, the constraint applies to the host part of the name.  The
  constraint MUST be specified as a fully qualified domain name and MAY
  specify a host or a domain.  Examples would be "host.example.com" and
@@ -156,7 +186,6 @@ out:
 
 static bool nc_compare_DNSNames(const DERItem *certName, const DERItem *subtreeName) {
     bool result = false;
-    CFStringRef subtreeName_with_wildcard = NULL;
     CFStringRef certName_str = CFStringCreateWithBytes(kCFAllocatorDefault,
                                                        certName->data, certName->length,
                                                        kCFStringEncodingUTF8, FALSE);
@@ -165,26 +194,14 @@ static bool nc_compare_DNSNames(const DERItem *certName, const DERItem *subtreeN
                                                           kCFStringEncodingUTF8, FALSE);
     require_quiet(certName_str, out);
     require_quiet(subtreeName_str, out);
-    /*
-     * We'll also compose a string with a preceding wildcard label since:
-     *      "Any DNS name that can be constructed by simply adding zero or more labels to
-     *      the left-hand side of the name satisfies the name constraint."
-     */
-    subtreeName_with_wildcard = CFStringCreateWithFormat(kCFAllocatorDefault,
-                                                         NULL,
-                                                         CFSTR("*.%s"),
-                                                         CFStringGetCStringPtr(subtreeName_str,
-                                                                               kCFStringEncodingUTF8));
-    require_quiet(subtreeName_with_wildcard, out);
-    
-    if (SecDNSMatch(certName_str, subtreeName_str) || SecDNSMatch(certName_str, subtreeName_with_wildcard)) {
+
+    if (SecDNSNameConstraintsMatch(certName_str, subtreeName_str)) {
         result = true;
     }
     
 out:
     CFReleaseNull(certName_str) ;
     CFReleaseNull(subtreeName_str);
-    CFReleaseNull(subtreeName_with_wildcard);
     return result;
 }
 
@@ -342,21 +359,17 @@ out:
     return true;
 }
 
-static bool nc_compare_subject_to_subtrees(CFDataRef subject, CFArrayRef subtrees) {
-    /* An empty subject name is considered a match */
-    if (isEmptySubject(subject))
-        return true;
+static void nc_compare_subject_to_subtrees(CFDataRef subject, CFArrayRef subtrees, match_t *match) {
+    /* An empty subject name is considered not present */
+    if (isEmptySubject(subject)) {
+        return;
+    }
     
     CFIndex num_trees = CFArrayGetCount(subtrees);
     CFRange range = { 0, num_trees };
     const DERItem subject_der = { (unsigned char *)CFDataGetBytePtr(subject), CFDataGetLength(subject) };
-    match_t match = { false, false };
-    nc_match_context_t context = {GNT_DirectoryName, &subject_der, &match};
+    nc_match_context_t context = {GNT_DirectoryName, &subject_der, match};
     CFArrayApplyFunction(subtrees, range, nc_decode_and_compare_subtree, &context);
-    
-    /* If no directory name amongst the subtrees, then return success. */
-    if (!match.present) return true;
-    else return match.isMatch;
 }
 
 static void nc_compare_RFC822Name_to_subtrees(const void *value, void *context) {
@@ -419,7 +432,7 @@ static OSStatus nc_compare_subjectAltName_to_subtrees(void *context, SecCEGenera
     return errSecInvalidCertificate;
 }
 
-OSStatus SecNameContraintsMatchSubtrees(SecCertificateRef certificate, CFArrayRef subtrees, bool *matched) {
+OSStatus SecNameContraintsMatchSubtrees(SecCertificateRef certificate, CFArrayRef subtrees, bool *matched, bool permit) {
     CFDataRef subject = NULL;
     OSStatus status = errSecSuccess;
     CFArrayRef rfc822Names = NULL;
@@ -430,11 +443,12 @@ OSStatus SecNameContraintsMatchSubtrees(SecCertificateRef certificate, CFArrayRe
     const DERItem *subjectAltNames = SecCertificateGetSubjectAltName(certificate);
 
     /* Reject certificates with neither Subject Name nor SubjectAltName */
-    require_action_quiet(!isEmptySubject(subject) || subjectAltNames, out, *matched = false);
+    require_action_quiet(!isEmptySubject(subject) || subjectAltNames, out, status = errSecInvalidCertificate);
     
     /* Verify that the subject name is within any of the subtrees for X.500 distinguished names */
-    require_action_quiet(nc_compare_subject_to_subtrees(subject,subtrees), out, *matched = false);
-    
+    match_t subject_match = { false, false };
+    nc_compare_subject_to_subtrees(subject,subtrees,&subject_match);
+
     match_t san_match = { false, true };
     nc_san_match_context_t san_context = {subtrees, &san_match};
     
@@ -442,15 +456,9 @@ OSStatus SecNameContraintsMatchSubtrees(SecCertificateRef certificate, CFArrayRe
     if (!subjectAltNames) {
         rfc822Names = SecCertificateCopyRFC822Names(certificate);
         /* If there's also no emailAddress field then subject match is enough. */
-        require_action_quiet(rfc822Names, out, *matched = true);
-        CFRange range = { 0 , CFArrayGetCount(rfc822Names) };
-        CFArrayApplyFunction(rfc822Names, range, nc_compare_RFC822Name_to_subtrees, &san_context);
-        
-        if (san_match.present && !san_match.isMatch) {
-            *matched = false;
-        }
-        else {
-            *matched = true;
+        if (rfc822Names) {
+            CFRange range = { 0 , CFArrayGetCount(rfc822Names) };
+            CFArrayApplyFunction(rfc822Names, range, nc_compare_RFC822Name_to_subtrees, &san_context);
         }
     }
     else {
@@ -459,13 +467,35 @@ OSStatus SecNameContraintsMatchSubtrees(SecCertificateRef certificate, CFArrayRe
         status = SecCertificateParseGeneralNames(subjectAltNames,
                                                  &san_context,
                                                  nc_compare_subjectAltName_to_subtrees);
-        /* If failed to parse or failed to match SAN(s) to subtree(s) of same type */
-        if((status != errSecSuccess) || (san_match.present && !san_match.isMatch)) {
-            *matched = false;
+        /* If failed to parse */
+        require_action_quiet(status == errSecSuccess, out, *matched = false);
+    }
+
+    /* If we are excluding based on the subtrees, lack of names of the
+       same type is not a match. But if we are permitting, it is.
+     */
+    if (subject_match.present) {
+        if (san_match.present &&
+            ((subject_match.isMatch && !san_match.isMatch) ||
+            (!subject_match.isMatch && san_match.isMatch))) {
+            /* If both san and subject types are present, but don't agree on match
+             * we should exclude on the basis of the match and not permit on the
+             * basis of the failed match. */
+            *matched = permit ? false : true;
         }
         else {
-            *matched = true;
+            /* If san type wasn't present or both had the same result, use the
+             * result from matching against the subject. */
+            *matched = subject_match.isMatch;
         }
+    }
+    else if (san_match.present) {
+        *matched = san_match.isMatch;
+    }
+    else {
+        /* Neither subject nor san had same type as subtrees, permit and don't
+         * exclude the cert. */
+        *matched = permit ? true : false;
     }
     
 out:
@@ -474,57 +504,80 @@ out:
     return status;
 }
 
+typedef struct {
+    CFMutableArrayRef existing_trees;
+    CFMutableArrayRef trees_to_add;
+} nc_intersect_context_t;
+
+static SecCEGeneralNameType nc_gn_type_convert (DERTag tag) {
+    switch (tag) {
+        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 0:
+            return GNT_OtherName;
+        case ASN1_CONTEXT_SPECIFIC | 1:
+            return GNT_RFC822Name;
+        case ASN1_CONTEXT_SPECIFIC | 2:
+            return GNT_DNSName;
+        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 3:
+            return GNT_X400Address;
+        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 4:
+            return GNT_DirectoryName;
+        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 5:
+            return GNT_EdiPartyName;
+        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 6:
+        case ASN1_CONTEXT_SPECIFIC | 6:
+            return GNT_URI;
+        case ASN1_CONTEXT_SPECIFIC | 7:
+            return GNT_IPAddress;
+        case ASN1_CONTEXT_SPECIFIC | 8:
+            return GNT_RegisteredID;
+        default:
+            return GNT_OtherName;
+    }
+}
+
 /* The recommended processing algorithm states:
  *    If permittedSubtrees is present in the certificate, set the permitted_subtrees state variable to the intersection
  *    of its previous value and the value indicated in the extension field.
- * However, in practice, certs are issued with permittedSubtrees whose intersection would be the empty set. Wherever
- * a new permittedSubtree is a subset of an existing subtree, we'll replace the existing subtree; otherwise, we just
- * append the new subtree.
+ * However, in practice, certs are issued with permittedSubtrees whose intersection would be the empty set. For now,
+ * wherever a new permittedSubtree is a subset of an existing subtree, we'll replace the existing subtree; otherwise,
+ * we just append the new subtree.
  */
 static void nc_intersect_tree_with_subtrees (const void *value, void *context) {
     CFDataRef new_subtree = value;
-    CFMutableArrayRef *existing_subtrees = context;
-    
-    if (!new_subtree || !*existing_subtrees) return;
-    
+    nc_intersect_context_t *intersect_context = context;
+    CFMutableArrayRef existing_subtrees = intersect_context->existing_trees;
+    CFMutableArrayRef trees_to_append = intersect_context->trees_to_add;
+
+    if (!new_subtree || !existing_subtrees) return;
+
     /* convert new subtree to DERItem */
     const DERItem general_name = { (unsigned char *)CFDataGetBytePtr(new_subtree), CFDataGetLength(new_subtree) };
     DERDecodedInfo general_name_content;
     if(DR_Success != DERDecodeItem(&general_name, &general_name_content)) return;
-    
+
     SecCEGeneralNameType gnType;
     DERItem *new_subtree_item = &general_name_content.content;
-    
+
     /* Attempt to intersect if one of the supported types: DirectoryName and DNSName.
-     * Otherwise, just append the new tree. 
-     */
-    switch (general_name_content.tag) {
-        case ASN1_CONTEXT_SPECIFIC | 2: {
-            gnType = GNT_DNSName;
-            break;
-        }
-        case ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 4: {
-            gnType = GNT_DirectoryName;
-            break;
-        }
-        default: {
-            CFArrayAppendValue(*existing_subtrees, new_subtree);
-            return;
-        }
+     * Otherwise, just append the new tree. */
+    gnType = nc_gn_type_convert(general_name_content.tag);
+    if (!(gnType == GNT_DirectoryName || gnType == GNT_DNSName)) {
+        CFArrayAppendValue(trees_to_append, new_subtree);
     }
-    
+
     CFIndex subtreeIX;
-    CFIndex num_existing_subtrees = CFArrayGetCount(*existing_subtrees);
+    CFIndex num_existing_subtrees = CFArrayGetCount(existing_subtrees);
     match_t match = { false, false };
     nc_match_context_t match_context = { gnType, new_subtree_item, &match};
     for (subtreeIX = 0; subtreeIX < num_existing_subtrees; subtreeIX++) {
-        CFDataRef candidate_subtree = CFArrayGetValueAtIndex(*existing_subtrees, subtreeIX);
+        CFDataRef candidate_subtree = CFArrayGetValueAtIndex(existing_subtrees, subtreeIX);
         /* Convert candidate subtree to DERItem */
         const DERItem candidate = { (unsigned char *)CFDataGetBytePtr(candidate_subtree), CFDataGetLength(candidate_subtree) };
         DERDecodedInfo candidate_content;
         /* We could probably just delete any subtrees in the array that don't decode */
         if(DR_Success != DERDecodeItem(&candidate, &candidate_content)) continue;
-        
+
+        /* first test whether new tree matches the existing tree */
         OSStatus status = SecCertificateParseGeneralNameContentProperty(candidate_content.tag,
                                                                         &candidate_content.content,
                                                                         &match_context,
@@ -532,14 +585,29 @@ static void nc_intersect_tree_with_subtrees (const void *value, void *context) {
         if((status == errSecSuccess) && match.present && match.isMatch) {
             break;
         }
+
+        /* then test whether existing tree matches the new tree*/
+        match_t local_match = { false , false };
+        nc_match_context_t local_match_context = { nc_gn_type_convert(candidate_content.tag),
+                                                   &candidate_content.content,
+                                                   &local_match };
+        status = SecCertificateParseGeneralNameContentProperty(general_name_content.tag,
+                                                               &general_name_content.content,
+                                                               &local_match_context,
+                                                               nc_compare_subtree);
+        if((status == errSecSuccess) && local_match.present && local_match.isMatch) {
+            break;
+        }
     }
     if (subtreeIX == num_existing_subtrees) {
         /* No matches found. Append new subtree */
-        CFArrayAppendValue(*existing_subtrees, new_subtree);
+        CFArrayAppendValue(trees_to_append, new_subtree);
     }
-    else {
-        CFArraySetValueAtIndex(*existing_subtrees, subtreeIX, new_subtree);
+    else if (match.present && match.isMatch) {
+        /* new subtree \subseteq existing subtree, replace existing tree */
+        CFArraySetValueAtIndex(existing_subtrees, subtreeIX, new_subtree);
     }
+    /* existing subtree \subset new subtree, drop the new tree so as not to broaden constraints*/
     return;
     
 }
@@ -550,5 +618,24 @@ void SecNameConstraintsIntersectSubtrees(CFMutableArrayRef subtrees_state, CFArr
     
     CFIndex num_new_trees = CFArrayGetCount(subtrees_new);
     CFRange range = { 0, num_new_trees };
-    CFArrayApplyFunction(subtrees_new, range, nc_intersect_tree_with_subtrees, &subtrees_state);
+
+    /* if existing subtrees state contains no subtrees, append new subtrees whole */
+    if (!CFArrayGetCount(subtrees_state)) {
+        CFArrayAppendArray(subtrees_state, subtrees_new, range);
+        return;
+    }
+
+    CFMutableArrayRef trees_to_append = NULL;
+    trees_to_append = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+    nc_intersect_context_t context = { subtrees_state , trees_to_append };
+    CFArrayApplyFunction(subtrees_new, range, nc_intersect_tree_with_subtrees, &context);
+
+    /* don't append to the state until we've processed all the new trees */
+    num_new_trees = CFArrayGetCount(trees_to_append);
+    if (trees_to_append && num_new_trees) {
+        range.length = num_new_trees;
+        CFArrayAppendArray(subtrees_state, trees_to_append, range);
+    }
+
+    CFReleaseNull(trees_to_append);
 }

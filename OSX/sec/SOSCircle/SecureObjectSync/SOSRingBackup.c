@@ -128,14 +128,6 @@ static bool SOSBackupRingPeersInViews(CFSetRef peers, SOSRingRef ring) {
     return retval;
 }
 
-static bool CFSetIsSubset(CFSetRef little, CFSetRef big) {
-    __block bool retval = true;
-    CFSetForEach(little, ^(const void *value) {
-        if(!CFSetContainsValue(big, value)) retval = false;
-    });
-    return retval;
-}
-
 // Make sure that the ring includes me if I'm enabled for its view.
 static SOSConcordanceStatus SOSBackupRingEvaluateMyInclusion(SOSRingRef ring, SOSFullPeerInfoRef me) {
     bool shouldBeInRing = false;
@@ -168,6 +160,11 @@ static SOSConcordanceStatus SOSRingPeerKeyConcordanceTrust_Backup(SOSFullPeerInf
         return kSOSConcordanceGenOld;
     }
     
+    
+    if (SOSRingIsEmpty_Internal(proposedRing)) {
+        return kSOSConcordanceTrusted;
+    }
+
     SOSConcordanceStatus localstatus = SOSBackupRingEvaluateMyInclusion(proposedRing, me);
     if(localstatus == kSOSConcordanceMissingMe) {
         SOSCreateError(kSOSErrorReplay, CFSTR("Improper exclusion of this peer"), NULL, error);
@@ -177,10 +174,6 @@ static SOSConcordanceStatus SOSRingPeerKeyConcordanceTrust_Backup(SOSFullPeerInf
     if(localstatus == kSOSConcordanceImNotWorthy) {
         SOSCreateError(kSOSErrorReplay, CFSTR("Improper inclusion of this peer"), NULL, error);
         return localstatus;
-    }
-
-    if (SOSRingIsEmpty_Internal(proposedRing)) {
-        return kSOSConcordanceTrusted;
     }
     
     if(!SOSBackupRingPeersInViews(peers, proposedRing)) {

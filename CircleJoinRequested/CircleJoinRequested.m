@@ -7,34 +7,35 @@
 //
 #import <Accounts/Accounts.h>
 #import <Accounts/ACAccountStore_Private.h>
+#import <Accounts/ACAccountType_Private.h>
 #import <AggregateDictionary/ADClient.h>
+#import <AppSupport/AppSupportUtils.h>
 #import <AppleAccount/AppleAccount.h>
 #import <AppleAccount/ACAccountStore+AppleAccount.h>
-#import <Accounts/ACAccountType_Private.h>
+#import <CloudServices/SecureBackup.h>
+#import <CoreFoundation/CFUserNotification.h>
 #import <Foundation/Foundation.h>
+#import <ManagedConfiguration/MCProfileConnection.h>
+#import <ManagedConfiguration/MCFeatures.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+#import <MobileCoreServices/LSApplicationWorkspace.h>
+#import <MobileGestalt.h>
+#import <ProtectedCloudStorage/CloudIdentity.h>
+#import <Security/SecFrameworkStrings.h>
+#import <SpringBoardServices/SBSCFUserNotificationKeys.h>
 #include <dispatch/dispatch.h>
 #include "SecureObjectSync/SOSCloudCircle.h"
 #include "SecureObjectSync/SOSPeerInfo.h"
-#import <CoreFoundation/CFUserNotification.h>
-#import <SpringBoardServices/SBSCFUserNotificationKeys.h>
 #include <notify.h>
 #include <sysexits.h>
 #import "Applicant.h"
 #import "NSArray+map.h"
-#import <ManagedConfiguration/MCProfileConnection.h>
-#import <ManagedConfiguration/MCFeatures.h>
-#import <Security/SecFrameworkStrings.h>
 #import "PersistentState.h"
 #include <xpc/private.h>
 #include <sys/time.h>
 #import "NSDate+TimeIntervalDescription.h"
-#include <MobileGestalt.h>
 #include <xpc/activity.h>
 #include <xpc/private.h>
-#import <MobileCoreServices/MobileCoreServices.h>
-#import <MobileCoreServices/LSApplicationWorkspace.h>
-#import <CloudServices/SecureBackup.h>
-#import <AppSupport/AppSupportUtils.h>
 #import <syslog.h>
 #include "utilities/SecCFRelease.h"
 #include "utilities/debugging.h"
@@ -52,6 +53,7 @@ volatile NSString *debugState = @"main?";
 dispatch_block_t doOnceInMainBlockChain = NULL;
 
 NSString *castleKeychainUrl = @"prefs:root=CASTLE&path=Keychain/ADVANCED";
+NSString *rejoinICDPUrl     = @"prefs:root=CASTLE&aaaction=CDP&command=rejoin";
 
 static void doOnceInMain(dispatch_block_t block)
 {
@@ -114,14 +116,19 @@ static BOOL processRequests(CFErrorRef *error) {
 	NSMutableArray *toReject = [[applicantsInState(ApplicantRejected) mapWithBlock:^id(id obj) {return (id)[obj rawPeerInfo];}] mutableCopy];
 	bool			ok = true;
 
-	NSLog(@"Process accept: %@", toAccept);
-	NSLog(@"Process reject: %@", toReject);
-
-	if ([toAccept count])
+	if ([toAccept count]) {
+		NSLog(@"Process accept: %@", toAccept);
 		ok = ok && SOSCCAcceptApplicants((__bridge CFArrayRef) toAccept, error);
+		if (ok) {
+			NSLog(@"kSOSCCHoldLockForInitialSync");
+			notify_post(kSOSCCHoldLockForInitialSync);
+		}
+	}
 
-	if ([toReject count])
+	if ([toReject count]) {
+		NSLog(@"Process reject: %@", toReject);
 		ok = ok && SOSCCRejectApplicants((__bridge CFArrayRef) toReject, error);
+	}
 
 	return ok;
 }
@@ -183,7 +190,7 @@ static void applicantChoice(CFUserNotificationRef userNotification, CFOptionFlag
 		CFReleaseNull(error);
 	}
 
-	NSString *password = (__bridge NSString *)(CFUserNotificationGetResponseValue(userNotification, kCFUserNotificationTextFieldValuesKey, 0));
+	NSString *password = (__bridge NSString *) CFUserNotificationGetResponseValue(userNotification, kCFUserNotificationTextFieldValuesKey, 0);
 	if (!password) {
 		NSLog(@"No password given, retry");
 		askAboutAll(true);
@@ -196,13 +203,13 @@ static void applicantChoice(CFUserNotificationRef userNotification, CFOptionFlag
 	// (which results in a process error -- I think this is 13355140), as a workaround we retry
 	// failure a few times before we give up.
 	for (int try = 0; try < 5 && !processed; try++) {
-		if (!SOSCCTryUserCredentials(CFSTR(""), (__bridge CFDataRef)(passwordBytes), &error)) {
+		if (!SOSCCTryUserCredentials(CFSTR(""), (__bridge CFDataRef) passwordBytes, &error)) {
 			NSLog(@"Try user credentials failed %@", error);
 			if ((error == NULL) ||
 				(CFEqual(kSOSErrorDomain, CFErrorGetDomain(error)) && kSOSErrorWrongPassword == CFErrorGetCode(error))) {
 				NSLog(@"Calling askAboutAll again...");
 				[onScreen enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
-					Applicant* applicant = (Applicant*) obj;
+					Applicant *applicant = (Applicant*) obj;
 					applicant.applicantUIState = ApplicantWaiting;
 				}];
 				askAboutAll(true);
@@ -241,7 +248,7 @@ static void passwordFailurePrompt()
 	};
 	CFOptionFlags		  flags = kCFUserNotificationPlainAlertLevel;
 	SInt32		  		  err;
-	CFUserNotificationRef note = CFUserNotificationCreate(NULL, 0.0, flags, &err, (__bridge CFDictionaryRef)noteAttributes);
+	CFUserNotificationRef note = CFUserNotificationCreate(NULL, 0.0, flags, &err, (__bridge CFDictionaryRef) noteAttributes);
 
 	if (note) {
 		CFUserNotificationReceiveResponse(note, 0.0, &flags);
@@ -324,14 +331,14 @@ static void askAboutAll(bool passwordFailure)
 	CFOptionFlags flags = flagsForAsk(applicantToAskAbout);
 
 	if (currentAlert) {
-		SInt32 err = CFUserNotificationUpdate(currentAlert, 0, flags, (__bridge CFDictionaryRef)noteAttributes);
+		SInt32 err = CFUserNotificationUpdate(currentAlert, 0, flags, (__bridge CFDictionaryRef) noteAttributes);
 		if (err) {
 			NSLog(@"CFUserNotificationUpdate err=%d", (int)err);
 			EXIT_LOGGED_FAILURE(EX_SOFTWARE);
 		}
 	} else {
 		SInt32 err = 0;
-		currentAlert = CFUserNotificationCreate(NULL, 0.0, flags, &err, (__bridge CFDictionaryRef)(noteAttributes));
+		currentAlert = CFUserNotificationCreate(NULL, 0.0, flags, &err, (__bridge CFDictionaryRef) noteAttributes);
 		if (err) {
 			NSLog(@"Can't make notification for %@ err=%x", applicantToAskAbout, (int)err);
 			EXIT_LOGGED_FAILURE(EX_SOFTWARE);
@@ -413,7 +420,8 @@ static void postApplicationReminderAlert(NSDate *nowish, PersistentState *state,
 	NSString *body		= getLocalizedApplicationReminder();
 	bool      has_iCSC	= iCloudResetAvailable();
 
-	if (state.defaultPendingApplicationReminderAlertInterval != state.pendingApplicationReminderAlertInterval) {
+	if (CPIsInternalDevice() &&
+		state.defaultPendingApplicationReminderAlertInterval != state.pendingApplicationReminderAlertInterval) {
 		body = [body stringByAppendingFormat: @"〖debug interval %u; wait time %@〗",
 					state.pendingApplicationReminderAlertInterval,
 					[nowish copyDescriptionOfIntervalSince:state.applicationDate]];
@@ -447,8 +455,22 @@ static void kickOutChoice(CFUserNotificationRef userNotification, CFOptionFlags 
 	if (responseFlags == kCFUserNotificationDefaultResponse) {
 		// We need to let things unwind to main for the new state to get saved
 		doOnceInMain(^{
-			BOOL ok = [[LSApplicationWorkspace defaultWorkspace] openSensitiveURL:[NSURL URLWithString:castleKeychainUrl] withOptions:nil];
-			NSLog(@"ok=%d opening %@", ok, [NSURL URLWithString:castleKeychainUrl]);
+			ACAccountStore	  *store	= [ACAccountStore new];
+			ACAccount		  *primary  = [store aa_primaryAppleAccount];
+			NSString		  *dsid 	= [primary aa_personID];
+			bool			  localICDP = false;
+			if (dsid) {
+				NSDictionary	  *options = @{ (__bridge id) kPCSSetupDSID : dsid, };
+				PCSIdentitySetRef identity = PCSIdentitySetCreate((__bridge CFDictionaryRef) options, NULL, NULL);
+
+				if (identity) {
+					localICDP = PCSIdentitySetIsICDP(identity, NULL);
+					CFRelease(identity);
+				}
+			}
+			NSURL    		  *url		= [NSURL URLWithString: localICDP ? rejoinICDPUrl : castleKeychainUrl];
+			BOOL 			  ok		= [[LSApplicationWorkspace defaultWorkspace] openSensitiveURL:url withOptions:nil];
+			NSLog(@"ok=%d opening %@", ok, url);
 		});
 	}
 	cancelCurrentAlert(true);

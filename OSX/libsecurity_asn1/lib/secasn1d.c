@@ -520,7 +520,8 @@ sec_asn1d_notify_after (SEC_ASN1DecoderContext *cx, void *dest, int depth)
 static sec_asn1d_state *
 sec_asn1d_init_state_based_on_template (sec_asn1d_state *state,
 	#ifdef	__APPLE__
-	const char *buf		/* for SEC_ASN1GetSubtemplate() */
+	const char *buf,	/* for SEC_ASN1GetSubtemplate() */
+	size_t len
 	#endif
 	)
 {
@@ -579,7 +580,7 @@ sec_asn1d_init_state_based_on_template (sec_asn1d_state *state,
 						state->dest, PR_FALSE);
 			if (state != NULL)
 				state = sec_asn1d_init_state_based_on_template (state,
-					buf /* __APPLE__ */);
+					buf /* __APPLE__ */, len /* __APPLE__ */);
 			return state;
 		}
     }
@@ -708,7 +709,7 @@ sec_asn1d_init_state_based_on_template (sec_asn1d_state *state,
 		}
 		#endif	/* __APPLE__ */
 		subt = SEC_ASN1GetSubtemplate (state->theTemplate, subDest,
-			PR_FALSE, buf /* __APPLE__ */);
+			PR_FALSE, buf /* __APPLE__ */, len /* __APPLE__ */);
 		state = sec_asn1d_push_state (state->top, subt, dest, PR_FALSE);
 		if (state == NULL)
 			return NULL;
@@ -722,7 +723,7 @@ sec_asn1d_init_state_based_on_template (sec_asn1d_state *state,
 			#endif
 			) {
 			state = sec_asn1d_init_state_based_on_template (state,
-				buf /* __APPLE__ */);
+				buf /* __APPLE__ */, len /* __APPLE__ */);
 			if (state != NULL) {
 				/*
 				 * If this field is optional, we need to record that on
@@ -1051,10 +1052,40 @@ sec_asn1d_parse_more_length (sec_asn1d_state *state,
 }
 
 
+/*
+ * Helper function for sec_asn1d_prepare_for_contents.
+ * Checks that a value representing a number of bytes consumed can be
+ * subtracted from a remaining length. If so, returns PR_TRUE.
+ * Otherwise, sets the error SEC_ERROR_BAD_DER, indicates that there was a
+ * decoding error in the given SEC_ASN1DecoderContext, and returns PR_FALSE.
+ */
+static PRBool
+sec_asn1d_check_and_subtract_length (unsigned long *remaining,
+                                     unsigned long consumed,
+                                     SEC_ASN1DecoderContext *cx)
+{
+    PORT_Assert(remaining);
+    PORT_Assert(cx);
+    if (!remaining || !cx) {
+        PORT_SetError (SEC_ERROR_INVALID_ARGS);
+        cx->status = decodeError;
+        return PR_FALSE;
+    }
+    if (*remaining < consumed) {
+        PORT_SetError (SEC_ERROR_BAD_DER);
+        cx->status = decodeError;
+        return PR_FALSE;
+    }
+    *remaining -= consumed;
+    return PR_TRUE;
+}
+
+
 static void
 sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
 	#ifdef	__APPLE__
-	const char *buf		/* needed for SEC_ASN1GetSubtemplate */
+	const char *buf,	/* needed for SEC_ASN1GetSubtemplate */
+	size_t len
 	#endif
 	)
 {
@@ -1068,6 +1099,60 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
                state->indefinite ? "indefinite" : "");
     }
 #endif
+
+    /**
+     * The maximum length for a child element should be constrained to the
+     * length remaining in the first definite length element in the ancestor
+     * stack. If there is no definite length element in the ancestor stack,
+     * there's nothing to constrain the length of the child, so there's no
+     * further processing necessary.
+     *
+     * It's necessary to walk the ancestor stack, because it's possible to have
+     * definite length children that are part of an indefinite length element,
+     * which is itself part of an indefinite length element, and which is
+     * ultimately part of a definite length element. A simple example of this
+     * would be the handling of constructed OCTET STRINGs in BER encoding.
+     *
+     * This algorithm finds the first definite length element in the ancestor
+     * stack, if any, and if so, ensures that the length of the child element
+     * is consistent with the number of bytes remaining in the constraining
+     * ancestor element (that is, after accounting for any other sibling
+     * elements that may have been read).
+     *
+     * It's slightly complicated by the need to account both for integer
+     * underflow and overflow, as well as ensure that for indefinite length
+     * encodings, there's also enough space for the End-of-Contents (EOC)
+     * octets (Tag = 0x00, Length = 0x00, or two bytes).
+     */
+
+    /* Determine the maximum length available for this element by finding the
+     * first definite length ancestor, if any. */
+    sec_asn1d_state *parent = sec_asn1d_get_enclosing_construct(state);
+    while (parent && parent->indefinite) {
+        parent = sec_asn1d_get_enclosing_construct(parent);
+    }
+    /* If parent is null, state is either the outermost state / at the top of
+     * the stack, or the outermost state uses indefinite length encoding. In
+     * these cases, there's nothing external to constrain this element, so
+     * there's nothing to check. */
+    if (parent) {
+        unsigned long remaining = parent->pending;
+        parent = state;
+        do {
+            if (!sec_asn1d_check_and_subtract_length(&remaining, parent->consumed, state->top) ||
+                /* If parent->indefinite is true, parent->contents_length is
+                 * zero and this is a no-op. */
+                !sec_asn1d_check_and_subtract_length(&remaining, parent->contents_length, state->top) ||
+                /* If parent->indefinite is true, then ensure there is enough
+                 * space for an EOC tag of 2 bytes. */
+                (parent->indefinite && !sec_asn1d_check_and_subtract_length(&remaining, 2, state->top))) {
+                /* This element is larger than its enclosing element, which is
+                 * invalid. */
+                return;
+            }
+        } while ((parent = sec_asn1d_get_enclosing_construct(parent)) &&
+                 parent->indefinite);
+    }
 
     /*
      * XXX I cannot decide if this allocation should exclude the case
@@ -1112,21 +1197,6 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
      */
     state->pending = state->contents_length;
 
-    /* If this item has definite length encoding, and 
-    ** is enclosed by a definite length constructed type,
-    ** make sure it isn't longer than the remaining space in that 
-    ** constructed type.  
-    */
-    if (state->contents_length > 0) {
-        sec_asn1d_state *parent = sec_asn1d_get_enclosing_construct(state);
-        if (parent && !parent->indefinite && 
-            state->consumed + state->contents_length > parent->pending) {
-            PORT_SetError (SEC_ERROR_BAD_DER);
-            state->top->status = decodeError;
-            return;
-        }
-    }
-    
     /*
      * An EXPLICIT is nothing but an outer header, which we have
      * already parsed and accepted.  Now we need to do the inner
@@ -1138,11 +1208,12 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
 				      SEC_ASN1GetSubtemplate(state->theTemplate,
 							     state->dest,
 							     PR_FALSE,
-								 buf /* __APPLE__ */),
+								 buf /* __APPLE__ */,
+								 len /* __APPLE__ */),
 				      state->dest, PR_TRUE);
 		if (state != NULL)
 			state = sec_asn1d_init_state_based_on_template (state,
-				buf /* __APPLE__ */);
+				buf /* __APPLE__ */, len /* __APPLE__ */);
         (void) state;
 		return;
     }
@@ -1169,7 +1240,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
 
 	    state->place = duringGroup;
 	    subt = SEC_ASN1GetSubtemplate (state->theTemplate, state->dest,
-					   PR_FALSE, buf /* __APPLE__ */);
+					   PR_FALSE, buf /* __APPLE__ */, len /* __APPLE__ */);
 	    state = sec_asn1d_push_state (state->top, subt, NULL, PR_TRUE);
 	    if (state != NULL) {
 			if (!state->top->filter_only)
@@ -1179,7 +1250,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
 			*/
 			sec_asn1d_notify_before (state->top, state->dest, state->depth);
 			state = sec_asn1d_init_state_based_on_template (state,
-				buf /* __APPLE__ */);
+				buf /* __APPLE__ */, len /* __APPLE__ */);
 	    }
 	} else {
 	    /*
@@ -1206,7 +1277,7 @@ sec_asn1d_prepare_for_contents (sec_asn1d_state *state,
 	     */
 	    sec_asn1d_notify_before (state->top, state->dest, state->depth);
 	    state = sec_asn1d_init_state_based_on_template (state,
-			buf /* __APPLE__ */);
+			buf /* __APPLE__ */, len /* __APPLE__ */);
 	}
     (void) state;
 	break;
@@ -1440,7 +1511,7 @@ regular_string_type:
 	    if (state != NULL) {
 		state->substring = PR_TRUE;	/* XXX propogate? */
 		state = sec_asn1d_init_state_based_on_template (state,
-			buf /* __APPLE__ */);
+			buf /* __APPLE__ */, len /* __APPLE__ */);
 	    }
 	} else if (state->indefinite) {
 	    /*
@@ -1598,7 +1669,8 @@ sec_asn1d_reuse_encoding (sec_asn1d_state *state)
      * And initialize it so it is ready to parse.
      */
     (void) sec_asn1d_init_state_based_on_template(child,
-		(char *) item->Data /* __APPLE__ */);
+		(char *) item->Data /* __APPLE__ */,
+		item->Length /* __APPLE__ */);
 
     /*
      * Now parse that out of our data.
@@ -1861,7 +1933,25 @@ sec_asn1d_next_substring (sec_asn1d_state *state)
 	PORT_Assert (state->indefinite);
 
 	item = (SecAsn1Item *)(child->dest);
-	if (item != NULL && item->Data != NULL) {
+    /*
+     * Iterate over ancestors to determine if any have definite length. If so,
+     * space has already been allocated for the substrings and we don't need to
+     * save them for concatenation.
+     */
+    PRBool copying_in_place = PR_FALSE;
+    sec_asn1d_state *temp_state = state;
+    while (temp_state && item == temp_state->dest && temp_state->indefinite) {
+        sec_asn1d_state *parent = sec_asn1d_get_enclosing_construct(temp_state);
+        if (!parent || parent->underlying_kind != temp_state->underlying_kind) {
+            break;
+        }
+        if (!parent->indefinite) {
+            copying_in_place = PR_TRUE;
+            break;
+        }
+        temp_state = parent;
+    }
+    if (item != NULL && item->Data != NULL && !copying_in_place) {
 	    /*
 	     * Save the string away for later concatenation.
 	     */
@@ -1899,7 +1989,8 @@ sec_asn1d_next_substring (sec_asn1d_state *state)
  */
 static void
 sec_asn1d_next_in_group (sec_asn1d_state *state,
-	const char *buf		/* __APPLE__ */)
+	const char *buf,	/* __APPLE__ */
+	size_t len /* __APPLE__ */)
 {
     sec_asn1d_state *child;
     unsigned long child_consumed;
@@ -2002,7 +2093,7 @@ sec_asn1d_next_in_group (sec_asn1d_state *state,
     sec_asn1d_scrub_state (child);
 
     /* Initialize child state from the template */
-    sec_asn1d_init_state_based_on_template(child, buf /* __APPLE__ */);
+    sec_asn1d_init_state_based_on_template(child, buf /* __APPLE__ */, len /* __APPLE__ */);
 
     state->top->current = child;
 }
@@ -2015,7 +2106,8 @@ sec_asn1d_next_in_group (sec_asn1d_state *state,
  */
 static void
 sec_asn1d_next_in_sequence (sec_asn1d_state *state,
-	const char *buf /* __APPLE__ */)
+	const char *buf /* __APPLE__ */,
+	size_t len  /*__APPLE__*/)
 {
     sec_asn1d_state *child;
     unsigned long child_consumed;
@@ -2141,7 +2233,8 @@ sec_asn1d_next_in_sequence (sec_asn1d_state *state,
 	}
 	state->top->current = child;
 	child = sec_asn1d_init_state_based_on_template (child, 
-		buf /* __APPLE__ */);
+		buf /* __APPLE__ */,
+		len /* __APPLE__ */);
 	if (child_missing && child) {
 	    child->place = afterIdentifier;
 	    child->found_tag_modifiers = child_found_tag_modifiers;
@@ -2482,7 +2575,9 @@ sec_asn1d_pop_state (sec_asn1d_state *state)
 }
 
 static sec_asn1d_state *
-sec_asn1d_before_choice (sec_asn1d_state *state, const char *buf /* __APPLE__ */)
+sec_asn1d_before_choice (sec_asn1d_state *state,
+                         const char *buf /* __APPLE__ */,
+                         size_t len /* __APPLE__ */)
 {
 	sec_asn1d_state *child;
 
@@ -2509,7 +2604,7 @@ sec_asn1d_before_choice (sec_asn1d_state *state, const char *buf /* __APPLE__ */
 	
 	sec_asn1d_scrub_state(child);
 	child = sec_asn1d_init_state_based_on_template(child, 
-		buf /* __APPLE__ */);
+		buf /* __APPLE__ */, len /* __APPLE__ */);
 	if( (sec_asn1d_state *)NULL == child ) {
 		return (sec_asn1d_state *)NULL;
 	}
@@ -2522,7 +2617,9 @@ sec_asn1d_before_choice (sec_asn1d_state *state, const char *buf /* __APPLE__ */
 }
 
 static sec_asn1d_state *
-sec_asn1d_during_choice (sec_asn1d_state *state, const char *buf /* __APPLE__ */)
+sec_asn1d_during_choice (sec_asn1d_state *state,
+                         const char *buf, /* __APPLE__ */
+                         size_t len /* __APPLE__ */)
 {
   sec_asn1d_state *child = state->child;
   
@@ -2596,7 +2693,7 @@ sec_asn1d_during_choice (sec_asn1d_state *state, const char *buf /* __APPLE__ */
     child_found_tag_modifiers = child->found_tag_modifiers;
     child_found_tag_number = child->found_tag_number;
 
-    child = sec_asn1d_init_state_based_on_template(child, buf /* __APPLE__*/);
+    child = sec_asn1d_init_state_based_on_template(child, buf /* __APPLE__*/, len /* __APPLE__ */);
     if( (sec_asn1d_state *)NULL == child ) {
       return (sec_asn1d_state *)NULL;
     }
@@ -2774,7 +2871,7 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 			what = SEC_ASN1_Length;
 			break;
 		case afterLength:
-			sec_asn1d_prepare_for_contents (state, buf);
+			sec_asn1d_prepare_for_contents (state, buf, len);
 			break;
 		case beforeBitString:
 			consumed = sec_asn1d_parse_bit_string (state, buf, len);
@@ -2786,7 +2883,7 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 			sec_asn1d_next_substring (state);
 			break;
 		case duringGroup:
-			sec_asn1d_next_in_group (state, buf);
+			sec_asn1d_next_in_group (state, buf, len);
 			break;
 		case duringLeaf:
 			consumed = sec_asn1d_parse_leaf (state, buf, len);
@@ -2806,7 +2903,7 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 			}
 			break;
 		case duringSequence:
-			sec_asn1d_next_in_sequence (state, buf);
+			sec_asn1d_next_in_sequence (state, buf, len);
 			break;
 		case afterConstructedString:
 			sec_asn1d_concat_substrings (state);
@@ -2837,10 +2934,10 @@ SEC_ASN1DecoderUpdate (SEC_ASN1DecoderContext *cx,
 			sec_asn1d_pop_state (state);
 			break;
 			case beforeChoice:
-				state = sec_asn1d_before_choice(state, buf);
+				state = sec_asn1d_before_choice(state, buf, len);
 				break;
 			case duringChoice:
-				state = sec_asn1d_during_choice(state, buf);
+				state = sec_asn1d_during_choice(state, buf, len);
 				break;
 			case afterChoice:
 				sec_asn1d_after_choice(state);
@@ -3038,7 +3135,8 @@ SEC_ASN1DecoderStart (PRArenaPool *their_pool, void *dest,
 			  #ifdef	__APPLE__
 			  ,
 			  /* only needed if first element will be SEC_ASN1_DYNAMIC */
-			  const char *buf
+			  const char *buf,
+			  size_t len /* __APPLE__ */
 			  #endif	
 			  )
 {
@@ -3067,7 +3165,7 @@ SEC_ASN1DecoderStart (PRArenaPool *their_pool, void *dest,
 
     if (sec_asn1d_push_state(cx, theTemplate, dest, PR_FALSE) == NULL
 	   || sec_asn1d_init_state_based_on_template (cx->current, 
-			buf /* __APPLE__ */) == NULL) {
+			buf /* __APPLE__ */, len /* __APPLE__ */) == NULL) {
 		/*
 	 	 * Trouble initializing (probably due to failed allocations)
 		 * requires that we just give up.
@@ -3141,7 +3239,7 @@ SEC_ASN1Decode (PRArenaPool *poolp, void *dest,
     SECStatus urv, frv;
 
     dcx = SEC_ASN1DecoderStart (poolp, dest, theTemplate,
-		buf /* __APPLE__ */);
+		buf /* __APPLE__ */, len /* __APPLE__ */);
     if (dcx == NULL)
 	return SECFailure;
 
