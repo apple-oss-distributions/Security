@@ -52,6 +52,11 @@ SECURITY_COMMAND(
 	"    -X     [limit]  best effort bail from circle in limit seconds\n"
     "    -o     list view unaware peers in circle\n"
     "    -0     boot view unaware peers from circle\n"
+    "    -1     grab account state from the keychain\n"
+    "    -2     delete account state from the keychain\n"
+    "    -3     grab engine state from the keychain\n"
+    "    -4     delete engine state from the keychain\n"
+
 	"\n"
 	"IDS\n"
 	"    -g     set IDS device id\n"

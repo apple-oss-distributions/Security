@@ -21,28 +21,36 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+/*
+ * This is to fool os services to not provide the Keychain manager
+ * interface tht doens't work since we don't have unified headers
+ * between iOS and OS X. rdar://23405418/
+ */
+#define __KEYCHAINCORE__ 1
 
-#include "secd_regressions.h"
 
-#include <securityd/SecDbItem.h>
-#include <utilities/array_size.h>
-#include <utilities/SecCFWrappers.h>
-#include <utilities/SecFileLocations.h>
-#include <utilities/fileIo.h>
+#import "secd_regressions.h"
 
-#include <securityd/SOSCloudCircleServer.h>
-#include <securityd/SecItemServer.h>
+#import <Foundation/Foundation.h>
+#import <securityd/SecDbItem.h>
+#import <utilities/array_size.h>
+#import <utilities/SecCFWrappers.h>
+#import <utilities/SecFileLocations.h>
+#import <utilities/fileIo.h>
 
-#include <Security/SecBasePriv.h>
+#import <securityd/SOSCloudCircleServer.h>
+#import <securityd/SecItemServer.h>
 
-#include <AssertMacros.h>
+#import <Security/SecBasePriv.h>
 
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <pthread.h>
+#import <AssertMacros.h>
 
-#include "SecdTestKeychainUtilities.h"
+#import <stdio.h>
+#import <unistd.h>
+#import <sys/stat.h>
+#import <pthread.h>
+
+#import "SecdTestKeychainUtilities.h"
 
 #define N_ITEMS (100)
 #define N_THREADS (10)
@@ -116,16 +124,16 @@ int secd_05_corrupted_items(int argc, char *const *argv)
         CFReleaseNull(port);
     }
 
-    /* corrupt all the password */
-    CFStringRef keychain_path_cf = __SecKeychainCopyPath();
 
-    CFStringPerformWithCString(keychain_path_cf, ^(const char *keychain_path) {
-        /* Create a new keychain sqlite db */
+
+    SecKeychainDbReset(^{
+        /* corrupt all the password */
+        NSString *keychain_path = [(NSString *)__SecKeychainCopyPath() autorelease];
+        char corrupt_item_sql[80];
         sqlite3 *db;
 
-        is(sqlite3_open(keychain_path, &db), SQLITE_OK, "open keychain");
+        is(sqlite3_open([keychain_path UTF8String], &db), SQLITE_OK, "open keychain");
 
-        char corrupt_item_sql[80];
         for(int i=1;i<=N_ITEMS;i++) {
             ok_unix(snprintf(corrupt_item_sql, sizeof(corrupt_item_sql), "UPDATE inet SET data=X'12345678' WHERE rowid=%d", i));
             is(sqlite3_exec(db, corrupt_item_sql, NULL, NULL, NULL), SQLITE_OK, "corrupting keychain item");
@@ -159,6 +167,5 @@ int secd_05_corrupted_items(int argc, char *const *argv)
 
     CFReleaseNull(pwdata);
     CFReleaseNull(query);
-    CFReleaseNull(keychain_path_cf);
     return 0;
 }

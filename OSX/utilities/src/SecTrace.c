@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2016 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -21,34 +21,29 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-
-/*!
- @header SOSViewManager.h - View creation and management.
- */
-
-#ifndef _SEC_SOSVIEWMANAGER_H_
-#define _SEC_SOSVIEWMANAGER_H_
-
-#include <Security/SecureObjectSync/SOSChangeTracker.h>
-
-__BEGIN_DECLS
-
-extern const CFStringRef kSOSViewNamesChildInfoKey;
-extern const CFStringRef kSOSFunctionChildInfoKey;
-extern const CFStringRef kSOSViewNamesChildInfoKey;
-
-typedef struct __OpaqueSOSViewManager *SOSViewManagerRef;
-
-//typedef struct __OpaqueSOSViewManager *SOSViewChildRef;
-
-//SOSViewManagerRef SOSViewManagerCreate(CFAllocatorRef allocator, CFErrorRef *error);
-
-bool SOSViewManagerSetChildren(SOSViewManagerRef vmgr, CFArrayRef children, CFErrorRef *error);
+#include "SecTrace.h"
 
 
-//SOSViewQueryRef SOSViewManagerCopyQueryWithViewName(SOSViewManagerRef vmgr, CFStringRef name);
+static int64_t
+SecBucketNSignificant(int64_t value, int64_t n)
+{
+    uint64_t factor = 1;
+    while (value > n) {
+        value /= 10;
+        factor *= 10;
+    }
+    return factor * value;
+}
 
+int64_t
+SecBucket1Significant(int64_t value)
+{
+    return SecBucketNSignificant(value, 10);
+}
 
-__END_DECLS
+int64_t
+SecBucket2Significant(int64_t value)
+{
+    return SecBucketNSignificant(value, 100);
+}
 
-#endif /* !_SEC_SOSVIEWMANAGER_H_ */

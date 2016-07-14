@@ -23,6 +23,15 @@
  * testenv.c
  */
 
+/*
+ * This is to fool os services to not provide the Keychain manager
+ * interface tht doens't work since we don't have unified headers
+ * between iOS and OS X. rdar://23405418/
+ */
+#define __KEYCHAINCORE__ 1
+
+
+#import <Foundation/Foundation.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -224,7 +233,9 @@ static int tests_run_all(int argc, char * const *argv)
 
     for (i = 0; testlist[i].name; ++i) {
         if(!testlist[i].off) {
-            failcount+=tests_run_test(&testlist[i], argc, argv);
+            @autoreleasepool {
+                failcount+=tests_run_test(&testlist[i], argc, argv);
+            }
             optind = curroptind;
         }
     }
@@ -325,10 +336,6 @@ tests_begin(int argc, char * const *argv) {
 #endif
     };
 
-    // TODO Currently our callers do this, but we can move this here together with the build date info.
-    const char *progname = strrchr(argv[0], '/');
-    progname = progname ? progname + 1 : argv[0];
-
     for (;;) {
         while (!testcase && (ch = getopt(argc, argv, "bklL1vwqs")) != -1)
         {
@@ -382,7 +389,7 @@ tests_begin(int argc, char * const *argv) {
         }
 
         if (!list && !initialized && !test_onebatstest)
-            fprintf(stdout, "[TEST] %s\n", progname);
+            fprintf(stdout, "[TEST] %s\n", getprogname());
         if (testix < 0) {
             if (!initialized) {
                 tests_init();
@@ -402,8 +409,11 @@ tests_begin(int argc, char * const *argv) {
             }
             optind++;
             testlist[testix].off = 0;
-            if (!list)
-                failcount+=tests_run_test(&testlist[testix], argc, argv);
+            if (!list) {
+                @autoreleasepool {
+                    failcount+=tests_run_test(&testlist[testix], argc, argv);
+                }
+            }
             testix = -1;
         }
     }
@@ -414,7 +424,7 @@ tests_begin(int argc, char * const *argv) {
             }
         }
     } else {
-        tests_summary(progname);
+        tests_summary(getprogname());
     }
     
     remove_security_log_handler(handle_logs);
