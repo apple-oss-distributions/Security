@@ -111,6 +111,11 @@ SEC_CONST_DECL (kSecAttrSynchronizable, "sync");
 SEC_CONST_DECL (kSecAttrSynchronizableAny, "syna");
 SEC_CONST_DECL (kSecAttrTombstone, "tomb");
 SEC_CONST_DECL (kSecAttrNoLegacy, "nleg");
+SEC_CONST_DECL (kSecAttrMultiUser, "musr");
+SEC_CONST_DECL (kSecAttrTokenOID, "toid");
+
+/* Predefined access groups constants */
+SEC_CONST_DECL (kSecAttrAccessGroupToken, "com.apple.token");
 
 /* Search Constants */
 SEC_CONST_DECL (kSecMatchPolicy, "m_Policy");
@@ -146,6 +151,8 @@ SEC_CONST_DECL (kSecValuePersistentRef, "v_PersistentRef");
 /* Other Constants */
 SEC_CONST_DECL (kSecUseItemList, "u_ItemList");
 SEC_CONST_DECL (kSecUseKeychain, "u_Keychain");
+SEC_CONST_DECL (kSecUseSystemKeychain, "u_SystemKeychain");
+SEC_CONST_DECL (kSecUseSyncBubbleKeychain, "u_SyncBubbleKeychain");
 
 /* kSecAttrAccessible Value Constants. */
 SEC_CONST_DECL (kSecAttrAccessibleWhenUnlocked, "ak");
@@ -155,6 +162,9 @@ SEC_CONST_DECL (kSecAttrAccessibleWhenUnlockedThisDeviceOnly, "aku");
 SEC_CONST_DECL (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, "cku");
 SEC_CONST_DECL (kSecAttrAccessibleAlwaysThisDeviceOnly, "dku");
 SEC_CONST_DECL (kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, "akpu");
+/* kSecAttrAccessible Value Constants (Private). */
+SEC_CONST_DECL (kSecAttrAccessibleAlwaysPrivate, "dk");
+SEC_CONST_DECL (kSecAttrAccessibleAlwaysThisDeviceOnlyPrivate, "dku");
 
 /* kSecAttrProtocol Value Constants. */
 SEC_CONST_DECL (kSecAttrProtocolFTP, "ftp ");
@@ -218,6 +228,7 @@ SEC_CONST_DECL (kSecAttrKeyTypeDSA, "43");
 SEC_CONST_DECL (kSecAttrKeyTypeCAST, "56");
 SEC_CONST_DECL (kSecAttrKeyTypeECDSA, "73");
 SEC_CONST_DECL (kSecAttrKeyTypeEC, "73"); /* rdar://13326326 */
+SEC_CONST_DECL (kSecAttrKeyTypeECSECPrimeRandom, "73");
 SEC_CONST_DECL (kSecAttrKeyTypeAES, "2147483649"); /* <Security/cssmapple.h> */
 
 SEC_CONST_DECL (kSecAttrPRFHmacAlgSHA1, "hsha1");

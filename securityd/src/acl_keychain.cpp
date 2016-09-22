@@ -1,15 +1,15 @@
 /*
- * Copyright (c) 2000-2004,2006-2009,2012-2013 Apple Inc. All Rights Reserved.
- * 
+ * Copyright (c) 2000-2004,2006-2009,2012-2013,2016 Apple Inc. All Rights Reserved.
+ *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -17,7 +17,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
 
@@ -51,10 +51,16 @@
 #include <security_utilities/logging.h>
 #include <security_cdsa_utilities/osxverifier.h>
 #include <algorithm>
+#include <sys/csr.h>
 
 #include <Security/AuthorizationTagsPriv.h>
 
 #define ACCEPT_LEGACY_FORM 1
+
+//
+// Initialize static memory.
+//
+uint32_t KeychainPromptAclSubject::promptsValidated = 0;
 
 
 //
@@ -67,14 +73,52 @@ CSSM_ACL_KEYCHAIN_PROMPT_SELECTOR KeychainPromptAclSubject::defaultSelector = {
 
 
 //
+// If we have a KeychainPromptAclSubject, we want KeychainMigrator to have
+// access even if we don't have the "pop ui" credential. Do the code signing
+// check first, then process this ACL as normal.
+//
+bool KeychainPromptAclSubject::validates(const AclValidationContext &ctx) const
+{
+    Process &process = Server::process();
+    if (process.checkAppleSigned() && process.hasEntitlement(migrationEntitlement)) {
+        Syslog::info("bypassing keychain prompt for keychain migrator");
+        secnotice("kcacl", "bypassing keychain prompt for keychain migrator");
+        return true;   // migrator client -> automatic win
+    }
+
+    // Also, mark down that we evaluated a prompt ACL. We want to record this for testing even if the client did not pass credentials for UI
+    // (so that tests can disable prompts but still detect if one would have popped)
+    promptsValidated++;
+
+    return SimpleAclSubject::validates(ctx);
+}
+
+
+//
 // Validate a credential set against this subject.
 //
-bool KeychainPromptAclSubject::validate(const AclValidationContext &context,
+bool KeychainPromptAclSubject::validates(const AclValidationContext &context,
     const TypedList &sample) const
+{
+	return validateExplicitly(context, ^{
+		if (SecurityServerEnvironment *env = context.environment<SecurityServerEnvironment>()) {
+            Process& process = Server::process();
+			StLock<Mutex> _(process);
+			RefPointer<AclSubject> subject = process.copyAclSubject();
+			if (SecurityServerAcl::addToStandardACL(context, subject)) {
+                if(env->database && env->database->dbVersion() >= CommonBlob::version_partition) {
+                    env->acl.addClientPartitionID(process);
+                }
+			}
+		}
+	});
+}
+
+bool KeychainPromptAclSubject::validateExplicitly(const AclValidationContext &context, void (^alwaysAllow)()) const
 {
     if (SecurityServerEnvironment *env = context.environment<SecurityServerEnvironment>()) {
 		Process &process = Server::process();
-		secdebug("kcacl", "Keychain query for process %d (UID %d)", process.pid(), process.uid());
+		secnotice("kcacl", "Keychain query for process %d (UID %d)", process.pid(), process.uid());
 
 		// assemble the effective validity mode mask
 		uint32_t mode = Maker::defaultMode;
@@ -83,90 +127,74 @@ bool KeychainPromptAclSubject::validate(const AclValidationContext &context,
 			mode = (mode & ~CSSM_ACL_KEYCHAIN_PROMPT_UNSIGNED) | (flags & CSSM_ACL_KEYCHAIN_PROMPT_UNSIGNED);
 		if (flags & CSSM_ACL_KEYCHAIN_PROMPT_INVALID_ACT)
 			mode = (mode & ~CSSM_ACL_KEYCHAIN_PROMPT_INVALID) | (flags & CSSM_ACL_KEYCHAIN_PROMPT_INVALID);
-		
+
 		// determine signed/validity status of client, without reference to any particular Code Requirement
-		SecCodeRef clientCode = NULL;
 		OSStatus validation = errSecCSStaticCodeNotFound;
 		{
 			StLock<Mutex> _(process);
 			Server::active().longTermActivity();
-			clientCode = process.currentGuest();
-			if (clientCode) {
-				validation = SecCodeCheckValidity(clientCode, kSecCSDefaultFlags, NULL);
-            }
-			
+
+			validation = process.checkValidity(kSecCSDefaultFlags, NULL);
+
 			switch (validation)
 			{
 				case noErr:							// client is signed and valid
 				{
-					bool forceAllow = false;
-					secdebug("kcacl", "client is valid, proceeding");
-					CFDictionaryRef codeDictionary = NULL;
-					if (errSecSuccess == SecCodeCopySigningInformation(clientCode, kSecCSDefaultFlags, &codeDictionary)) {
-						CFTypeRef entitlementsDictionary = NULL;
-						entitlementsDictionary = CFDictionaryGetValue(codeDictionary, kSecCodeInfoEntitlementsDict);
-						if (NULL != entitlementsDictionary) {
-							if (CFGetTypeID(entitlementsDictionary) == CFDictionaryGetTypeID()) {
-								CFTypeRef migrationEntitlement = CFDictionaryGetValue((CFDictionaryRef)entitlementsDictionary, CFSTR("com.apple.private.security.allow-migration"));
-								if (NULL != migrationEntitlement) {
-									if (CFGetTypeID(migrationEntitlement) == CFBooleanGetTypeID()) {
-										if (migrationEntitlement == kCFBooleanTrue) {
-											secdebug("kcacl", "client has migration entitlement, allowing");
-											forceAllow = true;
-										}
-									}
-								}
-							}
-						}
-						CFRelease(codeDictionary);
-					}
-					if (forceAllow) {
-						return true;
-					}
+					secnotice("kcacl", "client is valid, proceeding");
+                    // This should almost always be handled by the check in KeychainPromptAclSubject::validate, but check again just in case
+                    if (process.checkAppleSigned() && process.hasEntitlement(migrationEntitlement)) {
+                        Syslog::info("bypassing keychain prompt for keychain migrator");
+                        secnotice("kcacl", "bypassing keychain prompt for keychain migrator");
+						return true;	// migrator client -> automatic win
+                    }
 				}
 				break;
-					
+
 				case errSecCSUnsigned:
 				{			// client is not signed
 					if (!(mode & CSSM_ACL_KEYCHAIN_PROMPT_UNSIGNED)) {
-						secdebug("kcacl", "client is unsigned, suppressing prompt");
+                        Syslog::info("supressing keychain prompt for unsigned client %s(%d)", process.getPath().c_str(), process.pid());
+                        secnotice("kcacl", "supressing keychain prompt for unsigned client %s(%d)", process.getPath().c_str(), process.pid());
 						return false;
 					}
 				}
 				break;
-				
+
 				case errSecCSSignatureFailed:		// client signed but signature is broken
 				case errSecCSGuestInvalid:			// client signed but dynamically invalid
 				case errSecCSStaticCodeNotFound:	// client not on disk (or unreadable)
 				{
 					if (!(mode & CSSM_ACL_KEYCHAIN_PROMPT_INVALID)) {
-						secdebug("kcacl", "client is invalid, suppressing prompt");
-						Syslog::info("suppressing keychain prompt for invalidly signed client %s(%d)",
-							process.getPath().c_str(), process.pid());
+						secnotice("kcacl", "client is invalid, suppressing prompt");
+						Syslog::info("suppressing keychain prompt for invalidly signed client %s(%d)", process.getPath().c_str(), process.pid());
+                        secnotice("kcacl", "suppressing keychain prompt for invalidly signed client %s(%d)", process.getPath().c_str(), process.pid());
 						return false;
 					}
-					Syslog::info("attempting keychain prompt for invalidly signed client %s(%d)",
-						process.getPath().c_str(), process.pid());
+					Syslog::info("attempting keychain prompt for invalidly signed client %s(%d)", process.getPath().c_str(), process.pid());
+                    secnotice("kcacl", "attempting keychain prompt for invalidly signed client %s(%d)", process.getPath().c_str(), process.pid());
 				}
 				break;
 
 				default:							// something else went wrong
-					secdebug("kcacl", "client validation failed rc=%d, suppressing prompt", int32_t(validation));
+                    Syslog::info("suppressing keychain prompt %s(%d); code signing check failed rc=%d", process.getPath().c_str(), process.pid(),  (int32_t) validation);
+                    secnotice("kcacl", "suppressing keychain prompt %s(%d); code signing check failed rc=%d", process.getPath().c_str(), process.pid(),  (int32_t) validation);
 					return false;
 			}
 		}
-		
+
 		// At this point, we're committed to try to Pop The Question. Now, how?
-		
+        Syslog::info("displaying keychain prompt for %s(%d)", process.getPath().c_str(), process.pid());
+        secnotice("kcacl", "displaying keychain prompt for %s(%d)", process.getPath().c_str(), process.pid());
+
 		// does the user need to type in the passphrase?
         const Database *db = env->database;
         bool needPassphrase = db && (selector.flags & CSSM_ACL_KEYCHAIN_PROMPT_REQUIRE_PASSPHRASE);
 
 		// an application (i.e. Keychain Access.app :-) can force this option
-		if (clientCode && validation == noErr) {
+		if (validation == noErr) {
 			StLock<Mutex> _(process);
 			CFRef<CFDictionaryRef> dict;
-			if (SecCodeCopySigningInformation(clientCode, kSecCSDefaultFlags, &dict.aref()) == noErr)
+			if (process.copySigningInfo(kSecCSDefaultFlags, &dict.aref()) == noErr)
 				if (CFDictionaryRef info = CFDictionaryRef(CFDictionaryGetValue(dict, kSecCodeInfoPList)))
 					needPassphrase |=
 						(CFDictionaryGetValue(info, CFSTR("SecForcePassphrasePrompt")) != NULL);
@@ -183,16 +211,13 @@ bool KeychainPromptAclSubject::validate(const AclValidationContext &context,
 			QueryKeychainUse query(needPassphrase, db);
 			query.inferHints(Server::process());
 			query.addHint(AGENT_HINT_CLIENT_VALIDITY, &validation, sizeof(validation));
-			if (query.queryUser(db ? db->dbName() : NULL, 
+			if (query.queryUser(db ? db->dbName() : NULL,
 				description.c_str(), context.authorization()) != SecurityAgent::noReason)
 				return false;
 
 			// process an "always allow..." response
-			if (query.remember && clientCode) {
-				StLock<Mutex> _(process);
-				RefPointer<OSXCode> clientXCode = new OSXCodeWrap(clientCode);
-				RefPointer<AclSubject> subject = new CodeSignatureAclSubject(OSXVerifier(clientXCode));
-				SecurityServerAcl::addToStandardACL(context, subject);
+			if (query.remember && validation != errSecCSStaticCodeNotFound) {
+				alwaysAllow();
 			}
 
 			// finally, return the actual user response
@@ -216,13 +241,14 @@ CssmList KeychainPromptAclSubject::toList(Allocator &alloc) const
 
 //
 // Has the caller recently authorized in such a way as to render unnecessary
-// the usual QueryKeychainAuth dialog?  (The right is specific to Keychain 
-// Access' way of editing a system keychain.)  
+// the usual QueryKeychainAuth dialog?  (The right is specific to Keychain
+// Access' way of editing a system keychain.)
 //
 bool KeychainPromptAclSubject::hasAuthorizedForSystemKeychain() const
 {
-    string rightString = "system.keychain.modify";
-    return Server::session().isRightAuthorized(rightString, Server::connection(), false/*no UI*/);
+//	string rightString = "system.keychain.modify";
+//	return Server::session().isRightAuthorized(rightString, Server::connection(), false/*no UI*/);
+	return false;
 }
 
 
@@ -301,7 +327,7 @@ void KeychainPromptAclSubject::exportBlob(Writer::Counter &pub, Writer::Counter 
 		selector.flags = h2n (selector.flags);
 		pub(selector);
 	}
-	
+
     pub.insert(description.size() + 1);
 }
 
@@ -326,3 +352,17 @@ void KeychainPromptAclSubject::debugDump() const
 }
 
 #endif //DEBUGDUMP
+
+
+uint32_t KeychainPromptAclSubject::getPromptAttempts() {
+    if (csr_check(CSR_ALLOW_APPLE_INTERNAL)) {
+        // Not an internal install; don't answer
+        return 0;
+    } else {
+        return KeychainPromptAclSubject::promptsValidated;
+    }
+}
+
+void KeychainPromptAclSubject::addPromptAttempt() {
+    promptsValidated++;
+}

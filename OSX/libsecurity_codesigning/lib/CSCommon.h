@@ -115,6 +115,12 @@ CF_ENUM(OSStatus) {
 	errSecCSInvalidPlatform =			-67005,	/* invalid platform identifier or platform mismatch */
 	errSecCSTooBig =					-67004,	/* code is too big for current signing format */
 	errSecCSInvalidSymlink =			-67003,	/* invalid destination for symbolic link in bundle */
+	errSecCSNotAppLike =				-67002,	/* the code is valid but does not seem to be an app */
+	errSecCSBadDiskImageFormat =		-67001,	/* disk image format unrecognized, invalid, or unsuitable */
+	errSecCSUnsupportedDigestAlgorithm = -67000, /* signature digest algorithm(s) specified are not supported */
+	errSecCSInvalidAssociatedFileData =	-66999,	/* resource fork, Finder information, or similar detritus not allowed */
+    errSecCSInvalidTeamIdentifier =     -66998, /* a Team Identifier string is invalid */
+    errSecCSBadTeamIdentifier =         -66997, /* a Team Identifier is wrong or inappropriate */
 };
 
 /*
@@ -132,6 +138,7 @@ extern const CFStringRef kSecCFErrorResourceSeal;	/* CFTypeRef: invalid componen
 extern const CFStringRef kSecCFErrorResourceAdded;	/* CFURLRef: unsealed resource found */
 extern const CFStringRef kSecCFErrorResourceAltered; /* CFURLRef: modified resource found */
 extern const CFStringRef kSecCFErrorResourceMissing; /* CFURLRef: sealed (non-optional) resource missing */
+extern const CFStringRef kSecCFErrorResourceSideband; /* CFURLRef: sealed resource has invalid sideband data (resource fork, etc.) */
 extern const CFStringRef kSecCFErrorInfoPlist;		/* CFTypeRef: Info.plist dictionary or component thereof found invalid */
 extern const CFStringRef kSecCFErrorGuestAttributes; /* CFTypeRef: Guest attribute set of element not accepted */
 extern const CFStringRef kSecCFErrorRequirementSyntax; /* CFStringRef: compilation error for Requirement source */
@@ -197,11 +204,12 @@ CF_ENUM(SecGuestRef) {
 typedef CF_OPTIONS(uint32_t, SecCSFlags) {
     kSecCSDefaultFlags = 0,					/* no particular flags (default behavior) */
 	
-    kSecCSConsiderExpiration = 1 << 31,		/* consider expired certificates invalid */
+    kSecCSConsiderExpiration = 1U << 31,		/* consider expired certificates invalid */
     kSecCSEnforceRevocationChecks = 1 << 30,	/* force revocation checks regardless of preference settings */
     kSecCSNoNetworkAccess = 1 << 29,            /* do not use the network, cancels "kSecCSEnforceRevocationChecks"  */
 	kSecCSReportProgress = 1 << 28,			/* make progress report call-backs when configured */
     kSecCSCheckTrustedAnchors = 1 << 27, /* build certificate chain to system trust anchors, not to any self-signed certificate */
+	kSecCSQuickCheck = 1 << 26,		/* (internal) */
 };
 
 
@@ -307,6 +315,27 @@ typedef CF_ENUM(uint32_t, SecRequirementType) {
 	kSecPluginRequirementType =			5,	/* what plug-ins we may load */
 	kSecInvalidRequirementType,				/* invalid type of Requirement (must be last) */
 	kSecRequirementTypeCount = kSecInvalidRequirementType /* number of valid requirement types */
+};
+	
+	
+/*!
+ Types of cryptographic digests (hashes) used to hold code signatures
+ together.
+ 
+ Each combination of type, length, and other parameters is a separate
+ hash type; we don't understand "families" here.
+ 
+ These type codes govern the digest links that connect a CodeDirectory
+ to its subordinate data structures (code pages, resources, etc.)
+ They do not directly control other uses of hashes (such as those used
+ within X.509 certificates and CMS blobs).
+ */
+typedef CF_ENUM(uint32_t, SecCSDigestAlgorithm) {
+	kSecCodeSignatureNoHash							=  0,	/* null value */
+	kSecCodeSignatureHashSHA1						=  1,	/* SHA-1 */
+	kSecCodeSignatureHashSHA256						=  2,	/* SHA-256 */
+	kSecCodeSignatureHashSHA256Truncated			=  3,	/* SHA-256 truncated to first 20 bytes */
+	kSecCodeSignatureHashSHA384						=  4,	/* SHA-384 */
 };
 
 CF_ASSUME_NONNULL_END

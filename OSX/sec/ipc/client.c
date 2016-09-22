@@ -31,6 +31,8 @@
 #include <Security/SecBasePriv.h>
 #include <Security/SecInternal.h>
 #include <Security/SecuritydXPC.h>
+#include <Security/SecTask.h>
+#include <Security/SecItemPriv.h>
 
 #include <utilities/debugging.h>
 #include <utilities/SecCFError.h>
@@ -53,33 +55,62 @@ static CFArrayRef SecServerCopyAccessGroups(void) {
                                    CFSTR("test"),
                                    CFSTR("apple"),
                                    CFSTR("lockdown-identities"),
+                                   CFSTR("123456.test.group"),
+                                   CFSTR("123456.test.group2"),
 #else
                                    CFSTR("sync"),
 #endif
                                    CFSTR("com.apple.security.sos"),
                                    CFSTR("com.apple.sbd"),
                                    CFSTR("com.apple.lakitu"),
+                                   kSecAttrAccessGroupToken,
                                    NULL);
 }
 
-static CFArrayRef gSecServerAccessGroups;
-CFArrayRef SecAccessGroupsGetCurrent(void) {
-    static dispatch_once_t only_do_this_once;
-    dispatch_once(&only_do_this_once, ^{
-        gSecServerAccessGroups = SecServerCopyAccessGroups();
-        assert(gSecServerAccessGroups);
+static SecurityClient gClient;
+
+#if TARGET_OS_IOS
+void
+SecSecuritySetMusrMode(bool mode, uid_t uid, int activeUser)
+{
+    gClient.inMultiUser = mode;
+    gClient.uid = uid;
+    gClient.activeUser = activeUser;
+}
+#endif
+
+SecurityClient *
+SecSecurityClientGet(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gClient.task = NULL,
+        gClient.accessGroups = SecServerCopyAccessGroups();
+        gClient.allowSystemKeychain = true;
+        gClient.allowSyncBubbleKeychain = true;
+        gClient.isNetworkExtension = false;
+#if TARGET_OS_IPHONE
+        gClient.inMultiUser = false;
+        gClient.activeUser = 501;
+#endif
     });
-    return gSecServerAccessGroups;
+    return &gClient;
+}
+
+CFArrayRef SecAccessGroupsGetCurrent(void) {
+    SecurityClient *client = SecSecurityClientGet();
+    assert(client && client->accessGroups);
+    return client->accessGroups;
 }
 
 // Only for testing.
 void SecAccessGroupsSetCurrent(CFArrayRef accessGroups);
 void SecAccessGroupsSetCurrent(CFArrayRef accessGroups) {
     // Not thread safe at all, but OK because it is meant to be used only by tests.
-    gSecServerAccessGroups = accessGroups;
+    gClient.accessGroups = accessGroups;
 }
 
-#if (TARGET_OS_MAC && !(TARGET_OS_EMBEDDED || TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR))
+#if !TARGET_OS_IPHONE
 static bool securityd_in_system_context(void) {
     static bool runningInSystemContext;
     static dispatch_once_t onceToken;
@@ -146,19 +177,23 @@ static xpc_connection_t trustd_connection(void) {
 #endif
 }
 
-static xpc_connection_t securityd_connection_for_operation(enum SecXPCOperation op) {
-	bool isTrustOp;
+static bool is_trust_operation(enum SecXPCOperation op) {
 	switch (op) {
 		case sec_trust_store_contains_id:
 		case sec_trust_store_set_trust_settings_id:
 		case sec_trust_store_remove_certificate_id:
 		case sec_trust_evaluate_id:
-			isTrustOp = true;
-			break;
+		case sec_trust_store_copy_all_id:
+		case sec_trust_store_copy_usage_constraints_id:
+			return true;
 		default:
-			isTrustOp = false;
 			break;
 	}
+	return false;
+}
+
+static xpc_connection_t securityd_connection_for_operation(enum SecXPCOperation op) {
+	bool isTrustOp = is_trust_operation(op);
 	#if SECTRUST_VERBOSE_DEBUG
     {
         bool sysCtx = securityd_in_system_context();
@@ -200,7 +235,14 @@ securityd_message_with_reply_sync(xpc_object_t message, CFErrorRef *error)
         CFIndex code =  0;
         if (reply == XPC_ERROR_CONNECTION_INTERRUPTED || reply == XPC_ERROR_CONNECTION_INVALID) {
             code = kSecXPCErrorConnectionFailed;
-            seccritical("Failed to talk to secd after %d attempts.", max_tries);
+#if TARGET_OS_IPHONE
+            seccritical("Failed to talk to %s after %d attempts.", "securityd",
+                        max_tries);
+#else
+            seccritical("Failed to talk to %s after %d attempts.",
+                (is_trust_operation((enum SecXPCOperation)operation)) ? "trustd" : "secd",
+                max_tries);
+#endif
         } else if (reply == XPC_ERROR_TERMINATION_IMMINENT)
             code = kSecXPCErrorUnknown;
         else
@@ -261,6 +303,91 @@ bool securityd_send_sync_and_do(enum SecXPCOperation op, CFErrorRef *error,
 
     return ok;
 }
+
+
+CFDictionaryRef
+_SecSecuritydCopyWhoAmI(CFErrorRef *error)
+{
+    CFDictionaryRef reply = NULL;
+    xpc_object_t message = securityd_create_message(kSecXPCOpWhoAmI, error);
+    if (message) {
+        xpc_object_t response = securityd_message_with_reply_sync(message, error);
+        if (response) {
+            reply = _CFXPCCreateCFObjectFromXPCObject(response);
+            xpc_release(response);
+        } else {
+            securityd_message_no_error(response, error);
+        }
+        xpc_release(message);
+    }
+    return reply;
+}
+
+bool
+_SecSyncBubbleTransfer(CFArrayRef services, uid_t uid, CFErrorRef *error)
+{
+    xpc_object_t message;
+    bool reply = false;
+
+    message = securityd_create_message(kSecXPCOpTransmogrifyToSyncBubble, error);
+    if (message) {
+        xpc_dictionary_set_int64(message, "uid", uid);
+        if (SecXPCDictionarySetPList(message, "services", services, error)) {
+            xpc_object_t response = securityd_message_with_reply_sync(message, error);
+            if (response) {
+                reply = xpc_dictionary_get_bool(response, kSecXPCKeyResult);
+                if (!reply)
+                    securityd_message_no_error(response, error);
+                xpc_release(response);
+            }
+            xpc_release(message);
+        }
+    }
+    return reply;
+}
+
+bool
+_SecSystemKeychainTransfer(CFErrorRef *error)
+{
+    xpc_object_t message;
+    bool reply = false;
+
+    message = securityd_create_message(kSecXPCOpTransmogrifyToSystemKeychain, error);
+    if (message) {
+        xpc_object_t response = securityd_message_with_reply_sync(message, error);
+        if (response) {
+            reply = xpc_dictionary_get_bool(response, kSecXPCKeyResult);
+            if (!reply)
+                securityd_message_no_error(response, error);
+            xpc_release(response);
+        }
+        xpc_release(message);
+    }
+    return reply;
+}
+
+bool
+_SecSyncDeleteUserViews(uid_t uid, CFErrorRef *error)
+{
+    xpc_object_t message;
+    bool reply = false;
+
+    message = securityd_create_message(kSecXPCOpDeleteUserView, error);
+    if (message) {
+        xpc_dictionary_set_int64(message, "uid", uid);
+
+        xpc_object_t response = securityd_message_with_reply_sync(message, error);
+        if (response) {
+            reply = xpc_dictionary_get_bool(response, kSecXPCKeyResult);
+            if (!reply)
+                securityd_message_no_error(response, error);
+            xpc_release(response);
+        }
+        xpc_release(message);
+    }
+    return reply;
+}
+
 
 
 /* vi:set ts=4 sw=4 et: */

@@ -94,8 +94,18 @@ private:
 class KeychainDbCommon : public LocalDbCommon, 
 	public DatabaseCryptoCore, public MachServer::Timer {
 public:
-	KeychainDbCommon(Session &ssn, const DbIdentifier &id);
+    KeychainDbCommon(Session &ssn, const DbIdentifier &id, uint32 requestedVersion = CommonBlob::version_none);
+    KeychainDbCommon(Session &ssn, const DbIdentifier &id, KeychainDbCommon& toClone);
 	~KeychainDbCommon();
+
+    // If you have an existing KeychainDbCommon, and want to make it look a lot like that one
+    void cloneFrom(KeychainDbCommon& toClone, uint32 requestedVersion = CommonBlob::version_none);
+
+    // finishes the initialization of this KeychainDbCommon. Do not call this
+    // while holding the mCommon lock, or you may get a multiprocess deadlock.
+    void initializeKeybag();
+
+	void kill();                // remove from commonSet
 	
 	KeychainDbGlobal &global() const;
 	
@@ -112,6 +122,7 @@ public:
 	const DbIdentifier &identifier() const {return mIdentifier; }
 	const DLDbIdentifier &dlDbIdent() const { return identifier(); }
 	const char *dbName() const { return dlDbIdent().dbName(); }
+    uint32 dbVersion() { return DatabaseCryptoCore::mBlobVersion; }
     bool isLoginKeychain() const { return mLoginKeychain; }
 	
 	DbBlob *encode(KeychainDatabase &db);
@@ -122,6 +133,7 @@ public:
 	void lockProcessing();
 	
 	bool belongsToSystem() const;
+    bool isDefaultSystemKeychain() const;
 
 public:
     // debugging
@@ -147,6 +159,19 @@ private:
 	bool mIsLocked;				// logically locked
 	bool mValidParams;			// mParams has been set
     bool mLoginKeychain;
+
+public:
+    void insert();              // insert into commonSet
+    static bool find(const DbIdentifier &ident, Session &session, RefPointer<KeychainDbCommon> &common,
+            uint32 requestedVersion = CommonBlob::version_none, KeychainDbCommon* cloneFrom = NULL); // find in commonSet
+
+private:
+    void insertHoldingLock();              // Does the guts of insert(); you must hold a write lock on mRWCommonLock when calling this
+
+    // global set of KeychainDbCommons for name unification
+    typedef std::set<KeychainDbCommon *> CommonSet;
+    static CommonSet mCommonSet;
+    static ReadWriteLock mRWCommonLock;           //protects only mCommonSet
 };
 
 
@@ -165,6 +190,13 @@ public:
 	
 	// keychain synchronization recode to a specfic blob:
 	KeychainDatabase(KeychainDatabase &src, Process &proc, DbHandle dbToClone);
+
+    // Clone another database, but to a new DLDb identifier
+    KeychainDatabase(const DLDbIdentifier &id, KeychainDatabase &src, Process &proc);
+
+    // Copy another database, but with new secrets.
+    // To use this, you must provide the version you want to end up with.
+    KeychainDatabase(uint32 requestedVersion, KeychainDatabase &src, Process &proc);
 	virtual ~KeychainDatabase();
 
 	KeychainDbCommon &common() const;
@@ -184,6 +216,7 @@ public:
 	DbBlob *blob();
 	
     void authenticate(CSSM_DB_ACCESS_TYPE mode, const AccessCredentials *cred);
+    bool checkCredentials(const AccessCredentials* creds);
     void changePassphrase(const AccessCredentials *cred);
 	RefPointer<Key> extractMasterKey(Database &db, const AccessCredentials *cred,
 		const AclEntryPrototype *owner, uint32 usage, uint32 attrs);
@@ -191,8 +224,8 @@ public:
 	
 	// lock/unlock processing
 	void lockDb();											// unconditional lock
-	void unlockDb();										// full-feature unlock
-	void unlockDb(const CssmData &passphrase);				// unlock with passphrase
+	void unlockDb(bool unlockKeybag);                       // full-feature unlock
+	void unlockDb(const CssmData &passphrase, bool unlockKeybag);	// unlock with passphrase
     
     void stashDbCheck();                                    // check AppleKeyStore for master key
     void stashDb();                                         // stash master key in AppleKeyStore
@@ -228,6 +261,11 @@ public:
 	// miscellaneous utilities
 	static void validateBlob(const DbBlob *blob);
 
+    bool isRecoding();
+
+    // Notify ourselves that the keychain recode/migration has finished
+    void recodeFinished();
+
     // debugging
     IFDUMP(void dumpNode());
 
@@ -235,9 +273,9 @@ protected:
 	RefPointer<Key> makeKey(const CssmKey &newKey, uint32 moreAttributes, const AclEntryPrototype *owner);
 	RefPointer<Key> makeKey(Database &db, const CssmKey &newKey, uint32 moreAttributes, const AclEntryPrototype *owner);
 
-	void makeUnlocked();							// interior version of unlock()
-	void makeUnlocked(const AccessCredentials *cred); // like () with explicit cred
-	void makeUnlocked(const CssmData &passphrase);	// interior version of unlock(CssmData)
+	void makeUnlocked(bool unlockKeybag);	// interior version of unlock()
+	void makeUnlocked(const AccessCredentials *cred, bool unlockKeybag); // like () with explicit cred
+	void makeUnlocked(const CssmData &passphrase, bool unlockKeybag);	 // interior version of unlock(CssmData)
 	
 	void establishOldSecrets(const AccessCredentials *creds);
 	bool establishNewSecrets(const AccessCredentials *creds, SecurityAgent::Reason reason);
@@ -247,6 +285,12 @@ protected:
 	CssmClient::Key keyFromCreds(const TypedList &sample, unsigned int requiredLength);
 	
 	void encode();									// (re)generate mBlob if needed
+
+    // Counts the number of total interactive unlocks attempted by securityd
+    static uint32_t interactiveUnlockAttempts;
+
+public:
+    static uint32_t getInteractiveUnlockAttempts();
 	
 private:
 	// all following data is locked by the common lock
@@ -260,6 +304,7 @@ private:
     AccessCredentials *mCred;		// local access credentials (always valid)
 	
 	RefPointer<KeychainDatabase> mRecodingSource;	// keychain synchronization ONLY; should not require accessors
+    bool mRecoded;                  // true once a recode completes, until recodeFinished is called
 };
 
 #endif //_H_KCDATABASE

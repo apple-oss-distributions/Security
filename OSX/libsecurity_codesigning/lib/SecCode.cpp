@@ -46,6 +46,7 @@ const CFStringRef kSecCFErrorResourceSeal =		CFSTR("SecCSResourceSeal");
 const CFStringRef kSecCFErrorResourceAdded =		CFSTR("SecCSResourceAdded");
 const CFStringRef kSecCFErrorResourceAltered =	CFSTR("SecCSResourceAltered");
 const CFStringRef kSecCFErrorResourceMissing =	CFSTR("SecCSResourceMissing");
+const CFStringRef kSecCFErrorResourceSideband =	CFSTR("SecCSResourceHasSidebandData");
 const CFStringRef kSecCFErrorInfoPlist =			CFSTR("SecCSInfoPlist");
 const CFStringRef kSecCFErrorGuestAttributes =	CFSTR("SecCSGuestAttributes");
 const CFStringRef kSecCFErrorRequirementSyntax = CFSTR("SecRequirementSyntax");
@@ -152,8 +153,9 @@ const CFStringRef kSecGuestAttributeCanonical =		CFSTR("canonical");
 const CFStringRef kSecGuestAttributeHash =			CFSTR("codedirectory-hash");
 const CFStringRef kSecGuestAttributeMachPort =		CFSTR("mach-port");
 const CFStringRef kSecGuestAttributePid =			CFSTR("pid");
-const CFStringRef kSecGuestAttributeDynamicCode =               CFSTR("dynamicCode");
-const CFStringRef kSecGuestAttributeDynamicCodeInfoPlist =               CFSTR("dynamicCodeInfoPlist");
+const CFStringRef kSecGuestAttributeAudit =			CFSTR("audit");
+const CFStringRef kSecGuestAttributeDynamicCode =	CFSTR("dynamicCode");
+const CFStringRef kSecGuestAttributeDynamicCodeInfoPlist = CFSTR("dynamicCodeInfoPlist");
 const CFStringRef kSecGuestAttributeArchitecture =	CFSTR("architecture");
 const CFStringRef kSecGuestAttributeSubarchitecture = CFSTR("subarchitecture");
 
@@ -204,11 +206,12 @@ OSStatus SecCodeCheckValidity(SecCodeRef codeRef, SecCSFlags flags,
 OSStatus SecCodeCheckValidityWithErrors(SecCodeRef codeRef, SecCSFlags flags,
 	SecRequirementRef requirementRef, CFErrorRef *errors)
 {
-#if !SECTRUST_OSX
 	BEGIN_CSAPI
 
 	checkFlags(flags,
 		  kSecCSConsiderExpiration
+		| kSecCSStrictValidate
+		| kSecCSRestrictSidebandData
 		| kSecCSEnforceRevocationChecks);
 	SecPointer<SecCode> code = SecCode::required(codeRef);
 	code->checkValidity(flags);
@@ -216,41 +219,6 @@ OSStatus SecCodeCheckValidityWithErrors(SecCodeRef codeRef, SecCSFlags flags,
 		code->staticCode()->validateRequirement(req->requirement(), errSecCSReqFailed);
 
 	END_CSAPI_ERRORS
-#else
-#warning resolve before enabling SECTRUST_OSX: <rdar://21328880>
-	OSStatus result = errSecSuccess;
-	const char *func = "SecCodeCheckValidity";
-	CFErrorRef localErrors = NULL;
-	if (!errors) { errors = &localErrors; }
-	try {
-		checkFlags(flags,
-				kSecCSConsiderExpiration
-				| kSecCSEnforceRevocationChecks);
-		SecPointer<SecCode> code = SecCode::required(codeRef);
-		code->checkValidity(flags);
-		if (const SecRequirement *req = SecRequirement::optional(requirementRef))
-			code->staticCode()->validateRequirement(req->requirement(), errSecCSReqFailed);
-	}
-	catch (...) {
-		// the actual error being thrown is not being caught by any of the
-		// type-specific blocks contained in the END_CSAPI_ERRORS macro,
-		// so we only have the catch-all block here for now.
-		result = errSecCSInternalError;
-	}
-
-	if (errors && *errors) {
-		CFShow(errors);
-		CFRelease(errors);
-		*errors = NULL;
-	}
-	if (result == errSecCSInternalError) {
-	#if !NDEBUG
-		Security::Syslog::error("WARNING: %s ignored error %d", func, (int)result);
-	#endif
-		result = errSecSuccess;
-	}
-	return result;
-#endif
 }
 
 
@@ -271,6 +239,7 @@ const CFStringRef kSecCodeInfoEntitlementsDict =	CFSTR("entitlements-dict");
 const CFStringRef kSecCodeInfoFlags =			CFSTR("flags");
 const CFStringRef kSecCodeInfoFormat =			CFSTR("format");
 const CFStringRef kSecCodeInfoDigestAlgorithm =	CFSTR("digest-algorithm");
+const CFStringRef kSecCodeInfoDigestAlgorithms = CFSTR("digest-algorithms");
 const CFStringRef kSecCodeInfoPlatformIdentifier = CFSTR("platform-identifier");
 const CFStringRef kSecCodeInfoIdentifier =		CFSTR("identifier");
 const CFStringRef kSecCodeInfoImplicitDesignatedRequirement = CFSTR("implicit-requirement");
@@ -285,10 +254,19 @@ const CFStringRef kSecCodeInfoTime =			CFSTR("signing-time");
 const CFStringRef kSecCodeInfoTimestamp =		CFSTR("signing-timestamp");
 const CFStringRef kSecCodeInfoTrust =			CFSTR("trust");
 const CFStringRef kSecCodeInfoUnique =			CFSTR("unique");
+const CFStringRef kSecCodeInfoCdHashes =        CFSTR("cdhashes");
+
 
 const CFStringRef kSecCodeInfoCodeDirectory =	CFSTR("CodeDirectory");
 const CFStringRef kSecCodeInfoCodeOffset =		CFSTR("CodeOffset");
+const CFStringRef kSecCodeInfoDiskRepInfo =     CFSTR("DiskRepInfo");
 const CFStringRef kSecCodeInfoResourceDirectory = CFSTR("ResourceDirectory");
+
+/* DiskInfoRepInfo types */
+const CFStringRef kSecCodeInfoDiskRepOSPlatform =          CFSTR("OSPlatform");
+const CFStringRef kSecCodeInfoDiskRepOSVersionMin =        CFSTR("OSVersionMin");
+const CFStringRef kSecCodeInfoDiskRepOSSDKVersion =        CFSTR("SDKVersion");
+const CFStringRef kSecCodeInfoDiskRepNoLibraryValidation = CFSTR("NoLibraryValidation");
 
 
 OSStatus SecCodeCopySigningInformation(SecStaticCodeRef codeRef, SecCSFlags flags,

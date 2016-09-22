@@ -31,7 +31,7 @@
 #include "SDKey.h"
 #include <security_utilities/debugging.h>
 
-#define ssCryptDebug(args...)  secdebug("ssCrypt", ## args)
+#define ssCryptDebug(args...)  secinfo("ssCrypt", ## args)
 
 using namespace SecurityServer;
 
@@ -167,6 +167,22 @@ void SDSignatureContext::init(const Context &context, bool signing)
 			break;
 		case CSSM_ALGID_MD2WithRSA:
 			mDigestAlg = CSSM_ALGID_MD2;
+			mSigAlg = CSSM_ALGID_RSA;
+			break;
+		case CSSM_ALGID_SHA224WithRSA:
+			mDigestAlg = CSSM_ALGID_SHA224;
+			mSigAlg = CSSM_ALGID_RSA;
+			break;
+		case CSSM_ALGID_SHA256WithRSA:
+			mDigestAlg = CSSM_ALGID_SHA256;
+			mSigAlg = CSSM_ALGID_RSA;
+			break;
+		case CSSM_ALGID_SHA384WithRSA:
+			mDigestAlg = CSSM_ALGID_SHA384;
+			mSigAlg = CSSM_ALGID_RSA;
+			break;
+		case CSSM_ALGID_SHA512WithRSA:
+			mDigestAlg = CSSM_ALGID_SHA512;
 			mSigAlg = CSSM_ALGID_RSA;
 			break;
 		case CSSM_ALGID_RSA:				// Raw

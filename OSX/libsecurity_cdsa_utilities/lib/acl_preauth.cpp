@@ -58,7 +58,7 @@ AclSubject *OriginMaker::make(AclSubject::Version version, Reader &pub, Reader &
 // This tries to find the source AclObject and hands the question off to it.
 // If anything isn't right, fail the validation.
 //
-bool OriginAclSubject::validate(const AclValidationContext &ctx) const
+bool OriginAclSubject::validates(const AclValidationContext &ctx) const
 {
 	if (Environment *env = ctx.environment<Environment>())
 		if (ObjectAcl *source = env->preAuthSource())
@@ -162,7 +162,7 @@ private:
 	const char *mCredTag;
 };
 
-bool SourceAclSubject::SourceAclSubject::validate(const AclValidationContext &baseCtx) const
+bool SourceAclSubject::SourceAclSubject::validates(const AclValidationContext &baseCtx) const
 {
 	// try to authenticate our sub-subject
 	if (Environment *env = baseCtx.environment<Environment>()) {
@@ -170,13 +170,13 @@ bool SourceAclSubject::SourceAclSubject::validate(const AclValidationContext &ba
 		if (!CSSM_ACL_AUTHORIZATION_IS_PREAUTH(auth))	// all muddled up; bail
 			CssmError::throwMe(CSSM_ERRCODE_INVALID_ACL_SUBJECT_VALUE);
 		uint32 slot = CSSM_ACL_AUTHORIZATION_PREAUTH_SLOT(auth);
-		secdebug("preauth", "using state %d@%p", slot, &env->store(this));
+		secinfo("preauth", "using state %d@%p", slot, &env->store(this));
 		bool &accepted = env->store(this).attachment<AclState>((void *)((size_t) slot)).accepted;
 		if (!accepted) {
-			secdebug("preauth", "%p needs to authenticate its subject", this);
+			secinfo("preauth", "%p needs to authenticate its subject", this);
 			SourceValidationContext ctx(baseCtx);
-			if (mSourceSubject->validate(ctx)) {
-				secdebug("preauth", "%p pre-authenticated", this);
+			if (mSourceSubject->validates(ctx)) {
+				secinfo("preauth", "%p pre-authenticated", this);
 				accepted = true;
 			}
 		}

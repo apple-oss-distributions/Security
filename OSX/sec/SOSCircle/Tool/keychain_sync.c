@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/utsname.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include <Security/SecItem.h>
 
@@ -52,25 +55,18 @@
 #include <SecurityTool/readline.h>
 #include <notify.h>
 
-#include "SOSCommands.h"
+#include "keychain_sync.h"
+#include "keychain_log.h"
+#include "syncbackup.h"
+
+#include "secToolFileIO.h"
+#include "secViewDisplay.h"
 
 #include <Security/SecPasswordGenerate.h>
 
-#define printmsg(format, ...) _printcfmsg(stdout, NULL, format, __VA_ARGS__)
-#define printmsgWithFormatOptions(formatOptions, format, ...) _printcfmsg(stdout, formatOptions, format, __VA_ARGS__)
-#define printerr(format, ...) _printcfmsg(stderr, NULL, format, __VA_ARGS__)
 #define MAXKVSKEYTYPE kUnknownKey
 #define DATE_LENGTH 18
 
-static void _printcfmsg(FILE *ff, CFDictionaryRef formatOptions, CFStringRef format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    CFStringRef message = CFStringCreateWithFormatAndArguments(kCFAllocatorDefault, formatOptions, format, args);
-    va_end(args);
-    CFStringPerformWithCString(message, ^(const char *utf8String) { fprintf(ff, utf8String, ""); });
-    CFRelease(message);
-}
 
 static bool clearAllKVS(CFErrorRef *error)
 {
@@ -231,12 +227,8 @@ static void dumpCircleInfo()
 static bool enableDefaultViews()
 {
     bool result = false;
-    CFMutableSetRef viewsToEnable = CFSetCreateMutable(NULL, 0, NULL);
+    CFMutableSetRef viewsToEnable = SOSViewCopyViewSet(kViewSetV0);
     CFMutableSetRef viewsToDisable = CFSetCreateMutable(NULL, 0, NULL);
-    CFSetAddValue(viewsToEnable, (void*)kSOSViewWiFi);
-    CFSetAddValue(viewsToEnable, (void*)kSOSViewAutofillPasswords);
-    CFSetAddValue(viewsToEnable, (void*)kSOSViewSafariCreditCards);
-    CFSetAddValue(viewsToEnable, (void*)kSOSViewOtherSyncable);
     
     result = SOSCCViewSet(viewsToEnable, viewsToDisable);
     CFRelease(viewsToEnable);
@@ -519,7 +511,7 @@ static bool dumpKVS(char *itemName, CFErrorRef *err)
     if (itemName)
     {
         CFStringRef itemStr = CFStringCreateWithCString(kCFAllocatorDefault, itemName, kCFStringEncodingUTF8);
-        printf("Retrieving %s from KVS\n", itemName);
+        fprintf(outFile, "Retrieving %s from KVS\n", itemName);
         keysToGet = CFArrayCreateForCFTypes(kCFAllocatorDefault, itemStr, NULL);
         CFReleaseSafe(itemStr);
     }
@@ -529,29 +521,18 @@ static bool dumpKVS(char *itemName, CFErrorRef *err)
     CFReleaseSafe(keysToGet);
     if (objects)
     {
-        printf("All keys and values straight from KVS\n");
+        fprintf(outFile, "All keys and values straight from KVS\n");
         printEverything(objects);
-        printf("\nAll values in decoded form...\n");
+        fprintf(outFile, "\nAll values in decoded form...\n");
         decodeAllTheValues(objects);
     }
-    printf("\n");
+    fprintf(outFile, "\n");
     return true;
 }
 
-static bool syncAndWait(char *itemName, CFErrorRef *err)
+static bool syncAndWait(CFErrorRef *err)
 {
-    CFArrayRef keysToGet = NULL;
     __block CFTypeRef objects = NULL;
-    if (!itemName)
-    {
-        fprintf(stderr, "No item keys supplied\n");
-        return false;
-    }
-
-    CFStringRef itemStr = CFStringCreateWithCString(kCFAllocatorDefault, itemName, kCFStringEncodingUTF8);
-    printf("Retrieving %s from KVS\n", itemName);
-    keysToGet = CFArrayCreateForCFTypes(kCFAllocatorDefault, itemStr, NULL);
-    CFReleaseSafe(itemStr);
 
     dispatch_queue_t generalq = dispatch_queue_create("general", DISPATCH_QUEUE_SERIAL);
 
@@ -564,167 +545,20 @@ static bool syncAndWait(char *itemName, CFErrorRef *err)
         secinfo("sync", "SOSCloudKeychainSynchronizeAndWait returned: %@", returnedValues);
         if (error)
             secerror("SOSCloudKeychainSynchronizeAndWait returned error: %@", error);
-        objects = returnedValues;
-        if (objects)
-            CFRetain(objects);
+        objects = CFRetainSafe(returnedValues);
+
         secinfo("sync", "SOSCloudKeychainGetObjectsFromCloud block exit: %@", objects);
         dispatch_semaphore_signal(waitSemaphore);
     };
 
-    SOSCloudKeychainSynchronizeAndWait(keysToGet, generalq, replyBlock);
+    SOSCloudKeychainSynchronizeAndWait(generalq, replyBlock);
 
 	dispatch_semaphore_wait(waitSemaphore, finishTime);
 	dispatch_release(waitSemaphore);
 
-    CFReleaseSafe(keysToGet);
     dumpKVS(NULL, NULL);
-    printf("\n");
+    fprintf(outFile, "\n");
     return false;
-}
-
-static struct foo {
-    const char *name;
-    const CFStringRef *viewspec;
-} string2View[] = {
-    {
-        "keychain", &kSOSViewKeychainV0
-    }, {
-        "masterkey", &kSOSViewPCSMasterKey,
-    }, {
-        "iclouddrive", &kSOSViewPCSiCloudDrive,
-    }, {
-        "photos", &kSOSViewPCSPhotos,
-    }, {
-        "escrow", &kSOSViewPCSEscrow,
-    }, {
-        "fde", &kSOSViewPCSFDE,
-    }, {
-        "maildrop", &kSOSViewPCSMailDrop,
-    }, {
-        "icloudbackup", &kSOSViewPCSiCloudBackup,
-    }, {
-        "notes", &kSOSViewPCSNotes,
-    }, {
-        "imessage", &kSOSViewPCSiMessage,
-    }, {
-        "feldspar", &kSOSViewPCSFeldspar,
-    }, {
-        "appletv", &kSOSViewAppleTV,
-    }, {
-        "homekit", &kSOSViewHomeKit,
-    }, {
-        "wifi", &kSOSViewWiFi,
-    }, {
-        "passwords", &kSOSViewAutofillPasswords,
-    }, {
-        "creditcards", &kSOSViewSafariCreditCards,
-    }, {
-        "icloudidentity", &kSOSViewiCloudIdentity,
-    }, {
-        "othersyncable", &kSOSViewOtherSyncable,
-    }
-};
-
-static CFStringRef convertStringToView(char *viewname) {
-    unsigned n;
-
-    for (n = 0; n < sizeof(string2View)/sizeof(string2View[0]); n++) {
-        if (strcmp(string2View[n].name, viewname) == 0)
-            return *string2View[n].viewspec;
-    }
-    
-    // Leak this, since it's a getter.
-    return CFStringCreateWithCString(kCFAllocatorDefault, viewname, kCFStringEncodingUTF8);
-}
-
-static CFStringRef convertViewReturnCodeToString(SOSViewActionCode ac) {
-    CFStringRef retval = NULL;
-    switch(ac) {
-        case kSOSCCGeneralViewError:
-            retval = CFSTR("General Error"); break;
-        case kSOSCCViewMember:
-            retval = CFSTR("Is Member of View"); break;
-        case kSOSCCViewNotMember:
-            retval = CFSTR("Is Not Member of View"); break;
-        case kSOSCCViewNotQualified:
-            retval = CFSTR("Is not qualified for View"); break;
-        case kSOSCCNoSuchView:
-            retval = CFSTR("No Such View"); break;
-    }
-    return retval;
-}
-
-static bool viewcmd(char *itemName, CFErrorRef *err) {
-    char *cmd, *viewname;
-    SOSViewActionCode ac = kSOSCCViewQuery;
-    CFStringRef viewspec;
-    
-    viewname = strchr(itemName, ':');
-    if(viewname == NULL) return false;
-    *viewname = 0;
-    viewname++;
-    cmd = itemName;
-
-    if(strcmp(cmd, "enable") == 0) {
-        ac = kSOSCCViewEnable;
-    } else if(strcmp(cmd, "disable") == 0) {
-        ac = kSOSCCViewDisable;
-    } else if(strcmp(cmd, "query") == 0) {
-        ac = kSOSCCViewQuery;
-    } else {
-        return false;
-    }
-    
-    if(strchr(viewname, ',') == NULL) { // original single value version
-        viewspec = convertStringToView(viewname);
-        if(!viewspec) return false;
-        
-        SOSViewResultCode rc = SOSCCView(viewspec, ac, err);
-        CFStringRef resultString = convertViewReturnCodeToString(rc);
-        
-        printmsg(CFSTR("View Result: %@ : %@\n"), resultString, viewspec);
-        return true;
-    }
-    
-    if(ac == kSOSCCViewQuery) return false;
-    
-    // new multi-view version
-    char *viewlist = strdup(viewname);
-    char *token;
-    char *tofree = viewlist;
-    CFMutableSetRef viewSet = CFSetCreateMutable(NULL, 0, &kCFCopyStringSetCallBacks);
-    
-    while ((token = strsep(&viewlist, ",")) != NULL) {
-        CFStringRef resultString = convertStringToView(token);
-        CFSetAddValue(viewSet, resultString);
-    }
-    
-    printmsg(CFSTR("viewSet provided is %@\n"), viewSet);
-    
-    free(tofree);
-    
-    bool retcode;
-    if(ac == kSOSCCViewEnable) retcode = SOSCCViewSet(viewSet, NULL);
-    else retcode = SOSCCViewSet(NULL, viewSet);
-    
-    printf("SOSCCViewSet returned %s\n", (retcode)? "true": "false");
-    
-    return true;
-}
-
-static bool listviewcmd(CFErrorRef *err) {
-    unsigned n;
-
-    for (n = 0; n < sizeof(string2View)/sizeof(string2View[0]); n++) {
-        CFStringRef viewspec = *string2View[n].viewspec;
-
-        SOSViewResultCode rc = SOSCCView(viewspec, kSOSCCViewQuery, err);
-        CFStringRef resultString = convertViewReturnCodeToString(rc);
-
-        printmsg(CFSTR("View Result: %@ : %@\n"), resultString, viewspec);
-    };
-
-    return true;
 }
 
 static CFStringRef convertStringToProperty(char *propertyname) {
@@ -831,17 +665,19 @@ static bool dumpMyPeer(CFErrorRef *error) {
         CFMutableSetRef views = SOSPeerInfoV2DictionaryCopySet(myPeer, sViewsKey);
         CFStringRef serialNumber = SOSPeerInfoV2DictionaryCopyString(myPeer, sSerialNumberKey);
         CFBooleanRef preferIDS = SOSPeerInfoV2DictionaryCopyBoolean(myPeer, sPreferIDS);
+        CFBooleanRef preferIDSFragmentation = SOSPeerInfoV2DictionaryCopyBoolean(myPeer, sPreferIDSFragmentation);
         CFStringRef transportType = SOSPeerInfoV2DictionaryCopyString(myPeer, sTransportType);
         CFStringRef idsDeviceID = SOSPeerInfoV2DictionaryCopyString(myPeer, sDeviceID);
         CFMutableSetRef properties = SOSPeerInfoV2DictionaryCopySet(myPeer, sSecurityPropertiesKey);
         
-        printmsg(CFSTR("Serial#: %@   PrefIDS#: %@   transportType#: %@   idsDeviceID#: %@\n"),
-                 serialNumber, preferIDS, transportType, idsDeviceID);
+        printmsg(CFSTR("Serial#: %@   PrefIDS#: %@   PrefFragmentation#: %@   transportType#: %@   idsDeviceID#: %@\n"),
+                 serialNumber, preferIDS, preferIDSFragmentation, transportType, idsDeviceID);
         dumpStringSet(CFSTR("             Views: "), views);
         dumpStringSet(CFSTR("SecurityProperties: "), properties);
         
         CFReleaseSafe(serialNumber);
         CFReleaseSafe(preferIDS);
+        CFReleaseSafe(preferIDSFragmentation);
         CFReleaseSafe(views);
         CFReleaseSafe(transportType);
         CFReleaseSafe(idsDeviceID);
@@ -895,7 +731,7 @@ static bool setBag(char *itemName, CFErrorRef *err)
 }
 
 static void prClientViewState(char *label, bool result) {
-    printf("Sync Status for %s: %s\n", label, (result) ? "enabled": "not enabled");
+    fprintf(outFile, "Sync Status for %s: %s\n", label, (result) ? "enabled": "not enabled");
 }
 
 static bool clientViewStatus(CFErrorRef *error) {
@@ -904,6 +740,7 @@ static bool clientViewStatus(CFErrorRef *error) {
     prClientViewState("AppleTV", SOSCCIsAppleTVSyncing());
     prClientViewState("HomeKit", SOSCCIsHomeKitSyncing());
     prClientViewState("Wifi", SOSCCIsWiFiSyncing());
+    prClientViewState("AlwaysOnNoInitialSync", SOSCCIsContinuityUnlockSyncing());
     return false;
 }
 
@@ -942,7 +779,7 @@ keychain_sync(int argc, char * const *argv)
 	 "    -e     enable (join/create circle)"
 	 "    -i     info (current status)"
 	 "    -m     dump my peer"
-	 "    -s     schedule sync with all peers"
+	 "    -S     schedule sync with all peers"
 	 "
 	 "Account/Circle Management"
 	 "    -a     accept all applicants"
@@ -963,6 +800,10 @@ keychain_sync(int argc, char * const *argv)
 	 "    -X     [limit]  best effort bail from circle in limit seconds"
      "    -o     list view unaware peers in circle"
      "    -0     boot view unaware peers from circle"
+     "    -1     grab account state from the keychain"
+     "    -2     delete account state from the keychain"
+     "    -3     grab engine state from the keychain"
+     "    -4     delete engine state from the keychain"
 	 "
 	 "IDS"
 	 "    -g     set IDS device id"
@@ -979,7 +820,7 @@ keychain_sync(int argc, char * const *argv)
 	 "    -k     pend all registered kvs keys"
 	 "    -C     clear all values from KVS"
 	 "    -D     [itemName]  dump contents of KVS"
-	 "    -W     itemNames  sync and dump"
+     "    -W     sync and dump"
 	 "
 	 "Misc"
 	 "    -v     [enable|disable|query:viewname] enable, disable, or query my PeerInfo's view set"
@@ -998,12 +839,13 @@ keychain_sync(int argc, char * const *argv)
 	int ch, result = 0;
     CFErrorRef error = NULL;
     bool hadError = false;
-    
-    while ((ch = getopt(argc, argv, "ab:deg:hikl:mopq:rsv:w:x:zA:B:MNJCDEF:HG:ILOP:RT:UW:X:VY0")) != -1)
+    setOutputTo(NULL, NULL);
+
+    while ((ch = getopt(argc, argv, "ab:deg:hikl:mopq:rsSv:w:x:zA:B:MNJCDEF:HG:ILOP:RT:UWX:VY01234")) != -1)
         switch  (ch) {
 		case 'l':
 		{
-			printf("Signing out of circle\n");
+			fprintf(outFile, "Signing out of circle\n");
 			hadError = !SOSCCSignedOut(true, &error);
 			if (!hadError) {
 				errno = 0;
@@ -1011,9 +853,9 @@ keychain_sync(int argc, char * const *argv)
 				if (errno != 0 ||
 					reason < kSOSDepartureReasonError ||
 					reason >= kSOSNumDepartureReasons) {
-					fprintf(stderr, "Invalid custom departure reason %s\n", optarg);
+					fprintf(errFile, "Invalid custom departure reason %s\n", optarg);
 				} else {
-					printf("Setting custom departure reason %d\n", reason);
+					fprintf(outFile, "Setting custom departure reason %d\n", reason);
 					hadError = !SOSCCSetLastDepartureReason(reason, &error);
 					notify_post(kSOSCCCircleChangedNotification);
 				}
@@ -1023,14 +865,14 @@ keychain_sync(int argc, char * const *argv)
 			
 		case 'q':
 		{
-			printf("Signing out of circle\n");
+			fprintf(outFile, "Signing out of circle\n");
 			bool signOutImmediately = false;
 			if (strcasecmp(optarg, "true") == 0) {
 				signOutImmediately = true;
 			} else if (strcasecmp(optarg, "false") == 0) {
 				signOutImmediately = false;
 			} else {
-				printf("Please provide a \"true\" or \"false\" whether you'd like to leave the circle immediately\n");
+				fprintf(outFile, "Please provide a \"true\" or \"false\" whether you'd like to leave the circle immediately\n");
 			}
 			hadError = !SOSCCSignedOut(signOutImmediately, &error);
 			notify_post(kSOSCCCircleChangedNotification);
@@ -1039,7 +881,7 @@ keychain_sync(int argc, char * const *argv)
 			
 		case 'p':
 		{
-			printf("Grabbing DS ID\n");
+			fprintf(outFile, "Grabbing DS ID\n");
 			CFStringRef deviceID = SOSCCCopyDeviceID(&error);
 			if (error) {
 				hadError = true;
@@ -1048,9 +890,9 @@ keychain_sync(int argc, char * const *argv)
 			if (!isNull(deviceID)) {
 				const char *id = CFStringGetCStringPtr(deviceID, kCFStringEncodingUTF8);
 				if (id)
-					printf("IDS Device ID: %s\n", id);
+					fprintf(outFile, "IDS Device ID: %s\n", id);
 				else
-					printf("IDS Device ID is null!\n");
+					fprintf(outFile, "IDS Device ID is null!\n");
 			}
             CFReleaseNull(deviceID);
 			break;
@@ -1058,7 +900,7 @@ keychain_sync(int argc, char * const *argv)
 			
 		case 'g':
 		{
-			printf("Setting DS ID: %s\n", optarg);
+			fprintf(outFile, "Setting DS ID: %s\n", optarg);
 			CFStringRef deviceID = CFStringCreateWithCString(kCFAllocatorDefault, optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCSetDeviceID(deviceID, &error);
 			CFReleaseNull(deviceID);
@@ -1067,7 +909,7 @@ keychain_sync(int argc, char * const *argv)
 			
 		case 'w':
 		{
-			printf("Attempting to send this message over IDS: %s\n", optarg);
+			fprintf(outFile, "Attempting to send this message over IDS: %s\n", optarg);
 			CFStringRef message = CFStringCreateWithCString(kCFAllocatorDefault, optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCIDSServiceRegistrationTest(message, &error);
 			if (error) {
@@ -1080,7 +922,7 @@ keychain_sync(int argc, char * const *argv)
 			
 		case 'x':
 		{
-			printf("Starting ping test using this message: %s\n", optarg);
+			fprintf(outFile, "Starting ping test using this message: %s\n", optarg);
 			CFStringRef message = CFStringCreateWithCString(kCFAllocatorDefault, optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCIDSPingTest(message, &error);
 			if (error) {
@@ -1100,12 +942,12 @@ keychain_sync(int argc, char * const *argv)
 			break;
 			
 		case 'e':
-			printf("Turning ON keychain syncing\n");
+			fprintf(outFile, "Turning ON keychain syncing\n");
 			hadError = requestToJoinCircle(&error);
 			break;
 			
 		case 'd':
-			printf("Turning OFF keychain syncing\n");
+			fprintf(outFile, "Turning OFF keychain syncing\n");
 			hadError = !SOSCCRemoveThisDeviceFromCircle(&error);
 			break;
 			
@@ -1116,7 +958,7 @@ keychain_sync(int argc, char * const *argv)
 				hadError = !SOSCCAcceptApplicants(applicants, &error);
 				CFRelease(applicants);
 			} else {
-				fprintf(stderr, "No applicants to accept\n");
+				fprintf(errFile, "No applicants to accept\n");
 			}
 			break;
 		}
@@ -1128,7 +970,7 @@ keychain_sync(int argc, char * const *argv)
 				hadError = !SOSCCRejectApplicants(applicants, &error);
 				CFRelease(applicants);
 			} else {
-				fprintf(stderr, "No applicants to reject\n");
+				fprintf(errFile, "No applicants to reject\n");
 			}
 			break;
 		}
@@ -1156,62 +998,105 @@ keychain_sync(int argc, char * const *argv)
                 hadError = true;
             }
             CFReleaseNull(unawares);
+            break;
+        }
+        case '1':
+        {
+            CFDataRef accountState = SOSCCCopyAccountState(&error);
+            if (accountState) {
+                printmsg(CFSTR(" %@\n"), CFDataCopyHexString(accountState));
+            } else {
+                hadError = true;
+            }
+            CFReleaseNull(accountState);
+            break;
+        }
+        case '2':
+        {
+            bool status = SOSCCDeleteAccountState(&error);
+            if (status) {
+                printmsg(CFSTR("Deleted account from the keychain %d\n"), status);
+            } else {
+                hadError = true;
+            }
+            break;
+        }
+        case '3':
+        {
+            CFDataRef engineState = SOSCCCopyEngineData(&error);
+            if (engineState) {
+                printmsg(CFSTR(" %@\n"), CFDataCopyHexString(engineState));
+            } else {
+                hadError = true;
+            }
+            CFReleaseNull(engineState);
+            break;
+        }
+        case '4':
+        {
+            bool status = SOSCCDeleteEngineState(&error);
+            if (status) {
+                printmsg(CFSTR("Deleted engine-state from the keychain %d\n"), status);
+            } else {
+                hadError = true;
+            }
+            break;
         }
 
-		case 's':
+        case 's':
 		#if TARGET_OS_EMBEDDED
 			SOSCloudKeychainRequestSyncWithAllPeers(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL);
 		#else
-			printf("not exported yet...\n");
+			fprintf(outFile, "not exported yet...\n");
 		#endif
 			break;
 			
 		case 'E':
 		{
-			printf("Ensuring Fresh Parameters\n");
+			fprintf(outFile, "Ensuring Fresh Parameters\n");
 			bool result = SOSCCRequestEnsureFreshParameters(&error);
 			if (error) {
 				hadError = true;
 				break;
 			}
 			if (result) {
-				printf("Refreshed Parameters Ensured!\n");
+				fprintf(outFile, "Refreshed Parameters Ensured!\n");
 			} else {
-				printf("Problem trying to ensure fresh parameters\n");
+				fprintf(outFile, "Problem trying to ensure fresh parameters\n");
 			}
 			break;
 		}
 		case 'A':
 		{
-			printf("Applying to Ring\n");
+			fprintf(outFile, "Applying to Ring\n");
 			CFStringRef ringName = CFStringCreateWithCString(kCFAllocatorDefault, (char *)optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCApplyToARing(ringName, &error);
 			break;
 		}
 		case 'B':
 		{
-			printf("Withdrawing from Ring\n");
+			fprintf(outFile, "Withdrawing from Ring\n");
 			CFStringRef ringName = CFStringCreateWithCString(kCFAllocatorDefault, (char *)optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCWithdrawlFromARing(ringName, &error);
 			break;
 		}
 		case 'F':
 		{
-			printf("Status of this device in the Ring\n");
+			fprintf(outFile, "Status of this device in the Ring\n");
 			CFStringRef ringName = CFStringCreateWithCString(kCFAllocatorDefault, (char *)optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCRingStatus(ringName, &error);
 			break;
 		}
 		case 'G':
 		{
-			printf("Enabling Ring\n");
+			fprintf(outFile, "Enabling Ring\n");
 			CFStringRef ringName = CFStringCreateWithCString(kCFAllocatorDefault, (char *)optarg, kCFStringEncodingUTF8);
 			hadError = SOSCCEnableRing(ringName, &error);
 			break;
 		}
         case 'H':
         {
-            printf("Setting random escrow record\n");
+            fprintf(outFile, "Setting random escrow record\n");
             bool success = SOSCCSetEscrowRecord(CFSTR("label"), 8, &error);
             if(success)
                 hadError = false;
@@ -1226,25 +1111,25 @@ keychain_sync(int argc, char * const *argv)
                 CFDictionaryForEach(attempts, ^(const void *key, const void *value) {
                     if(isString(key)){
                         char *keyString = CFStringToCString(key);
-                        printf("%s:\n", keyString);
+                        fprintf(outFile, "%s:\n", keyString);
                         free(keyString);
                     }
                     if(isDictionary(value)){
                         CFDictionaryForEach(value, ^(const void *key, const void *value) {
                             if(isString(key)){
                                 char *keyString = CFStringToCString(key);
-                                printf("%s: ", keyString);
+                                fprintf(outFile, "%s: ", keyString);
                                 free(keyString);
                             }
                             if(isString(value)){
                                 char *time = CFStringToCString(value);
-                                printf("timestamp: %s\n", time);
+                                fprintf(outFile, "timestamp: %s\n", time);
                                 free(time);
                             }
                             else if(isNumber(value)){
                                 uint64_t tries;
                                 CFNumberGetValue(value, kCFNumberLongLongType, &tries);
-                                printf("date: %llu\n", tries);
+                                fprintf(outFile, "date: %llu\n", tries);
                             }
                         });
                     }
@@ -1266,12 +1151,12 @@ keychain_sync(int argc, char * const *argv)
         }
 		case 'I':
 		{
-			printf("Printing all the rings\n");
+			fprintf(outFile, "Printing all the rings\n");
 			CFStringRef ringdescription = SOSCCGetAllTheRings(&error);
 			if(!ringdescription)
 				hadError = true;
 			else
-				printf("Rings: %s", CFStringToCString(ringdescription));
+				fprintf(outFile, "Rings: %s", CFStringToCString(ringdescription));
 			
 			break;
 		}
@@ -1322,7 +1207,7 @@ keychain_sync(int argc, char * const *argv)
 			break;
 
 		case 'W':
-			hadError = syncAndWait(optarg, &error);
+			hadError = syncAndWait(&error);
 			break;
 
 		case 'v':

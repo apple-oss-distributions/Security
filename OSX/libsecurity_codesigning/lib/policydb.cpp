@@ -273,6 +273,19 @@ void PolicyDatabase::upgradeDatabase()
 		add.bind(":flags") = kAuthorityFlagDefault;
 		add.execute();
 	});
+	
+	simpleFeature("document rules", ^{
+		SQLite::Statement addApple(*this,
+			"INSERT INTO authority (type, allow, flags, label, requirement) VALUES (3, 1, 2, 'Apple System', 'anchor apple')");
+		addApple.execute();
+		SQLite::Statement addDevID(*this,
+			"INSERT INTO authority (type, allow, flags, label, requirement)	VALUES (3, 1, 2, 'Developer ID', 'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')");
+		addDevID.execute();
+	});
+    
+    simpleFeature("root_only", ^{
+        UnixError::check(::chmod(dbPath(), S_IRUSR | S_IWUSR));
+    });
 }
 
 
@@ -294,7 +307,7 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 			CFDictionaryRef content = auth.get<CFDictionaryRef>(CFSTR("authority"));
 			std::string authUUID = cfString(auth.get<CFStringRef>(CFSTR("uuid")));
 			if (authUUID.empty()) {
-				secdebug("gkupgrade", "no uuid in auth file; ignoring gke.auth");
+				secinfo("gkupgrade", "no uuid in auth file; ignoring gke.auth");
 				return;
 			}
 			std::string dbUUID;
@@ -302,7 +315,7 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 			if (uuidQuery.nextRow())
 				dbUUID = (const char *)uuidQuery[0];
 			if (dbUUID == authUUID) {
-				secdebug("gkupgrade", "gke.auth already present, ignoring");
+				secinfo("gkupgrade", "gke.auth already present, ignoring");
 				return;
 			}
 			Syslog::notice("loading GKE %s (replacing %s)", authUUID.c_str(), dbUUID.empty() ? "nothing" : dbUUID.c_str());
@@ -316,7 +329,7 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 						db.storeCode(blob, "<remote>");
 						count++;
 					}
-					secdebug("gkupgrade", "%d detached signature(s) loaded from override data", count);
+					secinfo("gkupgrade", "%d detached signature(s) loaded from override data", count);
 					fclose(sigs);
 				}
 			
@@ -341,8 +354,12 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 				uint32_t flags = kAuthorityFlagWhitelist;
 				if (CFNumberRef versionRef = info.get<CFNumberRef>("version")) {
 					int version = cfNumber<int>(versionRef);
-					if (version >= 2)
+					if (version >= 2) {
 						flags |= kAuthorityFlagWhitelistV2;
+						if (version >= 3) {
+							flags |= kAuthorityFlagWhitelistSHA256;
+						}
+					}
 				}
 				insert.reset();
 				insert.bind(":type") = cfString(info.get<CFStringRef>(CFSTR("type")));
@@ -359,9 +376,25 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 			// update version and commit
 			addFeature("gke", authUUID.c_str(), "gke loaded");
 			loadAuth.commit();
+            /* now that we have moved to a bundle for gke files, delete any old style files we find
+               This is really just a best effort cleanup, so we don't care about errors. */
+            if (access(gkeAuthFile_old, F_OK) == 0)
+            {
+                if (unlink(gkeAuthFile_old) == 0)
+                {
+                    Syslog::notice("Deleted old style gke file (%s)", gkeAuthFile_old);
+                }
+            }
+            if (access(gkeSigsFile_old, F_OK) == 0)
+            {
+                if (unlink(gkeSigsFile_old) == 0)
+                {
+                    Syslog::notice("Deleted old style gke file (%s)", gkeSigsFile_old);
+                }
+            }
 		}
 	} catch (...) {
-		secdebug("gkupgrade", "exception during GKE upgrade");
+		secinfo("gkupgrade", "exception during GKE upgrade");
 	}
 }
 

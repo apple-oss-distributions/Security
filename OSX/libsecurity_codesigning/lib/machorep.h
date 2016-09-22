@@ -53,14 +53,17 @@ public:
 	CFDataRef component(CodeDirectory::SpecialSlot slot);
 	CFDataRef identification();
 	Universal *mainExecutableImage();
+	void prepareForSigning(SigningContext &context);
 	size_t signingBase();
+	size_t signingLimit();
 	std::string format();
-	
+    CFDictionaryRef diskRepInformation();
+
 	std::string recommendedIdentifier(const SigningContext &ctx);
 	const Requirements *defaultRequirements(const Architecture *arch, const SigningContext &ctx);
 	size_t pageSize(const SigningContext &ctx);
 
-	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated);
+	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags);
 	
 	void flush();		// flush cache
 	

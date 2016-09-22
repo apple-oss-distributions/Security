@@ -197,7 +197,27 @@ public:
 private:
     unsigned int mCount;				// counter level
 };
- 
+
+//
+// A ReadWriteLock is a wrapper around a pthread_rwlock
+//
+class ReadWriteLock : public Mutex {
+public:
+    ReadWriteLock();
+    ~ReadWriteLock() { check(pthread_rwlock_destroy(&mLock)); }
+
+    // Takes the read lock
+    bool lock();
+    bool tryLock();
+    void unlock();
+
+    bool writeLock();
+    bool tryWriteLock();
+
+private:
+    pthread_rwlock_t mLock;
+};
+
 
 //
 // A guaranteed-unlocker stack-based class.
@@ -227,6 +247,58 @@ protected:
 	Lock &me;
 	bool mActive;
 };
+
+//
+// This class behaves exactly as StLock above, but accepts a pointer to a mutex instead of a reference.
+// If the pointer is NULL, this class does nothing. Otherwise, it behaves as StLock.
+// Try not to use this.
+//
+template <class Lock,
+void (Lock::*_lock)() = &Lock::lock,
+void (Lock::*_unlock)() = &Lock::unlock>
+class StMaybeLock {
+public:
+    StMaybeLock(Lock *lck) : me(lck), mActive(false)
+                                            { if(me) { (me->*_lock)(); mActive = true; } }
+    StMaybeLock(Lock *lck, bool option) : me(lck), mActive(option) { }
+    ~StMaybeLock()							{ if (me) { if(mActive) (me->*_unlock)(); } else {mActive = false;} }
+
+    bool isActive() const				{ return mActive; }
+    void lock()							{ if(me) { if(!mActive) { (me->*_lock)(); mActive = true; }}}
+    void unlock()						{ if(me) { if(mActive) { (me->*_unlock)(); mActive = false; }}}
+    void release()						{ if(me) { assert(mActive); mActive = false; } }
+
+    operator const Lock &() const		{ return me; }
+
+protected:
+    Lock *me;
+    bool mActive;
+};
+
+// Note: if you use the TryRead or TryWrite modes, you must check if you
+// actually have the lock before proceeding
+class StReadWriteLock {
+public:
+    enum Type {
+      Read,
+      TryRead,
+      Write,
+      TryWrite
+    };
+    StReadWriteLock(ReadWriteLock &lck, Type type) : mType(type), mIsLocked(false), mRWLock(lck)
+                       { lock(); }
+    ~StReadWriteLock() { if(mIsLocked) mRWLock.unlock(); }
+
+    bool lock();
+    void unlock();
+    bool isLocked();
+
+protected:
+    Type mType;
+    bool mIsLocked;
+    ReadWriteLock& mRWLock;
+};
+
 
 template <class TakeLock, class ReleaseLock,
 	void (TakeLock::*_lock)() = &TakeLock::lock,

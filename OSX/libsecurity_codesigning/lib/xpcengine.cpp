@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2011-2016 Apple Inc. All Rights Reserved.
  * 
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -25,6 +25,7 @@
 #include <syslog.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <security_utilities/cfutilities.h>
+#include <security_utilities/logging.h>
 #include <security_utilities/cfmunge.h>
 
 
@@ -96,8 +97,9 @@ public:
 		} else if (type == XPC_TYPE_ERROR) {
 			const char *s = xpc_copy_description(reply);
 			printf("Error returned: %s\n", s);
+            Syslog::notice("code signing internal problem: unexpected error from xpc: %s", s);
 			free((char*)s);
-			MacOSError::throwMe(errSecCSInternalError);
+            MacOSError::throwMe(errSecCSInternalError);
 		} else {
 			const char *s = xpc_copy_description(reply);
 			printf("Unexpected type of return object: %s\n", s);
@@ -120,9 +122,29 @@ static void copyCFDictionary(const void *key, const void *value, void *ctx)
 		CFDictionaryAddValue(target, key, value);
 	}
 }
+	
+	
+static bool precheckAccess(CFURLRef path, CFDictionaryRef context)
+{
+	CFTypeRef type = CFDictionaryGetValue(context, kSecAssessmentContextKeyOperation);
+	if (type == NULL || CFEqual(type, kSecAssessmentOperationTypeExecute)) {
+		CFRef<SecStaticCodeRef> code;
+		OSStatus rc = SecStaticCodeCreateWithPath(path, kSecCSDefaultFlags, &code.aref());
+        if (rc == errSecCSBadBundleFormat)  // work around <rdar://problem/26075034>
+            return false;
+		CFRef<CFURLRef> exec;
+		MacOSError::check(SecCodeCopyPath(code, kSecCSDefaultFlags, &exec.aref()));
+		UnixError::check(::access(cfString(exec).c_str(), R_OK));
+	} else {
+		UnixError::check(access(cfString(path).c_str(), R_OK));
+	}
+    return true;
+}
+	
 
 void xpcEngineAssess(CFURLRef path, SecAssessmentFlags flags, CFDictionaryRef context, CFMutableDictionaryRef result)
 {
+	precheckAccess(path, context);
 	Message msg("assess");
 	xpc_dictionary_set_string(msg, "path", cfString(path).c_str());
 	xpc_dictionary_set_int64(msg, "flags", flags);
@@ -171,9 +193,12 @@ CFDictionaryRef xpcEngineUpdate(CFTypeRef target, SecAssessmentFlags flags, CFDi
 	if (target) {
 		if (CFGetTypeID(target) == CFNumberGetTypeID())
 			xpc_dictionary_set_uint64(msg, "rule", cfNumber<int64_t>(CFNumberRef(target)));
-		else if (CFGetTypeID(target) == CFURLGetTypeID())
+		else if (CFGetTypeID(target) == CFURLGetTypeID()) {
+			bool good = precheckAccess(CFURLRef(target), context);
+            if (!good)      // work around <rdar://problem/26075034>
+                return makeCFDictionary(0); // pretend this worked
 			xpc_dictionary_set_string(msg, "url", cfString(CFURLRef(target)).c_str());
-		else if (CFGetTypeID(target) == SecRequirementGetTypeID()) {
+		} else if (CFGetTypeID(target) == SecRequirementGetTypeID()) {
 			CFRef<CFDataRef> data;
 			MacOSError::check(SecRequirementCopyData(SecRequirementRef(target), kSecCSDefaultFlags, &data.aref()));
 			xpc_dictionary_set_data(msg, "requirement", CFDataGetBytePtr(data), CFDataGetLength(data));
@@ -199,8 +224,8 @@ CFDictionaryRef xpcEngineUpdate(CFTypeRef target, SecAssessmentFlags flags, CFDi
 	if (localAuthorization)
 		AuthorizationFree(localAuthorization, kAuthorizationFlagDefaults);
 	
-	if (int64_t error = xpc_dictionary_get_int64(msg, "error"))
-		MacOSError::throwMe((int)error);
+    if (int64_t error = xpc_dictionary_get_int64(msg, "error"))
+        MacOSError::throwMe((int)error);
 	
 	size_t resultLength;
 	const void *resultData = xpc_dictionary_get_data(msg, "result", &resultLength);
@@ -224,6 +249,19 @@ void xpcEngineRecord(CFDictionaryRef info)
 	xpc_dictionary_set_data(msg, "info", CFDataGetBytePtr(infoData), CFDataGetLength(infoData));
 
 	msg.send();
+}
+
+void xpcEngineCheckDevID(CFBooleanRef* result)
+{
+    Message msg("check-dev-id");
+
+    msg.send();
+
+    if (int64_t error = xpc_dictionary_get_int64(msg, "error")) {
+        MacOSError::throwMe((int)error);
+    }
+
+    *result = xpc_dictionary_get_bool(msg,"result") ? kCFBooleanTrue : kCFBooleanFalse;
 }
 
 

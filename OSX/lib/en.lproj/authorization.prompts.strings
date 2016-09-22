@@ -40,6 +40,10 @@
 
 "com.apple.Safari.install-ephemeral-extensions" = "__APPNAME__ is trying to install an extension.";
 
+"com.apple.Safari.allow-apple-events-to-run-javascript" = "__APPNAME__ is trying to allow Apple Events to run JavaScript on web pages.";
+
+"com.apple.Safari.allow-javascript-in-smart-search-field" = "__APPNAME__ is trying to allow JavaScript to be used in the Smart Search Field.";
+
 "system.sharepoints." = "__APPNAME__ is trying to modify Sharing preferences.";
 
 "system.preferences.energysaver" = "__APPNAME__ is trying to unlock the Energy Saver preferences.";
@@ -53,6 +57,8 @@
 "com.apple.docset.install" = "__APPNAME__ is trying to update the developer documentation.";
 
 "com.apple.Safari.parental-controls" = "__APPNAME__ is trying to modify the Parental Controls settings for Safari.";
+
+"com.apple.Safari.allow-unsigned-app-extensions" = "__APPNAME__ is trying to allow unsigned extensions.";
 
 "com.apple.ServiceManagement.blesshelper" = "__APPNAME__ is trying to install a new helper tool.";
 
@@ -145,3 +151,7 @@
 "system.services.networkextension.filtering" = "__APPNAME__ is trying to modify the content filtering configuration.";
 
 "com.apple.iCloud.passwordReset" = "__APPNAME__ wants to reset your Apple ID password. This Mac can be used to reset your password because you are signed into iCloud on it.";
+
+"system.preferences.continuity" = "__APPNAME__ is trying to unlock the Touch ID preferences.";
+
+"com.apple.ctkbind.admin" = "__APPNAME__ is trying to pair the current user with the SmartCard identity.";

@@ -329,6 +329,25 @@ OSStatus SecCertificateParseGeneralNameContentProperty(DERTag tag,
 OSStatus SecCertificateParseGeneralNames(const DERItem *generalNames, void *context,
                                          parseGeneralNameCallback callback);
 
+bool SecCertificateIsWeak(SecCertificateRef certificate);
+bool SecCertificateIsAtLeastMinKeySize(SecCertificateRef certificate,
+                                       CFDictionaryRef keySizes);
+
+extern const CFStringRef kSecSignatureDigestAlgorithmUnknown;
+extern const CFStringRef kSecSignatureDigestAlgorithmMD2;
+extern const CFStringRef kSecSignatureDigestAlgorithmMD4;
+extern const CFStringRef kSecSignatureDigestAlgorithmMD5;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHA1;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHA224;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHA256;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHA384;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHA512;
+
+CFDataRef SecCertificateCreateOidDataFromString(CFAllocatorRef allocator, CFStringRef string);
+bool SecCertificateIsOidString(CFStringRef oid);
+
+DERItem *SecCertificateGetExtensionValue(SecCertificateRef certificate, CFTypeRef oid);
+
 __END_DECLS
 
 #endif /* !_SECURITY_SECCERTIFICATEINTERNAL_H_ */

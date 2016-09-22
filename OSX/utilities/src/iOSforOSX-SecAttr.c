@@ -39,8 +39,10 @@
 // We may not have all of these we need
 SEC_CONST_DECL (kSecAttrAccessible, "pdmn");
 SEC_CONST_DECL (kSecAttrAccessibleAlwaysThisDeviceOnly, "dku");
+SEC_CONST_DECL (kSecAttrAccessibleAlwaysThisDeviceOnlyPrivate, "dku");
 SEC_CONST_DECL (kSecAttrAccessControl, "accc");
 SEC_CONST_DECL (kSecAttrTokenID, "tkid");
+SEC_CONST_DECL (kSecAttrAccessGroupToken, "com.apple.token");
 SEC_CONST_DECL (kSecUseCredentialReference, "u_CredRef");
 SEC_CONST_DECL (kSecUseOperationPrompt, "u_OpPrompt");
 SEC_CONST_DECL (kSecUseNoAuthenticationUI, "u_NoAuthUI");
@@ -51,5 +53,6 @@ SEC_CONST_DECL (kSecUseAuthenticationUISkip, "u_AuthUIS");
 SEC_CONST_DECL (kSecUseAuthenticationContext, "u_AuthCtx");
 SEC_CONST_DECL (kSecUseToken, "u_Token");
 SEC_CONST_DECL (kSecUseTokenObjectID, "u_TokenOID");
+SEC_CONST_DECL (kSecUseCallerName, "u_CallerName");
 
 #endif

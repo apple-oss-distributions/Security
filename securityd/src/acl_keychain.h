@@ -41,7 +41,9 @@ class KeychainPromptAclSubject : public SimpleAclSubject {
 	static const Version jaguarVersion = 1;	// 10.2 et al -> first version selector
 	static const Version currentVersion = jaguarVersion; // what we write today
 public:
-    bool validate(const AclValidationContext &baseCtx, const TypedList &sample) const;
+    bool validates(const AclValidationContext &ctx) const;
+    bool validates(const AclValidationContext &baseCtx, const TypedList &sample) const;
+	bool validateExplicitly(const AclValidationContext &baseCtx, void (^always)()) const;
     CssmList toList(Allocator &alloc) const;
     bool hasAuthorizedForSystemKeychain() const;
     
@@ -54,6 +56,9 @@ public:
 	bool selectorFlag(uint32_t flag) const	{ return selectorFlags() & flag; }
 	
 	IFDUMP(void debugDump() const);
+
+    static uint32_t getPromptAttempts();
+    void addPromptAttempt(); // Use this only if you're going to call validateExplicitly out of the normal call hierarchy
 
 public:
     class Maker : public AclSubject::Maker {
@@ -69,6 +74,8 @@ public:
     };
     
 private:
+    static uint32_t promptsValidated;
+
 	CSSM_ACL_KEYCHAIN_PROMPT_SELECTOR selector; // selector structure
     string description;				// description blob (string)
 	

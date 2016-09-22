@@ -67,9 +67,9 @@ void SecretAclSubject::secret(const CssmData &s) const
 	if (mCacheSecret) {
 		mSecret = s;
 		mSecretValid = true;
-		secdebug("aclsecret", "%p secret stored", this);
+		secinfo("aclsecret", "%p secret stored", this);
 	} else
-		secdebug("aclsecret", "%p refused to store secret", this);
+		secinfo("aclsecret", "%p refused to store secret", this);
 }
 
 void SecretAclSubject::secret(CssmManagedData &s) const
@@ -78,9 +78,9 @@ void SecretAclSubject::secret(CssmManagedData &s) const
 	if (mCacheSecret) {
 		mSecret = s;
 		mSecretValid = true;
-		secdebug("aclsecret", "%p secret stored", this);
+		secinfo("aclsecret", "%p secret stored", this);
 	} else
-		secdebug("aclsecret", "%p refused to store secret", this);
+		secinfo("aclsecret", "%p refused to store secret", this);
 }
 
 
@@ -88,7 +88,7 @@ void SecretAclSubject::secret(CssmManagedData &s) const
 // Validate a secret.
 // The subclass has to come up with the secret somehow. We just validate it.
 //
-bool SecretAclSubject::validate(const AclValidationContext &context,
+bool SecretAclSubject::validates(const AclValidationContext &context,
     const TypedList &sample) const
 {
 	CssmAutoData secret(allocator);

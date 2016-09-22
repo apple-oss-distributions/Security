@@ -205,7 +205,9 @@ static void tests(void)
 
     dispatch_group_t group = dispatch_group_create();
     dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    dispatch_semaphore_t sema = dispatch_semaphore_create(50); // use semaphore so we dont end all threads an deadlock
     for (size_t job=0; job < 1000; ++job) {
+        dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
         dispatch_group_async(group, queue, ^{
             CFIndex cur_idle = SecDbIdleConnectionCount(db);
             dispatch_sync(count_queue, ^{ if (max_idle < cur_idle) max_idle = cur_idle; });
@@ -225,10 +227,12 @@ static void tests(void)
                 }), "read %@", performError);
             }
             CFReleaseNull(performError);
+            dispatch_semaphore_signal(sema);
         });
     }
     dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
     dispatch_release(group);
+    dispatch_release(sema);
 
     CFErrorRef writeError = NULL;
     ts_ok(SecDbPerformWrite(db, &writeError, ^(SecDbConnectionRef dbconn){
@@ -248,6 +252,7 @@ static void tests(void)
         is(max_readers, kSecDbMaxReaders, "max readers is %d", kSecDbMaxReaders);
     }
 
+    CFReleaseSafe(dbName);
     CFReleaseNull(db);
 }
 

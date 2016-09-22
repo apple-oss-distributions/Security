@@ -97,6 +97,7 @@ _kSecCodeInfoEntitlementsDict
 _kSecCodeInfoFlags
 _kSecCodeInfoFormat
 _kSecCodeInfoDigestAlgorithm
+_kSecCodeInfoDigestAlgorithms
 _kSecCodeInfoIdentifier
 _kSecCodeInfoImplicitDesignatedRequirement
 _kSecCodeInfoMainExecutable
@@ -107,8 +108,14 @@ _kSecCodeInfoSource
 _kSecCodeInfoStatus
 _kSecCodeInfoTrust
 _kSecCodeInfoUnique
+_kSecCodeInfoCdHashes
 _kSecCodeInfoCodeDirectory
 _kSecCodeInfoCodeOffset
+_kSecCodeInfoDiskRepInfo
+_kSecCodeInfoDiskRepOSPlatform
+_kSecCodeInfoDiskRepOSVersionMin
+_kSecCodeInfoDiskRepOSSDKVersion
+_kSecCodeInfoDiskRepNoLibraryValidation
 _kSecCodeInfoResourceDirectory
 _kSecGuestAttributeCanonical
 _kSecGuestAttributeHash
@@ -122,6 +129,7 @@ _kSecCFErrorResourceSeal
 _kSecCFErrorResourceAdded
 _kSecCFErrorResourceAltered
 _kSecCFErrorResourceMissing
+_kSecCFErrorResourceSideband
 _kSecCFErrorInfoPlist
 _kSecCFErrorGuestAttributes
 _kSecCFErrorRequirementSyntax
@@ -165,6 +173,7 @@ _kSecAssessmentAssessmentSource
 _kSecAssessmentAssessmentVerdict
 _kSecAssessmentAssessmentWeakSignature
 _kSecAssessmentAssessmentCodeSigningError
+_kSecAssessmentContextKeyPrimarySignature
 
 # gatekeeper logging
 

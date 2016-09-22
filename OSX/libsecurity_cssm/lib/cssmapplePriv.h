@@ -101,8 +101,33 @@ enum
     
     // stash a DB key
     CSSM_APPLECSPDL_DB_STASH = CSSM_APPLE_PRIVATE_CSPDL_CODE_17,
-    CSSM_APPLECSPDL_DB_STASH_CHECK = CSSM_APPLE_PRIVATE_CSPDL_CODE_18
-	
+    CSSM_APPLECSPDL_DB_STASH_CHECK = CSSM_APPLE_PRIVATE_CSPDL_CODE_18,
+
+    // Ask the CSPDL for its database blob version number.
+    CSSM_APPLECSPDL_DB_GET_BLOB_VERSION = CSSM_APPLE_PRIVATE_CSPDL_CODE_19,
+
+    // Recode this database blob into a new blob version
+    CSSM_APPLECSPDL_DB_RECODE_TO_BLOB_VERSION = CSSM_APPLE_PRIVATE_CSPDL_CODE_20,
+
+    // Try to take the file lock on the underlying database
+    // You should probably be sure that autocommit is off before taking this
+    CSSM_APPLECSPDL_DB_TAKE_FILE_LOCK = CSSM_APPLE_PRIVATE_CSPDL_CODE_21,
+    CSSM_APPLECSPDL_DB_RELEASE_FILE_LOCK = CSSM_APPLE_PRIVATE_CSPDL_CODE_22,
+
+    // Make a backup of this database on the filesystem
+    CSSM_APPLECSPDL_DB_MAKE_BACKUP = CSSM_APPLE_PRIVATE_CSPDL_CODE_23,
+
+    // Make a copy of this database on the filesystem
+    CSSM_APPLECSPDL_DB_MAKE_COPY = CSSM_APPLE_PRIVATE_CSPDL_CODE_24,
+
+    // Make a clone of this database on the filesystem, and tell securityd about it
+    CSSM_APPLECSPDL_DB_CLONE = CSSM_APPLE_PRIVATE_CSPDL_CODE_25,
+
+    // Delete the file underlying this database
+    CSSM_APPLECSPDL_DB_DELETE_FILE = CSSM_APPLE_PRIVATE_CSPDL_CODE_26,
+
+    // Recoding of this database is complete
+    CSSM_APPLECSPDL_DB_RECODE_FINISHED = CSSM_APPLE_PRIVATE_CSPDL_CODE_27,
 };
 
 /* AppleCSPDL passthrough parameters */

@@ -42,9 +42,11 @@ using namespace SecurityServer;
 //
 class DatabaseCryptoCore {
 public:
-    DatabaseCryptoCore();
+    DatabaseCryptoCore(uint32 requestedVersion = CommonBlob::version_none);
 	virtual ~DatabaseCryptoCore();
-    
+
+    void initializeFrom(DatabaseCryptoCore& core, uint32 requestedVersion = CommonBlob::version_none);
+
     bool isValid() const	{ return mIsValid; }
 	bool hasMaster() const	{ return mHaveMaster; }
     void invalidate();
@@ -52,8 +54,8 @@ public:
     void generateNewSecrets();
 	CssmClient::Key masterKey();
 
-	void setup(const DbBlob *blob, const CssmData &passphrase);
-	void setup(const DbBlob *blob, CssmClient::Key master);
+	void setup(const DbBlob *blob, const CssmData &passphrase, bool copyVersion = true);
+	void setup(const DbBlob *blob, CssmClient::Key master, bool copyVersion = true);
 
     void decodeCore(const DbBlob *blob, void **privateAclBlob = NULL);
     DbBlob *encodeCore(const DbBlob &blobTemplate,
@@ -73,7 +75,11 @@ public:
 	
 public:
 	bool validatePassphrase(const CssmData &passphrase);
-	
+    bool validateKey(const CssmClient::Key& master);
+
+protected:
+    uint32 mBlobVersion;            // blob version of current database
+
 private:
 	bool mHaveMaster;				// master key has been entered (setup)
     bool mIsValid;					// master secrets are valid (decode or generateNew)

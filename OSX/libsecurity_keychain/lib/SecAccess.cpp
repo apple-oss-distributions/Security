@@ -30,7 +30,6 @@
 #include "SecBridge.h"
 #include <sys/param.h>
 
-#undef secdebug
 #include <utilities/SecCFWrappers.h>
 
 
@@ -66,6 +65,8 @@ const CFStringRef kSecACLAuthorizationKeychainItemDelete = CFSTR("ACLAuthorizati
 
 const CFStringRef kSecACLAuthorizationChangeACL = CFSTR("ACLAuthorizationChangeACL");
 const CFStringRef kSecACLAuthorizationChangeOwner = CFSTR("ACLAuthorizationChangeOwner");
+const CFStringRef kSecACLAuthorizationPartitionID = CFSTR("ACLAuthorizationPartitionID");
+const CFStringRef kSecACLAuthorizationIntegrity = CFSTR("ACLAuthorizationIntegrity");
 
 
 static CFArrayRef copyTrustedAppListFromBundle(CFStringRef bundlePath, CFStringRef trustedAppListFileName);
@@ -95,8 +96,9 @@ static CFStringRef gKeys[] =
 	kSecACLAuthorizationKeychainItemDelete,
 
 	kSecACLAuthorizationChangeACL,
-	kSecACLAuthorizationChangeOwner
-
+	kSecACLAuthorizationChangeOwner,
+    kSecACLAuthorizationPartitionID,
+    kSecACLAuthorizationIntegrity
 };
 
 static sint32 gValues[] =
@@ -121,7 +123,9 @@ static sint32 gValues[] =
 	CSSM_ACL_AUTHORIZATION_DB_MODIFY,
 	CSSM_ACL_AUTHORIZATION_DB_DELETE,
 	CSSM_ACL_AUTHORIZATION_CHANGE_ACL,
-	CSSM_ACL_AUTHORIZATION_CHANGE_OWNER
+	CSSM_ACL_AUTHORIZATION_CHANGE_OWNER,
+    CSSM_ACL_AUTHORIZATION_PARTITION_ID,
+    CSSM_ACL_AUTHORIZATION_INTEGRITY
 };
 
 static

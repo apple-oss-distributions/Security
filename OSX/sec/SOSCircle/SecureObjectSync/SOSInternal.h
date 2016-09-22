@@ -70,6 +70,8 @@ enum {
     kSOSErrorNoiCloudPeer       = 1044,
 };
 
+extern CFStringRef kSOSErrorDomain;
+
 // Returns false unless errorCode is 0.
 bool SOSErrorCreate(CFIndex errorCode, CFErrorRef *error, CFDictionaryRef formatOptions, CFStringRef descriptionString, ...);
 
@@ -82,7 +84,6 @@ bool SOSCreateErrorWithFormat(CFIndex errorCode, CFErrorRef previousError, CFErr
 bool SOSCreateErrorWithFormatAndArguments(CFIndex errorCode, CFErrorRef previousError, CFErrorRef *newError,
                                           CFDictionaryRef formatOptions, CFStringRef formatString, va_list args)
                                 CF_FORMAT_FUNCTION(5,0);
-
 
 static inline bool isSOSErrorCoded(CFErrorRef error, CFIndex sosErrorCode) {
     return error && CFErrorGetCode(error) == sosErrorCode && CFEqualSafe(CFErrorGetDomain(error), kSOSErrorDomain);
@@ -114,6 +115,7 @@ OSStatus GeneratePermanentECPair(int keySize, SecKeyRef* public, SecKeyRef *full
 CFStringRef SOSItemsChangedCopyDescription(CFDictionaryRef changes, bool is_sender);
 
 CFStringRef SOSCopyIDOfKey(SecKeyRef key, CFErrorRef *error);
+CFStringRef SOSCopyIDOfKeyWithLength(SecKeyRef key, CFIndex len, CFErrorRef *error);
 
 //
 // Der encoding accumulation
@@ -125,6 +127,8 @@ static inline bool accumulate_size(size_t *accumulator, size_t size) {
 
 // Used for simple timestamping that's DERable (not durable)
 CFDataRef SOSDateCreate(void);
+
+CFDataRef CFDataCreateWithDER(CFAllocatorRef allocator, CFIndex size, uint8_t*(^operation)(size_t size, uint8_t *buffer));
 
 
 __END_DECLS

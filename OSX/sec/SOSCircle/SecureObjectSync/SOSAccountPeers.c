@@ -156,6 +156,77 @@ CFArrayRef SOSAccountCopyPeers(SOSAccountRef account, CFErrorRef *error) {
     });
 }
 
+CFDataRef SOSAccountCopyAccountStateFromKeychain(CFErrorRef *error){
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
+    CFTypeRef result = NULL;
+    CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("com.apple.security.sos"));
+    CFDictionaryAddValue(query, kSecAttrAccessible, CFSTR("dku"));
+    CFDictionaryAddValue(query, kSecAttrTombstone, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecAttrSynchronizable, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue);
+    
+    SecItemCopyMatching(query, &result);
+
+    if(!isData(result)){
+        SOSErrorCreate(kSOSErrorUnexpectedType, error, NULL, CFSTR("Expected CFData, got: %@"), result);
+        CFReleaseNull(result);
+        return NULL;
+    }
+    return result;
+}
+
+bool SOSAccountDeleteAccountStateFromKeychain(CFErrorRef *error){
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
+    bool result = false;
+    CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("com.apple.security.sos"));
+    CFDictionaryAddValue(query, kSecAttrAccessible, CFSTR("dku"));
+    CFDictionaryAddValue(query, kSecAttrTombstone, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecAttrSynchronizable, kCFBooleanFalse);
+    
+    result = SecItemDelete(query);
+    return result;
+}
+
+CFDataRef SOSAccountCopyEngineStateFromKeychain(CFErrorRef *error){
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
+    CFTypeRef result = NULL;
+    CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("engine-state"));
+    CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("com.apple.security.sos"));
+    CFDictionaryAddValue(query, kSecAttrAccessible, CFSTR("dk"));
+    CFDictionaryAddValue(query, kSecAttrService, CFSTR("SOSDataSource-ak"));
+    CFDictionaryAddValue(query, kSecAttrTombstone, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecAttrSynchronizable, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue);
+    
+    SecItemCopyMatching(query, &result);
+    
+    if(!isData(result)){
+        SOSErrorCreate(kSOSErrorUnexpectedType, error, NULL, CFSTR("Expected CFData, got: %@"), result);
+        CFReleaseNull(result);
+        return NULL;
+    }
+    return result;
+}
+
+bool SOSAccountDeleteEngineStateFromKeychain(CFErrorRef *error){
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
+    bool result = false;
+    CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("engine-state"));
+    CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("com.apple.security.sos"));
+    CFDictionaryAddValue(query, kSecAttrAccessible, CFSTR("dk"));
+    CFDictionaryAddValue(query, kSecAttrService, CFSTR("SOSDataSource-ak"));
+    CFDictionaryAddValue(query, kSecAttrTombstone, kCFBooleanFalse);
+    CFDictionaryAddValue(query, kSecAttrSynchronizable, kCFBooleanFalse);
+    
+    result = SecItemDelete(query);
+    return result;
+}
+
+
 CFArrayRef SOSAccountCopyActivePeers(SOSAccountRef account, CFErrorRef *error) {
     return SOSAccountCopySortedPeerArray(account, error, ^(SOSCircleRef circle, CFMutableArrayRef appendPeersTo) {
         SOSCircleForEachActivePeer(circle, ^(SOSPeerInfoRef peer) {
@@ -183,3 +254,33 @@ SOSPeerInfoRef SOSAccountCopyPeerWithID(SOSAccountRef account, CFStringRef peeri
     if(!account->trusted_circle) return NULL;
     return SOSCircleCopyPeerWithID(account->trusted_circle, peerid, error);
 }
+
+CFBooleanRef SOSAccountPeersHaveViewsEnabled(SOSAccountRef account, CFArrayRef viewNames, CFErrorRef *error) {
+    CFBooleanRef result = NULL;
+    CFMutableSetRef viewsRemaining = NULL;
+    CFSetRef viewsToLookFor = NULL;
+
+    require_quiet(SOSAccountHasPublicKey(account, error), done);
+    require_quiet(SOSAccountIsInCircle(account, error), done);
+
+    viewsToLookFor = CFSetCreateCopyOfArrayForCFTypes(viewNames);
+    viewsRemaining = CFSetCreateMutableCopy(kCFAllocatorDefault, 0, viewsToLookFor);
+    CFReleaseNull(viewsToLookFor);
+
+    SOSAccountForEachCirclePeerExceptMe(account, ^(SOSPeerInfoRef peer) {
+        if (SOSPeerInfoApplicationVerify(peer, account->user_public, NULL)) {
+            CFSetRef peerViews = SOSPeerInfoCopyEnabledViews(peer);
+            CFSetSubtract(viewsRemaining, peerViews);
+            CFReleaseNull(peerViews);
+        }
+    });
+
+    result = CFSetIsEmpty(viewsRemaining) ? kCFBooleanTrue : kCFBooleanFalse;
+
+done:
+    CFReleaseNull(viewsToLookFor);
+    CFReleaseNull(viewsRemaining);
+
+    return result;
+}
+

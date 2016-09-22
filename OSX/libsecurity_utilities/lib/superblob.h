@@ -6,6 +6,7 @@
 
 #include <security_utilities/blob.h>
 #include <map>
+#include <vector>
 
 namespace Security {
 
@@ -39,6 +40,7 @@ public:
 	};
 	
 	bool validateBlob(size_t maxSize = 0) const;
+	bool strictValidateBlob(size_t maxSize = 0) const;
 	
 	unsigned count() const { return mCount; }
 
@@ -77,6 +79,34 @@ inline bool SuperBlobCore<_BlobType, _magic, _Type>::validateBlob(size_t maxSize
 				return false;
 	}
 	return true;
+}
+
+struct _SBRange {
+	size_t base;
+	size_t end;
+	_SBRange(size_t b, size_t len) : base(b), end(b+len) { }
+	bool operator < (const _SBRange& other) const { return this->base < other.base; }
+};
+
+template <class _BlobType, uint32_t _magic, class _Type>
+inline bool SuperBlobCore<_BlobType, _magic, _Type>::strictValidateBlob(size_t size /* = 0 */) const
+{
+	if (!validateBlob(size))	// verifies in-bound sub-blobs
+		return false;
+	unsigned count = mCount;
+	if (count == 0)
+		return this->length() == sizeof(SuperBlobCore);	// nothing in here
+
+	std::vector<_SBRange> ranges;
+	for (unsigned ix = 0; ix < count; ++ix)
+		ranges.push_back(_SBRange(mIndex[ix].offset, this->blob(ix)->length()));
+	sort(ranges.begin(), ranges.end());
+	if (ranges[0].base != sizeof(SuperBlobCore) + count * sizeof(Index))
+		return false;	// start anchor
+	for (unsigned ix = 1; ix < count; ++ix)
+		if (ranges[ix].base != ranges[ix-1].end)	// nothing in between
+			return false;
+	return ranges[count-1].end == this->length();	// end anchor
 }
 
 
@@ -135,7 +165,8 @@ public:
 			return (it == mPieces.end()) ? NULL : it->second;
 		}
 	
-	size_t size(size_t size1 = 0, ...) const;	// size with optional additional blob sizes
+//	size_t size(size_t size1 = 0, ...) const;	// size with optional additional blob sizes
+	size_t size(const std::vector<size_t> &sizes, size_t size1 = 0, ...) const; // same with array-of-sizes input
 	_BlobType *make() const;					// create (malloc) and return SuperBlob
 	_BlobType *operator () () const { return make(); }
 
@@ -155,7 +186,7 @@ void SuperBlobCore<_BlobType, _magic, _Type>::Maker::add(Type type, BlobCore *bl
 {
 	pair<typename BlobMap::iterator, bool> r = mPieces.insert(make_pair(type, blob));
 	if (!r.second) {	// already there
-		secdebug("superblob", "Maker %p replaces type=%d", this, type);
+		secinfo("superblob", "Maker %p replaces type=%d", this, type);
 		::free(r.first->second);
 		r.first->second = blob;
 	}
@@ -181,15 +212,20 @@ void SuperBlobCore<_BlobType, _magic, _Type>::Maker::add(const Maker &maker)
 // so far, plus additional blobs with the sizes given.
 //
 template <class _BlobType, uint32_t _magic, class _Type>
-size_t SuperBlobCore<_BlobType, _magic, _Type>::Maker::size(size_t size1, ...) const
+size_t SuperBlobCore<_BlobType, _magic, _Type>::Maker::size(const std::vector<size_t> &sizes, size_t size1, ...) const
 {
 	// count established blobs
 	size_t count = mPieces.size();
 	size_t total = 0;
-	for (typename BlobMap::const_iterator it = mPieces.begin(); it != mPieces.end(); ++it)
+	for (auto it = mPieces.begin(); it != mPieces.end(); ++it)
 		total += it->second->length();
+	
+	// add more blobs from the sizes array
+	for (auto it = sizes.begin(); it != sizes.end(); ++it)
+		total += *it;
+	count += sizes.size();
 
-	// add preview blob sizes to calculation (if any)
+	// add more blobs from individual sizes specified
 	if (size1) {
 		va_list args;
 		va_start(args, size1);
@@ -213,7 +249,7 @@ template <class _BlobType, uint32_t _magic, class _Type>
 _BlobType *SuperBlobCore<_BlobType, _magic, _Type>::Maker::make() const
 {
 	Offset pc = (Offset)(sizeof(SuperBlobCore) + mPieces.size() * sizeof(Index));
-	Offset total = (Offset)size();
+	Offset total = (Offset)size(vector<size_t>(), 0);
 	_BlobType *result = (_BlobType *)malloc(total);
 	if (!result)
 		UnixError::throwMe(ENOMEM);
@@ -226,7 +262,7 @@ _BlobType *SuperBlobCore<_BlobType, _magic, _Type>::Maker::make() const
 		pc += it->second->length();
 		n++;
 	}
-	secdebug("superblob", "Maker %p assembles %ld blob(s) into %p (size=%d)",
+	secinfo("superblob", "Maker %p assembles %ld blob(s) into %p (size=%d)",
 		this, mPieces.size(), result, total);
 	return result;
 }

@@ -277,11 +277,26 @@ extern const CFStringRef kSecAttrCanSignRecover;
 extern const CFStringRef kSecAttrCanVerifyRecover;
 extern const CFStringRef kSecAttrTombstone;
 extern const CFStringRef kSecAttrNoLegacy
-    __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_NA);
+    __OSX_AVAILABLE(10.11) __IOS_AVAILABLE(9.3) __TVOS_AVAILABLE(9.3) __WATCHOS_AVAILABLE(2.3);
 extern const CFStringRef kSecAttrSyncViewHint
     __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
-extern const CFStringRef kSecAttrTokenID
-    __OSX_AVAILABLE_STARTING(__MAC_10_11, __IPHONE_9_0);
+extern const CFStringRef kSecAttrTokenOID
+    __OSX_AVAILABLE(10.12) __IOS_AVAILABLE(10.0) __TVOS_AVAILABLE(10.0) __WATCHOS_AVAILABLE(3.0);
+
+/*!
+    @enum kSecAttrAccessible Value Constants (Private)
+    @constant kSecAttrAccessibleAlwaysPrivate Private alias for kSecAttrAccessibleAlways,
+        which is going to be deprecated for 3rd party use.
+    @constant kSecAttrAccessibleAlwaysThisDeviceOnlyPrivate for kSecAttrAccessibleAlwaysThisDeviceOnly,
+        which is going to be deprecated for 3rd party use.
+*/
+extern const CFStringRef kSecAttrAccessibleAlwaysPrivate
+;//%%%    __OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_10_0);
+extern const CFStringRef kSecAttrAccessibleAlwaysThisDeviceOnlyPrivate
+;//%%%    __OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_10_0);
+
+extern const CFStringRef kSecAttrMultiUser
+    __OSX_AVAILABLE(10.11.5) __IOS_AVAILABLE(9.3) __TVOS_AVAILABLE(9.3) __WATCHOS_AVAILABLE(2.3);
 
 /*  View Hint Constants */
 
@@ -296,10 +311,30 @@ extern const CFStringRef kSecAttrViewHintPCSiCloudBackup;
 extern const CFStringRef kSecAttrViewHintPCSNotes;
 extern const CFStringRef kSecAttrViewHintPCSiMessage;
 extern const CFStringRef kSecAttrViewHintFeldspar;
+extern const CFStringRef kSecAttrViewHintPCSSharing;
 
 extern const CFStringRef kSecAttrViewHintAppleTV;
 extern const CFStringRef kSecAttrViewHintHomeKit;
 extern const CFStringRef kSecAttrViewHintThumper;
+extern const CFStringRef kSecAttrViewHintContinuityUnlock;
+extern const CFStringRef kSecAttrViewHintAccessoryPairing;
+
+/*
+ *
+ */
+
+extern const CFStringRef kSecUseSystemKeychain
+    __TVOS_AVAILABLE(9.2)
+    __WATCHOS_AVAILABLE(3.0)
+    __OSX_AVAILABLE(10.11.4)
+    __IOS_AVAILABLE(9.3);
+
+extern const CFStringRef kSecUseSyncBubbleKeychain
+    __TVOS_AVAILABLE(9.2)
+    __WATCHOS_AVAILABLE(3.0)
+    __OSX_AVAILABLE(10.11.4)
+    __IOS_AVAILABLE(9.3);
+
 
 /*!
     @enum Other Constants (Private)
@@ -325,16 +360,18 @@ extern const CFStringRef kSecAttrViewHintThumper;
     @constant kSecUseCredentialReference Specifies a CFDataRef containing
         AppleCredentialManager reference handle to be used when authorizing access
         to the item.
+    @constant kSecUseCallerName Specifies a dictionary key whose value
+        is a CFStringRef that represents a user-visible string describing
+        the caller name for which the application is attempting to authenticate.
+        The caller must have 'com.apple.private.LocalAuthentication.CallerName'
+        entitlement set to YES to use this feature, otherwise it is ignored.
 */
 extern const CFStringRef kSecUseTombstones
     __OSX_AVAILABLE_STARTING(__MAC_10_9, __IPHONE_7_0);
 extern const CFStringRef kSecUseCredentialReference
     __OSX_AVAILABLE_STARTING(__MAC_10_10, __IPHONE_8_0);
-#if defined(MULTIPLE_KEYCHAINS)
-extern const CFStringRef kSecUseKeychain;
-extern const CFStringRef kSecUseKeychainList;
-#endif /* !defined(MULTIPLE_KEYCHAINS) */
-
+extern const CFStringRef kSecUseCallerName
+    __OSX_AVAILABLE(10.11.4) __IOS_AVAILABLE(9.3) __TVOS_AVAILABLE(9.3) __WATCHOS_AVAILABLE(2.3);
 
 /*!
     @function SecItemCopyDisplayNames
@@ -362,6 +399,16 @@ OSStatus SecItemCopyDisplayNames(CFArrayRef items, CFArrayRef *displayNames);
 */
 OSStatus SecItemDeleteAll(void);
 
+/*!
+ @function SecItemDeleteAllWithAccessGroups
+ @abstract Deletes all items for each class for the given access groups
+ @param accessGroups An array of access groups for the items
+ @result A result code. See "Security Error Codes" (SecBase.h).
+ @discussion Provided for use by MobileInstallation to allow cleanup after uninstall
+    Requires entitlement "com.apple.private.uninstall.deletion"
+ */
+bool SecItemDeleteAllWithAccessGroups(CFArrayRef accessGroups, CFErrorRef *error);
+
 /*
     Ensure the escrow keybag has been used to unlock the system keybag before
     calling either of these APIs.
@@ -374,6 +421,16 @@ CFDataRef _SecKeychainCopyOTABackup(void);
 OSStatus _SecKeychainRestoreBackup(CFDataRef backup, CFDataRef backupKeybag,
     CFDataRef password);
 
+
+bool
+_SecKeychainWriteBackupToFileDescriptor(CFDataRef backupKeybag, CFDataRef password, int fd, CFErrorRef *error);
+
+bool
+_SecKeychainRestoreBackupFromFileDescriptor(int fd, CFDataRef backupKeybag, CFDataRef password, CFErrorRef *error);
+
+CFStringRef
+_SecKeychainCopyKeybagUUIDFromFileDescriptor(int fd, CFErrorRef *error);
+
 OSStatus _SecKeychainBackupSyncable(CFDataRef keybag, CFDataRef password, CFDictionaryRef backup_in, CFDictionaryRef *backup_out);
 OSStatus _SecKeychainRestoreSyncable(CFDataRef keybag, CFDataRef password, CFDictionaryRef backup_in);
 
@@ -381,15 +438,85 @@ OSStatus _SecKeychainRestoreSyncable(CFDataRef keybag, CFDataRef password, CFDic
    Requires caller to have the kSecEntitlementKeychainSyncUpdates entitlement. */
 CFArrayRef _SecKeychainSyncUpdateMessage(CFDictionaryRef updates, CFErrorRef *error);
 
-#if (TARGET_OS_MAC && !(TARGET_OS_EMBEDDED || TARGET_OS_IPHONE))
+#if !TARGET_OS_IPHONE
 CFDataRef _SecItemGetPersistentReference(CFTypeRef raw_item);
 #endif
 
-/* Returns an OSStatus value for the given CFErrorRef, returns errSecInternal if the 
-   domain of the provided error is not recognized.  Passing NULL returns errSecSuccess (0). */
+/* Returns an OSStatus value for the given CFErrorRef, returns errSecInternal if the
+ domain of the provided error is not recognized.  Passing NULL returns errSecSuccess (0). */
 OSStatus SecErrorGetOSStatus(CFErrorRef error);
 
 bool _SecKeychainRollKeys(bool force, CFErrorRef *error);
+
+CFDictionaryRef _SecSecuritydCopyWhoAmI(CFErrorRef *error);
+bool _SecSyncBubbleTransfer(CFArrayRef services, uid_t uid, CFErrorRef *error);
+bool _SecSystemKeychainTransfer(CFErrorRef *error);
+bool _SecSyncDeleteUserViews(uid_t uid, CFErrorRef *error);
+
+OSStatus SecItemUpdateTokenItems(CFTypeRef tokenID, CFArrayRef tokenItemsAttributes);
+
+/*!
+ * @function SecCopyLastError
+ * @abstract return the last CFErrorRef for this thread
+ * @param status the error code returned from the API call w/o CFErrorRef or 0
+ * @result NULL or a retained CFError of the matching error code
+ *
+ * @discussion There are plenty of API calls in Security.framework that
+ * doesn't return an CFError in case of an error, many of them actually have
+ * a CFErrorRef internally, but throw it away at the last moment.
+ * This might be your chance to get hold of it. The status code pass in is there
+ * to avoid stale copies of CFErrorRef.
+ 
+ * Note, not all interfaces support returning a CFErrorRef on the thread local
+ * storage. This is especially true when going though old CDSA style API.
+ */
+
+CFErrorRef
+SecCopyLastError(OSStatus status)
+    __TVOS_AVAILABLE(10.0)
+    __WATCHOS_AVAILABLE(3.0)
+    __IOS_AVAILABLE(10.0);
+
+
+bool
+SecItemUpdateWithError(CFDictionaryRef inQuery,
+                       CFDictionaryRef inAttributesToUpdate,
+                       CFErrorRef *error)
+    __TVOS_AVAILABLE(10.0)
+    __WATCHOS_AVAILABLE(3.0)
+    __IOS_AVAILABLE(10.0);
+
+
+#if SECTRUST_OSX && !TARGET_OS_IPHONE
+/*!
+ @function SecItemCopyParentCertificates
+ @abstract Retrieve an array of possible issuing certificates for a given certificate.
+ @param certificate A reference to a certificate whose issuers are being sought.
+ @param context Pass NULL in this parameter to indicate that the default certificate
+ source(s) should be searched. The default is to search all available keychains.
+ Values of context other than NULL are currently ignored.
+ @result An array of zero or more certificates whose normalized subject matches the
+ normalized issuer of the provided certificate. Note that no cryptographic validation
+ of the signature is performed by this function; its purpose is only to provide a list
+ of candidate certificates.
+ */
+CFArrayRef SecItemCopyParentCertificates(SecCertificateRef certificate, void *context)
+__OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_NA);
+
+/*!
+ @function SecItemCopyStoredCertificate
+ @abstract Retrieve the first stored instance of a given certificate.
+ @param certificate A reference to a certificate.
+ @param context Pass NULL in this parameter to indicate that the default certificate
+ source(s) should be searched. The default is to search all available keychains.
+ Values of context other than NULL are currently ignored.
+ @result Returns a certificate reference if the given certificate exists in a keychain,
+ or NULL if the certificate cannot be found in any keychain. The caller is responsible
+ for releasing the returned certificate reference when finished with it.
+ */
+SecCertificateRef SecItemCopyStoredCertificate(SecCertificateRef certificate, void *context)
+__OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_NA);
+#endif
 
 __END_DECLS
 

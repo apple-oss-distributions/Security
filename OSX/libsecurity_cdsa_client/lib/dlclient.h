@@ -322,6 +322,43 @@ public:
 	virtual void copyBlob(CssmData &data);
 	virtual void setBatchMode(Boolean mode, Boolean rollback);
 
+    // Get the version of this database's encoding
+    virtual uint32 dbBlobVersion();
+
+    // Attempt to recode this database to the new version
+    virtual uint32 recodeDbToVersion(uint32 version);
+
+    // Declare that the recode operation is complete
+    virtual void recodeFinished();
+
+    // Try to take or release the file lock on the underlying database.
+    // You _must_ call these as a pair. They start a transaction on the
+    // underlying DL object, and that transaction is only finished when release
+    // is called. Pass success=true if you want the transaction to commit; otherwise
+    // it will roll back.
+    virtual void takeFileLock();
+    virtual void releaseFileLock(bool success);
+
+    // Make a backup of this database on the filesystem
+    virtual void makeBackup();
+
+    // Make a copy of this database on the filesystem
+    // Throws a UnixError if anything goes wrong
+    virtual void makeCopy(const char* path);
+
+    // Make a clone of this database in a new location.
+    // This method handles telling securityd about the clone, and copying the
+    // file over.
+    virtual Db cloneTo(const DLDbIdentifier& dldbidentifier);
+
+    // Transfer this database to a new location. If the database is open in
+    // securityd, transfer the lock status as well.
+    virtual void transferTo(const DLDbIdentifier& dldbidentifier);
+
+    // This will attempt to delete the file underlying this database.
+    // Don't call this unless you really, really mean to.
+    virtual void deleteFile();
+
 	// Utility methods
 
 	// Always use the dbName and dbLocation that were passed in during
@@ -527,6 +564,13 @@ class DbAttributes : public CssmAutoDbRecordAttributeData
 public:
 	DbAttributes();
 	DbAttributes(const Db &db, uint32 capacity = 0, Allocator &allocator = Allocator::standard());
+
+    // Similar to CssmAutoDbRecordAttributeData::updateWith, but a different
+    // signature. Will canonicalize the elements in both this and the newValues dbAttributes.
+    void updateWithDbAttributes(DbAttributes* newValues);
+
+    // Try to change the infos in this database to a canonicalized form
+    void canonicalize();
 };
 
 

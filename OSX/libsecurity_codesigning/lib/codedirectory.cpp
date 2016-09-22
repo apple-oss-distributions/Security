@@ -27,6 +27,7 @@
 #include "codedirectory.h"
 #include "csutilities.h"
 #include "CSCommonPriv.h"
+#include <vector>
 
 using namespace UnixPlusPlus;
 
@@ -58,16 +59,28 @@ const char *CodeDirectory::canonicalSlotName(SpecialSlot slot)
 	switch (slot) {
 	case cdRequirementsSlot:
 		return kSecCS_REQUIREMENTSFILE;
+	case cdAlternateCodeDirectorySlots:
+		return kSecCS_REQUIREMENTSFILE "-1";
+	case cdAlternateCodeDirectorySlots+1:
+		return kSecCS_REQUIREMENTSFILE "-2";
+	case cdAlternateCodeDirectorySlots+2:
+		return kSecCS_REQUIREMENTSFILE "-3";
+	case cdAlternateCodeDirectorySlots+3:
+		return kSecCS_REQUIREMENTSFILE "-4";
+	case cdAlternateCodeDirectorySlots+4:
+		return kSecCS_REQUIREMENTSFILE "-5";
 	case cdResourceDirSlot:
 		return kSecCS_RESOURCEDIRFILE;
 	case cdCodeDirectorySlot:
 		return kSecCS_CODEDIRECTORYFILE;
 	case cdSignatureSlot:
 		return kSecCS_SIGNATUREFILE;
-	case cdApplicationSlot:
-		return kSecCS_APPLICATIONFILE;
+	case cdTopDirectorySlot:
+		return kSecCS_TOPDIRECTORYFILE;
 	case cdEntitlementSlot:
 		return kSecCS_ENTITLEMENTFILE;
+	case cdRepSpecificSlot:
+		return kSecCS_REPSPECIFICFILE;
 	default:
 		return NULL;
 	}
@@ -83,7 +96,12 @@ unsigned CodeDirectory::slotAttributes(SpecialSlot slot)
 	case cdRequirementsSlot:
 		return cdComponentIsBlob; // global
 	case cdCodeDirectorySlot:
-		return cdComponentPerArchitecture | cdComponentIsBlob;
+	case cdAlternateCodeDirectorySlots:
+	case cdAlternateCodeDirectorySlots+1:
+	case cdAlternateCodeDirectorySlots+2:
+	case cdAlternateCodeDirectorySlots+3:
+	case cdAlternateCodeDirectorySlots+4:
+			return cdComponentPerArchitecture | cdComponentIsBlob;
 	case cdSignatureSlot:
 		return cdComponentPerArchitecture; // raw
 	case cdEntitlementSlot:
@@ -107,7 +125,7 @@ const char * const CodeDirectory::debugSlotName[] = {
 	"info",
 	"requirements",
 	"resources",
-	"application",
+	"rep-specific",
 	"entitlement"
 };
 #endif //NDEBUG
@@ -137,7 +155,7 @@ void CodeDirectory::checkIntegrity() const
 	if (version < earliestVersion)
 		MacOSError::throwMe(errSecCSSignatureUnsupported);	// too old - can't support
 	if (version > currentVersion)
-		secdebug("codedir", "%p version 0x%x newer than current 0x%x",
+		secinfo("codedir", "%p version 0x%x newer than current 0x%x",
 			this, uint32_t(version), currentVersion);
 	
 	// now check interior offsets for validity
@@ -162,14 +180,15 @@ void CodeDirectory::checkIntegrity() const
 	}
 	
 	// check consistency between the page-coverage fields
+	size_t limit = signingLimit();
 	if (pageSize) {
-		if (codeLimit == 0)									// can't have paged signatures with no covered data
+		if (limit == 0)									// can't have paged signatures with no covered data
 			MacOSError::throwMe(errSecCSSignatureFailed);
-		size_t coveredPages = ((codeLimit-1) >> pageSize) + 1; // page slots required to cover codeLimit
+		size_t coveredPages = ((limit-1) >> pageSize) + 1; // page slots required to cover signingLimit
 		if (coveredPages != nCodeSlots)
 			MacOSError::throwMe(errSecCSSignatureFailed);
 	} else {
-		if ((codeLimit > 0) != nCodeSlots)	// must have one code slot, or none if no code
+		if ((limit > 0) != nCodeSlots)	// must have one code slot, or none if no code
 			MacOSError::throwMe(errSecCSSignatureFailed);
 	}
 }
@@ -180,7 +199,7 @@ void CodeDirectory::checkIntegrity() const
 //
 bool CodeDirectory::validateSlot(const void *data, size_t length, Slot slot) const
 {
-	secdebug("codedir", "%p validating slot %d", this, int(slot));
+	secinfo("codedir", "%p validating slot %d", this, int(slot));
 	MakeHash<CodeDirectory> hasher(this);
 	Hashing::Byte digest[hasher->digestLength()];
 	generateHash(hasher, data, length, digest);
@@ -229,10 +248,77 @@ DynamicHash *CodeDirectory::hashFor(HashAlgorithm hashType)
 	switch (hashType) {
 	case kSecCodeSignatureHashSHA1:						return new CCHashInstance(kCCDigestSHA1);
 	case kSecCodeSignatureHashSHA256:					return new CCHashInstance(kCCDigestSHA256);
+	case kSecCodeSignatureHashSHA384:					return new CCHashInstance(kCCDigestSHA384);
 	case kSecCodeSignatureHashSHA256Truncated:			return new CCHashInstance(kCCDigestSHA256, SHA1::digestLength);
 	default:
 		MacOSError::throwMe(errSecCSSignatureUnsupported);
 	}
+}
+	
+	
+//
+// Determine which of a set of possible digest types should be chosen as the "best" one
+//
+static const CodeDirectory::HashAlgorithm hashPriorities[] = {
+	kSecCodeSignatureHashSHA384,
+	kSecCodeSignatureHashSHA256,
+	kSecCodeSignatureHashSHA256Truncated,
+	kSecCodeSignatureHashSHA1,
+	kSecCodeSignatureNoHash		// sentinel
+};
+	
+bool CodeDirectory::viableHash(HashAlgorithm type)
+{
+	for (const HashAlgorithm* tp = hashPriorities; *tp != kSecCodeSignatureNoHash; tp++)
+		if (*tp == type)
+			return true;
+	return false;
+
+}
+
+CodeDirectory::HashAlgorithm CodeDirectory::bestHashOf(const HashAlgorithms &types)
+{
+	for (const HashAlgorithm* type = hashPriorities; *type != kSecCodeSignatureNoHash; type++)
+		if (types.find(*type) != types.end())
+			return *type;
+	MacOSError::throwMe(errSecCSUnsupportedDigestAlgorithm);
+}
+	
+
+//
+// Hash a file range with multiple digest algorithms and then pass the resulting
+// digests to a per-algorithm block.
+//
+void CodeDirectory::multipleHashFileData(FileDesc fd, size_t limit, CodeDirectory::HashAlgorithms types, void (^action)(HashAlgorithm type, DynamicHash* hasher))
+{
+	assert(!types.empty());
+	vector<RefPointer<DynamicHash> > hashers;
+	for (auto it = types.begin(); it != types.end(); ++it) {
+		if (CodeDirectory::viableHash(*it))
+			hashers.push_back(CodeDirectory::hashFor(*it));
+	}
+	scanFileData(fd, limit, ^(const void *buffer, size_t size) {
+		unsigned n = 0;
+		for (auto it = types.begin(); it != types.end(); ++it, ++n) {
+			hashers[n]->update(buffer, size);
+		}
+	});
+	CFRef<CFMutableDictionaryRef> result = makeCFMutableDictionary();
+	unsigned n = 0;
+	for (auto it = types.begin(); it != types.end(); ++it, ++n) {
+		action(*it, hashers[n]);
+	}
+}
+    
+    
+    //
+    // Hash data in memory using our hashAlgorithm()
+    //
+bool CodeDirectory::verifyMemoryContent(CFDataRef data, const Byte* digest) const
+{
+    RefPointer<DynamicHash> hasher = CodeDirectory::hashFor(this->hashType);
+    hasher->update(CFDataGetBytePtr(data), CFDataGetLength(data));
+    return hasher->verify(digest);
 }
 	
 	
@@ -297,6 +383,8 @@ std::string CodeDirectory::screeningCode() const
 {
 	if (slotIsPresent(-cdInfoSlot))		// has Info.plist
 		return "I" + hexHash((*this)[-cdInfoSlot]); // use Info.plist hash
+	if (slotIsPresent(-cdRepSpecificSlot))		// has Info.plist
+		return "R" + hexHash((*this)[-cdRepSpecificSlot]); // use Info.plist hash
 	if (pageSize == 0)					// good-enough proxy for "not a Mach-O file"
 		return "M" + hexHash((*this)[0]); // use hash of main executable
 	return "N";							// no suitable screening code

@@ -87,10 +87,6 @@ typedef struct Query
 
     CFArrayRef q_use_item_list;
     CFBooleanRef q_use_tomb;
-#if defined(MULTIPLE_KEYCHAINS)
-    CFArrayRef q_use_keychain;
-    CFArrayRef q_use_keychain_list;
-#endif /* !defined(MULTIPLE_KEYCHAINS) */
 
     /* Value of kSecMatchLimit key if present. */
     CFIndex q_limit;
@@ -108,7 +104,10 @@ typedef struct Query
     
     /* Keybag handle to use for this item. */
     keybag_handle_t q_keybag;
-    
+
+    /* musr view to use when modifying the database */
+    CFDataRef q_musrView;
+
     /* ACL and credHandle passed to the query. q_cred_handle contain LA context object. */
     SecAccessControlRef q_access_control;
     CFTypeRef q_use_cred_handle;
@@ -124,14 +123,24 @@ typedef struct Query
 
     /* Caller acces groups for AKS */
     CFArrayRef q_caller_access_groups;
+    bool q_system_keychain;
+    int32_t q_sync_bubble;
+    bool q_spindump_on_failure;
+
+    //policy for filtering certs and identities
+    SecPolicyRef q_match_policy;
+    //date for filtering certs and identities
+    CFDateRef q_match_valid_on_date;
+    //trusted only certs and identities
+    CFBooleanRef q_match_trusted_only;
 
     Pair q_pairs[];
 } Query;
 
-Query *query_create(const SecDbClass *qclass, CFDictionaryRef query, CFErrorRef *error);
+Query *query_create(const SecDbClass *qclass, CFDataRef musr, CFDictionaryRef query, CFErrorRef *error);
 bool query_destroy(Query *q, CFErrorRef *error);
 bool query_error(Query *q, CFErrorRef *error);
-Query *query_create_with_limit(CFDictionaryRef query, CFIndex limit, CFErrorRef *error);
+Query *query_create_with_limit(CFDictionaryRef query, CFDataRef musr, CFIndex limit, CFErrorRef *error);
 void query_add_attribute(const void *key, const void *value, Query *q);
 void query_add_or_attribute(const void *key, const void *value, Query *q);
 void query_add_not_attribute(const void *key, const void *value, Query *q);
@@ -145,6 +154,42 @@ Pair query_attr_at(const Query *q, CFIndex ix);
 bool query_update_parse(Query *q, CFDictionaryRef update, CFErrorRef *error);
 const SecDbClass *kc_class_with_name(CFStringRef name);
 void query_set_caller_access_groups(Query *q, CFArrayRef caller_access_groups);
+void query_set_policy(Query *q, SecPolicyRef policy);
+void query_set_valid_on_date(Query *q, CFDateRef policy);
+void query_set_trusted_only(Query *q, CFBooleanRef trusted_only);
+
+CFDataRef
+SecMUSRCopySystemKeychainUUID(void);
+
+CFDataRef
+SecMUSRGetSystemKeychainUUID(void);
+
+CFDataRef
+SecMUSRGetSingleUserKeychainUUID(void);
+
+bool
+SecMUSRIsSingleUserView(CFDataRef uuid);
+
+CFDataRef
+SecMUSRGetAllViews(void);
+
+bool
+SecMUSRIsViewAllViews(CFDataRef musr);
+
+#if TARGET_OS_IPHONE
+CFDataRef
+SecMUSRCreateActiveUserUUID(uid_t uid);
+
+CFDataRef
+SecMUSRCreateSyncBubbleUserUUID(uid_t uid);
+
+CFDataRef
+SecMUSRCreateBothUserAndSystemUUID(uid_t uid);
+
+bool
+SecMUSRGetBothUserAndSystemUUID(CFDataRef musr, uid_t *uid);
+
+#endif
 
 
 __END_DECLS

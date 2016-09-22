@@ -129,8 +129,16 @@ SSDbImpl::open()
 	DbImpl::open();
 }
 
-SSDbUniqueRecord
+DbUniqueRecord
 SSDbImpl::insert(CSSM_DB_RECORDTYPE recordType,
+                 const CSSM_DB_RECORD_ATTRIBUTE_DATA *attributes,
+                 const CSSM_DATA *data)
+{
+    return DbImpl::insert(recordType, attributes, data);
+}
+
+SSDbUniqueRecord
+SSDbImpl::ssInsert(CSSM_DB_RECORDTYPE recordType,
 				 const CSSM_DB_RECORD_ATTRIBUTE_DATA *attributes,
 				 const CSSM_DATA *data,
 				 const CSSM_RESOURCE_CONTROL_CONTEXT *rc)
@@ -148,7 +156,7 @@ SSDbImpl::insert(CSSM_DB_RECORDTYPE recordType,
 	const CSSM_ACCESS_CREDENTIALS *cred = rc ? rc->AccessCred : NULL;
 	try
 	{
-		return insert(recordType, attributes, data, group, cred);
+		SSDbUniqueRecord ssdbur = ssInsert(recordType, attributes, data, group, cred);
 		if (autoCommit)
 		{
 			// autoCommit was on so commit now that we are done and turn
@@ -157,6 +165,7 @@ SSDbImpl::insert(CSSM_DB_RECORDTYPE recordType,
 			CSSM_DL_PassThrough(dldbh, CSSM_APPLEFILEDL_TOGGLE_AUTOCOMMIT,
 				reinterpret_cast<const void *>(autoCommit), NULL);
 		}
+        return ssdbur;
 	}
 	catch(...)
 	{
@@ -171,13 +180,10 @@ SSDbImpl::insert(CSSM_DB_RECORDTYPE recordType,
 		}
 		throw;
 	}
-
-	// keep the compiler happy -- this path is NEVER taken
-	CssmError::throwMe(0);
 }
 
 SSDbUniqueRecord
-SSDbImpl::insert(CSSM_DB_RECORDTYPE recordType,
+SSDbImpl::ssInsert(CSSM_DB_RECORDTYPE recordType,
 				 const CSSM_DB_RECORD_ATTRIBUTE_DATA *attributes,
 				 const CSSM_DATA *data, const SSGroup &group,
 				 const CSSM_ACCESS_CREDENTIALS *cred)
@@ -411,11 +417,15 @@ SSDbCursorImpl::next(DbAttributes *attributes, ::CssmDataContainer *data,
 					 DbUniqueRecord &uniqueId,
 					 const CSSM_ACCESS_CREDENTIALS *cred)
 {
-	if (!data)
-		return DbDbCursorImpl::next(attributes, data, uniqueId);
+    if (!data) {
+        return DbDbCursorImpl::next(attributes, data, uniqueId);
+    }
 
 	DbAttributes noAttrs, *attrs;
 	attrs = attributes ? attributes : &noAttrs;
+
+	// To comply with previous behavior, this method will not find symmetric or public/private keys
+	// if you ask for the data of each item.
 
 	// Get the datablob for this record
 	CssmDataContainer dataBlob(allocator());
@@ -424,36 +434,42 @@ SSDbCursorImpl::next(DbAttributes *attributes, ::CssmDataContainer *data,
 		if (!DbDbCursorImpl::next(attrs, &dataBlob, uniqueId))
 			return false;
 
-		// Keep going until we find a non key type record.
 		CSSM_DB_RECORDTYPE rt = attrs->recordType();
-		if (rt != CSSM_DL_DB_RECORD_SYMMETRIC_KEY
-			&& rt != CSSM_DL_DB_RECORD_PRIVATE_KEY
-			&& rt != CSSM_DL_DB_RECORD_PUBLIC_KEY)
+		if (rt == CSSM_DL_DB_RECORD_SYMMETRIC_KEY ||
+		    rt == CSSM_DL_DB_RECORD_PRIVATE_KEY ||
+		    rt == CSSM_DL_DB_RECORD_PUBLIC_KEY)
 		{
-			// @@@ Check the label and if it doesn't start with the magic for a SSKey return the key.
+			// This is a key. Free it, and then check if we should return the item (but not the data)
+			database()->csp()->freeKey(*reinterpret_cast<CssmKey *>(dataBlob.Data));
+
+			if(!data) {
+				break;
+			}
+		} else {
+			// This is a non-key item. Return it.
 			break;
 		}
-		else
+	}
+
+	// If the caller requested any data, return the data.
+	if(data) {
+		if (!SSGroupImpl::isGroup(dataBlob))
 		{
-			// Free the key we just retrieved
-			database()->csp()->freeKey(*reinterpret_cast<CssmKey *>(dataBlob.Data));
+			data->Data = dataBlob.Data;
+			data->Length = dataBlob.Length;
+			dataBlob.Data = NULL;
+			dataBlob.Length = 0;
+			return true;
 		}
+
+		// Get the group for dataBlob
+		SSGroup group(database(), dataBlob);
+
+        // TODO: Add attrs to cred
+
+		// Decode the dataBlob, pass in the DL allocator.
+		group->decodeDataBlob(dataBlob, cred, database()->allocator(), *data);
 	}
-
-	if (!SSGroupImpl::isGroup(dataBlob))
-	{
-		data->Data = dataBlob.Data;
-		data->Length = dataBlob.Length;
-		dataBlob.Data = NULL;
-		dataBlob.Length = 0;
-		return true;
-	}
-
-	// Get the group for dataBlob
-	SSGroup group(database(), dataBlob);
-
-	// Decode the dataBlob, pass in the DL allocator.
-	group->decodeDataBlob(dataBlob, cred, database()->allocator(), *data);
 	return true;
 }
 

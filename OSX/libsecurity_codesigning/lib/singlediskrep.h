@@ -55,7 +55,7 @@ public:
 	
 	std::string recommendedIdentifier(const SigningContext &ctx); // basename(path)
 
-	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated);
+	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags);
 
 public:
 	class Writer;

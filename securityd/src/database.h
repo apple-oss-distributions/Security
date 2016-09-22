@@ -70,6 +70,8 @@ public:
 	
 	virtual bool belongsToSystem() const; // belongs to system (root) security domain
 
+    virtual uint32 dbVersion() = 0;     // For databases that have a concept of version, return the version
+
 protected:
 	void notify(NotificationEvent event, const DLDbIdentifier &ident);
 };
@@ -147,6 +149,9 @@ public:
 		CssmData *param, uint32 usage, uint32 attrs, RefPointer<Key> &derivedKey) = 0;
 
 	virtual void authenticate(CSSM_DB_ACCESS_TYPE mode, const AccessCredentials *cred);
+
+    // returns true if these credentials contain a valid password or master key for this database
+    virtual bool checkCredentials(const AccessCredentials *cred);
 	virtual SecurityServerAcl &acl();
 
 	virtual bool isLocked();
@@ -205,33 +210,11 @@ public:
 	DbCommon& common() const			{ return parent<DbCommon>(); }
 	virtual const char *dbName() const = 0;
 	virtual void dbName(const char *name);
-};
 
+    virtual uint32 dbVersion() { return common().dbVersion(); }
 
-//
-// This class implements a "system keychain unlock record" store
-//
-class SystemKeychainKey {
-public:
-	SystemKeychainKey(const char *path);
-	~SystemKeychainKey();
-	
-	bool matches(const DbBlob::Signature &signature);
-	CssmKey &key()		{ return mKey; }
-
-private:
-	std::string mPath;					// path to file
-	CssmKey mKey;						// proper CssmKey with data in mBlob
-
-	bool mValid;						// mBlob was validly read from mPath
-	UnlockBlob mBlob;					// contents of mPath as last read
-	
-	Time::Absolute mCachedDate;			// modify date of file when last read
-	Time::Absolute mUpdateThreshold;	// cutoff threshold for checking again
-	
-	static const int checkDelay = 1;	// seconds minimum delay between update checks
-	
-	bool update();
+    // Check if this database is in the middle of a recode/migration
+    virtual bool isRecoding() { return false; }
 };
 
 #endif //_H_DATABASE

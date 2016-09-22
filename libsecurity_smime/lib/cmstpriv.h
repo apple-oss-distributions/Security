@@ -206,6 +206,7 @@ struct SecCmsSignerInfoStr {
     SecCmsVerificationStatus	verificationStatus;
     SecPrivateKeyRef		signingKey; /* Used if we're using subjKeyID*/
     SecPublicKeyRef		pubKey;
+    CFDataRef           hashAgilityAttrValue;
 };
 #define SEC_CMS_SIGNER_INFO_VERSION_ISSUERSN	1	/* what we *create* */
 #define SEC_CMS_SIGNER_INFO_VERSION_SUBJKEY	3	/* what we *create* */
@@ -327,7 +328,7 @@ typedef struct SecCmsRecipientEncryptedKeyStr SecCmsRecipientEncryptedKey;
 struct SecCmsKeyAgreeRecipientInfoStr {
     SecAsn1Item				version;
     SecCmsOriginatorIdentifierOrKey	originatorIdentifierOrKey;
-    SecAsn1Item * 				ukm;				/* optional */
+    SecAsn1Item 				ukm;				/* optional */
     SECAlgorithmID			keyEncAlg;
     SecCmsRecipientEncryptedKey **	recipientEncryptedKeys;
 };

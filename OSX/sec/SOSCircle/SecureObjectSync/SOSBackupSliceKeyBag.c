@@ -121,6 +121,11 @@ fail:
 size_t der_sizeof_BackupSliceKeyBag(SOSBackupSliceKeyBagRef BackupSliceKeyBag, CFErrorRef *error) {
     size_t result = 0;
 
+    require_quiet(SecRequirementError(BackupSliceKeyBag != NULL, error, CFSTR("Null BackupSliceKeyBag")), fail);
+    require_quiet(BackupSliceKeyBag != NULL, fail); // this is redundant with what happens in SecRequirementError, but the analyzer can't understand that.
+    require_quiet(SecRequirementError(BackupSliceKeyBag->aks_bag != NULL, error, CFSTR("null aks_bag in BackupSliceKeyBag")), fail);
+    require_quiet(BackupSliceKeyBag->aks_bag != NULL, fail); // this is redundant with what happens in SecRequirementError, but the analyzer can't understand that.
+
     size_t bag_size = der_sizeof_data(BackupSliceKeyBag->aks_bag, error);
     require_quiet(bag_size, fail);
 
@@ -142,7 +147,10 @@ uint8_t* der_encode_BackupSliceKeyBag(SOSBackupSliceKeyBagRef set, CFErrorRef *e
     if (der_end == NULL) return der_end;
 
     require_quiet(SecRequirementError(set != NULL, error, CFSTR("Null set passed to encode")), fail);
-    require_quiet(set, fail); // This should be removed when SecRequirementError can squelch analyzer warnings
+    require_quiet(set, fail); // Silence the NULL warning.
+
+    require_quiet(SecRequirementError(set->aks_bag != NULL, error, CFSTR("Null set passed to encode")), fail);
+    require_quiet(set->aks_bag, fail); // Silence the warning.
 
     der_end = ccder_encode_constructed_tl(CCDER_CONSTRUCTED_SEQUENCE, der_end, der,
               der_encode_data(set->aks_bag, error, der,
@@ -223,14 +231,26 @@ static CFDictionaryRef SOSBackupSliceKeyBagCopyWrappedKeys(SOSBackupSliceKeyBagR
             CFDataRef backupKey = SOSPeerInfoCopyBackupKey(pi);
 
             if (backupKey) {
-                CFDataRef wrappedKey = SOSCopyECWrapped(backupKey, secret, error);
+                CFErrorRef wrapError = NULL;
+                CFDataRef wrappedKey = SOSCopyECWrapped(backupKey, secret, &wrapError);
                 if (wrappedKey) {
                     CFDictionaryAddValue(wrappedKeys, id, wrappedKey);
+                    CFDataPerformWithHexString(backupKey, ^(CFStringRef backupKeyString) {
+                        CFDataPerformWithHexString(wrappedKey, ^(CFStringRef wrappedKeyString) {
+                            secnotice("bskb", "Add for id: %@, bk: %@, wrapped: %@", id, backupKeyString, wrappedKeyString);
+                        });
+                    });
                 } else {
+                    CFDataPerformWithHexString(backupKey, ^(CFStringRef backupKeyString) {
+                        secnotice("bskb", "Failed at id: %@, bk: %@ error: %@", id, backupKeyString, wrapError);
+                    });
+                    CFErrorPropagate(wrapError, error);
                     success = false;
                 }
                 CFReleaseNull(wrappedKey);
                 CFReleaseNull(backupKey);
+            } else {
+                secnotice("bskb", "Skipping id %@, no backup key.", id);
             }
 
         }
@@ -350,6 +370,48 @@ CFDataRef SOSBSKBCopyAKSBag(SOSBackupSliceKeyBagRef backupSliceKeyBag, CFErrorRe
 
 CFSetRef SOSBSKBGetPeers(SOSBackupSliceKeyBagRef backupSliceKeyBag){
     return backupSliceKeyBag->peers;
+}
+
+int SOSBSKBCountPeers(SOSBackupSliceKeyBagRef backupSliceKeyBag) {
+    return (int) CFSetGetCount(backupSliceKeyBag->peers);
+}
+
+bool SOSBSKBPeerIsInKeyBag(SOSBackupSliceKeyBagRef backupSliceKeyBag, SOSPeerInfoRef pi) {
+    return CFSetGetValue(backupSliceKeyBag->peers, pi) != NULL;
+}
+
+bskb_keybag_handle_t SOSBSKBLoadLocked(SOSBackupSliceKeyBagRef backupSliceKeyBag,
+                                       CFErrorRef *error)
+{
+#if !TARGET_HAS_KEYSTORE
+    return bad_keybag_handle;
+#else
+    keybag_handle_t result = bad_keybag_handle;
+    keybag_handle_t bag_handle = bad_keybag_handle;
+
+    require_quiet(SecRequirementError(backupSliceKeyBag->aks_bag, error,
+                                      CFSTR("No aks bag to load")), exit);
+    require_quiet(SecRequirementError(CFDataGetLength(backupSliceKeyBag->aks_bag) < INT_MAX, error,
+                                      CFSTR("No aks bag to load")), exit);
+
+    kern_return_t aks_result;
+    aks_result = aks_load_bag(CFDataGetBytePtr(backupSliceKeyBag->aks_bag),
+                              (int) CFDataGetLength(backupSliceKeyBag->aks_bag),
+                              &bag_handle);
+    require_quiet(SecKernError(aks_result, error,
+                               CFSTR("aks_load_bag failed: %d"), aks_result), exit);
+
+    result = bag_handle;
+    bag_handle = bad_keybag_handle;
+
+exit:
+    if (bag_handle != bad_keybag_handle) {
+        (void) aks_unload_bag(bag_handle);
+    }
+
+    return result;
+#endif
+
 }
 
 static keybag_handle_t SOSBSKBLoadAndUnlockBagWithSecret(SOSBackupSliceKeyBagRef backupSliceKeyBag,

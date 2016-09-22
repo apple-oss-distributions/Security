@@ -41,6 +41,7 @@
 #include "OTATrustUtilities.h"
 
 static struct securityd spi = {
+#if !TRUSTD_SERVER
     .sec_item_add                           = _SecItemAdd,
     .sec_item_copy_matching                 = _SecItemCopyMatching,
     .sec_item_update                        = _SecItemUpdate,
@@ -53,8 +54,10 @@ static struct securityd spi = {
     .sec_trust_store_remove_certificate     = SecTrustStoreRemoveCertificateWithDigest,
     .sec_truststore_remove_all              = _SecTrustStoreRemoveAll,
     .sec_item_delete_all                    = _SecItemDeleteAll,
+#endif /* !TRUSTD_SERVER */
     .sec_trust_evaluate                     = SecTrustServerEvaluate,
-    .sec_keychain_backup                    = _SecServerKeychainBackup,
+#if !TRUSTD_SERVER
+    .sec_keychain_backup                    = _SecServerKeychainCreateBackup,
     .sec_keychain_restore                   = _SecServerKeychainRestore,
     .sec_keychain_backup_syncable           = _SecServerBackupSyncable,
     .sec_keychain_restore_syncable          = _SecServerRestoreSyncable,
@@ -105,7 +108,7 @@ static struct securityd spi = {
     .sec_ota_pki_get_new_asset              = SecOTAPKISignalNewAsset,
     .soscc_ProcessSyncWithAllPeers          = SOSCCProcessSyncWithAllPeers_Server,
     .soscc_EnsurePeerRegistration           = SOSCCProcessEnsurePeerRegistration_Server,
-    .sec_roll_keys                          = _SecServerRollKeys,
+    .sec_roll_keys                          = _SecServerRollKeysGlue,
     .soscc_CopyDeviceID                     = SOSCCCopyDeviceID_Server,
     .soscc_SetDeviceID                      = SOSCCSetDeviceID_Server,
     .soscc_CheckIDSRegistration             = SOSCCIDSServiceRegistrationTest_Server,
@@ -126,7 +129,23 @@ static struct securityd spi = {
     .soscc_SetEscrowRecords                 = SOSCCSetEscrowRecord_Server,
     .soscc_CopyEscrowRecords                = SOSCCCopyEscrowRecord_Server,
     .soscc_PeerAvailability                 = SOSCCCheckPeerAvailability_Server,
+    .sosbskb_WrapToBackupSliceKeyBagForView = SOSWrapToBackupSliceKeyBagForView_Server,
+    .soscc_CopyAccountState                 = SOSCCCopyAccountState_Server,
+    .soscc_DeleteAccountState               = SOSCCDeleteAccountState_Server,
+    .soscc_CopyEngineData                   = SOSCCCopyEngineData_Server,
+    .soscc_DeleteEngineState                = SOSCCDeleteEngineState_Server,
+    .soscc_AccountHasPublicKey              = SOSCCAccountHasPublicKey_Server,
+    .soscc_AccountIsNew                     = SOSCCAccountIsNew_Server,
+    .sec_item_update_token_items            = _SecItemUpdateTokenItems,
+    .sec_trust_store_copy_all               = _SecTrustStoreCopyAll,
+    .sec_trust_store_copy_usage_constraints = _SecTrustStoreCopyUsageConstraints,
+    .sec_delete_items_with_access_groups    = _SecItemServerDeleteAllWithAccessGroups,
+    .soscc_IsThisDeviceLastBackup           = SOSCCkSecXPCOpIsThisDeviceLastBackup_Server,
+    .soscc_requestSyncWithPeerOverKVS       = SOSCCRequestSyncWithPeerOverKVS_Server,
+    .soscc_requestSyncWithPeerOverIDS       = SOSCCRequestSyncWithPeerOverIDS_Server,
+    .soscc_SOSCCPeersHaveViewsEnabled       = SOSCCPeersHaveViewsEnabled_Server,
 
+#endif /* !TRUSTD_SERVER */
 };
 
 void securityd_init_server(void) {

@@ -55,8 +55,8 @@ CFArrayRef SOSCCCopyConcurringPeerPeerInfo(CFErrorRef* error);
 bool SOSCCPurgeUserCredentials(CFErrorRef* error);
 
 CFStringRef SOSCCGetStatusDescription(SOSCCStatus status);
-SecKeyRef SOSCCGetUserPrivKey(CFErrorRef *error);
-SecKeyRef SOSCCGetUserPubKey(CFErrorRef *error);
+bool SOSCCAccountHasPublicKey(CFErrorRef *error);
+bool SOSCCAccountIsNew(CFErrorRef *error);
 
 /*!
  @function SOSCCHandleIDSMessage
@@ -115,6 +115,29 @@ bool SOSCCIDSPingTest(CFStringRef message, CFErrorRef *error);
  @param error What went wrong if we returned false
  */
 bool SOSCCIDSDeviceIDIsAvailableTest(CFErrorRef *error);
+
+/*!
+ @function SOSWrapToBackupSliceKeyBagForView
+ @abstract Encrypts the given plaintext, and wraps the encryption key to the backup slice keybag for this view
+ @param viewName The view to wrap to
+ @param input The plaintext to encrypt
+ @param output The ciphertext
+ @param bskbEncoded The encoded backup slice keybag used to wrap the data
+ @param error What went wrong if we returned false
+ */
+bool SOSWrapToBackupSliceKeyBagForView(CFStringRef viewName, CFDataRef input, CFDataRef* output, CFDataRef* bskbEncoded, CFErrorRef* error);
+
+//
+// Security Tool calls
+//
+CFDataRef SOSCCCopyAccountState(CFErrorRef* error);
+bool SOSCCDeleteAccountState(CFErrorRef *error);
+CFDataRef SOSCCCopyEngineData(CFErrorRef* error);
+bool SOSCCDeleteEngineState(CFErrorRef *error);
+bool SOSCCRequestSyncWithPeerOverKVS( CFStringRef peerID, CFErrorRef *error);
+bool SOSCCRequestSyncWithPeerOverIDS(CFStringRef peerID, CFErrorRef *error);
+
+char *SOSCCSysdiagnose(const char *directoryname);
 
 __END_DECLS
 

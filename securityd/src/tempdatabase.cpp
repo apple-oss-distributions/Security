@@ -95,6 +95,13 @@ const char *TempDatabase::dbName() const
 	return "(transient)";
 }
 
+//
+// A TempDatabase doesn't have a common object or a version, really, so overload the function to return some base version
+//
+uint32 TempDatabase::dbVersion() {
+    return CommonBlob::version_MacOS_10_0;
+}
+
 bool TempDatabase::transient() const
 {
 	return true;
@@ -123,12 +130,12 @@ void TempDatabase::makeSecurePassphraseKey(const Context &context,
 										   uint32 usage, uint32 attrs, 
 										   RefPointer<Key> &newKey)
 {
-	secdebug("SSdb", "requesting secure passphrase");
+	secinfo("SSdb", "requesting secure passphrase");
 	
 	string passphrase;
 	getSecurePassphrase(context, passphrase);
 	
-	secdebug("SSdb", "wrapping securely-obtained passphrase as key");
+	secinfo("SSdb", "wrapping securely-obtained passphrase as key");
 	
 	// CssmKey rawKey(StringData(passphrase)) confuses gcc
 	StringData passphraseData(passphrase);

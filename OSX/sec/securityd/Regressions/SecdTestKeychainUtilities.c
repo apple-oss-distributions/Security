@@ -27,6 +27,9 @@
 #include <test/testmore.h>
 #include <utilities/SecFileLocations.h>
 #include <utilities/SecCFWrappers.h>
+#include <securityd/SecItemServer.h>
+#include <Security/SecureObjectSync/SOSViews.h>
+
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -35,9 +38,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-void kc_dbhandle_reset(void);
-
-void secd_test_setup_temp_keychain(const char* test_prefix, dispatch_block_t do_before_reset)
+void secd_test_setup_temp_keychain(const char* test_prefix, dispatch_block_t do_in_reset)
 {
     CFStringRef tmp_dir = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("/tmp/%s.%X/"), test_prefix, arc4random());
     CFStringRef keychain_dir = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%@Library/Keychains"), tmp_dir);
@@ -52,11 +53,27 @@ void secd_test_setup_temp_keychain(const char* test_prefix, dispatch_block_t do_
         SetCustomHomeURL(tmp_dir_string);
     });
 
-    if(do_before_reset)
-        do_before_reset();
-    
-    kc_dbhandle_reset();
-    
+    SecKeychainDbReset(do_in_reset);
+
     CFReleaseNull(tmp_dir);
     CFReleaseNull(keychain_dir);
 }
+
+CFStringRef kTestView1 = CFSTR("TestView1");
+CFStringRef kTestView2 = CFSTR("TestView2");
+
+void secd_test_setup_testviews(void) {
+    static dispatch_once_t onceToken = 0;
+    
+    dispatch_once(&onceToken, ^{
+        CFMutableSetRef testViews = CFSetCreateMutableForCFTypes(kCFAllocatorDefault);
+        CFSetAddValue(testViews, kTestView1);
+        CFSetAddValue(testViews, kTestView2);
+        
+        SOSViewsSetTestViewsSet(testViews);
+        CFReleaseNull(testViews);
+    });
+}
+
+
+

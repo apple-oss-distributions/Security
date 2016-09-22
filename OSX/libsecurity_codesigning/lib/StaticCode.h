@@ -117,13 +117,16 @@ public:
 	void detachedSignature(CFDataRef sig);		// attach an explicitly given detached signature
 	void checkForSystemSignature();				// check for and attach system-supplied detached signature
 
-	const CodeDirectory *codeDirectory(bool check = true);
+	const CodeDirectory *codeDirectory(bool check = true) const;
+	CodeDirectory::HashAlgorithm hashAlgorithm() const { return codeDirectory()->hashType; }
+	CodeDirectory::HashAlgorithms hashAlgorithms() const { return mHashAlgorithms; }
 	CFDataRef cdHash();
+	CFArrayRef cdHashes();
 	CFDataRef signature();
 	CFAbsoluteTime signingTime();
 	CFAbsoluteTime signingTimestamp();
 	bool isSigned() { return codeDirectory(false) != NULL; }
-	DiskRep *diskRep() { return mRep; }
+	DiskRep *diskRep() const { return mRep; }
 	bool isDetached() const { return mRep->base() != mRep; }
 	std::string mainExecutablePath() { return mRep->mainExecutablePath(); }
 	CFURLRef copyCanonicalPath() const { return mRep->copyCanonicalPath(); }
@@ -133,16 +136,16 @@ public:
 	std::string signatureSource();
  	virtual CFDataRef component(CodeDirectory::SpecialSlot slot, OSStatus fail = errSecCSSignatureFailed);
  	virtual CFDictionaryRef infoDictionary();
+	CFDictionaryRef diskRepInformation();
 
 	CFDictionaryRef entitlements();
+	CFDataRef copyComponent(CodeDirectory::SpecialSlot slot, CFDataRef hash);
 
 	CFDictionaryRef resourceDictionary(bool check = true);
 	CFURLRef resourceBase();
-	CFDataRef resource(std::string path);
-	CFDataRef resource(std::string path, ValidationContext &ctx);
 	void validateResource(CFDictionaryRef files, std::string path, bool isSymlink, ValidationContext &ctx, SecCSFlags flags, uint32_t version);
 	void validateSymlinkResource(std::string fullpath, std::string seal, ValidationContext &ctx, SecCSFlags flags);
-	
+
 	bool flag(uint32_t tested);
 
 	SecCodeCallback monitor() const { return mMonitor; }
@@ -161,17 +164,20 @@ public:
 		{ assert(validated()); return mValidated && (mValidationResult == errSecSuccess); }
 	bool validatedExecutable() const	{ return mExecutableValidated; }
 	bool validatedResources() const	{ return mResourcesValidated; }
-	
+
 	void prepareProgress(unsigned workload);
 	void cancelValidation();
 
 	void validateDirectory();
 	virtual void validateComponent(CodeDirectory::SpecialSlot slot, OSStatus fail = errSecCSSignatureFailed);
 	void validateNonResourceComponents();
+	void validateTopDirectory();
 	unsigned estimateResourceWorkload();
 	void validateResources(SecCSFlags flags);
 	void validateExecutable();
 	void validateNestedCode(CFURLRef path, const ResourceSeal &seal, SecCSFlags flags, bool isFramework);
+	
+	void validatePlainMemoryResource(string path, CFDataRef fileData, SecCSFlags flags);
 	
 	const Requirements *internalRequirements();
 	const Requirement *internalRequirement(SecRequirementType type);
@@ -189,16 +195,23 @@ public:
 	
 	CFDictionaryRef signingInformation(SecCSFlags flags); // omnibus information-gathering API (creates new dictionary)
 
-	static bool isAppleDeveloperCert(CFArrayRef certs); // determines if this is an apple developer certificate for libraray validation
+	static bool isAppleDeveloperCert(CFArrayRef certs); // determines if this is an apple developer certificate for library validation
 
 public:
 	void staticValidate(SecCSFlags flags, const SecRequirement *req);
 	void staticValidateCore(SecCSFlags flags, const SecRequirement *req);
 	
 protected:
+	typedef std::map<CodeDirectory::HashAlgorithm, CFCopyRef<CFDataRef> > CodeDirectoryMap;
+	bool loadCodeDirectories(CodeDirectoryMap& cdMap) const;
+	
+protected:
 	CFDictionaryRef getDictionary(CodeDirectory::SpecialSlot slot, bool check = true); // component value as a dictionary
 	bool verifySignature();
 	CFArrayRef verificationPolicies();
+	
+	// load preferred rules/files dictionaries (cached therein)
+	bool loadResources(CFDictionaryRef& rules, CFDictionaryRef& files, uint32_t& version);
 
 	static void checkOptionalResource(CFTypeRef key, CFTypeRef value, void *context);
 	bool hasWeakResourceRules(CFDictionaryRef rulesDict, uint32_t version, CFArrayRef allowedOmissions);
@@ -210,6 +223,8 @@ private:
 
 private:
 	RefPointer<DiskRep> mRep;			// on-disk representation
+	mutable CodeDirectoryMap mCodeDirectories; // available CodeDirectory blobs by digest type
+	mutable CFRef<CFDataRef> mBaseDir;	// the primary CodeDirectory blob (whether it's chosen or not)
 	CFRef<CFDataRef> mDetachedSig;		// currently applied explicit detached signature
 	
 	// private validation modifiers (only used by Gatekeeper checkfixes)
@@ -243,9 +258,9 @@ private:
 	const SecStaticCode *mOuterScope;	// containing code (if this is a nested validation; weak)
 	ResourceBuilder *mResourceScope;	// current Resource validation stack (while validating; weak)
 
-	
 	// cached contents
-	CFRef<CFDataRef> mDir;				// code directory data
+	mutable CFRef<CFDataRef> mDir;		// code directory data
+	mutable CodeDirectory::HashAlgorithms mHashAlgorithms; // available hash algorithms
 	CFRef<CFDataRef> mSignature;		// CMS signature data
 	CFAbsoluteTime mSigningTime;		// (signed) signing time
 	CFAbsoluteTime mSigningTimestamp;		// Timestamp time (from timestamping authority)
@@ -256,7 +271,8 @@ private:
 	CFRef<CFDictionaryRef> mEntitlements; // derived from mCache slot
 	CFRef<CFDictionaryRef> mResourceDict; // derived from mCache slot
 	const Requirement *mDesignatedReq;	// cached designated req if we made one up
-	CFRef<CFDataRef> mCDHash;			// hash of CodeDirectory
+	CFRef<CFDataRef> mCDHash;			// hash of chosen CodeDirectory
+	CFRef<CFArrayRef> mCDHashes;		// hashes of all CodeDirectories (in digest type code order)
 	
 	bool mGotResourceBase;				// asked mRep for resourceBasePath
 	CFRef<CFURLRef> mResourceBase;		// URL form of resource base directory

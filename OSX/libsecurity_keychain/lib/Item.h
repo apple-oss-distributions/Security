@@ -45,7 +45,10 @@ class Keychain;
 class ItemImpl : public SecCFObject
 {
 public:
-	SECCFFUNCTIONS(ItemImpl, SecKeychainItemRef, errSecInvalidItemRef, gTypes().ItemImpl)
+	SECCFFUNCTIONS_CREATABLE(ItemImpl, SecKeychainItemRef, gTypes().ItemImpl)
+
+    static ItemImpl *required(SecKeychainItemRef ptr);
+    static ItemImpl *optional(SecKeychainItemRef ptr);
 
     friend class Item;
 	friend class KeychainImpl;
@@ -79,13 +82,39 @@ public:
 	CFDataRef getPersistentRef();
 	
 	PrimaryKey addWithCopyInfo(Keychain &keychain, bool isCopy);
-	Mutex* getMutexForObject();
+	Mutex* getMutexForObject() const;
+
+    // Return true iff the item integrity has not been compromised.
+    virtual bool checkIntegrity();
+    bool checkIntegrity(AclBearer& key);
+    static bool checkIntegrityFromDictionary(AclBearer& key, DbAttributes* dbAttributes);
 
 protected:
 	// Methods called by KeychainImpl;
 
 	// Add the receiver to keychain
 	virtual PrimaryKey add(Keychain &keychain);
+
+    // Prepare a dbAttributes to extract all possible attributes with a call to
+    // getContent.
+    void fillDbAttributesFromSchema(DbAttributes& dbAttributes, CSSM_DB_RECORDTYPE recordType, Keychain keychain = NULL);
+
+    // Get all current attributes of this item. This will call out to the
+    // database (if there is one) and then overly the current pending updates.
+    // You must delete the returned object.
+    DbAttributes* getCurrentAttributes();
+
+    // Return a canonical form of this item's attributes
+    void encodeAttributes(CssmOwnedData &attributeBlob);
+
+    // Return a canonical form of the attributes passed in
+    static void encodeAttributesFromDictionary(CssmOwnedData &attributeBlob, DbAttributes* dbAttributes);
+
+    // Return a canonical digest of the record type and attributes of the item
+    void computeDigest(CssmOwnedData &sha2);
+
+    // Return a canonical digest of the record type and attributes passed in
+    static void computeDigestFromDictionary(CssmOwnedData &sha2, DbAttributes* dbAttributes);
 
 	// Get the default value for an attribute
 	static const CSSM_DATA &defaultAttributeValue(const CSSM_DB_ATTRIBUTE_INFO &info);
@@ -163,6 +192,34 @@ public:
     bool mayDelete();
     
 protected:
+
+    /* Saves the item with a new SSGroup and ACL. If you pass in an old SSGroup,
+     * the ACL will be copied from the old group, and the old group deleted. */
+    void updateSSGroup(Db& db, CSSM_DB_RECORDTYPE recordType, CssmDataContainer* data, Keychain keychain = NULL, SecPointer<Access> access = NULL);
+
+    // Helper function to abstract out error handling. Does not report any errors.
+    void deleteSSGroup(SSGroup & ssgroup, const AccessCredentials* nullCred);
+
+    void doChange(Keychain keychain, CSSM_DB_RECORDTYPE recordType, void (^tryChange) () );
+
+    // Add integrity acl entry to access.
+    void addIntegrity(Access &access, bool force = false);
+
+    // Set the integrity of this item to whatever my attributes are now
+    // If force, then perform this even if the underlying keychain claims to not
+    // support it. (This is needed because during an upgrade, the underlying
+    // keychain is confused about its actual version until it's written to disk.)
+    virtual void setIntegrity(bool force = false);
+
+    // Set the integrity of this bearer to be whatever my attributes are now
+    virtual void setIntegrity(AclBearer &bearer, bool force = false);
+
+    // Call this function to remove the integrity and partition_id ACLs from
+    // this item. You're not supposed to be able to do this, so force the issue
+    // by providing credentials to this keychain.
+    virtual void removeIntegrity(const AccessCredentials *cred);
+    virtual void removeIntegrity(AclBearer &bearer, const AccessCredentials *cred);
+
 	// new item members
 	RefPointer<CssmDataContainer> mData;
 	auto_ptr<CssmClient::DbAttributes> mDbAttributes;

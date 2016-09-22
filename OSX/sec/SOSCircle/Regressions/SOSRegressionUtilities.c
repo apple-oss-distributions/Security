@@ -306,7 +306,7 @@ SOSPeerInfoRef SOSCreatePeerInfoFromName(CFStringRef name, SecKeyRef* outSigning
 
     require(outSigningKey, exit);
 
-    GeneratePermanentECPair(256, &publicKey, outSigningKey);
+    require_quiet(SecError(GeneratePermanentECPair(256, &publicKey, outSigningKey), error, CFSTR("Failed To Create Key")), exit);
 
     gestalt = SOSCreatePeerGestaltFromName(name);
     require(gestalt, exit);
@@ -330,6 +330,8 @@ SOSFullPeerInfoRef SOSCreateFullPeerInfoFromName(CFStringRef name, SecKeyRef* ou
 
     //GeneratePermanentECPair(256, &publicKey, outSigningKey);
     *outSigningKey = GeneratePermanentFullECKey(256, name, error);
+    require(*outSigningKey, exit);
+
     gestalt = SOSCreatePeerGestaltFromName(name);
     require(gestalt, exit);
 

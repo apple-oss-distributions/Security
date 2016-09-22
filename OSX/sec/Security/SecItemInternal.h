@@ -38,6 +38,10 @@ __BEGIN_DECLS
 
 #define kSecServerKeychainChangedNotification "com.apple.security.keychainchanged"
 
+/* label when certificate data is joined with key data */
+static const CFStringRef kSecAttrIdentityCertificateData = CFSTR("certdata");
+static const CFStringRef kSecAttrIdentityCertificateTokenID = CFSTR("certtkid");
+
 CF_RETURNS_RETAINED CFDataRef _SecItemMakePersistentRef(CFTypeRef class, sqlite_int64 rowid);
 
 bool _SecItemParsePersistentRef(CFDataRef persistent_ref, CFStringRef *return_class,
@@ -47,7 +51,7 @@ OSStatus _SecRestoreKeychain(const char *path);
 
 OSStatus SecOSStatusWith(bool (^perform)(CFErrorRef *error));
 
-bool cftype_ag_to_bool_cftype_error_request(enum SecXPCOperation op, CFTypeRef attributes, __unused CFArrayRef accessGroups, CFTypeRef *result, CFErrorRef *error);
+bool cftype_client_to_bool_cftype_error_request(enum SecXPCOperation op, CFTypeRef attributes, __unused SecurityClient *client, CFTypeRef *result, CFErrorRef *error);
 
 /* Structure representing copy-on-write dictionary.  Typical use is:
  int bar(CFDictionaryRef input);
@@ -81,6 +85,8 @@ bool SecItemAuthDo(SecCFDictionaryCOW *auth_params, CFErrorRef *error, SecItemAu
 void SecItemAuthCopyParams(SecCFDictionaryCOW *auth_params, SecCFDictionaryCOW *query);
 
 TKTokenRef SecTokenCreate(CFStringRef token_id, CFDictionaryRef auth_params, CFErrorRef *error);
+
+CFDataRef _SecTokenItemCopyValueData(CFDataRef db_value, CFErrorRef *error);
 
 __END_DECLS
 
