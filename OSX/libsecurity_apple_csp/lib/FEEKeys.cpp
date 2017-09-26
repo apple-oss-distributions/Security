@@ -68,7 +68,7 @@ void CryptKit::FEEBinaryKey::generateKeyBlob(
 		const CssmKey		*paramKey,	/* optional, unused here */
 		CSSM_KEYATTR_FLAGS 	&attrFlags)	/* IN/OUT */
 {
-	unsigned char 	*keyBlob;
+	unsigned char 	*keyBlob = NULL;
 	unsigned 		len = 0;
 	feeReturn		frtn = FR_Internal;
 	bool			freeTheKey = false;
@@ -190,6 +190,7 @@ void CryptKit::FEEBinaryKey::generateKeyBlob(
 			break;
 		default:
 			/* not reached */
+            badFormat = true;
 			break;
 	}
 	

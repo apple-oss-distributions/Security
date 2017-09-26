@@ -31,6 +31,7 @@
 #include "SecTrustSettings.h"
 #include "SecTrustSettingsPriv.h"
 #include "SecTrustSettingsCertificates.h"
+#include "SecCFRelease.h"
 #include "TrustSettingsUtils.h"
 #include "TrustSettings.h"
 #include "TrustSettingsSchema.h"
@@ -54,6 +55,7 @@
 #include <vector>
 #include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CFPreferences.h>
+#include <utilities/SecCFRelease.h>
 
 #define trustSettingsDbg(args...)	secinfo("trustSettings", ## args)
 
@@ -243,7 +245,7 @@ static void tsPurgeCache()
 	StLock<Mutex>	_(sutCacheLock());
 	trustSettingsDbg("tsPurgeCache");
 	for(domain=0; domain<TRUST_SETTINGS_NUM_DOMAINS; domain++) {
-		tsSetGlobalTrustSettings(NULL, domain);
+		tsSetGlobalTrustSettings(NULL, (SecTrustSettingsDomain) domain);
 	}
 }
 
@@ -409,7 +411,7 @@ static OSStatus tsCopyCertsCommon(
 		if(!domainEnable[domain]) {
 			continue;
 		}
-		TrustSettings *ts = tsGetGlobalTrustSettings(domain);
+		TrustSettings *ts = tsGetGlobalTrustSettings((SecTrustSettingsDomain)domain);
 		if(ts == NULL) {
 			continue;
 		}
@@ -423,7 +425,7 @@ static OSStatus tsCopyCertsCommon(
 		tsAddConditionalCerts(outArray);
 	}
 	*certArray = outArray;
-	CFRetain(*certArray);
+	CFRetainSafe(*certArray);
 	trustSettingsDbg("tsCopyCertsCommon: %ld certs found",
 		CFArrayGetCount(outArray));
 	return errSecSuccess;
@@ -550,7 +552,7 @@ OSStatus SecTrustSettingsEvaluateCert(
 	for(unsigned domain=kSecTrustSettingsDomainUser;
 			     domain<=kSecTrustSettingsDomainSystem;
 				 domain++) {
-		TrustSettings *ts = tsGetGlobalTrustSettings(domain);
+		TrustSettings *ts = tsGetGlobalTrustSettings((SecTrustSettingsDomain)domain);
 		if(ts == NULL) {
 			continue;
 		}
@@ -567,7 +569,7 @@ OSStatus SecTrustSettingsEvaluateCert(
 			 * is an Unspecified entry and we find a definitive entry
 			 * later
 			 */
-			*foundDomain = domain;
+			*foundDomain = (SecTrustSettingsDomain)domain;
 		}
 		if(found && (*resultType != kSecTrustSettingsResultUnspecified)) {
 			trustSettingsDbg("SecTrustSettingsEvaluateCert: found in domain %d", domain);
@@ -662,6 +664,7 @@ CFStringRef SecTrustSettingsCertHashStrFromCert(
 	if(certRef == kSecTrustSettingsDefaultRootCertSetting) {
 		/* use this string instead of the cert hash as the dictionary key */
 		trustSettingsDbg("SecTrustSettingsCertHashStrFromCert: DefaultSetting");
+        secerror("Caller passed kSecTrustSettingsDefaultRootCertSetting. This constant is deprecated and no longer affects the behavior of the system.");
 		return kSecTrustRecordDefaultRootCert;
 	}
 
@@ -718,7 +721,7 @@ OSStatus SecTrustSettingsSetTrustSettingsExternal(
 	OSStatus result;
 	TrustSettings* ts;
 
-	result = TrustSettings::CreateTrustSettings(kSecTrustSettingsDomainMemory, settingsIn, ts);
+	result = TrustSettings::CreateTrustSettings((SecTrustSettingsDomain)kSecTrustSettingsDomainMemory, settingsIn, ts);
 	if (result != errSecSuccess) {
 		return result;
 	}
@@ -840,18 +843,19 @@ OSStatus SecTrustSettingsCopyCertificates(
 
 	TS_REQUIRED(certArray)
 
-	OSStatus result;
+	OSStatus status;
 	TrustSettings* ts;
+	CFMutableArrayRef trustedCertArray = NULL;
 
-	result = TrustSettings::CreateTrustSettings(domain, CREATE_NO, TRIM_NO, ts);
-	if (result != errSecSuccess) {
-		return result;
+	status = TrustSettings::CreateTrustSettings(domain, CREATE_NO, TRIM_NO, ts);
+	if (status != errSecSuccess) {
+		return status;
 	}
 
 	auto_ptr<TrustSettings>_(ts);
 
 	CFMutableArrayRef outArray = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-
+    
 	/*
 	 * Keychains to search: user's search list, System.keychain, system root store
 	 */
@@ -877,42 +881,83 @@ OSStatus SecTrustSettingsCopyCertificates(
 			break;
 	}
 	ts->findCerts(keychains, outArray);
-	if(CFArrayGetCount(outArray) == 0) {
-		CFRelease(outArray);
+    CFIndex count = outArray ? CFArrayGetCount(outArray) : 0;
+	if(count == 0) {
+		CFReleaseSafe(outArray);
 		return errSecNoTrustSettings;
 	}
+ /* Go through outArray and do a SecTrustEvaluate only for DomainSystem */
 	if (kSecTrustSettingsDomainSystem == domain) {
-		tsAddConditionalCerts(outArray);
-	}
-	*certArray = outArray;
+        CFIndex i;
+        SecPolicyRef policy = SecPolicyCreateBasicX509();
+	    trustedCertArray = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+        for (i = 0; i < count ; i++) {
+            SecTrustRef trust;
+            SecTrustResultType result;
+            SecCertificateRef certificate = (SecCertificateRef) CFArrayGetValueAtIndex(outArray, i);
+            status = SecTrustCreateWithCertificates(certificate, policy, &trust);
+        	if (status != errSecSuccess) {
+               CFReleaseSafe(policy);
+     	       goto out;
+            }
+            status = SecTrustEvaluate(trust, &result);
+            if (status != errSecSuccess) {
+               CFReleaseSafe(policy);
+               goto out;
+            }
+            if (result != kSecTrustResultFatalTrustFailure) {
+                CFArrayAppendValue(trustedCertArray, certificate);
+            }
+        }
+		tsAddConditionalCerts(trustedCertArray);
+        if (CFArrayGetCount(trustedCertArray) == 0) {
+			status = errSecNoTrustSettings;
+		} else {
+			*certArray = trustedCertArray;
+			CFReleaseSafe(outArray);
+		}
+		CFReleaseSafe(policy);
+	} else {
+		*certArray = outArray;
+    }
+out:
+    if (status != errSecSuccess) {
+        CFReleaseSafe(outArray);
+		CFReleaseSafe(trustedCertArray);
+     }
+    return status;
 	END_RCSAPI
 }
 
 static CFArrayRef gUserAdminCerts = NULL;
+static bool gUserAdminCertsCacheBuilt = false;
 static ReadWriteLock gUserAdminCertsLock;
 
 void SecTrustSettingsPurgeUserAdminCertsCache(void) {
     StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Write);
-    if (gUserAdminCerts) {
-        CFRelease(gUserAdminCerts);
-        gUserAdminCerts = NULL;
-    }
+    CFReleaseNull(gUserAdminCerts);
+    gUserAdminCertsCacheBuilt = false;
 }
 
 OSStatus SecTrustSettingsCopyCertificatesForUserAdminDomains(
-    CFArrayRef  *certArray)
+                                                             CFArrayRef  *certArray)
 {
     TS_REQUIRED(certArray);
     OSStatus result = errSecSuccess;
 
-    { /* Only hold the lock for the check */
+    { /* Hold the read lock for the check */
         StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Read);
-        if (gUserAdminCerts) {
-            *certArray = (CFArrayRef)CFRetain(gUserAdminCerts);
-            return errSecSuccess;
+        if (gUserAdminCertsCacheBuilt) {
+            if (gUserAdminCerts) {
+                *certArray = (CFArrayRef)CFRetain(gUserAdminCerts);
+                return errSecSuccess;
+            } else {
+                return errSecNoTrustSettings;
+            }
         }
     }
 
+    /* There were no cached results. We'll have to recreate them. */
     CFMutableArrayRef outArray = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
     if (!outArray) {
         return errSecAllocate;
@@ -931,7 +976,7 @@ OSStatus SecTrustSettingsCopyCertificatesForUserAdminDomains(
         CFRelease(adminTrusted);
     }
 
-    /* Lack of trust settings for a domain results in an error. Only fail
+    /* Lack of trust settings for a domain results in an error above. Only fail
      * if we weren't able to get trust settings for both domains. */
     if (userStatus != errSecSuccess && adminStatus != errSecSuccess) {
         result = userStatus;
@@ -944,11 +989,12 @@ OSStatus SecTrustSettingsCopyCertificatesForUserAdminDomains(
 
     *certArray = outArray;
 
-    if (certArray && *certArray) {
+    /* For valid results, update the global cache */
+    if (result == errSecSuccess || result == errSecNoTrustSettings) {
         StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Write);
-        if (!gUserAdminCerts) {
-            gUserAdminCerts = (CFArrayRef)CFRetain(*certArray);
-        }
+        CFReleaseNull(gUserAdminCerts);
+        gUserAdminCerts = (CFArrayRef)CFRetainSafe(outArray);
+        gUserAdminCertsCacheBuilt = true;
     }
 
     return result;
@@ -1013,3 +1059,221 @@ OSStatus SecTrustSettingsImportExternalRepresentation(
 	END_RCSAPI
 }
 
+/*
+ * SecTrustSettingsSetTrustSettings convenience wrapper function.
+ */
+void SecTrustSettingsSetTrustedCertificateForSSLHost(
+    SecCertificateRef certificate,
+    CFStringRef hostname,
+    void (^result)(SecTrustSettingsResult trustResult, CFErrorRef error))
+{
+	__block CFMutableArrayRef trustSettings = NULL;
+	__block CFNumberRef trustSettingsResult = NULL;
+	__block SecTrustSettingsDomain domain = kSecTrustSettingsDomainUser;
+
+	CFDictionaryRef policyProperties = NULL;
+	CFStringRef policyOid = NULL;
+	SecPolicyRef policy = NULL;
+
+	Boolean isSelfSigned = false;
+	Boolean hasPolicyConstraint = false;
+	Boolean hasPolicyValue = false;
+	Boolean policyConstraintChanged = false;
+	Boolean changed = false;
+	CFIndex indexOfEntryWithAllowedErrorForExpiredCert = kCFNotFound;
+	CFIndex indexOfEntryWithAllowedErrorForHostnameMismatch = kCFNotFound;
+	CFIndex indexOfEntryWithAllowedErrorNotSet = kCFNotFound;
+	CFIndex i, count;
+	int32_t trustSettingsResultCode = kSecTrustSettingsResultTrustAsRoot;
+	OSStatus status = errSecSuccess;
+
+	CFRetainSafe(certificate);
+	CFRetainSafe(hostname);
+	if (!certificate || !hostname) {
+		status = errSecParam;
+	} else {
+		status = SecCertificateIsSelfSigned(certificate, &isSelfSigned);
+	}
+	if (status != errSecSuccess) {
+		goto reportErr;
+	}
+	if (isSelfSigned) {
+		trustSettingsResultCode = kSecTrustSettingsResultTrustRoot;
+	}
+	trustSettingsResult = CFNumberCreate(NULL, kCFNumberSInt32Type, &trustSettingsResultCode);
+
+	/* start with the existing trust settings for this certificate, if any */
+	{
+		CFArrayRef curTrustSettings = NULL;
+		(void)SecTrustSettingsCopyTrustSettings(certificate, domain, &curTrustSettings);
+		if (curTrustSettings) {
+			trustSettings = CFArrayCreateMutableCopy(NULL, 0, curTrustSettings);
+			CFReleaseNull(curTrustSettings);
+		} else {
+			trustSettings = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+		}
+	}
+	if (!trustSettings || !trustSettingsResult) {
+		status = errSecAllocate;
+		goto reportErr;
+	}
+
+	/* set up policy and value instances to trust the certificate for SSL for a given hostname */
+	policy = SecPolicyCreateSSL(true, hostname);
+	if (!policy) {
+		status = errSecInternal;
+		goto reportErr;
+	}
+	policyProperties = SecPolicyCopyProperties(policy);
+	if (!policyProperties) {
+		status = errSecInternal;
+		goto reportErr;
+	}
+	policyOid = (CFStringRef)CFDictionaryGetValue(policyProperties, kSecPolicyOid);
+	CFRetainSafe(policyOid);
+	if (!policyOid) {
+		status = errSecInternal;
+		goto reportErr;
+	}
+
+	/* look for dictionaries in the trust settings array for this policy and value */
+	count = CFArrayGetCount(trustSettings);
+	for (i=0; i < count; i++) {
+		CFDictionaryRef constraints = (CFDictionaryRef)CFArrayGetValueAtIndex(trustSettings, i);
+		if (!constraints) { continue; }
+		SecPolicyRef aPolicy = (SecPolicyRef)CFDictionaryGetValue(constraints, kSecTrustSettingsPolicy);
+		if (!aPolicy) { continue; }
+		CFDictionaryRef properties = SecPolicyCopyProperties(aPolicy);
+		if (!properties) { continue; }
+		CFStringRef aPolicyOid = (CFStringRef)CFDictionaryGetValue(properties, kSecPolicyOid);
+		if (aPolicyOid && kCFCompareEqualTo == CFStringCompare(aPolicyOid, policyOid, 0)) {
+			CFStringRef aPolicyString = (CFStringRef)CFDictionaryGetValue(constraints, kSecTrustSettingsPolicyString);
+			if (aPolicyString && kCFCompareEqualTo == CFStringCompare(aPolicyString, hostname, kCFCompareCaseInsensitive)) {
+				/* found existing entry */
+				CFNumberRef allowedErr = (CFNumberRef)CFDictionaryGetValue(constraints, kSecTrustSettingsAllowedError);
+				int32_t eOld = 0;
+				if (!allowedErr || !CFNumberGetValue(allowedErr, kCFNumberSInt32Type, &eOld)) {
+					eOld = CSSM_OK;
+				}
+				CFNumberRef tsResult = (CFNumberRef)CFDictionaryGetValue(constraints, kSecTrustSettingsResult);
+				int32_t rOld = 0;
+				if (!tsResult || !CFNumberGetValue(allowedErr, kCFNumberSInt32Type, &rOld)) {
+					rOld = kSecTrustSettingsResultTrustRoot;
+				}
+				if (!hasPolicyValue) { hasPolicyValue = (aPolicyString != NULL); }
+				if (!hasPolicyConstraint) { hasPolicyConstraint = true; }
+				if (eOld == CSSMERR_TP_CERT_EXPIRED) {
+					indexOfEntryWithAllowedErrorForExpiredCert = i;
+				} else if (eOld == CSSMERR_APPLETP_HOSTNAME_MISMATCH) {
+					indexOfEntryWithAllowedErrorForHostnameMismatch = i;
+				} else if (eOld == CSSM_OK) {
+					indexOfEntryWithAllowedErrorNotSet = i;
+				}
+				if (trustSettingsResultCode != rOld) {
+					changed = policyConstraintChanged = true;  // we are changing existing policy constraint's result
+				}
+			}
+		}
+		CFReleaseSafe(properties);
+	}
+
+	if (!hasPolicyConstraint) {
+		policyConstraintChanged = true; // we are adding a new policy constraint
+	} else if (hostname && !hasPolicyValue) {
+		policyConstraintChanged = true; // we need to add the hostname to an existing policy constraint
+	} else if ((indexOfEntryWithAllowedErrorForExpiredCert == kCFNotFound) ||
+			   (indexOfEntryWithAllowedErrorForHostnameMismatch == kCFNotFound)) {
+		policyConstraintChanged = true; // we are missing one of the expected allowed-error entries for this policy
+	}
+
+	if (policyConstraintChanged) {
+		CFMutableDictionaryRef policyDict[2] = { NULL, NULL };
+		policyDict[0] = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		policyDict[1] = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		int32_t certExpiredCode = (int32_t)CSSMERR_TP_CERT_EXPIRED;
+		CFNumberRef certExpired = CFNumberCreate(NULL, kCFNumberSInt32Type, &certExpiredCode);
+		int32_t hostnameMismatchCode = (int32_t)CSSMERR_APPLETP_HOSTNAME_MISMATCH;
+		CFNumberRef hostnameMismatch = CFNumberCreate(NULL, kCFNumberSInt32Type, &hostnameMismatchCode);
+		if (!policyDict[0] || !policyDict[1] || !certExpired || !hostnameMismatch) {
+			status = errSecInternal;
+		} else {
+			/* set up entry for policy, hostname, expired cert error, and result */
+			CFDictionarySetValue(policyDict[0], kSecTrustSettingsPolicy, policy);
+			CFDictionarySetValue(policyDict[0], kSecTrustSettingsPolicyString, hostname);
+			CFDictionarySetValue(policyDict[0], kSecTrustSettingsAllowedError, certExpired);
+			CFDictionarySetValue(policyDict[0], kSecTrustSettingsResult, trustSettingsResult);
+			if (indexOfEntryWithAllowedErrorForExpiredCert != kCFNotFound) {
+				/* if we found an existing constraint for this policy, hostname, and allowed error, replace it */
+				CFArraySetValueAtIndex(trustSettings, indexOfEntryWithAllowedErrorForExpiredCert, policyDict[0]);
+			} else if (!(hasPolicyValue)) {
+				/* add a new policy constraint */
+				CFArrayAppendValue(trustSettings, policyDict[0]);
+			}
+			/* set up additional entry for policy, hostname, hostname mismatch error, and result */
+			CFDictionarySetValue(policyDict[1], kSecTrustSettingsPolicy, policy);
+			CFDictionarySetValue(policyDict[1], kSecTrustSettingsPolicyString, hostname);
+			CFDictionarySetValue(policyDict[1], kSecTrustSettingsAllowedError, hostnameMismatch);
+			CFDictionarySetValue(policyDict[1], kSecTrustSettingsResult, trustSettingsResult);
+			if (indexOfEntryWithAllowedErrorForHostnameMismatch != kCFNotFound) {
+				/* if we found an existing constraint for this policy, hostname, and allowed error, replace it */
+				CFArraySetValueAtIndex(trustSettings, indexOfEntryWithAllowedErrorForHostnameMismatch, policyDict[1]);
+			} else if (!(hasPolicyValue)) {
+				/* add a new policy constraint */
+				CFArrayAppendValue(trustSettings, policyDict[1]);
+			}
+		}
+		CFReleaseSafe(policyDict[0]);
+		CFReleaseSafe(policyDict[1]);
+		CFReleaseSafe(certExpired);
+		CFReleaseSafe(hostnameMismatch);
+	}
+
+	if (status != errSecSuccess) {
+		goto reportErr;
+	}
+	CFReleaseSafe(policyOid);
+	CFReleaseSafe(policyProperties);
+	CFReleaseSafe(policy);
+
+	dispatch_async(dispatch_get_main_queue(), ^{
+		/* add certificate to keychain first */
+		OSStatus status = SecCertificateAddToKeychain(certificate, NULL);
+		if (status == errSecSuccess || status == errSecDuplicateItem) {
+			/* this will block on authorization UI... */
+			status = SecTrustSettingsSetTrustSettings(certificate,
+				domain, trustSettings);
+		}
+		if (result) {
+			CFErrorRef error = NULL;
+			if (status) {
+				error = CFErrorCreate(NULL, kCFErrorDomainOSStatus, status, NULL);
+			}
+			int32_t tsrc;
+			if (!CFNumberGetValue(trustSettingsResult, kCFNumberSInt32Type, (int32_t*)&tsrc)) {
+				tsrc = (int32_t)kSecTrustSettingsResultUnspecified;
+			}
+			result((SecTrustSettingsResult)tsrc, error);
+			CFReleaseSafe(error);
+		}
+		CFRelease(trustSettingsResult);
+		CFRelease(trustSettings);
+		CFRelease(certificate);
+		CFRelease(hostname);
+	});
+
+	return;
+
+reportErr:
+	CFReleaseSafe(policyOid);
+	CFReleaseSafe(policyProperties);
+	CFReleaseSafe(policy);
+	CFReleaseSafe(trustSettingsResult);
+	CFReleaseSafe(trustSettings);
+	CFReleaseSafe(certificate);
+	CFReleaseSafe(hostname);
+	if (result) {
+		CFErrorRef error = CFErrorCreate(NULL, kCFErrorDomainOSStatus, status, NULL);
+		result(kSecTrustSettingsResultInvalid, error);
+		CFReleaseSafe(error);
+	}
+}

@@ -26,6 +26,7 @@
 #define _SECCFERROR_H_
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <utilities/SecCFRelease.h>
 
 //
 // Leaf error creation from other systems
@@ -33,39 +34,47 @@
 
 // kern_return_t errors
 #define kSecKernDomain  kCFErrorDomainMach
-bool SecKernError(kern_return_t result, CFErrorRef *error, CFStringRef format, ...);
+bool SecKernError(kern_return_t result, CFErrorRef *error, CFStringRef format, ...)
+   CF_FORMAT_FUNCTION(3, 4);
 
 // Unix errno errors
 #define kSecErrnoDomain  kCFErrorDomainPOSIX
-bool SecCheckErrno(int result, CFErrorRef *error, CFStringRef format, ...);
+bool SecCheckErrno(int result, CFErrorRef *error, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 // OSStatus errors
 #define kSecErrorDomain  kCFErrorDomainOSStatus
-bool SecError(OSStatus status, CFErrorRef *error, CFStringRef format, ...);
+bool SecError(OSStatus status, CFErrorRef *error, CFStringRef format, ...)
+   CF_FORMAT_FUNCTION(3, 4);
 
 // Direct checking of POSIX errors.
-bool SecPOSIXError(int error, CFErrorRef *cferror, CFStringRef format, ...);
+bool SecPOSIXError(int error, CFErrorRef *cferror, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 // CoreCrypto error
 #define kSecCoreCryptoDomain CFSTR("kSecCoreCryptoDomain")
-bool SecCoreCryptoError(int error, CFErrorRef *cferror, CFStringRef format, ...);
+bool SecCoreCryptoError(int error, CFErrorRef *cferror, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 // Notification
 #define kSecNotifyDomain CFSTR("kSecNotifyDomain")
-bool SecNotifyError(uint32_t result, CFErrorRef *error, CFStringRef format, ...);
+bool SecNotifyError(uint32_t result, CFErrorRef *error, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
+
 
 // requirement error, typically parameters
-bool SecRequirementError(bool requirement, CFErrorRef *error, CFStringRef format, ...);
+bool SecRequirementError(bool requirement, CFErrorRef *error, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 // Allocation failure
-bool SecAllocationError(const void *allocated, CFErrorRef *error, CFStringRef format, ...);
-
+bool SecAllocationError(const void *allocated, CFErrorRef *error, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 //
 // Create and chain, all return false to make the analyzer happy.
 //
-bool SecCFCreateError(CFIndex errorCode, CFStringRef domain, CFStringRef descriptionString,
-                      CFErrorRef previousError, CFErrorRef *newError);
+#define SecCFCreateError(errorCode, domain, descriptionString, previousError, newError) \
+    SecCFCreateErrorWithFormat(errorCode, domain, previousError, newError, NULL, descriptionString)
 
 bool SecCFCreateErrorWithFormat(CFIndex errorCode, CFStringRef domain, CFErrorRef previousError, CFErrorRef *newError,
                                 CFDictionaryRef formatoptions, CFStringRef descriptionString, ...)
@@ -112,6 +121,69 @@ static inline bool asSetOptional(CFTypeRef cfType, CFSetRef *set, CFErrorRef *er
 // MARK: Required value type casting
 //
 
+//
+// MARK: Required value type casting
+//
+
+static inline CFArrayRef copyIfArray(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFArrayGetTypeID())
+        return (CFArrayRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not an array"), cfType);
+    return NULL;
+}
+
+static inline CFBooleanRef copyIfBoolean(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFBooleanGetTypeID())
+        return (CFBooleanRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not an boolean"), cfType);
+    return NULL;
+}
+
+static inline CFDataRef copyIfData(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFDataGetTypeID())
+        return (CFDataRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a data"), cfType);
+    return NULL;
+}
+
+static inline CFDateRef copyIfDate(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFDateGetTypeID())
+        return (CFDateRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a date"), cfType);
+    return NULL;
+}
+
+static inline CFDictionaryRef copyIfDictionary(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFDictionaryGetTypeID())
+        return (CFDictionaryRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a dictionary"), cfType);
+    return NULL;
+}
+
+static inline CFSetRef copyIfSet(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFSetGetTypeID())
+        return (CFSetRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a set"), cfType);
+    return NULL;
+}
+
+static inline CFStringRef copyIfString(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFStringGetTypeID())
+        return (CFStringRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a string"), cfType);
+    return NULL;
+}
+
+static inline CFUUIDRef copyIfUUID(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFUUIDGetTypeID())
+        return (CFUUIDRef)CFRetainSafe(cfType);
+    SecError(-50, error, CFSTR("object %@ is not a UUID"), cfType);
+    return NULL;
+}
+
+//
+// MARK: Analyzer confusing asXxx casting
+//
 static inline CFArrayRef asArray(CFTypeRef cfType, CFErrorRef *error) {
     if (cfType && CFGetTypeID(cfType) == CFArrayGetTypeID())
         return (CFArrayRef)cfType;
@@ -158,6 +230,13 @@ static inline CFStringRef asString(CFTypeRef cfType, CFErrorRef *error) {
     if (cfType && CFGetTypeID(cfType) == CFStringGetTypeID())
         return (CFStringRef)cfType;
     SecError(-50, error, CFSTR("object %@ is not a string"), cfType);
+    return NULL;
+}
+
+static inline CFUUIDRef asUUID(CFTypeRef cfType, CFErrorRef *error) {
+    if (cfType && CFGetTypeID(cfType) == CFUUIDGetTypeID())
+        return (CFUUIDRef)cfType;
+    SecError(-50, error, CFSTR("object %@ is not a UUID"), cfType);
     return NULL;
 }
 

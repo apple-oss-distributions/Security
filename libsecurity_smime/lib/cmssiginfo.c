@@ -60,6 +60,7 @@
 #include <utilities/SecCFWrappers.h>
 #include <CoreFoundation/CFTimeZone.h>
 #include <Security/SecBasePriv.h>
+#include <Security/SecItem.h>
 
 
 #define HIDIGIT(v) (((v) / 10) + '0')    
@@ -193,11 +194,21 @@ SecCmsSignerInfoCreate(SecCmsSignedDataRef sigd, SecIdentityRef identity, SECOid
     SecCmsSignerInfoRef signerInfo = NULL;
     SecCertificateRef cert = NULL;
     SecPrivateKeyRef signingKey = NULL;
+    CFDictionaryRef keyAttrs = NULL;
 
     if (SecIdentityCopyCertificate(identity, &cert))
 	goto loser;
     if (SecIdentityCopyPrivateKey(identity, &signingKey))
 	goto loser;
+
+    /* In some situations, the "Private Key" in the identity is actually a public key. Check. */
+    keyAttrs = SecKeyCopyAttributes(signingKey);
+    if (!keyAttrs)
+        goto loser;
+    CFTypeRef class = CFDictionaryGetValue(keyAttrs, kSecAttrKeyClass);
+    if (!class || (CFGetTypeID(class) != CFStringGetTypeID()) || !CFEqual(class, kSecAttrKeyClassPrivate)) {
+        goto loser;
+    }
 
     signerInfo = nss_cmssignerinfo_create(sigd, SecCmsSignerIDIssuerSN, cert, NULL, NULL, signingKey, digestalgtag);
 
@@ -206,6 +217,8 @@ loser:
 	CFRelease(cert);
     if (signingKey)
 	CFRelease(signingKey);
+    if (keyAttrs)
+        CFRelease(keyAttrs);
 
     return signerInfo;
 }
@@ -245,8 +258,10 @@ nss_cmssignerinfo_create(SecCmsSignedDataRef sigd, SecCmsSignerIDSelector type, 
         if (!subjKeyID)
             goto loser;
         signerinfo->signerIdentifier.id.subjectKeyID = PORT_ArenaNew(poolp, SecAsn1Item);
-        SECITEM_CopyItem(poolp, signerinfo->signerIdentifier.id.subjectKeyID,
-                         subjKeyID);
+        if (SECITEM_CopyItem(poolp, signerinfo->signerIdentifier.id.subjectKeyID,
+                             subjKeyID)) {
+            goto loser;
+        }
         signerinfo->pubKey = SECKEY_CopyPublicKey(pubKey);
         if (!signerinfo->pubKey)
             goto loser;
@@ -289,11 +304,17 @@ loser:
 void
 SecCmsSignerInfoDestroy(SecCmsSignerInfoRef si)
 {
-    if (si->cert != NULL)
-	CERT_DestroyCertificate(si->cert);
+    if (si->cert != NULL) {
+        CERT_DestroyCertificate(si->cert);
+    }
 
-    if (si->certList != NULL) 
-	CFRelease(si->certList);
+    if (si->certList != NULL) {
+        CFRelease(si->certList);
+    }
+
+    if (si->hashAgilityAttrValue != NULL) {
+        CFRelease(si->hashAgilityAttrValue);
+    }
 
     /* XXX storage ??? */
 }
@@ -542,6 +563,17 @@ SecCmsSignerInfoCopySigningCertificates(SecCmsSignerInfoRef signerinfo)
             CFRelease(cert);
         }
     }
+
+    if ((CFArrayGetCount(certs) == 0) &&
+        (signerinfo->signerIdentifier.identifierType == SecCmsSignerIDSubjectKeyID))
+    {
+        SecCertificateRef cert = CERT_FindCertificateBySubjectKeyID(signerinfo->signedData->certs,
+                                                                    signerinfo->signerIdentifier.id.subjectKeyID);
+        if (cert) {
+            CFArrayAppendValue(certs, cert);
+            CFRelease(cert);
+        }
+    }
     return certs;
 }
 #endif
@@ -615,7 +647,6 @@ SecCmsSignerInfoVerify(SecCmsSignerInfoRef signerinfo, SecAsn1Item * digest, Sec
     SecCertificateRef cert;
     SecCmsVerificationStatus vs = SecCmsVSUnverified;
     PLArenaPool *poolp;
-    SECOidTag digestAlgTag, digestEncAlgTag;
 
     if (signerinfo == NULL)
 	return SECFailure;
@@ -638,8 +669,6 @@ SecCmsSignerInfoVerify(SecCmsSignerInfoRef signerinfo, SecAsn1Item * digest, Sec
         goto loser;
 #endif
 
-    digestAlgTag = SECOID_GetAlgorithmTag(&(signerinfo->digestAlg));
-    digestEncAlgTag = SECOID_GetAlgorithmTag(&(signerinfo->digestEncAlg));
     if (!SecCmsArrayIsEmpty((void **)signerinfo->authAttr)) {
 	if (contentType) {
 	    /*
@@ -940,6 +969,10 @@ SecCmsSignerInfoGetSigningCertificate(SecCmsSignerInfoRef signerinfo, SecKeychai
 
     if (!signerinfo->cert && (signerinfo->signerIdentifier.identifierType == SecCmsSignerIDIssuerSN)) {
         cert = CERT_FindCertificateByIssuerAndSN(signerinfo->signedData->certs, signerinfo->signerIdentifier.id.issuerAndSN);
+        signerinfo->cert = cert;
+    }
+    if (!signerinfo->cert && (signerinfo->signerIdentifier.identifierType == SecCmsSignerIDSubjectKeyID)) {
+        cert = CERT_FindCertificateBySubjectKeyID(signerinfo->signedData->certs, signerinfo->signerIdentifier.id.subjectKeyID);
         signerinfo->cert = cert;
     }
 #endif
@@ -1299,6 +1332,33 @@ SecCmsSignerInfoAddAppleCodesigningHashAgility(SecCmsSignerInfoRef signerinfo, C
 loser:
     PORT_ArenaRelease(poolp, mark);
     return status;
+}
+
+SecCertificateRef SecCmsSignerInfoCopyCertFromEncryptionKeyPreference(SecCmsSignerInfoRef signerinfo) {
+    SecCertificateRef cert = NULL;
+    SecCmsAttribute *attr;
+    SecAsn1Item *ekp;
+
+    /* sanity check - see if verification status is ok (unverified does not count...) */
+    if (signerinfo->verificationStatus != SecCmsVSGoodSignature)
+        return NULL;
+
+    /* find preferred encryption cert */
+    if (!SecCmsArrayIsEmpty((void **)signerinfo->authAttr) &&
+        (attr = SecCmsAttributeArrayFindAttrByOidTag(signerinfo->authAttr,
+                                                     SEC_OID_SMIME_ENCRYPTION_KEY_PREFERENCE, PR_TRUE)) != NULL)
+    { /* we have a SMIME_ENCRYPTION_KEY_PREFERENCE attribute! Find the cert. */
+        ekp = SecCmsAttributeGetValue(attr);
+        if (ekp == NULL)
+            return NULL;
+
+        SecAsn1Item **rawCerts = NULL;
+        if (signerinfo->signedData) {
+            rawCerts = signerinfo->signedData->rawCerts;
+        }
+        cert = SecSMIMEGetCertFromEncryptionKeyPreference(rawCerts, ekp);
+    }
+    return cert;
 }
 
 /*

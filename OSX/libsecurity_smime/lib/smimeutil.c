@@ -191,8 +191,7 @@ SecSMIMEEnableCipher(uint32 which, Boolean on)
 	return SECFailure;
     }
 
-    if (smime_cipher_map[mapi].enabled != on)
-	smime_cipher_map[mapi].enabled = on;
+    smime_cipher_map[mapi].enabled = on;
 
     return SECSuccess;
 }
@@ -219,8 +218,7 @@ SecSMIMEAllowCipher(uint32 which, Boolean on)
 	/* XXX set an error */
 	return SECFailure;
 
-    if (smime_cipher_map[mapi].allowed != on)
-	smime_cipher_map[mapi].allowed = on;
+    smime_cipher_map[mapi].allowed = on;
 
     return SECSuccess;
 }
@@ -574,6 +572,9 @@ SecSMIMEFindBulkAlgForRecipients(SecCertificateRef *rcerts, SECOidTag *bulkalgta
 
     cipher = smime_choose_cipher(NULL, rcerts);
     mapi = smime_mapi_by_cipher(cipher);
+    if (mapi < 0) {
+        return SECFailure;
+    }
 
     *bulkalgtag = smime_cipher_map[mapi].algtag;
     *keysize = smime_keysize_by_cipher(smime_cipher_map[mapi].cipher);
@@ -745,7 +746,7 @@ loser:
  * they are assumed to have been imported already.
  */
 SecCertificateRef
-SecSMIMEGetCertFromEncryptionKeyPreference(SecKeychainRef keychainOrArray, CSSM_DATA_PTR DERekp)
+SecSMIMEGetCertFromEncryptionKeyPreference(SecKeychainRef keychainOrArray, CSSM_DATA_PTR *rawCerts, CSSM_DATA_PTR DERekp)
 {
     PLArenaPool *tmppoolp = NULL;
     SecCertificateRef cert = NULL;
@@ -762,11 +763,11 @@ SecSMIMEGetCertFromEncryptionKeyPreference(SecKeychainRef keychainOrArray, CSSM_
     /* find cert */
     switch (ekp.selector) {
     case NSSSMIMEEncryptionKeyPref_IssuerSN:
-	cert = CERT_FindCertByIssuerAndSN(keychainOrArray, NULL, NULL, ekp.id.issuerAndSN);
+	cert = CERT_FindCertByIssuerAndSN(keychainOrArray, rawCerts, NULL, tmppoolp, ekp.id.issuerAndSN);
 	break;
     case NSSSMIMEEncryptionKeyPref_RKeyID:
     case NSSSMIMEEncryptionKeyPref_SubjectKeyID:
-	/* XXX not supported yet - we need to be able to look up certs by SubjectKeyID */
+            cert = CERT_FindCertBySubjectKeyID(keychainOrArray, rawCerts, NULL, ekp.id.subjectKeyID);
 	break;
     default:
 	PORT_Assert(0);

@@ -23,7 +23,7 @@
 
 /*
  * This is to fool os services to not provide the Keychain manager
- * interface tht doens't work since we don't have unified headers
+ * interface that doesn't work since we don't have unified headers
  * between iOS and OS X. rdar://23405418/
  */
 #define __KEYCHAINCORE__ 1
@@ -57,8 +57,6 @@ command_bubble(__unused int argc, __unused char * const * argv)
         } else {
             errx(1, "%s", [[NSString stringWithFormat:@"sync bubble failed to inflate: %@\n", error] UTF8String]);
         }
-        if (error)
-            CFRelease(error);
     }
 
     return 0;

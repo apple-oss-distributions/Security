@@ -46,6 +46,7 @@ try
 }
 catch (...)
 {
+    return;	// Prevent re-throw of exception [function-try-block]
 }
 
 SSUniqueRecord
@@ -260,7 +261,7 @@ SSDatabaseImpl::ssCreate(const DLDbIdentifier &dlDbIdentifier)
 		mSSDbHandle = mClientSession.createDb(dlDbIdentifier, cred, owner, dbParameters);
 		CssmDataContainer dbb(allocator());
 		mClientSession.encodeDb(mSSDbHandle, dbb, allocator());
-        secnotice("integrity", "opening %s", name());
+        secinfo("integrity", "opening %s", name());
 		Db::Impl::insert(DBBlobRelationID, NULL, &dbb);
 		if (autoCommit)
 		{
@@ -291,7 +292,7 @@ SSDatabaseImpl::ssCreateWithBlob(const DLDbIdentifier &dlDbIdentifier, const CSS
 	{
 		bool autoCommit;
 		commonCreate(dlDbIdentifier, autoCommit);
-        secnotice("integrity", "opening %s", name());
+        secinfo("integrity", "opening %s", name());
 		Db::Impl::insert(DBBlobRelationID, NULL, &blob);
 		if (autoCommit)
 		{
@@ -327,7 +328,7 @@ SSDatabaseImpl::load(const DLDbIdentifier &dlDbIdentifier) {
     CssmDataContainer dbb(allocator());
     getDbBlobId(&dbb);
 
-    secnotice("integrity", "loading %s", name());
+    secinfo("integrity", "loading %s", name());
 }
 
 void
@@ -383,9 +384,9 @@ SSDatabaseImpl::recodeDbToVersion(uint32 newBlobVersion) {
     try
     {
         if(isLocked()) {
-            secnotice("integrity", "is currently locked");
+            secinfo("integrity", "is currently locked");
         } else {
-            secnotice("integrity", "is already unlocked");
+            secinfo("integrity", "is already unlocked");
         }
 
         CssmDataContainer dbb(allocator());
@@ -397,15 +398,15 @@ SSDatabaseImpl::recodeDbToVersion(uint32 newBlobVersion) {
         dbb.clear();
 
         // Create a newDbHandle using the master secrets from the dbBlob we are recoding to.
-        secnotice("integrity", "recoding db with handle %d", mSSDbHandle);
+        secinfo("integrity", "recoding db with handle %d", mSSDbHandle);
         SecurityServer::DbHandle clonedDbHandle = mClientSession.recodeDbToVersion(newBlobVersion, mSSDbHandle);
-        secnotice("integrity", "received db with handle %d", clonedDbHandle);
+        secinfo("integrity", "received db with handle %d", clonedDbHandle);
 
         // @@@ If the dbb changed since we fetched it we should abort or
         // retry the operation here.
 
         uint32 newBlobVersion = recodeHelper(clonedDbHandle, dbBlobId);
-        secnotice("integrity", "committing transaction %d", clonedDbHandle);
+        secinfo("integrity", "committing transaction %d", clonedDbHandle);
 
         // Commit the transaction to the db
         transaction.commit();
@@ -518,7 +519,7 @@ uint32 SSDatabaseImpl::recodeHelper(SecurityServer::DbHandle clonedDbHandle, Css
     // Commit the new blob to securityd, reencode the db blob, release the
     // cloned db handle and commit the new blob to the db.
     CssmDataContainer dbb(allocator());
-    secnotice("integrity", "committing %d", clonedDbHandle);
+    secinfo("integrity", "committing %d", clonedDbHandle);
     mClientSession.commitDbForSync(mSSDbHandle, clonedDbHandle,
             dbb, allocator());
     dbBlobId->modify(DBBlobRelationID, NULL, &dbb,

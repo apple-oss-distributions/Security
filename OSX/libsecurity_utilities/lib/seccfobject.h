@@ -29,7 +29,11 @@
 #include <CoreFoundation/CFRuntime.h>
 #include <new>
 #include "threading.h"
+#include <os/lock.h>
+
+#if( __cplusplus <= 201103L)
 #include <stdatomic.h>
+#endif
 
 namespace Security {
 
@@ -79,7 +83,7 @@ private:
 	static const size_t kAlignedRuntimeSize = SECALIGNUP(sizeof(SecRuntimeBase), 4);
 
     uint32_t mRetainCount;
-    OSSpinLock mRetainSpinLock;
+    os_unfair_lock mRetainLock;
 
 public:
 	// For use by SecPointer only. Returns true once the first time it's called after the object has been created.

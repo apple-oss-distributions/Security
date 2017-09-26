@@ -59,6 +59,9 @@
 #include <sys/sysctl.h>
 #include <sys/kauth.h>
 #include <sys/csr.h>
+__BEGIN_DECLS
+#include <corecrypto/ccmode_siv.h>
+__END_DECLS
 
 void unflattenKey(const CssmData &flatKey, CssmKey &rawKey);	//>> make static method on KeychainDatabase
 
@@ -171,7 +174,10 @@ change_secret_on_keybag(KeychainDatabase & db, const void * secret, int secret_l
     // if for some reason we are locked lets unlock so later we don't try and throw up SecurityAgent dialog
     bool locked = false;
     if ((service_client_kb_is_locked(&context, &locked, NULL) == KB_Success) && locked) {
-        service_client_kb_unlock(&context, new_secret, new_secret_len);
+        rc = service_client_kb_unlock(&context, new_secret, new_secret_len);
+        if (rc != KB_Success) {
+            syslog(LOG_ERR, "Failed to unlock iCloud keychain for uid %d (%d)", context.s_uid, (int)rc);
+        }
     }
 }
 
@@ -295,14 +301,13 @@ KeychainDatabase::KeychainDatabase(const DLDbIdentifier &id, const DbBlob *blob,
     DbIdentifier ident(id, blob->randomSignature);
 	Session &session = process().session();
 	RefPointer<KeychainDbCommon> com;
-    secnotice("kccommon", "looking for a common at %s", ident.dbName());
+    secinfo("kccommon", "looking for a common at %s", ident.dbName());
 	if (KeychainDbCommon::find(ident, session, com)) {
-        secnotice("kccommon", "found %p", com.get());
 		parent(*com);
         secinfo("KCdb", "joining keychain %p %s with common %p", this, (char*)this->dbName(), &common());
 	} else {
 		// DbCommon not present; make a new one
-        secnotice("kccommon", "no common found");
+        secinfo("kccommon", "no common found");
 		parent(*com);
 		common().mParams = blob->params;
         secinfo("KCdb", "making keychain %p %s with common %p", this, (char*)this->dbName(), &common());
@@ -333,7 +338,7 @@ bool KeychainDbCommon::find(const DbIdentifier &ident, Session &session, RefPoin
         for (CommonSet::const_iterator it = mCommonSet.begin(); it != mCommonSet.end(); ++it) {
             if (&session == &(*it)->session() && ident == (*it)->identifier()) {
                 common = *it;
-                secnotice("kccommon", "found a common for %s at %p", ident.dbName(), common.get());
+                secinfo("kccommon", "found a common for %s at %p", ident.dbName(), common.get());
                 return true;
             }
         }
@@ -346,7 +351,7 @@ bool KeychainDbCommon::find(const DbIdentifier &ident, Session &session, RefPoin
         for (CommonSet::const_iterator it = mCommonSet.begin(); it != mCommonSet.end(); ++it) {
             if (&session == &(*it)->session() && ident == (*it)->identifier()) {
                 common = *it;
-                secnotice("kccommon", "found a common for %s at %p", ident.dbName(), common.get());
+                secinfo("kccommon", "found a common for %s at %p", ident.dbName(), common.get());
                 return true;
             }
         }
@@ -360,7 +365,7 @@ bool KeychainDbCommon::find(const DbIdentifier &ident, Session &session, RefPoin
             common = new KeychainDbCommon(session, ident);
         }
 
-        secnotice("kccommon", "made a new common for %s at %p", ident.dbName(), common.get());
+        secinfo("kccommon", "made a new common for %s at %p", ident.dbName(), common.get());
 
         // Can't call insert() here, because it grabs the write lock (which we have).
         common->insertHoldingLock();
@@ -446,7 +451,7 @@ KeychainDatabase::KeychainDatabase(const DLDbIdentifier& id, KeychainDatabase &s
     RefPointer<KeychainDbCommon> newCommon;
     if(KeychainDbCommon::find(ident, process().session(), newCommon, CommonBlob::version_none, &src.common())) {
         // A common already existed. Write over it, but note that everything may go horribly from here on out.
-        secnotice("kccommon", "Found common where we didn't expect. Possible strange behavior ahead.");
+        secinfo("kccommon", "Found common where we didn't expect. Possible strange behavior ahead.");
         newCommon->cloneFrom(src.common());
     }
 
@@ -497,7 +502,7 @@ KeychainDatabase::KeychainDatabase(uint32 requestedVersion, KeychainDatabase &sr
     RefPointer<KeychainDbCommon> newCommon;
     if(KeychainDbCommon::find(ident, process().session(), newCommon, requestedVersion)) {
         // A common already existed here. Write over it, but note that everything may go horribly from here on out.
-        secnotice("kccommon", "Found common where we didn't expect. Possible strange behavior ahead.");
+        secinfo("kccommon", "Found common where we didn't expect. Possible strange behavior ahead.");
         newCommon->cloneFrom(src.common(), requestedVersion);
     }
     newCommon->initializeKeybag();
@@ -787,7 +792,7 @@ void KeychainDatabase::makeUnlocked(bool unlockKeybag)
 void KeychainDatabase::makeUnlocked(const AccessCredentials *cred, bool unlockKeybag)
 {
     if (isLocked()) {
-		secinfo("KCdb", "%p(%p) unlocking for makeUnlocked()", this, &common());
+		secnotice("KCdb", "%p(%p) unlocking for makeUnlocked()", this, &common());
         assert(mBlob || (mValidData && common().hasMaster()));
 		establishOldSecrets(cred);
 		common().setUnlocked(); // mark unlocked
@@ -810,7 +815,7 @@ void KeychainDatabase::makeUnlocked(const AccessCredentials *cred, bool unlockKe
         }
     }
 	if (!mValidData) {	// need to decode to get our ACLs, master secret available
-		secinfo("KCdb", "%p(%p) is unlocked; decoding for makeUnlocked()", this, &common());
+		secnotice("KCdb", "%p(%p) is unlocked; decoding for makeUnlocked()", this, &common());
 		if (!decode())
 			CssmError::throwMe(CSSM_ERRCODE_OPERATION_AUTH_DENIED);
 	}
@@ -840,6 +845,7 @@ void KeychainDatabase::stashDbCheck()
             free(stash_key);
         }
     } else {
+        secnotice("KCdb", "failed to get stash from securityd_service: %d", (int)rc);
         CssmError::throwMe(rc);
     }
     
@@ -1036,6 +1042,14 @@ void KeychainDatabase::establishOldSecrets(const AccessCredentials *creds)
                 if (decode()) {
 					return;
                 }
+				break;
+			case CSSM_SAMPLE_TYPE_KEYBAG_KEY:
+				assert(mBlob);
+				secinfo("KCdb", "%p attempting keybag key unlock", this);
+				common().setup(mBlob, keyFromKeybag(sample));
+				if (decode()) {
+					return;
+				}
 				break;
 			// explicitly defeat the default action but don't try anything in particular
 			case CSSM_WORDID_CANCELED:
@@ -1426,6 +1440,76 @@ void unflattenKey(const CssmData &flatKey, CssmKey &rawKey)
 	Security::n2hi(rawKey.KeyHeader);	// convert it to host byte order
 }
 
+CssmClient::Key
+KeychainDatabase::keyFromKeybag(const TypedList &sample)
+{
+    service_context_t context;
+    uint8_t *session_key;
+    int session_key_size;
+    int rc;
+    const struct ccmode_siv *mode = ccaes_siv_decrypt_mode();
+    const size_t session_key_wrapped_len = 40;
+    const size_t version_len = 1, nonce_len = 16;
+    uint8_t *decrypted_data;
+    size_t decrypted_len;
+
+    assert(sample.type() == CSSM_SAMPLE_TYPE_KEYBAG_KEY);
+
+    CssmData &unlock_token = sample[2].data();
+
+    context = common().session().get_current_service_context();
+    rc = service_client_kb_unwrap_key(&context, unlock_token.data(), session_key_wrapped_len, key_class_ak, (void **)&session_key, &session_key_size);
+    if (rc != 0) {
+        CssmError::throwMe(CSSM_ERRCODE_INVALID_CRYPTO_DATA);
+    }
+
+    uint8_t *indata = (uint8_t *)unlock_token.data() + session_key_wrapped_len;
+    size_t inlen = unlock_token.length() - session_key_wrapped_len;
+
+    decrypted_len = ccsiv_plaintext_size(mode, inlen - (version_len + nonce_len));
+    decrypted_data = (uint8_t *)calloc(1, decrypted_len);
+
+    ccsiv_ctx_decl(mode->size, ctx);
+
+    rc = ccsiv_init(mode, ctx, session_key_size, session_key);
+    if (rc != 0) CssmError::throwMe(CSSM_ERRCODE_INVALID_CRYPTO_DATA);
+    rc = ccsiv_set_nonce(mode, ctx, nonce_len, indata + version_len);
+    if (rc != 0) CssmError::throwMe(CSSM_ERRCODE_INVALID_CRYPTO_DATA);
+    rc = ccsiv_aad(mode, ctx, 1, indata);
+    if (rc != 0) CssmError::throwMe(CSSM_ERRCODE_INVALID_CRYPTO_DATA);
+    rc = ccsiv_crypt(mode, ctx, inlen - (version_len + nonce_len), indata + version_len + nonce_len, decrypted_data);
+    if (rc != 0) CssmError::throwMe(CSSM_ERRCODE_INVALID_CRYPTO_DATA);
+
+    ccsiv_ctx_clear(mode->size, ctx);
+
+    //free(decrypted_data);
+    free(session_key);
+    return makeRawKey(decrypted_data, decrypted_len, CSSM_ALGID_3DES_3KEY_EDE, CSSM_KEYUSE_ENCRYPT | CSSM_KEYUSE_DECRYPT);
+}
+
+// adapted from DatabaseCryptoCore::makeRawKey
+CssmClient::Key KeychainDatabase::makeRawKey(void *data, size_t length,
+    CSSM_ALGORITHMS algid, CSSM_KEYUSE usage)
+{
+    // build a fake key
+    CssmKey key;
+    key.header().BlobType = CSSM_KEYBLOB_RAW;
+    key.header().Format = CSSM_KEYBLOB_RAW_FORMAT_OCTET_STRING;
+    key.header().AlgorithmId = algid;
+    key.header().KeyClass = CSSM_KEYCLASS_SESSION_KEY;
+    key.header().KeyUsage = usage;
+    key.header().KeyAttr = 0;
+    key.KeyData = CssmData(data, length);
+
+    // unwrap it into the CSP (but keep it raw)
+    CssmClient::UnwrapKey unwrap(Server::csp(), CSSM_ALGID_NONE);
+    CssmKey unwrappedKey;
+    CssmData descriptiveData;
+    unwrap(key,
+        CssmClient::KeySpec(CSSM_KEYUSE_ANY, CSSM_KEYATTR_RETURN_DATA | CSSM_KEYATTR_EXTRACTABLE),
+        unwrappedKey, &descriptiveData, NULL);
+    return CssmClient::Key(Server::csp(), unwrappedKey);
+}
 
 //
 // Verify a putative database passphrase.
@@ -1833,7 +1917,6 @@ void KeychainDbCommon::setUnlocked()
 
 void KeychainDbCommon::lockDb()
 {
-    bool lock = false;
     {
         StLock<Mutex> _(*this);
         if (!isLocked()) {
@@ -1843,7 +1926,6 @@ void KeychainDbCommon::lockDb()
             Server::active().clearTimer(this);
 
             mIsLocked = true;		// mark locked
-            lock = true;
             
             // this call may destroy us if we have no databases anymore
             session().removeReference(*this);

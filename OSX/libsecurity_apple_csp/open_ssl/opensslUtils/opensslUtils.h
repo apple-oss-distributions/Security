@@ -23,7 +23,7 @@
 #ifndef	_OPENSSL_UTILS_H_
 #define _OPENSSL_UTILS_H_
 
-#include <openssl/err.h>
+#include <openssl/opensslerr.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -50,7 +50,7 @@ void clearOpensslErrors();
 unsigned long logSslErrInfo(const char *op);
 
 void throwRsaDsa(
-	const char *op);
+	const char *op) __attribute__((analyzer_noreturn));
 	
 /*
  * given an openssl-style error, throw appropriate CssmError.

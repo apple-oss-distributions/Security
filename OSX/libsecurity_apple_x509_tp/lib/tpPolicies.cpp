@@ -636,7 +636,7 @@ static CSSM_BOOL tpCompareSubjectName(
 	CSSM_BOOL		ourRtn = CSSM_FALSE;
 	const CSSM_OID	*oidSrch;
 
-	const char x500_userid_oid[] = { 0x09,0x92,0x26,0x89,0x93,0xF2,0x2C,0x64,0x01,0x01 };
+	const unsigned char x500_userid_oid[] = { 0x09,0x92,0x26,0x89,0x93,0xF2,0x2C,0x64,0x01,0x01 };
 	CSSM_OID X500_UserID_OID = { sizeof(x500_userid_oid), (uint8*)x500_userid_oid };
 
 	fieldFound = false;
@@ -688,7 +688,7 @@ static CSSM_BOOL tpCompareSubjectName(
 					case SN_CommonName:
 					{
 						/* handle odd encodings that we need to convert to 8-bit */
-						CFStringBuiltInEncodings encoding;
+						CFStringBuiltInEncodings encoding = kCFStringEncodingUnicode;
 						CFDataRef cfd = NULL;
 						bool doConvert = false;
 						switch(ptvp->valueType) {
@@ -965,7 +965,7 @@ static CSSM_BOOL tpIsNumeric(
  * CFStringRef. Caller owns and must release the result. NULL return means
  * unconvertible input "string".
  */
-static CFStringRef tpTvpToCfString(
+static CFStringRef CF_RETURNS_RETAINED tpTvpToCfString(
 	const CSSM_X509_TYPE_VALUE_PAIR	*tvp)
 {
 	CFStringBuiltInEncodings encoding;

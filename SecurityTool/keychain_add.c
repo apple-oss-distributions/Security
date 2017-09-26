@@ -25,7 +25,7 @@
 
 #include "keychain_add.h"
 #include "keychain_find.h"
-#include "readline.h"
+#include "readline_cssm.h"
 #include "security_tool.h"
 #include "access_utils.h"
 #include "keychain_utilities.h"
@@ -532,7 +532,7 @@ cleanup:
 
 static bool promptForPasswordData(char **returnedPasswordData) {
     // Caller must zero memory and free returned value.
-    // Returns true if we have data; false means the user cancelled
+    // Returns true if we have data; false means the user canceled
     if (!returnedPasswordData)
         return false;
 

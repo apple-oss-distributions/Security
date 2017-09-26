@@ -76,30 +76,22 @@ __BEGIN_DECLS
 #define SECLOG_LEVEL_DEBUG  7
 
 #include <os/log_private.h>
-extern os_log_t logObjForScope(const char *scope);
+extern os_log_t secLogObjForScope(const char *scope);
+extern os_log_t secLogObjForCFScope(CFStringRef scope);
 extern bool secLogEnabled(void);
 extern void secLogDisable(void);
 extern void secLogEnable(void);
 
 #if TARGET_OS_OSX
-#define NO_OS_LOG 1
-#ifdef NO_OS_LOG
-
-// There might be no os_log available. Weak link their internal functions.
+// Downstream projects link these, but we no longer use them internally. Keep them here for now.
+// <rdar://problem/31765903> Remove weak-linked os_log functions
 void weak_os_log_impl(void *dso, os_log_t log, os_log_type_t type, const char *format, uint8_t *buf, unsigned int size);
-#define _os_log_impl weak_os_log_impl
-
-#undef os_log_create
 os_log_t weak_os_log_create(const char *subsystem, const char *category);
-#define os_log_create weak_os_log_create
-
 bool weak_os_log_type_enabled(os_log_t oslog, os_log_type_t type);
-#define os_log_type_enabled weak_os_log_type_enabled
-
-#endif // NO_OS_LOG
 #endif // TARGET_OS_OSX
 
-CFStringRef SecLogAPICreate(bool apiIn, const char *api, CFStringRef format, ...);
+CFStringRef SecLogAPICreate(bool apiIn, const char *api, CFStringRef format, ...)
+    CF_FORMAT_FUNCTION(3, 4);
 
 extern const char *api_trace;
 
@@ -122,22 +114,22 @@ extern const char *api_trace;
     CFReleaseNull(info); return _r; \
 }
 
-#define secemergency(format, ...)       os_log_error(logObjForScope("SecEmergency"), format, ## __VA_ARGS__)
-#define secalert(format, ...)           os_log_error(logObjForScope("SecAlert"), format, ## __VA_ARGS__)
-#define seccritical(format, ...)        os_log(logObjForScope("SecCritical"), format, ## __VA_ARGS__)
-#define secerror(format, ...)           os_log(logObjForScope("SecError"), format, ## __VA_ARGS__)
-#define secerrorq(format, ...)          os_log(logObjForScope("SecError"), format, ## __VA_ARGS__)
-#define secwarning(format, ...)         os_log(logObjForScope("SecWarning"), format, ## __VA_ARGS__)
-#define secnotice(scope, format, ...)	os_log(logObjForScope(scope), format, ## __VA_ARGS__)
-#define secnoticeq(scope, format, ...)	os_log(logObjForScope(scope), format, ## __VA_ARGS__)
-#define secinfo(scope, format, ...)     os_log_debug(logObjForScope(scope), format, ## __VA_ARGS__)
+#define secemergency(format, ...)       os_log_error(secLogObjForScope("SecEmergency"), format, ## __VA_ARGS__)
+#define secalert(format, ...)           os_log_error(secLogObjForScope("SecAlert"), format, ## __VA_ARGS__)
+#define seccritical(format, ...)        os_log(secLogObjForScope("SecCritical"), format, ## __VA_ARGS__)
+#define secerror(format, ...)           os_log(secLogObjForScope("SecError"), format, ## __VA_ARGS__)
+#define secerrorq(format, ...)          os_log(secLogObjForScope("SecError"), format, ## __VA_ARGS__)
+#define secwarning(format, ...)         os_log(secLogObjForScope("SecWarning"), format, ## __VA_ARGS__)
+#define secnotice(scope, format, ...)	os_log(secLogObjForScope(scope), format, ## __VA_ARGS__)
+#define secnoticeq(scope, format, ...)	os_log(secLogObjForScope(scope), format, ## __VA_ARGS__)
+#define secinfo(scope, format, ...)     os_log_debug(secLogObjForScope(scope), format, ## __VA_ARGS__)
 
-#define secinfoenabled(scope)           os_log_debug_enabled(logObjForScope(scope))
+#define secinfoenabled(scope)           os_log_debug_enabled(secLogObjForScope(scope))
 
 // secdebug is used for things that might not be privacy safe at all, so only debug builds can have these traces
 #undef secdebug
 #if !defined(NDEBUG)
-#define secdebug(scope, format, ...)	os_log_debug(logObjForScope(scope), format, ## __VA_ARGS__)
+#define secdebug(scope, format, ...)	os_log_debug(secLogObjForScope(scope), format, ## __VA_ARGS__)
 #else
 # define secdebug(scope,...)	/* nothing */
 #endif
@@ -162,6 +154,7 @@ void __security_stackshotreport(CFStringRef reason, uint32_t code);
 #define __sec_exception_code_CKD_nil_pending_keys   __sec_exception_code(9)
 #define __sec_exception_code_SQLiteBusy             __sec_exception_code(10)
 #define __sec_exception_code_CorruptDb(rc)          __sec_exception_code(11|((rc)<<8))
+#define __sec_exception_code_Watchdog               __sec_exception_code(12)
 
 /* For testing only, turns off/on simulated crashes, when turning on, returns number of
    simulated crashes which were not reported since last turned off. */

@@ -25,10 +25,13 @@
 #include <security_utilities/cfclass.h>
 #include <security_utilities/errors.h>
 #include <security_utilities/debugging.h>
+#include <os/lock.h>
 
 #include <list>
 #include <security_utilities/globalizer.h>
+#if( __cplusplus <= 201103L)
 #include <stdatomic.h>
+#endif
 
 SecPointerBase::SecPointerBase(const SecPointerBase& p)
 {
@@ -146,11 +149,7 @@ void
 SecCFObject::operator delete(void *object) throw()
 {
 	CFTypeRef cfType = reinterpret_cast<CFTypeRef>(reinterpret_cast<const uint8_t *>(object) - kAlignedRuntimeSize);
-    if (CF_IS_COLLECTABLE(cfType))
-    {
-        return;
-    }
-    
+
     CFAllocatorRef allocator = CFGetAllocator(cfType);
     CFAllocatorDeallocate(allocator, (void*) cfType);
 }
@@ -158,12 +157,12 @@ SecCFObject::operator delete(void *object) throw()
 SecCFObject::SecCFObject()
 {
     mRetainCount = 1;
-    mRetainSpinLock = OS_SPINLOCK_INIT;
+    mRetainLock = OS_UNFAIR_LOCK_INIT;
 }
 
 uint32_t SecCFObject::updateRetainCount(intptr_t direction, uint32_t *oldCount)
 {
-    OSSpinLockLock(&mRetainSpinLock);
+    os_unfair_lock_lock(&mRetainLock);
 
     if (oldCount != NULL)
     {
@@ -181,7 +180,7 @@ uint32_t SecCFObject::updateRetainCount(intptr_t direction, uint32_t *oldCount)
     
     uint32_t result = mRetainCount;
 
-    OSSpinLockUnlock(&mRetainSpinLock);
+    os_unfair_lock_unlock(&mRetainLock);
     
     return result;
 }

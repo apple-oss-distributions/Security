@@ -27,13 +27,15 @@
  */
 
 #include <Security/SecureObjectSync/SOSChangeTracker.h>
-#include <Security/SecureObjectSync/SOSEngine.h>
+#include <Security/SecureObjectSync/SOSEnginePriv.h>
 #include <Security/SecureObjectSync/SOSDigestVector.h>
 #include <Security/SecureObjectSync/SOSInternal.h>
 #include <Security/SecureObjectSync/SOSPeer.h>
 #include <Security/SecureObjectSync/SOSViews.h>
 #include <Security/SecureObjectSync/SOSBackupEvent.h>
 #include <Security/SecureObjectSync/SOSPersist.h>
+#include <Security/SecureObjectSync/SOSCloudCircleInternal.h>
+
 #include <corecrypto/ccder.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -48,6 +50,10 @@
 #include <utilities/iCloudKeychainTrace.h>
 #include <utilities/SecCoreCrypto.h>
 #include <utilities/SecFileLocations.h>
+#include <utilities/SecADWrapper.h>
+#include <utilities/SecTrace.h>
+
+
 #include <AssertMacros.h>
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -57,6 +63,8 @@
 #include <Security/SecItemPriv.h>       // TODO: We can't leave this here.
 #include <securityd/SecItemSchema.h>
 #include <securityd/iCloudTrace.h>
+
+#include <keychain/ckks/CKKS.h>
 
 #include <CoreFoundation/CFURL.h>
 
@@ -83,21 +91,21 @@ static CFStringRef kSOSEngineTraceDateKey = CFSTR("traceDate");
 // MARK: Engine state v2
 //----------------------------------------------------------------------------------------
 
+#if !TARGET_IPHONE_SIMULATOR
 static const CFIndex kCurrentEngineVersion = 2;
+#endif
 // Keychain/datasource items
 // Used for the kSecAttrAccount when saving in the datasource with dsSetStateWithKey
 // Class D [kSecAttrAccessibleAlwaysPrivate/kSecAttrAccessibleAlwaysThisDeviceOnly]
-static CFStringRef kSOSEngineStatev2 = CFSTR("engine-state-v2");
-static CFStringRef kSOSEnginePeerStates = CFSTR("engine-peer-states");
-static CFStringRef kSOSEngineManifestCache = CFSTR("engine-manifest-cache");
-#define kSOSEngineProtectionDomainClassD kSecAttrAccessibleAlwaysPrivate  // >>>> or kSecAttrAccessibleAlwaysThisDeviceOnly
-// Class A [kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-static CFStringRef kSOSEngineCoders = CFSTR("engine-coders");
+CFStringRef kSOSEngineStatev2 = CFSTR("engine-state-v2");
+CFStringRef kSOSEnginePeerStates = CFSTR("engine-peer-states");
+CFStringRef kSOSEngineManifestCache = CFSTR("engine-manifest-cache");
+CFStringRef kSOSEngineCoders = CFSTR("engine-coders");
 #define kSOSEngineProtectionDomainClassA kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 
 // Keys for individual dictionaries
 //  engine-state-v2
-static CFStringRef kSOSEngineStateVersionKey = CFSTR("engine-stateVersion");
+CFStringRef kSOSEngineStateVersionKey = CFSTR("engine-stateVersion");
 
 // Current save/load routines
 // SOSEngineCreate/SOSEngineLoad/SOSEngineSetState
@@ -156,48 +164,16 @@ static CFStringRef kSOSEngineStateVersionKey = CFSTR("engine-stateVersion");
 
  */
 
-/* SOSEngine implementation. */
-struct __OpaqueSOSEngine {
-    CFRuntimeBase _base;
-    SOSDataSourceRef dataSource;
-    CFStringRef myID;                       // My peerID in the circle
-    // We need to address the issues of corrupt keychain items
-    SOSManifestRef unreadable;              // Possibly by having a set of unreadable items, to which we
-    // add any corrupted items in the db that have yet to be deleted.
-    // This happens if we notce corruption during a (read only) query.
-    // We would also perma-subtract unreadable from manifest whenever
-    // anyone asked for manifest.  This result would be cached in
-    // The manifestCache below, so we just need a key into the cache
-    CFDataRef localMinusUnreadableDigest;   // or a digest (CFDataRef of the right size).
 
-    CFMutableDictionaryRef manifestCache;       // digest -> ( refcount, manifest )
-    CFMutableDictionaryRef peerMap;             // peerId -> SOSPeerRef
-    CFDictionaryRef viewNameSet2ChangeTracker;  // CFSetRef of CFStringRef -> SOSChangeTrackerRef
-    CFDictionaryRef viewName2ChangeTracker;     // CFStringRef -> SOSChangeTrackerRef
-    CFArrayRef peerIDs;
-    CFDateRef lastTraceDate;                    // Last time we did a CloudKeychainTrace
-    CFMutableDictionaryRef coders;
-    bool haveLoadedCoders;
-    
-    bool dirty;
-    bool codersNeedSaving;
-
-    dispatch_queue_t queue;                     // Engine queue
-
-    dispatch_source_t save_timer;               // Engine state save timer
-    bool save_timer_pending;                    // Engine state timer running, read/modify on engine queue
-
-    dispatch_queue_t syncCompleteQueue;              // Non-retained queue for async notificaion
-    SOSEnginePeerInSyncBlock syncCompleteListener;   // Block to call to notify the listener.
-};
 
 static bool SOSEngineLoad(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error);
 static bool SOSEngineSetPeers_locked(SOSEngineRef engine, SOSPeerMetaRef myPeerMeta, CFArrayRef trustedPeerMetas, CFArrayRef untrustedPeerMetas);
 static void SOSEngineApplyPeerState(SOSEngineRef engine, CFDictionaryRef peerStateMap);
 static void SOSEngineSynthesizePeerMetas(SOSEngineRef engine, CFMutableArrayRef trustedPeersMetas, CFMutableArrayRef untrustedPeers);
 static bool SOSEngineLoadCoders(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error);
+#if !TARGET_IPHONE_SIMULATOR
 static bool SOSEngineDeleteV0State(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error);
-
+#endif
 static CFStringRef SOSPeerIDArrayCreateString(CFArrayRef peerIDs) {
     return peerIDs ? CFStringCreateByCombiningStrings(kCFAllocatorDefault, peerIDs, CFSTR(" ")) : CFSTR("");
 }
@@ -407,48 +383,13 @@ CFMutableArrayRef SOSEngineCopyPersistedManifestArray(SOSEngineRef engine, CFDic
     return manifests;
 }
 
+#if !TARGET_IPHONE_SIMULATOR
 static CFDictionaryRef SOSEngineCopyEncodedManifestCache_locked(SOSEngineRef engine, CFErrorRef *error) {
     CFMutableDictionaryRef mfc = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
     SOSEngineForEachPeer_locked(engine, ^(SOSPeerRef peer) {
         SOSPeerAddManifestsInUse(peer, mfc);
     });
     return mfc;
-}
-
-#if 0
-static bool SOSEngineGCManifests_locked(SOSEngineRef engine, CFErrorRef *error) {
-    __block struct SOSDigestVector mdInCache = SOSDigestVectorInit;
-    __block struct SOSDigestVector mdInUse = SOSDigestVectorInit;
-    struct SOSDigestVector mdUnused = SOSDigestVectorInit;
-    struct SOSDigestVector mdMissing = SOSDigestVectorInit;
-    bool ok = true;
-
-    SOSEngineForEachPeer_locked(engine, ^(SOSPeerRef peer) {
-        SOSPeerMarkDigestsInUse(peer, &mdInUse);
-    });
-
-    if (engine->manifestCache) {
-        CFDictionaryForEach(engine->manifestCache, ^(const void *key, const void *value) {
-            CFDataRef digest = (CFDataRef)key;
-            if (isData(digest))
-                SOSDigestVectorAppend(&mdInCache, CFDataGetBytePtr(digest));
-        });
-        
-        // Delete unused manifests.
-        SOSDigestVectorDiff(&mdInCache, &mdInUse, &mdUnused, &mdMissing);
-        SOSManifestRef unused = SOSManifestCreateWithDigestVector(&mdUnused, NULL);
-        SOSManifestForEach(unused, ^(CFDataRef digest, bool *stop) {
-            if (digest)
-                CFDictionaryRemoveValue(engine->manifestCache, digest);
-        });
-        CFReleaseSafe(unused);
-    }
-
-    SOSDigestVectorFree(&mdInCache);
-    SOSDigestVectorFree(&mdInUse);
-    SOSDigestVectorFree(&mdUnused);
-    SOSDigestVectorFree(&mdMissing);
-    return ok;
 }
 #endif
 
@@ -502,11 +443,8 @@ static SOSCoderRef SOSEngineGetCoderInTx_locked(SOSEngineRef engine, SOSTransact
     return coder;
 }
 
-static SOSCoderRef SOSEngineGetCoder_locked(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error) {
-    return SOSEngineGetCoderInTx_locked(engine, NULL, peerID, error);
-}
-
-static bool SOSEngineEnsureCoder_locked(SOSEngineRef engine, CFStringRef peerID, SOSFullPeerInfoRef myPeerInfo, SOSPeerInfoRef peerInfo, SOSCoderRef ourCoder, CFErrorRef *error) {
+static bool SOSEngineEnsureCoder_locked(SOSEngineRef engine, SOSTransactionRef txn, CFStringRef peerID, SOSFullPeerInfoRef myPeerInfo, SOSPeerInfoRef peerInfo, SOSCoderRef ourCoder, CFErrorRef *error) {
+    //have to have caused coder loading, transactions do this.
     if (!ourCoder || !SOSCoderIsFor(ourCoder, peerInfo, myPeerInfo)) {
         secinfo("coder", "New coder for id %@.", peerID);
         CFErrorRef localError = NULL;
@@ -517,7 +455,9 @@ static bool SOSEngineEnsureCoder_locked(SOSEngineRef engine, CFStringRef peerID,
             return false;
         }
         CFDictionarySetValue(engine->coders, peerID, coder);
+        secdebug("coder", "setting coder for peerid: %@, coder: %@", peerID, coder);
         CFReleaseNull(coder);
+        engine->codersNeedSaving = true;
     }
     return true;
 }
@@ -525,9 +465,12 @@ static bool SOSEngineEnsureCoder_locked(SOSEngineRef engine, CFStringRef peerID,
 bool SOSEngineInitializePeerCoder(SOSEngineRef engine, SOSFullPeerInfoRef myPeerInfo, SOSPeerInfoRef peerInfo, CFErrorRef *error) {
     __block bool ok = true;
     CFStringRef peerID = SOSPeerInfoGetPeerID(peerInfo);
-    ok &= SOSEngineForPeerID(engine, peerID, error, ^(SOSTransactionRef txn, SOSPeerRef peer, SOSCoderRef coder) {
-        ok = SOSEngineEnsureCoder_locked(engine, peerID, myPeerInfo, peerInfo, coder, error);
+
+    ok &= SOSEngineWithPeerID(engine, peerID, error, ^(SOSPeerRef peer, SOSCoderRef coder, SOSDataSourceRef dataSource, SOSTransactionRef txn, bool *forceSaveState) {
+        ok = SOSEngineEnsureCoder_locked(engine, txn, peerID, myPeerInfo, peerInfo, coder, error);
+        *forceSaveState = ok;
     });
+
     return ok;
 }
 
@@ -539,7 +482,7 @@ static bool SOSEngineGCPeerState_locked(SOSEngineRef engine, CFErrorRef *error) 
 //exit:
     return ok;
 }
-
+#if !TARGET_IPHONE_SIMULATOR
 static CFMutableDictionaryRef SOSEngineCopyPeerState_locked(SOSEngineRef engine, CFErrorRef *error) {
     CFMutableDictionaryRef peerState = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
     CFDictionaryForEach(engine->peerMap, ^(const void *key, const void *value) {
@@ -564,13 +507,14 @@ static CFMutableDictionaryRef SOSEngineCopyPeerState_locked(SOSEngineRef engine,
     });
     return peerState;
 }
-
+#endif
 static CFMutableDictionaryRef SOSEngineCopyPeerCoders_locked(SOSEngineRef engine, CFErrorRef *error) {
     CFMutableDictionaryRef coders = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
     CFDictionaryForEach(engine->peerMap, ^(const void *key, const void *value) {
         CFDataRef coderData = NULL;
         CFErrorRef localError = NULL;
         bool ok = SOSEngineCopyCoderData(engine, (CFStringRef)key, &coderData, &localError);
+
         if (!ok) {
             secnotice("engine", "%@ no coder for peer: %@", key, localError);
         }
@@ -592,6 +536,7 @@ static CFMutableDictionaryRef SOSEngineCopyPeerCoders_locked(SOSEngineRef engine
 static CFDataRef SOSEngineCopyCoders(SOSEngineRef engine, CFErrorRef *error) {
     // Copy the CFDataRef version of the coders into a dictionary, which is then DER-encoded for saving
     CFDictionaryRef coders = SOSEngineCopyPeerCoders_locked(engine, error);
+    secdebug("coders", "copying coders! %@", coders);
     CFDataRef der = CFPropertyListCreateDERData(kCFAllocatorDefault, coders, error);
     CFReleaseSafe(coders);
     return der;
@@ -600,6 +545,11 @@ static CFDataRef SOSEngineCopyCoders(SOSEngineRef engine, CFErrorRef *error) {
 static bool SOSEngineSaveCoders(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
     // MUST hold engine lock
     // Device must be unlocked for this to succeed
+
+    if(!engine->haveLoadedCoders){
+        secdebug("coders", "attempting to save coders before we have loaded them!");
+    }
+    
     bool ok = true;
     if (engine->codersNeedSaving) {
         CFDataRef derCoders = SOSEngineCopyCoders(engine, error);
@@ -607,11 +557,17 @@ static bool SOSEngineSaveCoders(SOSEngineRef engine, SOSTransactionRef txn, CFEr
                                                             kSOSEngineProtectionDomainClassA, derCoders, error);
         if (ok) {
             engine->codersNeedSaving = false;
+            secnotice("coder", "saved coders: %@", engine->coders);
         }
         CFReleaseSafe(derCoders);
     }
     return ok;
 }
+
+bool SOSTestEngineSaveCoders(CFTypeRef engine, SOSTransactionRef txn, CFErrorRef *error){
+    return SOSEngineSaveCoders((SOSEngineRef)engine, txn, error);
+}
+#if !TARGET_IPHONE_SIMULATOR
 
 static CFDictionaryRef SOSEngineCopyBasicState(SOSEngineRef engine, CFErrorRef *error) {
     // Create a version of the in-memory engine state for saving to disk
@@ -656,81 +612,14 @@ static bool SOSEngineDoSave(SOSEngineRef engine, SOSTransactionRef txn, CFErrorR
 
     return ok;
 }
-
-#if ENGINE_DELAY_SAVE
-
-#define SOSENGINE_SAVE_TIMEOUT  (NSEC_PER_MSEC * 500ull)
-#define SOSENGINE_SAVE_LEEWAY  (NSEC_PER_MSEC * 500ull)
-#define SOSENGINE_SAVE_MAX_DELAY  (NSEC_PER_MSEC * 500ull)
-
-#if !(TARGET_IPHONE_SIMULATOR)
-static void SOSEngineShouldSave(SOSEngineRef engine) {
-    bool start_timer = false;
-
-    if (engine->save_timer == NULL) {
-        // Schedule the timer to fire on a concurrent queue, so we can follow
-        // the proper procedure of acquiring a dataSource and then engine queues.
-        engine->save_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0));
-        dispatch_source_set_event_handler(engine->save_timer, ^{
-            CFErrorRef dsWithError = NULL;
-
-            // Start with clearing the pending state so that any other caller
-            // get their own timer, worse case it that we get a duplicate store.
-            dispatch_sync(engine->queue, ^{
-                engine->save_timer_pending = false;
-            });
-
-            if (engine->dataSource) {
-                if (!SOSDataSourceWith(engine->dataSource, &dsWithError, ^(SOSTransactionRef txn, bool *commit) {
-                    dispatch_sync(engine->queue, ^{
-                        CFErrorRef saveError = NULL;
-                        if (!SOSEngineDoSave(engine, txn, &saveError)) {
-                            secerrorq("Failed to save engine state: %@", saveError);
-                            CFReleaseNull(saveError);
-                        }
-                    });
-                })) {
-                    secerrorq("Failed to open dataSource to save engine state: %@", dsWithError);
-                    CFReleaseNull(dsWithError);
-                }
-            }
-
-            xpc_transaction_end();
-        });
-        start_timer = true;
-        assert(engine->save_timer_pending == false);
-    }
-
-    if (engine->save_timer_pending)
-        return;
-
-    engine->save_timer_pending = true;
-
-    // Start a trasaction, then start the timer, the handler for the timer will end
-    // the transaction.
-    xpc_transaction_begin();
-
-    // Set the timer's fire time to now + SOSENGINE_SAVE_TIMEOUT seconds with a SOSENGINE_SAVE_LEEWAY fuzz factor.
-    dispatch_source_set_timer(engine->save_timer,
-                              dispatch_time(DISPATCH_TIME_NOW, SOSENGINE_SAVE_TIMEOUT),
-                              DISPATCH_TIME_FOREVER, SOSENGINE_SAVE_LEEWAY);
-
-    if (start_timer)
-        dispatch_resume(engine->save_timer);
-
-}
 #endif
-
-#endif /* ENGINE_DELAY_SAVE */
 
 static bool SOSEngineSave(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
     // Don't save engine state from tests
     if (!engine->dataSource)
         return true;
-#if (TARGET_IPHONE_SIMULATOR) || !ENGINE_DELAY_SAVE
+#if !TARGET_IPHONE_SIMULATOR
     return SOSEngineDoSave(engine, txn, error);
-#else
-    SOSEngineShouldSave(engine);
 #endif
     return true;
 }
@@ -799,7 +688,7 @@ static bool SOSEngineSetPeerStateWithDictionary(SOSEngineRef engine, CFDictionar
     return true;
 }
 
-static CFMutableDictionaryRef derStateToDictionaryCopy(CFDataRef state, CFErrorRef *error) {
+CFMutableDictionaryRef derStateToDictionaryCopy(CFDataRef state, CFErrorRef *error) {
     bool ok = true;
     CFMutableDictionaryRef stateDict = NULL;
     if (state) {
@@ -815,33 +704,31 @@ static CFMutableDictionaryRef derStateToDictionaryCopy(CFDataRef state, CFErrorR
     }
     return stateDict;
 }
+bool TestSOSEngineLoadCoders(CFTypeRef engine, SOSTransactionRef txn, CFErrorRef *error)
+{
+    return SOSEngineLoadCoders((SOSEngineRef)engine, txn, error);
+}
 
 static bool SOSEngineLoadCoders(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
     // Read the serialized engine state from the datasource (aka keychain) and populate the in-memory engine
     bool ok = true;
     CFDataRef derCoders = NULL;
     CFMutableDictionaryRef codersDict = NULL;
-
     derCoders = SOSDataSourceCopyStateWithKey(engine->dataSource, kSOSEngineCoders, kSOSEngineProtectionDomainClassA, txn, error);
     require_quiet(derCoders, xit);
     codersDict = derStateToDictionaryCopy(derCoders, error);
     require_quiet(codersDict, xit);
-
     CFDictionaryForEach(engine->peerMap, ^(const void *peerID, const void *peerState) {
         if (peerID) {
-            if (!CFDictionaryContainsKey(engine->coders, peerID)) {
-                CFDataRef coderData = asData(CFDictionaryGetValue(codersDict, peerID), NULL);
+            CFTypeRef coderRef = CFDictionaryGetValue(codersDict, peerID);
+            if (coderRef) {
+                CFDataRef coderData = asData(coderRef, NULL);
                 if (coderData) {
                     CFErrorRef createError = NULL;
                     SOSCoderRef coder = SOSCoderCreateFromData(coderData, &createError);
                     if (coder) {
-                        // Sanity check
-                        CFStringRef coderid = SOSCoderGetID(coder);
-                        if (!CFEqualSafe(coderid, (CFStringRef)peerID)) {
-                            secerror("Coder id %@ on disk does not match: %@", coderid, peerID);
-                        } else {
-                            CFDictionaryAddValue(engine->coders, peerID, coder);
-                        }
+                        CFDictionaryAddValue(engine->coders, peerID, coder);
+                        secnotice("coder", "adding coder: %@ for peerid: %@", coder, peerID);
                     } else {
                         secnotice("coder", "Coder for '%@' failed to create: %@", peerID, createError);
                     }
@@ -850,18 +737,26 @@ static bool SOSEngineLoadCoders(SOSEngineRef engine, SOSTransactionRef txn, CFEr
                 } else {
                     // Needed a coder, didn't find one, notify the account to help us out.
                     // Next attempt to sync will fix this
+                    secnotice("coder", "coder for %@ was not cf data: %@", peerID, coderData);
                     SOSCCEnsurePeerRegistration();
                 }
+            }
+            else{
+                secnotice("coder", "didn't find coder for peer: %@ engine dictionary: %@", peerID, codersDict);
+                SOSCCEnsurePeerRegistration();
             }
 
         }
     });
+
+    engine->haveLoadedCoders = true;
+
 xit:
     CFReleaseNull(derCoders);
     CFReleaseNull(codersDict);
     return ok;
 }
-
+#if !TARGET_IPHONE_SIMULATOR
 static bool SOSEngineDeleteV0State(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
 //    SOSDataSourceDeleteStateWithKey(engine->dataSource, kSOSEngineState, kSOSEngineProtectionDomainClassD, txn, error);
 
@@ -876,7 +771,7 @@ static bool SOSEngineDeleteV0State(SOSEngineRef engine, SOSTransactionRef txn, C
     CFReleaseSafe(derState);
     return ok;
 }
-
+#endif
 static bool SOSEngineLoad(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
     // Read the serialized engine state from the datasource (aka keychain) and populate the in-memory engine
     bool ok = true;
@@ -911,7 +806,10 @@ static bool SOSEngineLoad(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef
         }
         secnotice("coder", "Migrating from v0 engine state; dropping coders and forcing re-negotiation");
         SOSCCEnsurePeerRegistration();
-        SOSCCSyncWithAllPeers();
+
+        if (engine->peerIDs) {
+            SOSCCRequestSyncWithPeersList(engine->peerIDs);
+        }
     }
 
     ok = engineState && SOSEngineSetStateWithDictionary(engine, engineState, error);
@@ -933,12 +831,17 @@ bool SOSTestEngineSaveWithDER(SOSEngineRef engine, CFDataRef derState, CFErrorRe
     return true;
 }
 
-/*
- bool SOSTestEngineSave(SOSEngineRef engine, CFErrorRef *error) {
-
+bool SOSTestEngineSave(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
+    bool bx = SOSEngineSave(engine, txn, error);
+    secnotice("test", "saved engine: %@", engine);
+    return bx;
 }
 
-*/
+bool SOSTestEngineLoad(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error) {
+    bool bx = SOSEngineLoad(engine, txn, error);
+    secnotice("test", "loaded engine: %@", engine);
+    return bx;
+}
 
 //----------------------------------------------------------------------------------------
 // MARK: Change Trackers and Peer Manifests
@@ -992,7 +895,7 @@ static void SOSEngineObjectWithView(SOSEngineRef engine, SOSObjectRef object, vo
     } else if (SecDbItemIsSyncableOrCorrupted(item)) {
         const SecDbClass *iclass = SecDbItemGetClass(item);
         CFTypeRef pdmn = SecDbItemGetCachedValueWithName(item, kSecAttrAccessible);
-        if ((iclass == &genp_class || iclass == &inet_class || iclass == &keys_class || iclass == &cert_class)
+        if ((iclass == genp_class() || iclass == inet_class() || iclass == keys_class() || iclass == cert_class())
             && isString(pdmn)
             && (CFEqual(pdmn, kSecAttrAccessibleWhenUnlocked)
                 || CFEqual(pdmn, kSecAttrAccessibleAfterFirstUnlock)
@@ -1005,21 +908,27 @@ static void SOSEngineObjectWithView(SOSEngineRef engine, SOSObjectRef object, vo
             char cvalue = 0;
             bool isTomb = (isNumber(tomb) && CFNumberGetValue(tomb, kCFNumberCharType, &cvalue) && cvalue == 1);
             CFTypeRef viewHint = SecDbItemGetCachedValueWithName(item, kSecAttrSyncViewHint);
+
+            // Intecept CKKS-handled items here and short-circuit function
+            if(SOSViewHintInCKKSSystem(viewHint)) {
+                return;
+            }
+
             if (viewHint == NULL) {
-                if (iclass == &cert_class) {
+                if (iclass == cert_class()) {
                     withViewAndBackup(kSOSViewOtherSyncable);
                 } else {
                     if (!SecDbItemGetCachedValueWithName(item, kSecAttrTokenID)) {
                         withViewAndBackup(kSOSViewKeychainV0);
                     }
                     CFTypeRef agrp = SecDbItemGetCachedValueWithName(item, kSecAttrAccessGroup);
-                    if (iclass == &keys_class && CFEqualSafe(agrp, CFSTR("com.apple.security.sos"))) {
+                    if (iclass == keys_class() && CFEqualSafe(agrp, CFSTR("com.apple.security.sos"))) {
                         withViewAndBackup(kSOSViewiCloudIdentity);
                     } else if (CFEqualSafe(agrp, CFSTR("com.apple.cfnetwork"))) {
                         withViewAndBackup(kSOSViewAutofillPasswords);
                     } else if (CFEqualSafe(agrp, CFSTR("com.apple.safari.credit-cards"))) {
                         withViewAndBackup(kSOSViewSafariCreditCards);
-                    } else if (iclass == &genp_class) {
+                    } else if (iclass == genp_class()) {
                         if (CFEqualSafe(agrp, CFSTR("apple")) &&
                             CFEqualSafe(SecDbItemGetCachedValueWithName(item, kSecAttrService), CFSTR("AirPort"))) {
                             withViewAndBackup(kSOSViewWiFi);
@@ -1227,7 +1136,12 @@ static bool SOSChangeMapperSend(struct SOSChangeMapper *cm, CFErrorRef *error) {
 
 static bool SOSEngineUpdateChanges_locked(SOSEngineRef engine, SOSTransactionRef txn, SOSDataSourceTransactionPhase phase, SOSDataSourceTransactionSource source, CFArrayRef changes, CFErrorRef *error)
 {
-    secnoticeq("engine", "%@: %s %s %ld changes, txn=%@, %p", engine->myID, phase == kSOSDataSourceTransactionWillCommit ? "will-commit" : phase == kSOSDataSourceTransactionDidCommit ? "did-commit" : "did-rollback", source == kSOSDataSourceSOSTransaction ? "sos" : "api", CFArrayGetCount(changes), txn, txn);
+    secnoticeq("engine", "%@: %s %s %ld changes, txn=%@, %p", engine->myID, phase == kSOSDataSourceTransactionWillCommit ? "will-commit" : phase == kSOSDataSourceTransactionDidCommit ? "did-commit" : "did-rollback",
+               source == kSOSDataSourceSOSTransaction ? "sos" :
+               source == kSOSDataSourceCKKSTransaction ? "ckks" :
+               source == kSOSDataSourceAPITransaction ? "api" :
+               "unknown",
+               CFArrayGetCount(changes), txn, txn);
     bool ok = true;
     switch (phase) {
         case kSOSDataSourceTransactionDidRollback:
@@ -1248,12 +1162,22 @@ static bool SOSEngineUpdateChanges_locked(SOSEngineRef engine, SOSTransactionRef
                 if (deleted) {
                     bool someoneCares = SOSChangeMapperIngestChange(&cm, false, deleted);
                     if (someoneCares) {
+#if TARGET_OS_EMBEDDED
+                        SecADAddValueForScalarKey(CFSTR("com.apple.security.sos.delete"), 1);
+#endif
                         mappedItemChanged = true;
                     }
                 }
                 if (inserted) {
                     bool someoneCares = SOSChangeMapperIngestChange(&cm, true, inserted);
                     if (someoneCares) {
+#if TARGET_OS_EMBEDDED
+                        if (deleted == NULL) {
+                            SecADAddValueForScalarKey(CFSTR("com.apple.security.sos.add"), 1);
+                        } else {
+                            SecADAddValueForScalarKey(CFSTR("com.apple.security.sos.update"), 1);
+                        }
+#endif
                         mappedItemChanged = true;
                     }
                     if (!someoneCares && !isData(inserted) && SecDbItemIsTombstone((SecDbItemRef)inserted) && !CFEqualSafe(SecDbItemGetValue((SecDbItemRef)inserted, &v7utomb, NULL), kCFBooleanTrue)) {
@@ -1276,13 +1200,24 @@ static bool SOSEngineUpdateChanges_locked(SOSEngineRef engine, SOSTransactionRef
                 // Only consider writing if we're in the WillCommit phase.
                 // DidCommit phases happen outside the database lock and
                 // writing to the DBConn will cause deadlocks.
-                if (mappedItemChanged) {
+                if (mappedItemChanged || source == kSOSDataSourceSOSTransaction) {
                     // Write SOSEngine and SOSPeer state to disk
-                    ok &= SOSEngineSave(engine, txn, error);
+#if OCTAGON
+                    if(!SecCKKSTestDisableSOS()) {
+#endif
+                        secnotice("engine", "saving engine state");
+                        ok &= SOSEngineSave(engine, txn, error);
+                    
+                        if (kSOSDataSourceAPITransaction == source || kSOSDataSourceCKKSTransaction == source)
+                            SOSCCRequestSyncWithPeersList(engine->peerIDs);
+#if OCTAGON
+                    }
+#endif
                 } else {
-                    secnotice("engine", "Not saving engine state, nothing changed.");
+                    secinfo("engine", "Not saving engine state, nothing changed.");
                 }
             }
+            
             break;
         }
     }
@@ -1607,32 +1542,33 @@ static bool SOSEngineSetPeers_locked(SOSEngineRef engine, SOSPeerMetaRef myPeerM
     // Start with no coders
     CFMutableDictionaryRef codersToKeep = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
 
-    // If we're the same peerID we keep known peers (both trusted and untrusted)
-    if (CFEqualSafe(myPeerID, engine->myID)) {
-        void (^copyPeerMetasCoder)(const void *value) = ^(const void*element) {
-            SOSPeerMetaRef peerMeta = (SOSPeerMetaRef) element;
+    if(engine->haveLoadedCoders){
+        // If we're the same peerID we keep known peers (both trusted and untrusted)
+        if (CFEqualSafe(myPeerID, engine->myID)) {
+            void (^copyPeerMetasCoder)(const void *value) = ^(const void*element) {
+                SOSPeerMetaRef peerMeta = (SOSPeerMetaRef) element;
 
-            CFStringRef currentID = SOSPeerMetaGetComponents(peerMeta, NULL, NULL, NULL);
-            if (currentID) {
-                SOSCoderRef coder = (SOSCoderRef) CFDictionaryGetValue(engine->coders, currentID);
-                if (coder) {
-                    CFDictionarySetValue(codersToKeep, currentID, coder);
+                CFStringRef currentID = SOSPeerMetaGetComponents(peerMeta, NULL, NULL, NULL);
+                if (currentID) {
+                    SOSCoderRef coder = (SOSCoderRef) CFDictionaryGetValue(engine->coders, currentID);
+                    if (coder) {
+                        CFDictionarySetValue(codersToKeep, currentID, coder);
+                    }
                 }
+            };
+
+            if (trustedPeerMetas) {
+                CFArrayForEach(trustedPeerMetas, copyPeerMetasCoder);
             }
-        };
+            if (untrustedPeerMetas) {
+                CFArrayForEach(untrustedPeerMetas, copyPeerMetasCoder);
+            }
+        }
 
-        if (trustedPeerMetas) {
-            CFArrayForEach(trustedPeerMetas, copyPeerMetasCoder);
-        }
-        if (untrustedPeerMetas) {
-            CFArrayForEach(untrustedPeerMetas, copyPeerMetasCoder);
-        }
+        engine->codersNeedSaving = true;
     }
-
-    CFTransferRetained(engine->coders, codersToKeep);
-    engine->codersNeedSaving = true;
-
     CFRetainAssign(engine->myID, myPeerID);
+    CFTransferRetained(engine->coders, codersToKeep);
 
     // Remake engine->peerMap from both trusted and untrusted peers
     SOSEngineReferenceChangeTrackers(engine, trustedPeerMetas, untrustedPeerMetas, desc);
@@ -1738,9 +1674,9 @@ static void SOSEngineCloudKeychainTrace(SOSEngineRef engine, CFAbsoluteTime now)
     struct _SecServerKeyStats inetStats = { };
     struct _SecServerKeyStats keysStats = { };
 
-    _SecServerGetKeyStats(&genp_class, &genpStats);
-    _SecServerGetKeyStats(&inet_class, &inetStats);
-    _SecServerGetKeyStats(&keys_class, &keysStats);
+    _SecServerGetKeyStats(genp_class(), &genpStats);
+    _SecServerGetKeyStats(inet_class(), &inetStats);
+    _SecServerGetKeyStats(keys_class(), &keysStats);
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         CloudKeychainTrace(num_peers, num_items, &genpStats, &inetStats, &keysStats);
@@ -1867,12 +1803,33 @@ static void SOSEngineForEachBackupPeer(SOSEngineRef engine, void (^with)(SOSPeer
     });
 }
 
+static const CFStringRef kSecADSecurityNewItemSyncTimeKey = CFSTR("com.apple.security.secureobjectsync.itemtime.new");
+static const CFStringRef kSecADSecurityKnownItemSyncTimeKey = CFSTR("com.apple.security.secureobjectsync.itemtime.known");
+
+
+static void ReportItemSyncTime(SOSDataSourceRef ds, bool known, SOSObjectRef object)
+{
+    CFDateRef itemModDate = SOSObjectCopyModificationDate(ds, object, NULL);
+    if (itemModDate) {
+        CFAbsoluteTime syncTime = 0;
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+        CFAbsoluteTime peerModificationAbsoluteTime = CFDateGetAbsoluteTime(itemModDate);
+        if (peerModificationAbsoluteTime > now) {
+            syncTime = now - peerModificationAbsoluteTime;
+        }
+
+        SecADClientPushValueForDistributionKey(known ? kSecADSecurityKnownItemSyncTimeKey : kSecADSecurityNewItemSyncTimeKey,
+                                               SecBucket2Significant(syncTime));
+    }
+}
 
 /* Handle incoming message from peer p.  Return false if there was an error, true otherwise. */
 bool SOSEngineHandleMessage_locked(SOSEngineRef engine, CFStringRef peerID, SOSMessageRef message,
                                    SOSTransactionRef txn, bool *commit, bool *somethingChanged, CFErrorRef *error) {
     SOSPeerRef peer = SOSEngineCopyPeerWithID_locked(engine, peerID, error);
     if (!peer) return false;
+
     CFStringRef peerDesc = NULL;
     SOSManifestRef localManifest = NULL;
     SOSManifestRef allAdditions = NULL;
@@ -1890,6 +1847,8 @@ bool SOSEngineHandleMessage_locked(SOSEngineRef engine, CFStringRef peerID, SOSM
 
     require_action_quiet(peer, exit, ok = SOSErrorCreate(errSecParam, error, NULL, CFSTR("Couldn't create peer with Engine for %@"), peerID));
     peerDesc = CFCopyDescription(peer);
+
+    bool hadBeenInSyncAtStart = SOSPeerHasBeenInSync(peer);
 
     SOSMessageWithExtensions(message, true, ^(CFDataRef oid, bool isCritical, CFDataRef extension, bool *stop) {
         // OMFG a Critical extension what shall I do!
@@ -1933,6 +1892,13 @@ bool SOSEngineHandleMessage_locked(SOSEngineRef engine, CFStringRef peerID, SOSM
             // Ensure localObject is in local manifest (possible corruption) by posting an update when we are done.
             SOSChangesAppendAdd(changes, mergedObject);
         }
+
+        if (ok && hadBeenInSyncAtStart) {
+            ReportItemSyncTime(engine->dataSource,
+                               mr == kSOSMergeLocalObject,
+                               peersObject);
+        }
+
         CFReleaseSafe(mergedObject);
         CFReleaseSafe(digest);
     }), exit);
@@ -2271,11 +2237,13 @@ static void SOSEngineCompletedSyncWithPeer(SOSEngineRef engine, SOSPeerRef peer)
             CFReleaseSafe(block_to_call);
         });
     }
+
+    SOSPeerSetHasBeenInSync(peer, true);
 }
 
 
 CFDataRef SOSEngineCreateMessage_locked(SOSEngineRef engine, SOSTransactionRef txn, SOSPeerRef peer,
-                                        CFErrorRef *error, SOSEnginePeerMessageSentBlock *sent) {
+                                        CFMutableArrayRef *attributeList, CFErrorRef *error, SOSEnginePeerMessageSentBlock *sent) {
     SOSManifestRef local = SOSEngineCopyLocalPeerManifest_locked(engine, peer, error);
     __block SOSMessageRef message = SOSMessageCreate(kCFAllocatorDefault, SOSPeerGetMessageVersion(peer), error);
     SOSManifestRef confirmed = SOSPeerGetConfirmedManifest(peer);
@@ -2392,7 +2360,7 @@ CFDataRef SOSEngineCreateMessage_locked(SOSEngineRef engine, SOSTransactionRef t
                 if (!object) {
                     const uint8_t *d = CFDataGetBytePtr(key);
                     secerror("%@:%@ object %02X%02X%02X%02X dropping from manifest: not found in datasource: %@",
-                               engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], dsfeError);
+                             engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], dsfeError);
                     SOSChangesAppendDelete(changes, key);
                 } else if (!(der = SOSEngineCopyObjectDER(engine, object, &localError))
                            || !(digest = SOSObjectCopyDigest(engine->dataSource, object, &localError))) {
@@ -2400,14 +2368,14 @@ CFDataRef SOSEngineCreateMessage_locked(SOSEngineRef engine, SOSTransactionRef t
                         // Decode error, we need to drop these objects from our manifests
                         const uint8_t *d = CFDataGetBytePtr(key);
                         secnoticeq("engine", "%@:%@ object %02X%02X%02X%02X dropping from manifest: %@",
-                            engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], localError);
+                                   engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], localError);
                         SOSChangesAppendDelete(changes, key);
                         CFRelease(localError);
                     } else {
                         // Stop iterating and propagate out all other errors.
                         const uint8_t *d = CFDataGetBytePtr(key);
                         secnoticeq("engine", "%@:%@ object %02X%02X%02X%02X in SOSDataSourceForEachObject: %@",
-                            engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], localError);
+                                   engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], localError);
                         *stop = true;
                         CFErrorPropagate(localError, error);
                         CFReleaseNull(message);
@@ -2421,20 +2389,27 @@ CFDataRef SOSEngineCreateMessage_locked(SOSEngineRef engine, SOSTransactionRef t
                         SOSChangesAppendDelete(changes, key);
                         SOSChangesAppendAdd(changes, object); // This is new behaviour but we think it's more correct
                     }
-
+                    
                     size_t objectLen = (size_t)CFDataGetLength(der);
                     if (SOSMessageAppendObject(message, der, &localError)) {
                         SOSDigestVectorAppend(&dv, CFDataGetBytePtr(digest));
+                        if(!*attributeList)
+                            *attributeList = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
+                        CFDictionaryRef itemPlist = SOSObjectCopyPropertyList(engine->dataSource, object, &localError);
+                        if(itemPlist && !CFArrayContainsValue(*attributeList, CFRangeMake(0, CFArrayGetCount(*attributeList)), (CFStringRef)CFDictionaryGetValue(itemPlist, kSecAttrAccessGroup))){
+                                CFArrayAppendValue(*attributeList, (CFStringRef)CFDictionaryGetValue(itemPlist, kSecAttrAccessGroup));
+                            }//copy access group to array
                     } else {
                         const uint8_t *d = CFDataGetBytePtr(digest);
                         CFStringRef hexder = CFDataCopyHexString(der);
                         secnoticeq("engine", "%@:%@ object %02X%02X%02X%02X der: %@ dropping from manifest: %@",
-                                  engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], hexder, localError);
+                                   engine->myID, SOSPeerGetID(peer), d[0], d[1], d[2], d[3], hexder, localError);
                         CFReleaseNull(hexder);
                         CFReleaseNull(message);
                         // Since we can't send these objects let's assume they are bad too?
                         SOSChangesAppendDelete(changes, digest);
                     }
+                    
                     objectsSize += objectLen;
                     if (objectsSize > kSOSMessageMaxObjectsSize)
                         *stop = true;
@@ -2693,17 +2668,48 @@ done:
     return ok;
 }
 
-bool SOSEngineSyncWithPeers(SOSEngineRef engine, CFErrorRef *error) {
-    __block bool ok = true;
+CF_RETURNS_RETAINED CFSetRef SOSEngineSyncWithBackupPeers(SOSEngineRef engine, CFSetRef /* CFStringRef */ peers, bool forceReset, CFErrorRef *error)
+{
     __block bool incomplete = false;
-    ok &= SOSEngineDoTxnOnQueue(engine, error, ^(SOSTransactionRef txn, bool *commit) {
+    CFMutableSetRef handledSet = CFSetCreateMutableForCFTypes(kCFAllocatorDefault);
+
+    bool ok = SOSEngineDoTxnOnQueue(engine, error, ^(SOSTransactionRef txn, bool *commit) {
         __block bool dirty = false;
-        SOSEngineForEachBackupPeer_locked(engine, ^(SOSPeerRef peer) {
-            ok = SOSEngineWriteToBackup_locked(engine, peer, false, &dirty, &incomplete, error);
+        CFSetForEach(peers, ^(const void *value) {
+            bool report_handled = true;
+            CFErrorRef localError = NULL;
+            SOSPeerRef peer = NULL;
+            CFStringRef peerID = asString(value, &localError);
+            require_action_quiet(peerID, done, report_handled = false);
+
+            peer = SOSEngineCopyPeerWithID_locked(engine, peerID, &localError);
+            require_quiet(peerID, done);
+
+            if (SOSPeerMapEntryIsBackup(peer)) {
+                if(forceReset) {
+                    SOSPeerSetMustSendMessage(peer, true);
+                }
+
+                report_handled = SOSEngineWriteToBackup_locked(engine, peer, false, &dirty, &incomplete, &localError);
+            }
+
+        done:
+            if (localError) {
+                secnotice("engine-sync", "Failed to process sync for %@: %@", peerID, localError);
+            }
+            if (report_handled) {
+                CFSetAddValue(handledSet, peerID);
+            }
+            CFReleaseNull(localError);
+            CFReleaseNull(peer);
         });
 
-        if (dirty)
-            ok = SOSEngineSave(engine, txn, error);
+        if (dirty) {
+            CFErrorRef saveError = NULL;
+            if (!SOSEngineSave(engine, txn, &saveError)) {
+                secnotice("engine-save", "Failed to save engine: %@", saveError);
+            }
+        }
     });
     if (incomplete) {
         // Ensure we get called again in a while (after a backup timeout)
@@ -2711,7 +2717,10 @@ bool SOSEngineSyncWithPeers(SOSEngineRef engine, CFErrorRef *error) {
         // TODO: This relies on us not writing complete marker for update
         // event while we havn't finished a full backup, which we currently still do.
     }
-    return ok;
+    if (!ok)
+        CFReleaseNull(handledSet);
+
+    return handledSet;
 }
 
 bool SOSEngineHandleMessage(SOSEngineRef engine, CFStringRef peerID,
@@ -2725,7 +2734,7 @@ bool SOSEngineHandleMessage(SOSEngineRef engine, CFStringRef peerID,
     });
     CFReleaseSafe(message);
     if (somethingChanged)
-        SecKeychainChanged(false);
+        SecKeychainChanged();
     return result;
 }
 
@@ -2733,8 +2742,10 @@ void SOSEngineCircleChanged(SOSEngineRef engine, CFStringRef myPeerID, CFArrayRe
     __block bool peersOrViewsChanged = false;
     SOSEngineDoOnQueue(engine, ^{
         peersOrViewsChanged = SOSEngineCircleChanged_locked(engine, myPeerID, trustedPeers, untrustedPeers);
-        engine->dirty = peersOrViewsChanged;
-        engine->codersNeedSaving = peersOrViewsChanged;
+
+        // We should probably get a more precise list of peers that actually need talking to
+        if (peersOrViewsChanged && engine->myID && CFArrayGetCount(engine->peerIDs) != 0)
+            SOSCCRequestSyncWithPeersList(engine->peerIDs);
     });
 
     __block bool ok = true;
@@ -2747,8 +2758,6 @@ void SOSEngineCircleChanged(SOSEngineRef engine, CFStringRef myPeerID, CFArrayRe
         CFReleaseSafe(localError);
     }
 
-    if (peersOrViewsChanged)
-        SOSCCSyncWithAllPeers();
 }
 
 SOSManifestRef SOSEngineCopyManifest(SOSEngineRef engine, CFErrorRef *error) {
@@ -2798,31 +2807,13 @@ SOSPeerRef SOSEngineCopyPeerWithID(SOSEngineRef engine, CFStringRef peer_id, CFE
     return peer;
 }
 
-bool SOSEngineForPeerIDNoCoder(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer)) {
+bool SOSEngineForPeerID(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer)) {
     __block bool ok = true;
     SOSDataSourceReadWithCommitQueue(engine->dataSource, error, ^(SOSTransactionRef txn) {
         SOSEngineDoOnQueue(engine, ^{
             SOSPeerRef peer = SOSEngineCopyPeerWithID_locked(engine, peerID, error);
             if (peer) {
                 forPeer(txn, peer);
-                CFRelease(peer);
-            } else {
-                ok = false;
-            }
-        });
-    });
-
-    return ok;
-}
-
-bool SOSEngineForPeerID(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer, SOSCoderRef coder)) {
-    __block bool ok = true;
-    SOSDataSourceReadWithCommitQueue(engine->dataSource, error, ^(SOSTransactionRef txn) {
-        SOSEngineDoOnQueue(engine, ^{
-            SOSPeerRef peer = SOSEngineCopyPeerWithID_locked(engine, peerID, error);
-            if (peer) {
-                SOSCoderRef coder = SOSEngineGetCoder_locked(engine, peerID, NULL);
-                forPeer(txn, peer, coder);
                 CFRelease(peer);
             } else {
                 ok = false;
@@ -2853,10 +2844,10 @@ bool SOSEngineWithPeerID(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *er
     return result;
 }
 
-CFDataRef SOSEngineCreateMessageToSyncToPeer(SOSEngineRef engine, CFStringRef peerID, SOSEnginePeerMessageSentBlock *sentBlock, CFErrorRef *error) {
-    __block CFDataRef message = NULL;
-    SOSEngineForPeerID(engine, peerID, error, ^(SOSTransactionRef txn, SOSPeerRef peer, SOSCoderRef coder) {
-        message = SOSEngineCreateMessage_locked(engine, txn, peer, error, sentBlock);
+CFDataRef SOSEngineCreateMessageToSyncToPeer(SOSEngineRef engine, CFStringRef peerID, CFMutableArrayRef *attributeList, SOSEnginePeerMessageSentBlock *sentBlock, CFErrorRef *error){
+__block CFDataRef message = NULL;
+    SOSEngineForPeerID(engine, peerID, error, ^(SOSTransactionRef txn, SOSPeerRef peer) {
+        message = SOSEngineCreateMessage_locked(engine, txn, peer, attributeList, error, sentBlock);
     });
     return message;
 }
@@ -2871,7 +2862,7 @@ bool SOSEngineSetPeerConfirmedManifest(SOSEngineRef engine, CFStringRef backupNa
                                        CFDataRef keybagDigest, CFDataRef manifestData, CFErrorRef *error) {
     __block bool ok = true;
 
-    ok &= SOSEngineForPeerID(engine, backupName, error, ^(SOSTransactionRef txn, SOSPeerRef peer, SOSCoderRef coder) {
+    ok &= SOSEngineForPeerID(engine, backupName, error, ^(SOSTransactionRef txn, SOSPeerRef peer) {
         bool dirty = false;
         bool incomplete = false;
         SOSManifestRef confirmed = NULL;
@@ -2912,40 +2903,40 @@ CFArrayRef SOSEngineCopyBackupPeerNames(SOSEngineRef engine, CFErrorRef *error) 
     return backupNames;
 }
 
-static CFStringRef CFStringCreateWithLabelAndViewNameSetDescription(CFStringRef label, CFStringRef peerID, CFSetRef vns, SOSManifestRef manifest) {
-    __block CFStringRef desc;
-    CFStringSetPerformWithDescription(vns, ^(CFStringRef description) {
-        desc = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%@ %@ (%@) [%lu]"), label, peerID, description, (manifest) ? SOSManifestGetCount(manifest): 0);
-    });
-    return desc;
+static CFMutableDictionaryRef SOSEngineCreateStateDictionary(CFStringRef peerID, SOSManifestRef manifest, CFSetRef vns, CFStringRef coderString) {
+    CFNumberRef manifestCount = CFNumberCreateWithCFIndex(kCFAllocatorDefault, SOSManifestGetCount(manifest));
+    CFDataRef manifestHash = SOSManifestGetDigest(manifest, NULL);
+    CFMutableDictionaryRef result = CFDictionaryCreateMutableForCFTypesWithSafe(kCFAllocatorDefault,
+                                                                                kSOSCCEngineStatePeerIDKey, peerID,
+                                                                                kSOSCCEngineStateManifestCountKey, manifestCount,
+                                                                                kSOSCCEngineStateManifestHashKey, manifestHash,
+                                                                                kSOSCCEngineStateSyncSetKey, asSet(vns, NULL),
+                                                                                kSOSCCEngineStateCoderKey, coderString,
+                                                                                NULL);
+    CFReleaseNull(manifestCount);
+    return result;
 }
 
-static void CFArrayAppendConfirmedDigestsEntry(CFMutableArrayRef array, CFStringRef label, CFStringRef peerID, CFSetRef vns, SOSManifestRef manifest) {
-    CFStringRef desc = CFStringCreateWithLabelAndViewNameSetDescription(label, peerID, vns, manifest);
-    CFArrayAppendValue(array, desc);
-    CFReleaseSafe(desc);
-    CFDataRef digest = SOSManifestGetDigest(manifest, NULL);
-    if (digest) {
-        CFArrayAppendValue(array, digest);
-    } else {
-        CFDataRef nullDigest = CFDataCreate(kCFAllocatorDefault, NULL, 0);
-        CFArrayAppendValue(array, nullDigest);
-        CFReleaseSafe(nullDigest);
-    }
+static void SOSEngineAppendStateDictionary(CFMutableArrayRef stateArray, CFStringRef peerID, SOSManifestRef manifest, CFSetRef vns, CFStringRef coderString) {
+    CFMutableDictionaryRef newState = SOSEngineCreateStateDictionary(peerID, manifest, vns, coderString);
+    CFArrayAppendValue(stateArray, newState);
+    CFReleaseNull(newState);
 }
 
 static CFArrayRef SOSEngineCopyPeerConfirmedDigests_locked(SOSEngineRef engine, CFErrorRef *error) {
     CFMutableArrayRef result = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
     CFDictionaryForEach(engine->viewNameSet2ChangeTracker, ^(const void *vns, const void *ct) {
         SOSManifestRef manifest = SOSEngineCopyManifestWithViewNameSet_locked(engine, vns, error);
-        CFArrayAppendConfirmedDigestsEntry(result, CFSTR("local "), engine->myID, (CFSetRef)vns, manifest);
-        CFReleaseSafe(manifest);
+        SOSEngineAppendStateDictionary(result, NULL, manifest, vns, NULL);
+        CFReleaseNull(manifest);
     });
 
     // Copy other peers even if we aren't in the circle, since we're observing it.
     SOSEngineForEachPeer_locked(engine, ^(SOSPeerRef peer) {
-        CFArrayAppendConfirmedDigestsEntry(result, CFSTR("remote"), SOSPeerGetID(peer), SOSPeerGetViewNameSet(peer),
-                                           SOSPeerGetConfirmedManifest(peer));
+        CFTypeRef coderObject = engine->coders ? CFDictionaryGetValue(engine->coders, SOSPeerGetID(peer)) : CFSTR("Coders not loaded.");
+        CFStringRef coderState = coderObject ? CFCopyDescription(coderObject) : NULL;
+        SOSEngineAppendStateDictionary(result, SOSPeerGetID(peer), SOSPeerGetConfirmedManifest(peer), SOSPeerGetViewNameSet(peer), coderState);
+        CFReleaseNull(coderState);
     });
     return result;
 }
@@ -2972,16 +2963,11 @@ void SOSEngineLogState(SOSEngineRef engine) {
     require_action_quiet(engine, retOut, secnotice(ENGINELOGSTATE, "No Engine Available"));
     confirmedDigests = SOSEngineCopyPeerConfirmedDigests(engine, &error);
     require_action_quiet(confirmedDigests, retOut, secnotice(ENGINELOGSTATE, "No engine peers: %@\n", error));
-    CFIndex entries = CFArrayGetCount(confirmedDigests) / 2;
-    for(CFIndex i = 0; i < entries; i++) {
-        CFStringRef partA = asString(CFArrayGetValueAtIndex(confirmedDigests, i*2), NULL);
-        CFDataRef partB = asData(CFArrayGetValueAtIndex(confirmedDigests, i*2+1), NULL);
-        if(partA && partB) {
-            CFStringRef hexDigest = CFDataCopyHexString(partB);
-            secnotice(ENGINELOGSTATE, "%@ %@", partA, hexDigest);
-            CFReleaseNull(hexDigest);
-        }
-    }
+
+    SOSCCForEachEngineStateAsStringFromArray(confirmedDigests, ^(CFStringRef onePeerDescription) {
+        secnotice(ENGINELOGSTATE, "%@", onePeerDescription);
+    });
+
 retOut:
     CFReleaseNull(error);
     CFReleaseNull(confirmedDigests);
@@ -2989,3 +2975,27 @@ retOut:
 
     return;
 }
+
+//For Testing
+void TestSOSEngineDoOnQueue(CFTypeRef engine, dispatch_block_t action)
+{
+    dispatch_sync(((SOSEngineRef)engine)->queue, action);
+}
+CFMutableDictionaryRef TestSOSEngineGetCoders(CFTypeRef engine){
+    return ((SOSEngineRef)engine)->coders;
+}
+
+bool TestSOSEngineDoTxnOnQueue(CFTypeRef engine, CFErrorRef *error, void(^transaction)(SOSTransactionRef txn, bool *commit))
+{
+    return SOSDataSourceWithCommitQueue(((SOSEngineRef)engine)->dataSource, error, ^(SOSTransactionRef txn, bool *commit) {
+        TestSOSEngineDoOnQueue((SOSEngineRef)engine, ^{ transaction(txn, commit); });
+    });
+}
+bool SOSEngineGetCodersNeedSaving(SOSEngineRef engine){
+    return engine->codersNeedSaving;
+}
+
+void SOSEngineSetCodersNeedSaving(SOSEngineRef engine, bool saved){
+    engine->codersNeedSaving = saved;
+}
+

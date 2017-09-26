@@ -24,6 +24,9 @@
 //
 // passphrases - canonical code to obtain passphrases
 //
+#define __STDC_WANT_LIB_EXT1__ 1
+#include <string.h>
+
 #include "agentquery.h"
 #include "ccaudit_extensions.h"
 
@@ -50,6 +53,7 @@
 #define AUTH_XPC_ITEM_FLAGS "_item_flags"
 #define AUTH_XPC_ITEM_VALUE "_item_value"
 #define AUTH_XPC_ITEM_TYPE  "_item_type"
+#define AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH "_item_sensitive_value_length"
 
 #define AUTH_XPC_REQUEST_METHOD_KEY "_agent_request_key"
 #define AUTH_XPC_REQUEST_METHOD_CREATE "_agent_request_create"
@@ -102,7 +106,7 @@ SecurityAgentXPCConnection::~SecurityAgentXPCConnection()
     // If a connection has been established, we need to tear it down.
     if (NULL != mXPCConnection) {
         // Tearing this down is a multi-step process. First, request a cancellation.
-        // This is safe even if the connection is already in the cancelled state.
+        // This is safe even if the connection is already in the canceled state.
         xpc_connection_cancel(mXPCConnection);
 
         // Then release the XPC connection
@@ -221,19 +225,29 @@ SecurityAgentXPCQuery::inferHints(Process &thisProcess)
     pid_t clientPid = thisProcess.pid();
     uid_t clientUid = thisProcess.uid();
     string guestPath = thisProcess.getPath();
+    Boolean ignoreSession = TRUE;
 
 	clientHints.insert(AuthItemRef(AGENT_HINT_CLIENT_TYPE, AuthValueOverlay(sizeof(type), &type)));
 	clientHints.insert(AuthItemRef(AGENT_HINT_CLIENT_PATH, AuthValueOverlay(guestPath)));
 	clientHints.insert(AuthItemRef(AGENT_HINT_CLIENT_PID, AuthValueOverlay(sizeof(clientPid), &clientPid)));
 	clientHints.insert(AuthItemRef(AGENT_HINT_CLIENT_UID, AuthValueOverlay(sizeof(clientUid), &clientUid)));
 
+    /*
+     * If its loginwindow that's asking, override the loginwindow shield detection
+     * up front so that it can trigger SecurityAgent dialogs (like password change)
+     * for when the OD password and keychain password is out of sync.
+     */
+
+    if (guestPath == "/System/Library/CoreServices/loginwindow.app") {
+        clientHints.insert(AuthItemRef(AGENT_HINT_IGNORE_SESSION, AuthValueOverlay(sizeof(ignoreSession), &ignoreSession)));
+    }
 
 	mClientHints.insert(clientHints.begin(), clientHints.end());
 
     bool validSignature = thisProcess.checkAppleSigned();
     AuthItemSet clientImmutableHints;
 
-	clientImmutableHints.insert(AuthItemRef(AGENT_HINT_PROCESS_SIGNED, AuthValueOverlay(sizeof(validSignature), &validSignature)));
+	clientImmutableHints.insert(AuthItemRef(AGENT_HINT_CLIENT_SIGNED, AuthValueOverlay(sizeof(validSignature), &validSignature)));
 
 	mImmutableHints.insert(clientImmutableHints.begin(), clientImmutableHints.end());
 }
@@ -298,8 +312,20 @@ static void xpcArrayToAuthItemSet(AuthItemSet *setToBuild, xpc_object_t input) {
 
         size_t length;
         const void *data = xpc_dictionary_get_data(item, AUTH_XPC_ITEM_VALUE, &length);
-        void *dataCopy = malloc(length);
-        memcpy(dataCopy, data, length);
+        void *dataCopy = 0;
+
+        // <rdar://problem/13033889> authd is holding on to multiple copies of my password in the clear
+        bool sensitive = xpc_dictionary_get_value(item, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
+        if (sensitive) {
+            size_t sensitiveLength = (size_t)xpc_dictionary_get_uint64(item, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
+            dataCopy = malloc(sensitiveLength);
+            memcpy(dataCopy, data, sensitiveLength);
+            memset_s((void *)data, length, 0, sensitiveLength); // clear the sensitive data, memset_s is never optimized away
+            length = sensitiveLength;
+        } else {
+            dataCopy = malloc(length);
+            memcpy(dataCopy, data, length);
+        }
 
         uint64_t flags = xpc_dictionary_get_uint64(item, AUTH_XPC_ITEM_FLAGS);
         AuthItemRef nextItem(name, AuthValueOverlay((uint32_t)length, dataCopy), (uint32_t)flags);
@@ -401,10 +427,8 @@ static xpc_object_t authItemSetToXPCArray(AuthItemSet input) {
     return outputArray;
 }
 
-OSStatus
+void
 SecurityAgentXPCQuery::invoke() {
-    __block OSStatus status = kAuthorizationResultUndefined;
-
     xpc_object_t hintsArray = authItemSetToXPCArray(mInHints);
     xpc_object_t contextArray = authItemSetToXPCArray(mInContext);
     xpc_object_t immutableHintsArray = authItemSetToXPCArray(mImmutableHints);
@@ -441,8 +465,6 @@ SecurityAgentXPCQuery::invoke() {
     xpc_release(contextArray);
     xpc_release(immutableHintsArray);
     xpc_release(requestObject);
-
-    return status;
 }
 
 void SecurityAgentXPCQuery::checkResult()
@@ -473,8 +495,7 @@ QueryKeychainUse::QueryKeychainUse(bool needPass, const Database *db)
 Reason QueryKeychainUse::queryUser (const char *database, const char *description, AclAuthorization action)
 {
     Reason reason = SecurityAgent::noReason;
-    int retryCount = 0;
-	OSStatus status;
+	uint32_t retryCount = 0;
 	AuthItemSet hints, context;
 
 	// prepopulate with client hints
@@ -511,7 +532,7 @@ Reason QueryKeychainUse::queryUser (const char *database, const char *descriptio
             hints.erase(retryHint); hints.insert(retryHint); // replace
 
             setInput(hints, context);
-			status = invoke();
+			invoke();
 
             if (retryCount > kMaximumAuthorizationTries)
 			{
@@ -549,7 +570,6 @@ Reason QueryKeychainUse::queryUser (const char *database, const char *descriptio
 Reason QueryOld::query()
 {
 	Reason reason = SecurityAgent::noReason;
-	OSStatus status;
 	AuthItemSet hints, context;
 	CssmAutoData passphrase(Allocator::standard(Allocator::sensitive));
 	int retryCount = 0;
@@ -579,7 +599,7 @@ Reason QueryOld::query()
         hints.erase(retryHint); hints.insert(retryHint); // replace
 
         setInput(hints, context);
-        status = invoke();
+        invoke();
 
         if (retryCount > maxTries)
         {
@@ -644,7 +664,6 @@ QueryKeybagPassphrase::QueryKeybagPassphrase(Session & session, int32_t tries) :
 Reason QueryKeybagPassphrase::query()
 {
 	Reason reason = SecurityAgent::noReason;
-	OSStatus status;
 	AuthItemSet hints, context;
 	CssmAutoData passphrase(Allocator::standard(Allocator::sensitive));
 	int retryCount = 0;
@@ -675,7 +694,7 @@ Reason QueryKeybagPassphrase::query()
         hints.erase(retryHint); hints.insert(retryHint); // replace
 
         setInput(hints, context);
-        status = invoke();
+        invoke();
 
         checkResult();
 
@@ -706,7 +725,6 @@ Reason QueryKeybagNewPassphrase::query(CssmOwnedData &oldPassphrase, CssmOwnedDa
     CssmAutoData pass(Allocator::standard(Allocator::sensitive));
     CssmAutoData oldPass(Allocator::standard(Allocator::sensitive));
     Reason reason = SecurityAgent::noReason;
-	OSStatus status;
 	AuthItemSet hints, context;
 	int retryCount = 0;
 
@@ -740,7 +758,7 @@ Reason QueryKeybagNewPassphrase::query(CssmOwnedData &oldPassphrase, CssmOwnedDa
         hints.erase(retryHint); hints.insert(retryHint); // replace
 
         setInput(hints, context);
-        status = invoke();
+        invoke();
 
         checkResult();
 
@@ -797,7 +815,6 @@ Reason QueryNewPassphrase::query()
 	CssmAutoData passphrase(Allocator::standard(Allocator::sensitive));
 	CssmAutoData oldPassphrase(Allocator::standard(Allocator::sensitive));
 
-    OSStatus status;
 	AuthItemSet hints, context;
 
 	int retryCount = 0;
@@ -834,7 +851,7 @@ Reason QueryNewPassphrase::query()
         hints.erase(retryHint); hints.insert(retryHint); // replace
 
         setInput(hints, context);
-		status = invoke();
+		invoke();
 
 		if (retryCount > maxTries)
 		{
@@ -914,7 +931,6 @@ Reason QueryGenericPassphrase::query(const CssmData *prompt, bool verify,
                                      string &passphrase)
 {
     Reason reason = SecurityAgent::noReason;
-    OSStatus status;    // not really used; remove?
     AuthItemSet hints, context;
 
     hints.insert(mClientHints.begin(), mClientHints.end());
@@ -933,7 +949,7 @@ Reason QueryGenericPassphrase::query(const CssmData *prompt, bool verify,
 
     do {
         setInput(hints, context);
-		status = invoke();
+		invoke();
 		checkResult();
 		passwordItem = mOutContext.find(AGENT_PASSWORD);
 
@@ -957,7 +973,6 @@ Reason QueryDBBlobSecret::query(DbHandle *dbHandleArray, uint8 dbHandleArrayCoun
 {
     Reason reason = SecurityAgent::noReason;
 	CssmAutoData passphrase(Allocator::standard(Allocator::sensitive));
-    OSStatus status;    // not really used; remove?
     AuthItemSet hints/*NUKEME*/, context;
 
 	hints.insert(mClientHints.begin(), mClientHints.end());
@@ -980,7 +995,7 @@ Reason QueryDBBlobSecret::query(DbHandle *dbHandleArray, uint8 dbHandleArrayCoun
         hints.erase(retryHint); hints.insert(retryHint); // replace
 
         setInput(hints, context);
-		status = invoke();
+		invoke();
 		checkResult();
 		secretItem = mOutContext.find(AGENT_PASSWORD);
 		if (!secretItem)
@@ -1029,7 +1044,7 @@ QueryKeychainAuth::operator () (const char *database, const char *description, A
 	string password;
 
     using CommonCriteria::Securityd::KeychainAuthLogger;
-    KeychainAuthLogger logger(mAuditToken, AUE_ssauthint, database, description);
+    KeychainAuthLogger logger(mAuditToken, (short)AUE_ssauthint, database, description);
 
     hints.insert(mClientHints.begin(), mClientHints.end());
 

@@ -1,9 +1,10 @@
 #include "SecManifest.h"
 #include <security_utilities/security_utilities.h>
+#include <utilities/SecCFRelease.h>
 #include "Manifest.h"
 #include <security_utilities/seccfobject.h>
 #include <security_cdsa_utilities/cssmbridge.h>
-#include <../sec/Security/SecBase.h>
+#include <../../base/SecBase.h>
 /*
  * Copyright (c) 2004,2011,2013-2014 Apple Inc. All Rights Reserved.
  * 
@@ -76,9 +77,12 @@ void SecManifestRelease (SecManifestRef manifest)
 #pragma clang diagnostic ignored "-Wunused-function"
 static const char* GetDescription (CFTypeRef object)
 {
-	return CFStringGetCStringPtr (CFCopyDescription (object), kCFStringEncodingMacRoman);
+    CFStringRef s = CFCopyDescription (object);
+	const char * p = CFStringGetCStringPtr (s, kCFStringEncodingMacRoman);
+    CFReleaseNull(s);
+    return p;
 }
-#pragma clang pop
+#pragma clang diagnostic pop
 
 
 

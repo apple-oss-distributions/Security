@@ -133,22 +133,20 @@ bool SecPolicyCheckCertExtendedKeyUsage(SecCertificateRef cert, CFTypeRef pvcVal
     return match;
 }
 
-static bool SecPolicyCheckCertNonEmptySubject(SecCertificateRef cert, CFTypeRef pvcValue) {
+bool SecPolicyCheckCertNonEmptySubject(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
     /* If the certificate has a subject, or
-     if it doesn't, and it's the leaf and not self signed,
+     if it doesn't, and it's the leaf and not a CA,
      and also has a critical subjectAltName extension it's valid. */
     if (!SecCertificateHasSubject(cert)) {
-        Boolean isSelfSigned = true;
-        SecCertificateIsSelfSigned(cert, &isSelfSigned);
-        if (!isSelfSigned) {
+        if (SecCertificateIsCA(cert)) {
+            /* CA certificate has empty subject. */
+            return false;
+        } else {
             if (!SecCertificateHasCriticalSubjectAltName(cert)) {
                 /* Leaf certificate with empty subject does not have
                  a critical subject alt name extension. */
                 return false;
             }
-        } else {
-            /* CA certificate has empty subject. */
-            return false;
         }
     }
     return true;
@@ -162,7 +160,6 @@ static bool SecPolicyCheckCertQualifiedCertStatements(SecCertificateRef __unused
     return true;
 }
 
-#if 0
 /* We have a wildcard reference identifier that looks like "*." followed by 2 or
    more labels. Use CFNetwork's function for determining if those labels comprise
    a top-level domain. We need to dlopen since CFNetwork is a client of ours. */
@@ -176,7 +173,7 @@ static bool SecDNSIsTLD(CFStringRef reference) {
     dispatch_once(&onceToken, ^{
         void *framework = dlopen("/System/Library/Frameworks/CFNetwork.framework/CFNetwork", RTLD_LAZY);
         if (framework) {
-            CFNIsDomainTopLevelFunctionPtr = dlsym(framework, "_CFHostIsDomainTopLevel");
+            CFNIsDomainTopLevelFunctionPtr = dlsym(framework, "_CFHostIsDomainTopLevelForCertificatePolicy");
         }
     });
 
@@ -195,7 +192,6 @@ out:
     CFReleaseNull(presentedDomain);
     return result;
 }
-#endif
 
 /* Compare hostname, to a server name obtained from the server's cert
  Obtained from the SubjectAltName or the CommonName entry in the Subject.
@@ -258,11 +254,9 @@ static bool SecDNSMatch(CFStringRef reference, CFStringRef presented) {
 
             /* must not occur before single-label TLD */
             require_quiet(count > 2 && ix != count - 2, noMatch);
-#if 0
-            // <rdar://26563617>, check removed due to <rdar://26552669>
+
             /* must not occur before a multi-label gTLD */
             require_quiet(!SecDNSIsTLD(presented), noMatch);
-#endif
         } else {
             /* partial-label wildcards are disallowed */
             CFRange partialRange = CFStringFind(plabel, CFSTR("*"), 0);
@@ -472,6 +466,24 @@ bool SecPolicyCheckCertSubjectOrganizationalUnit(SecCertificateRef cert, CFTypeR
     return match;
 }
 
+bool SecPolicyCheckCertSubjectCountry(SecCertificateRef cert, CFTypeRef pvcValue) {
+    CFStringRef country = pvcValue;
+    bool match = true;
+    if (!isString(country)) {
+        /* @@@ We can't return an error here and making the evaluation fail
+         won't help much either. */
+        return false;
+    }
+    CFArrayRef certCountry = SecCertificateCopyCountry(cert);
+    if (!certCountry || CFArrayGetCount(certCountry) != 1 ||
+        !CFEqual(country, CFArrayGetValueAtIndex(certCountry, 0))) {
+        /* Subject Country mismatch. */
+        match = false;
+    }
+    CFReleaseSafe(certCountry);
+    return match;
+}
+
 bool SecPolicyCheckCertEAPTrustedServerNames(SecCertificateRef cert, CFTypeRef pvcValue) {
     CFArrayRef trustedServerNames = pvcValue;
     /* No names specified means we accept any name. */
@@ -592,7 +604,7 @@ static bool SecPolicyCheckCertCertificatePolicyOid(SecCertificateRef cert, CFTyp
 }
 
 static bool SecPolicyCheckCertWeak(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
-    if (cert && SecCertificateIsWeak(cert)) {
+    if (cert && SecCertificateIsWeakKey(cert)) {
         /* Leaf certificate has a weak key. */
         return false;
     }

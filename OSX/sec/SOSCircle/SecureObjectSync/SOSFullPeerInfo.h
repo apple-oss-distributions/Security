@@ -39,13 +39,13 @@ enum {
     kSOSFullPeerVersion = 1,
 };
 
-SOSFullPeerInfoRef SOSFullPeerInfoCreate(CFAllocatorRef allocator, CFDictionaryRef gestalt, CFDataRef backupKey, SecKeyRef signingKey, CFErrorRef *error);
+SOSFullPeerInfoRef SOSFullPeerInfoCreate(CFAllocatorRef allocator, CFDictionaryRef gestalt, CFDataRef backupKey, SecKeyRef signingKey, SecKeyRef octagonSigningKey, CFErrorRef *error);
 
 bool SOSFullPeerInfoUpdateToThisPeer(SOSFullPeerInfoRef peer, SOSPeerInfoRef pi, CFErrorRef *error);
 
 SOSFullPeerInfoRef SOSFullPeerInfoCreateWithViews(CFAllocatorRef allocator,
                                                   CFDictionaryRef gestalt, CFDataRef backupKey, CFSetRef enabledViews,
-                                                  SecKeyRef signingKey, CFErrorRef *error);
+                                                  SecKeyRef signingKey, SecKeyRef octagonSigningKey, CFErrorRef *error);
 
 SOSFullPeerInfoRef SOSFullPeerInfoCopyFullPeerInfo(SOSFullPeerInfoRef toCopy);
 
@@ -53,6 +53,8 @@ SOSFullPeerInfoRef SOSFullPeerInfoCreateCloudIdentity(CFAllocatorRef allocator, 
 
 SOSPeerInfoRef SOSFullPeerInfoGetPeerInfo(SOSFullPeerInfoRef fullPeer);
 SecKeyRef      SOSFullPeerInfoCopyDeviceKey(SOSFullPeerInfoRef fullPeer, CFErrorRef* error);
+SecKeyRef SOSFullPeerInfoCopyPubKey(SOSFullPeerInfoRef fpi, CFErrorRef *error);
+SecKeyRef SOSFullPeerInfoCopyOctagonSigningKey(SOSFullPeerInfoRef fullPeer, CFErrorRef* error);
 
 bool SOSFullPeerInfoPurgePersistentKey(SOSFullPeerInfoRef peer, CFErrorRef* error);
 
@@ -64,7 +66,11 @@ bool SOSFullPeerInfoValidate(SOSFullPeerInfoRef peer, CFErrorRef* error);
 
 bool SOSFullPeerInfoPrivKeyExists(SOSFullPeerInfoRef peer);
 
+bool SOSFullPeerInfoOctagonPrivKeyExists(SOSFullPeerInfoRef peer);
+
 bool SOSFullPeerInfoUpdateGestalt(SOSFullPeerInfoRef peer, CFDictionaryRef gestalt, CFErrorRef* error);
+
+bool SOSFullPeerInfoUpdateV2Dictionary(SOSFullPeerInfoRef peer, CFDictionaryRef newv2dict, CFErrorRef* error);
 
 bool SOSFullPeerInfoUpdateBackupKey(SOSFullPeerInfoRef peer, CFDataRef backupKey, CFErrorRef* error);
 
@@ -100,10 +106,11 @@ bool SOSFullPeerInfoUpdateTransportType(SOSFullPeerInfoRef peer, CFStringRef tra
 bool SOSFullPeerInfoUpdateDeviceID(SOSFullPeerInfoRef peer, CFStringRef deviceID, CFErrorRef* error);
 bool SOSFullPeerInfoUpdateTransportPreference(SOSFullPeerInfoRef peer, CFBooleanRef preference, CFErrorRef* error);
 bool SOSFullPeerInfoUpdateTransportFragmentationPreference(SOSFullPeerInfoRef peer, CFBooleanRef preference, CFErrorRef* error);
+bool SOSFullPeerInfoUpdateTransportAckModelPreference(SOSFullPeerInfoRef peer, CFBooleanRef preference, CFErrorRef* error);
 
 SOSSecurityPropertyResultCode SOSFullPeerInfoUpdateSecurityProperty(SOSFullPeerInfoRef peer, SOSViewActionCode action, CFStringRef property, CFErrorRef* error);
 SOSSecurityPropertyResultCode SOSFullPeerInfoSecurityPropertyStatus(SOSFullPeerInfoRef peer, CFStringRef property, CFErrorRef *error);
-
+CFDataRef SOSPeerInfoCopyData(SOSPeerInfoRef fpi, CFErrorRef *error);
 
 __END_DECLS
 

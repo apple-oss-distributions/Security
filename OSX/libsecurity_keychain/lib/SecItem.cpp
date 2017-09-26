@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2015 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2006-2017 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -28,6 +28,7 @@
 #include <Security/SecBase.h>
 #include <Security/SecKeychainItem.h>
 #include <Security/SecCertificate.h>
+#include <Security/SecCertificatePriv.h>
 #include <sys/param.h>
 #include "cssmdatetime.h"
 #include "SecItem.h"
@@ -43,12 +44,18 @@
 
 #include <AssertMacros.h>
 #include <syslog.h>
+#include <dlfcn.h>
 
 #include <Security/SecTrustedApplication.h>
 #include <Security/SecTrustedApplicationPriv.h>
 #include <Security/SecCode.h>
 #include <Security/SecCodePriv.h>
 #include <Security/SecRequirement.h>
+
+#include <login/SessionAgentCom.h>
+#include <login/SessionAgentStatusCom.h>
+#include <os/activity.h>
+
 
 const uint8_t kUUIDStringLength = 36;
 
@@ -64,10 +71,13 @@ OSStatus SecItemUpdate_ios(CFDictionaryRef query, CFDictionaryRef attributesToUp
 OSStatus SecItemDelete_ios(CFDictionaryRef query);
 OSStatus SecItemUpdateTokenItems_ios(CFTypeRef tokenID, CFArrayRef tokenItemsAttributes);
 
-CFTypeRef SecItemCreateFromAttributeDictionary_osx(CFDictionaryRef refAttributes);
+
 OSStatus SecItemValidateAppleApplicationGroupAccess(CFStringRef group);
 CFDictionaryRef SecItemCopyTranslatedAttributes(CFDictionaryRef inOSXDict, CFTypeRef itemClass,
 	bool iOSOut, bool pruneMatch, bool pruneSync, bool pruneReturn, bool pruneData, bool pruneAccess);
+    
+bool _SecItemParsePersistentRef(CFDataRef persistent_ref, CFStringRef *return_class,
+                                long long int *return_rowid, CFDictionaryRef *return_token_attrs);
 }
 
 static Boolean SecItemSynchronizable(CFDictionaryRef query);
@@ -579,7 +589,7 @@ _ConvertNewFormatToOldFormat(
 
 	// now we can make the result array
 	attrList->count = (UInt32)count;
-	attrList->attr = (SecKeychainAttribute*) malloc(sizeof(SecKeychainAttribute) * count);
+    attrList->attr = (count > 0) ? (SecKeychainAttribute*) malloc(sizeof(SecKeychainAttribute) * count) : NULL;
 
 	// fill out the array
 	int resultPointer = 0;
@@ -658,6 +668,7 @@ _ConvertOldFormatToNewFormat(
 							break;
 						default:
 							stringRef = CFStringCreateWithFormat(allocator, NULL, CFSTR("%d"), keyRecordValue);
+                            retainString = false;
 							break;
 					}
 					if (stringRef) {
@@ -864,7 +875,7 @@ _CreateAttributesDictionaryFromKeyItem(
 
 	CFMutableDictionaryRef dict = CFDictionaryCreateMutable(allocator, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	unsigned int ix;
-	SecItemClass itemClass = 0;
+	SecItemClass itemClass = (SecItemClass) 0;
 	UInt32 itemID;
 	SecKeychainAttributeList *attrList = NULL;
 	SecKeychainAttributeInfo *info = NULL;
@@ -944,6 +955,7 @@ _CreateAttributesDictionaryFromKeyItem(
 							break;
 						default:
 							stringRef = CFStringCreateWithFormat(allocator, NULL, CFSTR("%u"), (unsigned int)keyRecordValue);
+                            retainString = false;
 							break;
 					}
 					if (stringRef) {
@@ -1182,7 +1194,7 @@ _CreateAttributesDictionaryFromInternetPasswordItem(
 	// add kSecAttrAuthenticationType
 	if ( attrList.attr[6].length > 0 ) {
 		keys[numValues] = kSecAttrAuthenticationType;
-		values[numValues] = _SecAttrAuthenticationTypeForSecAuthenticationType(*(SecProtocolType*)attrList.attr[6].data);
+		values[numValues] = _SecAttrAuthenticationTypeForSecAuthenticationType( (SecAuthenticationType) (*(SecProtocolType*)attrList.attr[6].data));
 		if ( values[numValues] != NULL ) {
 			CFRetain(values[numValues]);
 			++numValues;
@@ -2000,7 +2012,7 @@ _CreateSecKeychainAttributeListFromDictionary(
  * _AppNameFromSecTrustedApplication attempts to pull the name of the
  * application/tool from the SecTrustedApplicationRef.
  */
-static CFStringRef
+static CFStringRef CF_RETURNS_RETAINED
 _AppNameFromSecTrustedApplication(
 	CFAllocatorRef alloc,
 	SecTrustedApplicationRef appRef)
@@ -2228,7 +2240,7 @@ _SafeSecKeychainItemDelete(
 		}
 
 		// create SecTrustedApplicationRef for current application/tool
-		CFReleaseSafe(currentAppRef);
+		CFReleaseNull(currentAppRef);
 		status = SecTrustedApplicationCreateFromPath(NULL, &currentAppRef);
 		require_noerr(status, finish);
 		require_quiet(currentAppRef != NULL, finish);
@@ -2415,7 +2427,7 @@ _UpdateKeychainItem(CFTypeRef item, CFDictionaryRef changedAttributes)
 		return errSecParam;
 	}
 
-	SecItemClass itemClass;
+	SecItemClass itemClass = (SecItemClass) 0;
 	SecAccessRef access = NULL;
 	SecKeychainAttributeList *changeAttrList = NULL;
 	SecKeychainItemRef itemToUpdate = NULL;
@@ -2487,6 +2499,13 @@ _UpdateKeychainItem(CFTypeRef item, CFDictionaryRef changedAttributes)
 			status = _CreateSecKeychainKeyAttributeListFromDictionary(changedAttributes, &changeAttrList);
 			require_noerr(status, update_failed);
 		}
+		break;
+		case kSecAppleSharePasswordItemClass:
+		{
+			// do nothing (legacy behavior).
+		}
+		break;
+
 	}
 
 	// get the password
@@ -2497,7 +2516,7 @@ _UpdateKeychainItem(CFTypeRef item, CFDictionaryRef changedAttributes)
 	}
 	// update item
 	status = SecKeychainItemModifyContent(itemToUpdate,
-				(changeAttrList->count == 0) ? NULL : changeAttrList,
+				(!changeAttrList || changeAttrList->count == 0) ? NULL : changeAttrList,
 				(theData != NULL) ? (UInt32)CFDataGetLength(theData) : 0,
 				(theData != NULL) ? CFDataGetBytePtrVoid(theData) : NULL);
 	require_noerr(status, update_failed);
@@ -2512,7 +2531,7 @@ update_failed:
 		(itemClass == kSecInternetPasswordItemClass || itemClass == kSecGenericPasswordItemClass)) {
 		// if we got a cryptographic failure updating a password item, it needs to be replaced
 		status = _ReplaceKeychainItem(itemToUpdate,
-					(changeAttrList->count == 0) ? NULL : changeAttrList,
+					(!changeAttrList ||  changeAttrList->count == 0) ? NULL : changeAttrList,
 					theData);
 	}
 	if (itemToUpdate)
@@ -2734,7 +2753,7 @@ _ItemClassFromItemList(CFArrayRef itemList)
 	// Given a list of items (standard or persistent references),
 	// determine whether they all have the same item class. Returns
 	// the item class, or 0 if multiple classes in list.
-	SecItemClass result = 0;
+	SecItemClass result = (SecItemClass) 0;
 	CFIndex index, count = (itemList) ? CFArrayGetCount(itemList) : 0;
 	for (index=0; index < count; index++) {
 		CFTypeRef item = (CFTypeRef) CFArrayGetValueAtIndex(itemList, index);
@@ -2749,7 +2768,7 @@ _ItemClassFromItemList(CFArrayRef itemList)
 				itemRef = (SecKeychainItemRef) CFRetain(item);
 			}
 			if (itemRef) {
-				SecItemClass itemClass = 0;
+				SecItemClass itemClass = (SecItemClass) 0;
 				CFTypeID itemTypeID = CFGetTypeID(itemRef);
 				if (itemTypeID == SecIdentityGetTypeID() || itemTypeID == SecCertificateGetTypeID()) {
 					// Identities and certificates have the same underlying item class
@@ -2776,7 +2795,7 @@ _ItemClassFromItemList(CFArrayRef itemList)
 				CFRelease(itemRef);
 				if (itemClass != 0) {
 					if (result != 0 && result != itemClass) {
-						return 0; // different item classes in list; bail out
+						return (SecItemClass) 0; // different item classes in list; bail out
 					}
 					result = itemClass;
 				}
@@ -2816,6 +2835,7 @@ struct SecItemParams {
 	CFTypeRef keyClass;					// value for kSecAttrKeyClass (may be NULL)
 	CFTypeRef service;					// value for kSecAttrService (may be NULL)
 	CFTypeRef issuer;					// value for kSecAttrIssuer (may be NULL)
+	CFTypeRef matchIssuers;					// value for kSecMatchIssuers (may be NULL)
 	CFTypeRef serialNumber;				// value for kSecAttrSerialNumber (may be NULL)
 	CFTypeRef search;					// search reference for this query (SecKeychainSearchRef or SecIdentitySearchRef)
 	CFTypeRef assumedKeyClass;			// if no kSecAttrKeyClass provided, holds the current class we're searching for
@@ -2927,6 +2947,7 @@ _FreeSecItemParams(SecItemParams *itemParams)
 	if (itemParams->keyClass) CFRelease(itemParams->keyClass);
 	if (itemParams->service) CFRelease(itemParams->service);
 	if (itemParams->issuer) CFRelease(itemParams->issuer);
+	if (itemParams->matchIssuers) CFRelease(itemParams->matchIssuers);
 	if (itemParams->serialNumber) CFRelease(itemParams->serialNumber);
 	if (itemParams->search) CFRelease(itemParams->search);
 	if (itemParams->access) CFRelease(itemParams->access);
@@ -2945,6 +2966,7 @@ _CreateSecItemParamsFromDictionary(CFDictionaryRef dict, OSStatus *error)
 {
 	OSStatus status;
 	CFTypeRef value = NULL;
+    CFDictionaryRef policyDict = NULL;
 	SecItemParams *itemParams = (SecItemParams *)calloc(1, sizeof(struct SecItemParams));
 
 	require_action(itemParams != NULL, error_exit, status = errSecAllocate);
@@ -3053,6 +3075,32 @@ _CreateSecItemParamsFromDictionary(CFDictionaryRef dict, OSStatus *error)
 		require_action(!(itemParams->itemClass == 0 && !itemParams->useItems), error_exit, status = errSecItemClassMissing);
 	}
 
+    // kSecMatchIssuers is only permitted with identities.
+    // Convert the input issuers to normalized form.
+    require_noerr(status = _ValidateDictionaryEntry(dict, kSecMatchIssuers, (const void **)&itemParams->matchIssuers, CFArrayGetTypeID(), NULL), error_exit);
+    if (itemParams->matchIssuers) {
+        require_action(itemParams->returnIdentity, error_exit, status = errSecParam);
+        CFMutableArrayRef canonical_issuers = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+        CFArrayRef issuers = (CFArrayRef)itemParams->matchIssuers;
+        if (canonical_issuers) {
+            CFIndex i, count = CFArrayGetCount(issuers);
+            for (i = 0; i < count; i++) {
+                CFTypeRef issuer_data = CFArrayGetValueAtIndex(issuers, i);
+                CFDataRef issuer_canonical = NULL;
+                if (CFDataGetTypeID() == CFGetTypeID(issuer_data))
+                    issuer_canonical = SecDistinguishedNameCopyNormalizedSequence((CFDataRef)issuer_data);
+                if (issuer_canonical) {
+                    CFArrayAppendValue(canonical_issuers, issuer_canonical);
+                    CFRelease(issuer_canonical);
+                }
+            }
+            if (CFArrayGetCount(canonical_issuers) > 0) {
+                CFAssignRetained(itemParams->matchIssuers, canonical_issuers);
+            } else
+                CFRelease(canonical_issuers);
+        }
+    }
+
 	itemParams->keyUsage = _CssmKeyUsageFromQuery(dict);
 	itemParams->trustedOnly = CFDictionaryGetValueIfPresent(dict, kSecMatchTrustedOnly, (const void **)&value) && value && CFEqual(kCFBooleanTrue, value);
 	itemParams->issuerAndSNToMatch = (itemParams->issuer != NULL && itemParams->serialNumber != NULL);
@@ -3101,12 +3149,18 @@ _CreateSecItemParamsFromDictionary(CFDictionaryRef dict, OSStatus *error)
 		require_noerr(status, error_exit);
 	}
 
-	// if we already have an item list (to add or find items in), we don't need an item class, attribute list or a search reference
+    // if we already have an item list (to add or find items in), we don't need a search reference
 	if (itemParams->useItems) {
 		if (itemParams->itemClass == 0) {
 			itemParams->itemClass = _ItemClassFromItemList(itemParams->useItems);
 		}
-		status = errSecSuccess;
+
+        // build a SecKeychainAttributeList from the query dictionary for the specified item class
+        if (itemParams->itemClass != 0) {
+            status = _CreateSecKeychainAttributeListFromDictionary(dict, itemParams->itemClass, &itemParams->attrList);
+        } else {
+            status = errSecSuccess;
+        }
 		goto error_exit; // all done here
 	}
 
@@ -3115,12 +3169,12 @@ _CreateSecItemParamsFromDictionary(CFDictionaryRef dict, OSStatus *error)
 	
     // if policy is a SMIME policy, copy email address in policy into emailAddrToMatch parameter
     if(itemParams->policy) {
-        CFDictionaryRef policyDict = SecPolicyCopyProperties(itemParams->policy);
+        policyDict = SecPolicyCopyProperties(itemParams->policy);
         CFStringRef oidStr = (CFStringRef) CFDictionaryGetValue(policyDict, kSecPolicyOid);
         if(oidStr && CFStringCompare(kSecPolicyAppleSMIME,oidStr,0) == 0) {
             require_noerr(status = _ValidateDictionaryEntry(policyDict, kSecPolicyName, (const void **)&itemParams->emailAddrToMatch, CFStringGetTypeID(), NULL), error_exit);
         }
-        CFRelease(policyDict);
+        CFReleaseNull(policyDict);
     }
 
 	// create a search reference (either a SecKeychainSearchRef or a SecIdentitySearchRef)
@@ -3169,6 +3223,7 @@ _CreateSecItemParamsFromDictionary(CFDictionaryRef dict, OSStatus *error)
 	}
 
 error_exit:
+    CFReleaseNull(policyDict);
 	if (status) {
 		_FreeSecItemParams(itemParams);
 		itemParams = NULL;
@@ -3221,31 +3276,6 @@ _ImportKey(
 	END_SECAPI
 }
 
-#if !SECTRUST_OSX
-static Boolean
-_CanIgnoreLeafStatusCodes(CSSM_TP_APPLE_EVIDENCE_INFO *evidence)
-{
-	/* Check for ignorable status codes in leaf certificate's evidence */
-	Boolean result = true;
-	unsigned int i;
-	for (i=0; i < evidence->NumStatusCodes; i++) {
-		CSSM_RETURN scode = evidence->StatusCodes[i];
-		if (scode == CSSMERR_APPLETP_INVALID_CA) {
-			// the TP has rejected this CA cert because it's in the leaf position
-			result = true;
-		}
-		else if (ignorableRevocationStatusCode(scode)) {
-			result = true;
-		}
-		else {
-			result = false;
-			break;
-		}
-	}
-	return result;
-}
-#endif
-
 static OSStatus
 _FilterWithPolicy(SecPolicyRef policy, CFDateRef date, SecCertificateRef cert)
 {
@@ -3257,9 +3287,6 @@ _FilterWithPolicy(SecPolicyRef policy, CFDateRef date, SecCertificateRef cert)
 	SecTrustRef trust = NULL;
 
 	SecTrustResultType	trustResult;
-#if !SECTRUST_OSX
-	CSSM_TP_APPLE_EVIDENCE_INFO *evidence = NULL;
-#endif
 	Boolean needChain = false;
 	OSStatus status;
 	if (!policy || !cert) return errSecParam;
@@ -3285,40 +3312,10 @@ _FilterWithPolicy(SecPolicyRef policy, CFDateRef date, SecCertificateRef cert)
 	}
 
 	if (!needChain) {
-#if !SECTRUST_OSX
-		/* To make the evaluation as lightweight as possible, specify an empty array
-		 * of keychains which will be searched for certificates.
-		 */
-		keychains = CFArrayCreate(NULL, NULL, 0, &kCFTypeArrayCallBacks);
-		status = SecTrustSetKeychains(trust, keychains);
-		if(status) goto cleanup;
-
-		/* To make the evaluation as lightweight as possible, specify an empty array
-		 * of trusted anchors.
-		 */
-		anchors = CFArrayCreate(NULL, NULL, 0, &kCFTypeArrayCallBacks);
-		status = SecTrustSetAnchorCertificates(trust, anchors);
-		if(status) goto cleanup;
-#else
 		status = SecTrustEvaluateLeafOnly(trust, &trustResult);
 	} else {
 		status = SecTrustEvaluate(trust, &trustResult);
-#endif
 	}
-
-#if !SECTRUST_OSX
-	/* All parameters are locked and loaded, ready to evaluate! */
-	status = SecTrustEvaluate(trust, &trustResult);
-	if(status) goto cleanup;
-
-	/* If we didn't provide trust anchors or a way to look for them,
-	 * the evaluation will fail with kSecTrustResultRecoverableTrustFailure.
-	 * However, we can tell whether the policy evaluation succeeded by
-	 * looking at the per-cert status codes in the returned evidence.
-	 */
-	status = SecTrustGetResult(trust, &trustResult, &chain, &evidence);
-	if(status) goto cleanup;
-#endif
 
 	if (!(trustResult == kSecTrustResultProceed ||
 		  trustResult == kSecTrustResultUnspecified ||
@@ -3331,18 +3328,8 @@ _FilterWithPolicy(SecPolicyRef policy, CFDateRef date, SecCertificateRef cert)
 	/* If there are no per-cert policy status codes,
 	 * and the cert has not expired, consider it valid for the policy.
 	 */
-#if SECTRUST_OSX
 	if (true) {
 		(void)SecTrustGetCssmResultCode(trust, &status);
-#else
-	if((evidence != NULL) && _CanIgnoreLeafStatusCodes(evidence) &&
-	   ((evidence[0].StatusBits & CSSM_CERT_STATUS_EXPIRED) == 0) &&
-	   ((evidence[0].StatusBits & CSSM_CERT_STATUS_NOT_VALID_YET) == 0)) {
-		status = errSecSuccess;
-#endif
-	}
-	else {
-		status = errSecCertificateCannotOperate;
 	}
 
 cleanup:
@@ -3411,6 +3398,77 @@ _FilterWithTrust(Boolean trustedOnly, SecCertificateRef cert)
 	}
 
 	return status;
+}
+
+static bool items_matching_issuer_parent(CFDataRef issuer, CFArrayRef issuers, int recurse) {
+    if (!issuers || CFArrayGetCount(issuers) == 0) { return false; }
+
+    /* We found a match, we're done. */
+    if (CFArrayContainsValue(issuers, CFRangeMake(0, CFArrayGetCount(issuers)), issuer)) { return true; }
+
+    /* Prevent infinite recursion */
+    if (recurse <= 0) { return false; }
+    recurse--;
+
+    /* Query for parents */
+    CFMutableDictionaryRef query = NULL;
+    CFTypeRef parents = NULL;
+    bool found = false;
+
+    require_quiet(query = CFDictionaryCreateMutable(kCFAllocatorDefault, 4, &kCFTypeDictionaryKeyCallBacks,
+                                      &kCFTypeDictionaryValueCallBacks), out);
+    CFDictionaryAddValue(query, kSecClass, kSecClassCertificate);
+    CFDictionaryAddValue(query, kSecReturnRef, kCFBooleanTrue);
+    CFDictionaryAddValue(query, kSecAttrSubject, issuer);
+    CFDictionaryAddValue(query, kSecMatchLimit, kSecMatchLimitAll);
+    require_noerr_quiet(SecItemCopyMatching(query, &parents), out);
+
+    if (parents && CFArrayGetTypeID() == CFGetTypeID(parents)) {
+        CFIndex i, count = CFArrayGetCount((CFArrayRef)parents);
+        for (i = 0; i < count; i++) {
+            SecCertificateRef cert = (SecCertificateRef)CFArrayGetValueAtIndex((CFArrayRef)parents, i);
+            CFDataRef cert_issuer = SecCertificateCopyNormalizedIssuerSequence(cert);
+            if (CFEqual(cert_issuer, issuer)) {
+                // Self-issued cert, don't look for parents.
+                CFReleaseNull(cert_issuer);
+                continue;
+            }
+            found = items_matching_issuer_parent(cert_issuer, issuers, recurse);
+            CFReleaseNull(cert_issuer);
+            if (found) { break; }
+        }
+    } else if (parents && SecCertificateGetTypeID() == CFGetTypeID(parents)) {
+        SecCertificateRef cert = (SecCertificateRef)parents;
+        CFDataRef cert_issuer = SecCertificateCopyNormalizedIssuerSequence(cert);
+        require_action_quiet(!CFEqual(cert_issuer, issuer), out, CFReleaseNull(cert_issuer));
+        found = items_matching_issuer_parent(cert_issuer, issuers, recurse);
+        CFReleaseNull(cert_issuer);
+    }
+
+out:
+    CFReleaseNull(query);
+    CFReleaseNull(parents);
+    return found;
+}
+
+static OSStatus
+_FilterWithIssuers(CFArrayRef issuers, SecCertificateRef cert)
+{
+    if (!issuers || CFArrayGetCount(issuers) == 0) return errSecParam;
+    if (!cert) return errSecParam;
+
+    OSStatus status = errSecInternalError;
+
+    /* kSecMatchIssuers matches certificates where ANY certificate in the chain has this issuer.
+     * So we now need to recursively query the keychain for this cert's parents to determine if
+     * they match. (This is why we limited the use of this key in _CreateSecItemParamsFromDictionary.) */
+    CFDataRef issuer = SecCertificateCopyNormalizedIssuerSequence(cert);
+    if (items_matching_issuer_parent(issuer, issuers, 10)) {
+        status = errSecSuccess;
+    }
+
+    CFReleaseNull(issuer);
+    return status;
 }
 
 static SecKeychainItemRef
@@ -3521,16 +3579,17 @@ SecItemSearchCopyNext(SecItemParams *params, CFTypeRef *item)
 	OSStatus status;
 	CFTypeRef search = (params) ? params->search : NULL;
 	CFTypeID typeID = (search) ? CFGetTypeID(search) : 0;
-	if (typeID == SecIdentitySearchGetTypeID()) {
+
+	if (search && typeID == SecIdentitySearchGetTypeID()) {
 		status = SecIdentitySearchCopyNext((SecIdentitySearchRef)search, (SecIdentityRef*)item);
 	}
-	else if (typeID == SecKeychainSearchGetTypeID()) {
+	else if (search && typeID == SecKeychainSearchGetTypeID()) {
 		status = SecKeychainSearchCopyNext((SecKeychainSearchRef)search, (SecKeychainItemRef*)item);
 		// Check if we need to refresh the search for the next key class
 		while (status == errSecItemNotFound && params->assumedKeyClass != NULL)
 			status = UpdateKeychainSearchAndCopyNext(params, item);
 	}
-	else if (typeID == 0 && (params->useItems || params->itemList)) {
+	else if (typeID == 0 && params && (params->useItems || params->itemList)) {
 		// No search available, but there is an item list available.
 		// Return the next candidate item from the caller's item list
 		CFArrayRef itemList = (params->useItems) ? params->useItems : params->itemList;
@@ -3655,6 +3714,11 @@ FilterCandidateItem(CFTypeRef *item, SecItemParams *itemParams, SecIdentityRef *
 			}
 			// certificate item is trusted on this system
 		}
+        if (itemParams->matchIssuers) {
+            status = _FilterWithIssuers((CFArrayRef)itemParams->matchIssuers, (SecCertificateRef) *item);
+            if (status) goto filterOut;
+            // certificate item has one of the issuers
+        }
 	}
 	if (itemParams->itemList) {
 		Boolean foundMatch = FALSE;
@@ -3951,10 +4015,7 @@ static Boolean SecItemSynchronizable(CFDictionaryRef query)
 static Boolean SecItemIsIOSPersistentReference(CFTypeRef value)
 {
 	if (value) {
-		/* Synchronizable persistent ref consists of the sqlite rowid and 4-byte class value */
-		const CFIndex kSynchronizablePersistentRefLength = sizeof(int64_t) + 4;
-		return (CFGetTypeID(value) == CFDataGetTypeID() &&
-				CFDataGetLength((CFDataRef)value) == kSynchronizablePersistentRefLength);
+        return ::_SecItemParsePersistentRef((CFDataRef)value, NULL, NULL, NULL);
 	}
 	return false;
 }
@@ -4183,7 +4244,7 @@ CFTypeRef
 SecItemCreateFromAttributeDictionary_osx(CFDictionaryRef refAttributes) {
 	CFTypeRef ref = NULL;
 	CFStringRef item_class_string = (CFStringRef)CFDictionaryGetValue(refAttributes, kSecClass);
-	SecItemClass item_class = 0;
+	SecItemClass item_class = (SecItemClass) 0;
 
 	if (CFEqual(item_class_string, kSecClassGenericPassword)) {
 		item_class = kSecGenericPasswordItemClass;
@@ -4268,7 +4329,7 @@ void SecItemParentCachePurge() {
     CFReleaseNull(gParentCertCacheList);
 }
 
-static CFArrayRef parentCacheRead(SecCertificateRef certificate) {
+static CFArrayRef CF_RETURNS_RETAINED parentCacheRead(SecCertificateRef certificate) {
     CFArrayRef parents = NULL;
     CFIndex ix;
     CFDataRef digest = SecCertificateGetSHA1Digest(certificate);
@@ -4317,13 +4378,13 @@ static void parentCacheWrite(SecCertificateRef certificate, CFArrayRef parents) 
 }
 
 /*
- * SecItemCopyParentCertificates returns an array of zero of more possible
+ * SecItemCopyParentCertificates_osx returns an array of zero of more possible
  * issuer certificates for the provided certificate. No cryptographic validation
  * of the signature is performed in this function; its purpose is only to
  * provide a list of candidate certificates.
  */
 CFArrayRef
-SecItemCopyParentCertificates(SecCertificateRef certificate, void *context)
+SecItemCopyParentCertificates_osx(SecCertificateRef certificate, void *context)
 {
 #pragma unused (context) /* for now; in future this can reference a container object */
 	/* Check for parents in keychain cache */
@@ -4371,13 +4432,20 @@ SecItemCopyParentCertificates(SecCertificateRef certificate, void *context)
 		CFDictionaryAddValue(query, kSecMatchSearchList, combinedSearchList);
 		CFRelease(combinedSearchList);
 	}
-	CFDictionaryAddValue(query, kSecAttrSubject, normalizedIssuer);
 
-	/* Get all certificates matching our query. */
 	CFTypeRef results = NULL;
-	status = SecItemCopyMatching_osx(query, &results);
+	if (normalizedIssuer) {
+		/* Look up certs whose subject is the same as this cert's issuer. */
+		CFDictionaryAddValue(query, kSecAttrSubject, normalizedIssuer);
+		status = SecItemCopyMatching_osx(query, &results);
+	}
+	else {
+		/* Cannot match anything without an issuer! */
+		status = errSecItemNotFound;
+	}
+
 	if ((status != errSecSuccess) && (status != errSecItemNotFound)) {
-		secitemlog(LOG_WARNING, "SecItemCopyParentCertificates: %d", (int)status);
+		secitemlog(LOG_WARNING, "SecItemCopyParentCertificates_osx: %d", (int)status);
 	}
 	CFRelease(query);
 
@@ -4395,7 +4463,7 @@ SecItemCopyParentCertificates(SecCertificateRef certificate, void *context)
 				}
 			}
 		}
-	} else if (resultType == CFDataGetTypeID()) {
+	} else if (results && resultType == CFDataGetTypeID()) {
 		SecCertificateRef cert = SecCertificateCreateWithData(kCFAllocatorDefault, (CFDataRef)results);
 		if (cert) {
 			CFArrayAppendValue(result, cert);
@@ -4630,8 +4698,10 @@ SecItemMergeResults(bool can_target_ios, OSStatus status_ios, CFTypeRef result_i
 		// If both keychains were targetted, examine returning statuses and decide what to do.
 		if (status_ios != errSecSuccess) {
 			// iOS keychain failed to produce results because of some error, go with results from OSX keychain.
+            // Since iOS keychain queries will fail without a keychain-access-group or proper entitlements, SecItemCopyMatching
+            // calls against the OSX keychain API that should return errSecItemNotFound will return nonsense from the iOS keychain.
 			AssignOrReleaseResult(result_osx, result);
-			return status_osx;
+            return status_osx;
 		} else if (status_osx != errSecSuccess) {
 			if (status_osx != errSecItemNotFound) {
 				// OSX failed to produce results with some failure mode (else than not_found), but iOS produced results.
@@ -4680,10 +4750,52 @@ SecItemMergeResults(bool can_target_ios, OSStatus status_ios, CFTypeRef result_i
 	}
 }
 
+static bool
+ShouldTryUnlockKeybag(CFDictionaryRef query, OSErr status)
+{
+    static __typeof(SASSessionStateForUser) *soft_SASSessionStateForUser = NULL;
+	static dispatch_once_t onceToken;
+	static void *framework;
+
+	if (status != errSecInteractionNotAllowed)
+		return false;
+
+    // If the query disabled authUI, respect it.
+    CFTypeRef authUI = NULL;
+    if (query) {
+        authUI = CFDictionaryGetValue(query, kSecUseAuthenticationUI);
+        if (authUI == NULL) {
+            authUI = CFDictionaryGetValue(query, kSecUseNoAuthenticationUI);
+            authUI = (authUI != NULL && CFEqual(authUI, kCFBooleanTrue)) ? kSecUseAuthenticationUIFail : NULL;
+        }
+    }
+    if (authUI && !CFEqual(authUI, kSecUseAuthenticationUIAllow))
+        return false;
+
+    dispatch_once(&onceToken, ^{
+		framework = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_LAZY);
+		if (framework == NULL)
+			return;
+		soft_SASSessionStateForUser = (__typeof(soft_SASSessionStateForUser)) dlsym(framework, "SASSessionStateForUser");
+    });
+
+    if (soft_SASSessionStateForUser == NULL)
+        return false;
+
+    SessionAgentState sessionState = soft_SASSessionStateForUser(getuid());
+    if(sessionState != kSA_state_desktopshowing)
+        return false;
+
+    return true;
+}
+
 OSStatus
 SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
 {
-	secitemlog(LOG_NOTICE, "SecItemCopyMatching");
+    os_activity_t activity = os_activity_create("SecItemCopyMatching", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_DEFAULT);
+    os_activity_scope(activity);
+    os_release(activity);
+
 	if (!query) {
 		return errSecParam;
 	}
@@ -4705,9 +4817,10 @@ SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
 		}
 		else {
 			status_ios = SecItemCopyMatching_ios(attrs_ios, &result_ios);
-            if(status_ios == errSecInteractionNotAllowed) {
+            if(ShouldTryUnlockKeybag(query, status_ios)) {
                 // The keybag is locked. Attempt to unlock it...
-                if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
+				secitemlog(LOG_WARNING, "SecItemCopyMatching triggering SecurityAgent");
+                if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(1)) {
                     CFReleaseNull(result_ios);
                     status_ios = SecItemCopyMatching_ios(attrs_ios, &result_ios);
                 }
@@ -4739,7 +4852,10 @@ SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
 OSStatus
 SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
 {
-	secitemlog(LOG_NOTICE, "SecItemAdd");
+    os_activity_t activity = os_activity_create("SecItemAdd", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_DEFAULT);
+    os_activity_scope(activity);
+    os_release(activity);
+
 	if (!attributes) {
 		return errSecParam;
 	}
@@ -4765,8 +4881,9 @@ SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
 			status = errSecParam;
 		} else {
             status = SecItemAdd_ios(attrs_ios, &result_ios);
-            if(status == errSecInteractionNotAllowed) {
+            if(ShouldTryUnlockKeybag(attributes, status)) {
                 // The keybag is locked. Attempt to unlock it...
+				secitemlog(LOG_WARNING, "SecItemAdd triggering SecurityAgent");
                 if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
                     CFReleaseNull(result_ios);
                     status = SecItemAdd_ios(attrs_ios, &result_ios);
@@ -4795,7 +4912,10 @@ SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
 OSStatus
 SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate)
 {
-	secitemlog(LOG_NOTICE, "SecItemUpdate");
+    os_activity_t activity = os_activity_create("SecItemUpdate", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_DEFAULT);
+    os_activity_scope(activity);
+    os_release(activity);
+
 	if (!query || !attributesToUpdate) {
 		return errSecParam;
 	}
@@ -4818,17 +4938,19 @@ SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate)
 		else {
             if (SecItemHasSynchronizableUpdate(true, attributesToUpdate)) {
                 status_ios = SecItemChangeSynchronizability(attrs_ios, attributesToUpdate, false);
-                if(status_ios == errSecInteractionNotAllowed) {
+                if(ShouldTryUnlockKeybag(query, status_ios)) {
                     // The keybag is locked. Attempt to unlock it...
-                    if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
+					secitemlog(LOG_WARNING, "SecItemUpdate triggering SecurityAgent");
+                    if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(1)) {
                         status_ios = SecItemChangeSynchronizability(attrs_ios, attributesToUpdate, false);
                     }
                 }
             } else {
                 status_ios = SecItemUpdate_ios(attrs_ios, attributesToUpdate);
-                if(status_ios == errSecInteractionNotAllowed) {
+                if(ShouldTryUnlockKeybag(query, status_ios)) {
                     // The keybag is locked. Attempt to unlock it...
-                    if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
+					secitemlog(LOG_WARNING, "SecItemUpdate triggering SecurityAgent");
+                    if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(1)) {
                         status_ios = SecItemUpdate_ios(attrs_ios, attributesToUpdate);
                     }
                 }
@@ -4864,7 +4986,10 @@ SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate)
 OSStatus
 SecItemDelete(CFDictionaryRef query)
 {
-	secitemlog(LOG_NOTICE, "SecItemDelete");
+    os_activity_t activity = os_activity_create("SecItemDelete", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_DEFAULT);
+    os_activity_scope(activity);
+    os_release(activity);
+
 	if (!query) {
 		return errSecParam;
 	}
@@ -4884,12 +5009,6 @@ SecItemDelete(CFDictionaryRef query)
 			status_ios = errSecParam;
 		} else {
             status_ios = SecItemDelete_ios(attrs_ios);
-            if(status_ios == errSecInteractionNotAllowed) {
-                // The keybag is locked. Attempt to unlock it...
-                if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
-                    status_ios = SecItemDelete_ios(attrs_ios);
-                }
-            }
 			CFRelease(attrs_ios);
 		}
 		secitemlog(LOG_NOTICE, "SecItemDelete_ios result: %d", status_ios);
@@ -4917,9 +5036,10 @@ OSStatus
 SecItemUpdateTokenItems(CFTypeRef tokenID, CFArrayRef tokenItemsAttributes)
 {
 	OSStatus status = SecItemUpdateTokenItems_ios(tokenID, tokenItemsAttributes);
-    if(status == errSecInteractionNotAllowed) {
+    if(ShouldTryUnlockKeybag(NULL, status)) {
         // The keybag is locked. Attempt to unlock it...
-        if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(3)) {
+        if(errSecSuccess == SecKeychainVerifyKeyStorePassphrase(1)) {
+			secitemlog(LOG_WARNING, "SecItemUpdateTokenItems triggering SecurityAgent");
             status = SecItemUpdateTokenItems_ios(tokenID, tokenItemsAttributes);
         }
     }

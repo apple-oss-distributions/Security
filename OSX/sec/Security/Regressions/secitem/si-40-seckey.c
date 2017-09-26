@@ -74,10 +74,11 @@ static void testdigestandsignalg(SecKeyRef privKey, SecKeyRef pubKey, const SecA
         ok_status(SecKeyDigestAndVerify(pubKey, algId, dataToDigest, dataToDigestLen,
             sig, sigLen), "digest and verify");
         /* Invalidate the signature. */
-        sig[0] ^= 0xff;
+        /* Tweak the least-significant bit to avoid putting the signature out of range. */
+        sig[sigLen-1] ^= 1;
         is_status(SecKeyDigestAndVerify(pubKey, algId, dataToDigest, dataToDigestLen,
             sig, sigLen), errSSLCrypto, "digest and verify bad sig");
-        sig[0] ^= 0xff;
+        sig[sigLen-1] ^= 1;
         dataToDigest[0] ^= 0xff;
         is_status(SecKeyDigestAndVerify(pubKey, algId, dataToDigest, dataToDigestLen,
             sig, sigLen), errSSLCrypto, "digest and verify bad digest");
@@ -348,7 +349,7 @@ static void testkeygen(size_t keySizeInBits) {
 #define kKeyGen2TestCount 12
 static void testkeygen2(size_t keySizeInBits) {
 	SecKeyRef pubKey = NULL, privKey = NULL;
-	size_t keySizeInBytes = (keySizeInBits + 7) / 8;
+    int32_t keySizeInBytes = (int32_t)((keySizeInBits + 7) / 8);
 	CFNumberRef kzib;
 
     CFUUIDRef ourUUID = CFUUIDCreate(kCFAllocatorDefault);
@@ -378,8 +379,8 @@ static void testkeygen2(size_t keySizeInBits) {
 
 	OSStatus status;
 	ok_status(status = SecKeyGeneratePair(kgp, &pubKey, &privKey),
-              "Generate %ld bit (%ld byte) persistent RSA keypair",
-              keySizeInBits, keySizeInBytes);
+              "Generate %d bit (%d byte) persistent RSA keypair",
+              (int)keySizeInBits, (int)keySizeInBytes);
 	CFRelease(kzib);
 	CFRelease(kgp);
 
@@ -440,7 +441,7 @@ static const int kTestSupportedCount = 3 + (4 * 11) + 2 + (4 * 5);
 static void testsupportedalgos(size_t keySizeInBits)
 {
     SecKeyRef pubKey = NULL, privKey = NULL;
-    size_t keySizeInBytes = (keySizeInBits + 7) / 8;
+    int32_t keySizeInBytes = (int)((keySizeInBits + 7) / 8);
     CFNumberRef kzib;
 
     int32_t iKeySizeInBits = (int32_t) keySizeInBits;
@@ -451,8 +452,8 @@ static void testsupportedalgos(size_t keySizeInBits)
 
     OSStatus status;
     ok_status(status = SecKeyGeneratePair(kgp, &pubKey, &privKey),
-              "Generate %ld bit (%ld byte) persistent RSA keypair",
-              keySizeInBits, keySizeInBytes);
+              "Generate %d bit (%d byte) persistent RSA keypair",
+              (int)keySizeInBits, (int)keySizeInBytes);
     CFRelease(kzib);
     CFRelease(kgp);
 
@@ -934,9 +935,45 @@ static void testsignverify(unsigned long keySizeInBits)
     CFReleaseNull(privKey);
 }
 
+
+#define kSPKITestCount 4
+static void testspki(CFStringRef keytype, size_t keySizeInBits)
+{
+    SecKeyRef pubKey = NULL, privKey = NULL, pubKey2 = NULL;
+    size_t keySizeInBytes = (keySizeInBits + 7) / 8;
+    CFNumberRef kzib;
+    int32_t keysz32 = (int32_t)keySizeInBits;
+    CFDataRef spki = NULL;
+
+    kzib = CFNumberCreate(NULL, kCFNumberSInt32Type, &keysz32);
+    CFMutableDictionaryRef kgp = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFDictionaryAddValue(kgp, kSecAttrKeyType, keytype);
+    CFDictionaryAddValue(kgp, kSecAttrKeySizeInBits, kzib);
+
+    OSStatus status;
+    ok_status(status = SecKeyGeneratePair(kgp, &pubKey, &privKey),
+              "Generate %ld bit (%ld byte) keypair", keySizeInBits, keySizeInBytes);
+    CFRelease(kzib);
+    CFRelease(kgp);
+
+    spki = SecKeyCopySubjectPublicKeyInfo(pubKey);
+    ok(spki, "failed to create SPKI");
+
+    pubKey2 = SecKeyCreateFromSubjectPublicKeyInfoData(NULL, spki);
+    ok(pubKey2, "failed to create key from SPKI");
+
+    eq_cf(pubKey, pubKey2, "public not same after going though SPKI");
+
+    CFReleaseNull(pubKey);
+    CFReleaseNull(pubKey2);
+    CFReleaseNull(privKey);
+    CFReleaseNull(spki);
+}
+
+
 /* Test basic add delete update copy matching stuff. */
 #define kTestCount ((3 * kKeyGenTestCount) + kKeyGen2TestCount + kTestSupportedCount + kCreateWithDataTestCount \
-    + kCopyAttributesTestCount + kCopyPublicKeyTestCount + kSignAndVerifyTestCount)
+    + kCopyAttributesTestCount + kCopyPublicKeyTestCount + kSignAndVerifyTestCount + ((3 + 3) * kSPKITestCount))
 static void tests(void)
 {
 	/* Comment out lines below for testing generating all common key sizes,
@@ -955,6 +992,14 @@ static void tests(void)
     testcopyattributes(768);
     testcopypublickey(768);
     testsignverify(768);
+
+    testspki(kSecAttrKeyTypeRSA, 1024);
+    testspki(kSecAttrKeyTypeRSA, 2048);
+    testspki(kSecAttrKeyTypeRSA, 4096);
+
+    testspki(kSecAttrKeyTypeEC, 256);
+    testspki(kSecAttrKeyTypeEC, 384);
+    testspki(kSecAttrKeyTypeEC, 521);
 }
 
 int si_40_seckey(int argc, char *const *argv)

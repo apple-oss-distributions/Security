@@ -59,6 +59,7 @@ extern "C" {
 #define AUTH_XPC_ITEM_FLAGS "_item_flags"
 #define AUTH_XPC_ITEM_VALUE "_item_value"
 #define AUTH_XPC_ITEM_TYPE  "_item_type"
+#define AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH "_item_sensitive_value_length"
 
 #define AUTH_XPC_REQUEST_METHOD_KEY "_agent_request_key"
 #define AUTH_XPC_REQUEST_METHOD_CREATE "_agent_request_create"
@@ -104,7 +105,8 @@ enum {
     AUTHORIZATION_CREATE_WITH_AUDIT_TOKEN,
     AUTHORIZATION_DISMISS,
     AUTHORIZATION_SETUP,
-    AUTHORIZATION_ENABLE_SMARTCARD
+    AUTHORIZATION_ENABLE_SMARTCARD,
+	AUTHORIZATION_PREAUTHORIZE_CREDENTIALS
 };
     
 #if defined(__cplusplus)

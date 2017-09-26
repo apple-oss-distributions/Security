@@ -27,6 +27,8 @@
 #include <Security/SecTrustedApplication.h>
 #include <Security/SecTrustedApplicationPriv.h>
 #include <security_keychain/Access.h>
+#include <security_utilities/casts.h>
+#include <utilities/SecCFRelease.h>
 #include "SecBridge.h"
 #include <sys/param.h>
 
@@ -230,6 +232,7 @@ CFStringRef GetAuthStringFromACLAuthorizationTag(sint32 tag)
 	{
 		result = (CFStringRef)CFDictionaryGetValue(gTagMapping, aNum);
 	}
+    CFReleaseSafe(aNum);
 	return result;
 }
 
@@ -291,7 +294,7 @@ SecAccessRef SecAccessCreateWithOwnerAndACL(uid_t userId, gid_t groupId, SecAcce
 	CSSM_ACL_PROCESS_SUBJECT_SELECTOR selector =
 	{
 		CSSM_ACL_PROCESS_SELECTOR_CURRENT_VERSION,	// selector version
-		ownerType,
+		int_cast<UInt32, uint16>(ownerType),
 		userId,
 		groupId
 	};
@@ -318,7 +321,9 @@ SecAccessRef SecAccessCreateWithOwnerAndACL(uid_t userId, gid_t groupId, SecAcce
 	CFRelease(debugStr);
 #endif
 
-	CSSM_ACL_AUTHORIZATION_TAG rights[numAcls];
+    CFIndex rightsSize = numAcls > 0 ? numAcls : 1;
+
+	CSSM_ACL_AUTHORIZATION_TAG rights[rightsSize];
 	memset(rights, 0, sizeof(rights));
 
 	for (CFIndex iCnt = 0; iCnt < numAcls; iCnt++)
@@ -379,7 +384,7 @@ SecAccessRef SecAccessCreateWithOwnerAndACL(uid_t userId, gid_t groupId, SecAcce
 				{ CSSM_LIST_TYPE_UNKNOWN, &subject1, &subject2 },
 				false,	// Delegate
 				// rights for this entry
-				{ (uint32)(sizeof(rights) / sizeof(rights[0])), rights },
+				{ (uint32)numAcls, rights },
 				// rest is defaulted
 			}
 		}
@@ -576,9 +581,6 @@ CFArrayRef copyTrustedAppListFromBundle(CFStringRef bundlePath, CFStringRef trus
     if (!trustedAppsURL)
         goto xit;
 
-    if ( trustedAppListFileNameWithoutExtension )
-		CFRelease(trustedAppListFileNameWithoutExtension);
-
 	if (!CFURLCreateDataAndPropertiesFromResource(kCFAllocatorDefault,trustedAppsURL,&xmlDataRef,NULL,NULL,&errorCode))
         goto xit;
 
@@ -586,6 +588,7 @@ CFArrayRef copyTrustedAppListFromBundle(CFStringRef bundlePath, CFStringRef trus
     trustedAppList = (CFArrayRef)trustedAppsPlist;
 
 xit:
+    CFReleaseNull(trustedAppListFileNameWithoutExtension);
     if (bundleURL)
         CFRelease(bundleURL);
     if (secBundle)

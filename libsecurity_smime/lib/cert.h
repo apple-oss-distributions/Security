@@ -88,6 +88,7 @@ SecIdentityRef CERT_FindIdentityByIssuerAndSN (CFTypeRef keychainOrArray, const 
 SecCertificateRef CERT_FindCertificateByIssuerAndSN (CFTypeRef keychainOrArray, const SecCmsIssuerAndSN *issuerAndSN);
 
 SecIdentityRef CERT_FindIdentityBySubjectKeyID (CFTypeRef keychainOrArray, const SecAsn1Item *subjKeyID);
+SecCertificateRef CERT_FindCertificateBySubjectKeyID(CFTypeRef keychainOrArray, const SecAsn1Item *subjKeyID);
 
 // find the smime symmetric capabilities profile for a given cert
 SecAsn1Item *CERT_FindSMimeProfile(SecCertificateRef cert);

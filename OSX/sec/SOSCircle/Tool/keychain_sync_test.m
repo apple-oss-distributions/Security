@@ -14,11 +14,18 @@
 #include <stdlib.h>
 #include <getopt.h>
 
+#include <utilities/SecCFWrappers.h>
+#include <utilities/SecCFRelease.h>
+
 #import <Foundation/Foundation.h>
 
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
 
 #import "NSFileHandle+Formatting.h"
+
+static char boolToChars(bool val, char truechar, char falsechar) {
+    return val? truechar: falsechar;
+}
 
 int
 keychain_sync_test(int argc, char * const *argv)
@@ -30,10 +37,11 @@ keychain_sync_test(int argc, char * const *argv)
 
      */
     int result = 0;
-    NSError* error = nil;
-    CFErrorRef cfError = NULL;
+    __block CFErrorRef cfError = NULL;
 
     static int verbose_flag = 0;
+    bool dump_pending = false;
+
     static struct option long_options[] =
     {
         /* These options set a flag. */
@@ -42,9 +50,10 @@ keychain_sync_test(int argc, char * const *argv)
         /* These options don’t set a flag.
          We distinguish them by their indices. */
         {"enabled-peer-views",      required_argument, 0, 'p'},
+        {"message-pending-state",   no_argument,       0, 'm'},
         {0, 0, 0, 0}
     };
-    static const char * params = "abc:d:f:";
+    static const char * params = "p:m";
 
     /* getopt_long stores the option index here. */
     int option_index = 0;
@@ -62,6 +71,9 @@ keychain_sync_test(int argc, char * const *argv)
                 
                 }
                 break;
+            case 'm':
+                dump_pending = true;
+                break;
             case -1:
                 break;
             default:
@@ -78,12 +90,36 @@ keychain_sync_test(int argc, char * const *argv)
         }
     }
 
-    if (cfError != NULL) {
-        [fherr writeFormat: @"Error: %@\n", cfError];
+    if (dump_pending) {
+        CFArrayRef peers = SOSCCCopyPeerPeerInfo(&cfError);
+        if (peers != NULL) {
+            [fhout writeFormat: @"Dumping state for %ld peers\n", CFArrayGetCount(peers)];
+
+            CFArrayForEach(peers, ^(const void *value) {
+                SOSPeerInfoRef thisPeer = (SOSPeerInfoRef) value;
+                if (thisPeer) {
+                    CFReleaseNull(cfError);
+                    bool message = SOSCCMessageFromPeerIsPending(thisPeer, &cfError);
+                    if (!message && cfError != NULL) {
+                        [fherr writeFormat: @"Error from SOSCCMessageFromPeerIsPending: %@\n", cfError];
+                    }
+                    CFReleaseNull(cfError);
+                    bool send = SOSCCSendToPeerIsPending(thisPeer, &cfError);
+                    if (!message && cfError != NULL) {
+                        [fherr writeFormat: @"Error from SOSCCSendToPeerIsPending: %@\n", cfError];
+                    }
+                    CFReleaseNull(cfError);
+
+                    [fhout writeFormat: @"Peer: %c%c %@\n", boolToChars(message, 'M', 'm'), boolToChars(send, 'S', 's'), thisPeer];
+                } else {
+                    [fherr writeFormat: @"Non SOSPeerInfoRef in array: %@\n", value];
+                }
+            });
+        }
     }
 
-    if (error != NULL) {
-        [fherr writeFormat: @"Error: %@\n", error];
+    if (cfError != NULL) {
+        [fherr writeFormat: @"Error: %@\n", cfError];
     }
 
     return result;

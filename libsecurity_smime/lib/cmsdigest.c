@@ -92,8 +92,9 @@ SecCmsDigestContextStartMultiple(SECAlgorithmID **digestalgs)
     digcnt = (digestalgs == NULL) ? 0 : SecCmsArrayCount((void **)digestalgs);
 
     cmsdigcx = (SecCmsDigestContextRef)PORT_ArenaAlloc(poolp, sizeof(struct SecCmsDigestContextStr));
-    if (cmsdigcx == NULL)
-	return NULL;
+    if (cmsdigcx == NULL) {
+        goto loser;
+    }
     cmsdigcx->poolp = poolp;
 
     if (digcnt > 0) {
@@ -239,7 +240,7 @@ SecCmsDigestContextCancel(SecCmsDigestContextRef cmsdigcx)
             free(cmsdigcx->digobjs[i]);
 #endif
 
-    PORT_FreeArena(cmsdigcx->poolp, PR_FALSE);
+    PORT_FreeArena(cmsdigcx->poolp, PR_TRUE);
 }
 
 /*
@@ -391,7 +392,9 @@ SecCmsDigestContextFinishSingle(SecCmsDigestContextRef cmsdigcx,
 	goto loser;
 
     /* Return the first element in the digest array. */
-    digest = *dp;
+    if (digest) {
+        *digest = *dp[0];
+    }
 
     rv = SECSuccess;
 

@@ -32,6 +32,7 @@
 #include <Security/oidscert.h>
 #include <Security/oidscrl.h>
 #include <security_cdsa_utilities/cssmerrors.h>
+#include <utilities/SecCFRelease.h>
 #include <string.h>						/* for memcmp */
 #include <Security/cssmapple.h>
 
@@ -291,6 +292,7 @@ CSSM_RETURN TPCrlInfo::parseExtensions(
                                                "CE_CDNT_NameRelativeToCrlIssuer not implemented\n");
                                     break;
                                 }
+#if 0
                                 /* relativeName is a RDN sequence */
                                 CSSM_X509_RDN_PTR idpName = idp->distPointName->dpn.rdn;
                                 CSSM_X509_RDN_PTR certName = dp->distPointName->dpn.rdn;
@@ -311,6 +313,7 @@ CSSM_RETURN TPCrlInfo::parseExtensions(
                                     /* All the pairs matched. */
                                     found = CSSM_TRUE;
                                 }
+#endif
                             }
                             case CE_CDNT_FullName: {
                                 /* fullName is a GeneralNames sequence */
@@ -691,14 +694,12 @@ CSSM_RETURN TPCrlInfo::isCertRevoked(
 	}
 
 	subjectCert.freeField(&CSSMOID_X509V1SerialNumber, subjSerial);
+
+    CFReleaseNull(cfRevokedTime);
+    CFReleaseNull(cfVerifyTime);
+
 	if(crtn && !subjectCert.addStatusCode(crtn)) {
 		return CSSM_OK;
-	}
-	if(cfRevokedTime) {
-		CFRelease(cfRevokedTime);
-	}
-	if(cfVerifyTime) {
-		CFRelease(cfVerifyTime);
 	}
 	return crtn;
 }

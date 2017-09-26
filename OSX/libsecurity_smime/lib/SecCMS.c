@@ -36,6 +36,9 @@
 #include <Security/SecCmsDecoder.h>
 #include <Security/SecCmsEncoder.h>
 #include <Security/SecCmsDigestContext.h>
+#include <Security/SecCmsEnvelopedData.h>
+#include <Security/SecCmsRecipientInfo.h>
+#include <utilities/SecCFRelease.h>
 #include <secitem.h>
 #include <cmslocal.h>
 
@@ -51,6 +54,11 @@ CFTypeRef kSecCMSAdditionalCerts = CFSTR("kSecCMSAdditionalCerts");
 CFTypeRef kSecCMSSignedAttributes = CFSTR("kSecCMSSignedAttributes");
 CFTypeRef kSecCMSSignDate = CFSTR("kSecCMSSignDate");
 CFTypeRef kSecCMSAllCerts = CFSTR("kSecCMSAllCerts");
+CFTypeRef kSecCMSHashAgility = CFSTR("kSecCMSHashAgility");
+
+CFTypeRef kSecCMSBulkEncryptionAlgorithm = CFSTR("kSecCMSBulkEncryptionAlgorithm");
+CFTypeRef kSecCMSEncryptionAlgorithmDESCBC = CFSTR("kSecCMSEncryptionAlgorithmDESCBC");
+CFTypeRef kSecCMSEncryptionAlgorithmAESCBC = CFSTR("kSecCMSEncryptionAlgorithmAESCBC");
 
 CFTypeRef kSecCMSSignHashAlgorithm = CFSTR("kSecCMSSignHashAlgorithm");
 CFTypeRef kSecCMSHashingAlgorithmSHA1 = CFSTR("kSecCMSHashingAlgorithmSHA1");
@@ -143,6 +151,8 @@ static OSStatus SecCMSSignDataOrDigestAndAttributes(SecIdentityRef identity,
     if (signed_attributes)
         CFDictionaryApplyFunction(signed_attributes, sign_all_attributes, signerinfo);
 
+    require_noerr(SecCmsSignedDataAddSignerInfo(sigd, signerinfo), out);
+
     SecAsn1Item input = {};
     if (data) {
         input.Length = CFDataGetLength(data);
@@ -171,6 +181,20 @@ out:
     if (arena) PORT_FreeArena(arena, PR_FALSE);
     if (cmsg) SecCmsMessageDestroy(cmsg);
     return status;
+}
+
+OSStatus SecCMSSignDataAndAttributes(SecIdentityRef identity, CFDataRef data, bool detached,
+                                     CFMutableDataRef signed_data, CFDictionaryRef signed_attributes)
+{
+    return SecCMSSignDataOrDigestAndAttributes(identity, data, detached, false, SEC_OID_SHA1,
+                                               signed_data, signed_attributes, SecCmsCMCertChain, NULL);
+}
+
+OSStatus SecCMSSignDigestAndAttributes(SecIdentityRef identity, CFDataRef digest,
+                                       CFMutableDataRef signed_data, CFDictionaryRef signed_attributes)
+{
+    return SecCMSSignDataOrDigestAndAttributes(identity, digest, true, true, SEC_OID_SHA1,
+                                               signed_data, signed_attributes, SecCmsCMCertChain, NULL);
 }
 
 OSStatus SecCMSCreateSignedData(SecIdentityRef identity, CFDataRef data,
@@ -242,6 +266,9 @@ SecCmsSignedDataSetDigestContext(SecCmsSignedDataRef sigd,
     if (SecCmsSignedDataSetDigests(sigd, digestAlgorithms, digests) != SECSuccess)
         goto loser;
 
+    if (arena) {
+        PORT_FreeArena(arena, PR_FALSE);
+    }
     return 0;
 loser:
     if (arena)
@@ -273,6 +300,7 @@ static OSStatus SecCMSVerifySignedData_internal(CFDataRef message, CFDataRef det
     SecCmsSignedDataRef sigd = NULL;
     OSStatus status = errSecParam;
 
+    require(message, out);
     SecAsn1Item encoded_message = { CFDataGetLength(message), (uint8_t*)CFDataGetBytePtr(message) };
     require_noerr_action_quiet(SecCmsMessageDecode(&encoded_message, NULL, NULL, NULL, NULL, NULL, NULL, &cmsg),
                                out, status = errSecDecode);
@@ -360,6 +388,13 @@ static OSStatus SecCMSVerifySignedData_internal(CFDataRef message, CFDataRef det
             }
         }
 
+        CFDataRef hash_agility_value = NULL;
+        if (errSecSuccess == SecCmsSignerInfoGetAppleCodesigningHashAgility(sigd->signerInfos[0], &hash_agility_value)) {
+            if (hash_agility_value) {
+                CFDictionarySetValue(attrs, kSecCMSHashAgility, hash_agility_value);
+            }
+        }
+        
         *signed_attributes = attrs;
         if (certs) CFRelease(certs);
     }
@@ -564,4 +599,111 @@ out:
         CFRelease(certdata);
     }
     return message;
+}
+
+OSStatus SecCMSCreateEnvelopedData(CFTypeRef recipient_or_cfarray_thereof,
+                                   CFDictionaryRef params, CFDataRef data, CFMutableDataRef enveloped_data)
+{
+    SecCmsMessageRef cmsg = NULL;
+    SecCmsContentInfoRef cinfo;
+    SecCmsEnvelopedDataRef envd = NULL;
+    SECOidTag algorithmTag = SEC_OID_DES_EDE3_CBC;
+    int keySize = 192;
+    OSStatus status = errSecParam;
+    PLArenaPool *arena = NULL;
+
+    if (params) {
+        CFStringRef algorithm_name = CFDictionaryGetValue(params, kSecCMSBulkEncryptionAlgorithm);
+        if (algorithm_name) {
+            if (CFEqual(kSecCMSEncryptionAlgorithmDESCBC, algorithm_name)) {
+                algorithmTag = SEC_OID_DES_CBC;
+                keySize = 64;
+            } else if (CFEqual(kSecCMSEncryptionAlgorithmAESCBC, algorithm_name)) {
+                algorithmTag = SEC_OID_AES_128_CBC;
+                keySize = 128;
+            }
+        }
+    }
+
+    require(cmsg = SecCmsMessageCreate(NULL), out);
+    require(envd = SecCmsEnvelopedDataCreate(cmsg, algorithmTag, keySize), out);
+    require(cinfo = SecCmsMessageGetContentInfo(cmsg), out);
+    require_noerr(SecCmsContentInfoSetContentEnvelopedData(cmsg, cinfo, envd), out);
+    require(cinfo = SecCmsEnvelopedDataGetContentInfo(envd), out);
+    require_noerr(SecCmsContentInfoSetContentData(cmsg, cinfo, NULL, false), out);
+    // == wrapper of: require(SECSuccess == SecCmsContentInfoSetContent(cinfo, SEC_OID_PKCS7_DATA, NULL), out);
+
+    if (CFGetTypeID(recipient_or_cfarray_thereof) == CFArrayGetTypeID()) {
+        CFIndex dex, numCerts = CFArrayGetCount(recipient_or_cfarray_thereof);
+        for(dex=0; dex<numCerts; dex++) {
+            SecCertificateRef recip =
+            (SecCertificateRef)CFArrayGetValueAtIndex(recipient_or_cfarray_thereof, dex);
+            SecCmsRecipientInfoRef rinfo;
+            require(rinfo = SecCmsRecipientInfoCreate(cmsg, recip), out);
+            require_noerr(SecCmsEnvelopedDataAddRecipient(envd, rinfo), out);
+        }
+    } else if (CFGetTypeID(recipient_or_cfarray_thereof) == SecCertificateGetTypeID()) {
+        SecCmsRecipientInfoRef rinfo;
+        require(rinfo = SecCmsRecipientInfoCreate(cmsg, (SecCertificateRef)recipient_or_cfarray_thereof), out);
+        require_noerr(SecCmsEnvelopedDataAddRecipient(envd, rinfo), out);
+    } else
+        goto out;
+
+    SecAsn1Item input = {};
+    if (data) {
+        input.Length = CFDataGetLength(data);
+        input.Data = (uint8_t*)CFDataGetBytePtr(data);
+    }
+
+    CSSM_DATA cssm_enveloped_data = {0, NULL};
+    // make an encoder context
+    if ((arena = PORT_NewArena(1024)) == NULL) {
+        goto out;
+    }
+    require_noerr(SecCmsMessageEncode(cmsg, (data && input.Length) ? &input : NULL, (SecArenaPoolRef)arena, &cssm_enveloped_data), out);
+    if (enveloped_data && cssm_enveloped_data.Data) {
+        CFDataAppendBytes(enveloped_data, cssm_enveloped_data.Data, cssm_enveloped_data.Length);
+    }
+
+    status = errSecSuccess;
+out:
+    if (arena) PORT_FreeArena(arena, PR_FALSE);
+    if (cmsg) SecCmsMessageDestroy(cmsg);
+    return status;
+}
+
+OSStatus SecCMSDecryptEnvelopedData(CFDataRef message,
+                                    CFMutableDataRef data, SecCertificateRef *recipient)
+{
+    SecCmsMessageRef cmsg = NULL;
+    SecCmsContentInfoRef cinfo;
+    SecCmsEnvelopedDataRef envd = NULL;
+    SecCertificateRef used_recipient = NULL;
+    OSStatus status = errSecParam;
+
+    SecAsn1Item encoded_message = { CFDataGetLength(message), (uint8_t*)CFDataGetBytePtr(message) };
+    require_noerr_action_quiet(SecCmsMessageDecode(&encoded_message, NULL, NULL, NULL, NULL, NULL, NULL, &cmsg),
+                               out, status = errSecDecode);
+    require_quiet(cinfo = SecCmsMessageContentLevel(cmsg, 0), out);
+    require_quiet(SecCmsContentInfoGetContentTypeTag(cinfo) == SEC_OID_PKCS7_ENVELOPED_DATA, out);
+    require_quiet(envd = (SecCmsEnvelopedDataRef)SecCmsContentInfoGetContent(cinfo), out);
+    SecCmsRecipientInfoRef *rinfo = envd->recipientInfos;
+    while (!used_recipient && *rinfo) {
+        used_recipient = (*rinfo)->cert;
+        rinfo++;
+    }
+    require_quiet(2 == SecCmsMessageContentLevelCount(cmsg), out);
+    require_quiet(cinfo = SecCmsMessageContentLevel(cmsg, 1), out);
+    require_quiet(SecCmsContentInfoGetContentTypeTag(cinfo) == SEC_OID_PKCS7_DATA, out);
+    const SecAsn1Item *content = SecCmsMessageGetContent(cmsg);
+    if (content)
+        CFDataAppendBytes(data, content->Data, content->Length);
+    if (recipient) {
+        CFRetainSafe(used_recipient);
+        *recipient = used_recipient;
+    }
+    status = errSecSuccess;
+out:
+    if (cmsg) SecCmsMessageDestroy(cmsg);
+    return status;
 }

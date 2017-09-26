@@ -46,6 +46,8 @@
 #include <security_asn1/secerr.h>
 #include <security_asn1/seccomon.h>
 
+#include <unistd.h>
+
 #define TMP_KEYCHAIN_PATH "/tmp/cms_01_test.keychain"
 
 #pragma clang diagnostic push
@@ -94,6 +96,8 @@ static SecKeychainRef setup_keychain(const uint8_t *p12, size_t p12_len, SecIden
     CFReleaseNull(imported_items);
 
 out:
+    CFReleaseNull(oldSearchList);
+    CFReleaseNull(newSearchList);
     return keychain;
 }
 

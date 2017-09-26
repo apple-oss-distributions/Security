@@ -35,6 +35,7 @@
 #include <Availability.h>
 #include <CoreFoundation/CFAvailability.h>
 #include <CoreFoundation/CFBase.h>
+#include <CoreFoundation/CFArray.h>
 
 #include <stdio.h>
 
@@ -54,7 +55,7 @@ CF_ASSUME_NONNULL_BEGIN
 	
 	If any of the operations that the preference panel wishes to perform are currently not allowed the lock icon in the window would show up in the locked state.  Otherwise it would show up unlocked.
 	
-	When the user locks the lock AuthorizationFree() is called with the kAuthorizationFlagDestroyRights to destroy any authorization rights that have been aquired.
+	When the user locks the lock AuthorizationFree() is called with the kAuthorizationFlagDestroyRights to destroy any authorization rights that have been acquired.
 	
 	When the user unlocks the lock AuthorizationCreate() is called with the kAuthorizationFlagInteractionAllowed and kAuthorizationFlagExtendRights flags to obtain all required rights.  The old authorization object can be freed by calling AuthorizationFree() with no flags.
 
@@ -90,7 +91,7 @@ CF_ENUM(OSStatus) {
 	errAuthorizationInvalidTag              = -60003, /* The authorization tag is invalid. */
 	errAuthorizationInvalidPointer          = -60004, /* The returned authorization is invalid. */
 	errAuthorizationDenied                  = -60005, /* The authorization was denied. */
-	errAuthorizationCanceled                = -60006, /* The authorization was cancelled by the user. */
+	errAuthorizationCanceled                = -60006, /* The authorization was canceled by the user. */
 	errAuthorizationInteractionNotAllowed   = -60007, /* The authorization was denied since no user interaction was possible. */
 	errAuthorizationInternal                = -60008, /* Unable to obtain authorization for this operation. */
 	errAuthorizationExternalizeNotAllowed	= -60009, /* The authorization is not allowed to be converted to an external format. */
@@ -176,7 +177,7 @@ typedef struct {
 } AuthorizationItemSet;
 
 
-
+static const size_t kAuthorizationExternalFormLength = 32;
 /*!
 	@struct AuthorizationExternalForm
 	An AuthorizationExternalForm structure can hold the externalized form of
@@ -188,8 +189,6 @@ typedef struct {
 	SECURITY NOTE: Applications should take care to not disclose the AuthorizationExternalForm to
 	potential attackers since it would authorize rights to them.
 */
-static const size_t kAuthorizationExternalFormLength = 32;
-
 typedef struct {
 	char bytes[kAuthorizationExternalFormLength];
 } AuthorizationExternalForm;
@@ -232,13 +231,13 @@ typedef AuthorizationItemSet AuthorizationEnvironment;
     @param rights (input/optional) An AuthorizationItemSet containing rights for which authorization is being requested.  If none are specified the resulting AuthorizationRef will authorize nothing at all.
     @param environment (input/optional) An AuthorizationItemSet containing environment state used when making the autorization decision.  See the AuthorizationEnvironment type for details.
     @param flags (input) options specified by the AuthorizationFlags enum.  set all unused bits to zero to allow for future expansion.
-    @param authorization (output optional) A pointer to an AuthorizationRef to be returned.  When the returned AuthorizationRef is no longer needed AuthorizationFree should be called to prevent anyone from using the aquired rights.  If NULL is specified no new rights are returned, but the system will attempt to authorize all the requested rights and return the appropriate status.
+    @param authorization (output optional) A pointer to an AuthorizationRef to be returned.  When the returned AuthorizationRef is no longer needed AuthorizationFree should be called to prevent anyone from using the acquired rights.  If NULL is specified no new rights are returned, but the system will attempt to authorize all the requested rights and return the appropriate status.
 
     @result errAuthorizationSuccess 0 authorization or all requested rights succeeded.
 
 	errAuthorizationDenied -60005 The authorization for one or more of the requested rights was denied.
 
-	errAuthorizationCanceled -60006 The authorization was cancelled by the user.
+	errAuthorizationCanceled -60006 The authorization was canceled by the user.
 
 	errAuthorizationInteractionNotAllowed -60007 The authorization was denied since no interaction with the user was allowed.
 */

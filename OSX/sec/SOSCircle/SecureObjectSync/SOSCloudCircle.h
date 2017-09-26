@@ -28,6 +28,10 @@
 #ifndef _SECURITY_SOSCLOUDCIRCLE_H_
 #define _SECURITY_SOSCLOUDCIRCLE_H_
 
+#if __OBJC__
+#import <Foundation/Foundation.h>
+#endif
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFArray.h>
 #include <CoreFoundation/CFSet.h>
@@ -43,7 +47,7 @@ __BEGIN_DECLS
 // CFError info for propogated errors
 //
 
-extern CFStringRef kSOSErrorDomain;
+extern const CFStringRef kSOSErrorDomain;
 
 enum {
     kSOSErrorPrivateKeyAbsent = 1,
@@ -54,7 +58,8 @@ enum {
     kSOSErrorNotReady = 4, // System not yet ready (before first unlock)
 
     kSOSErrorIncompatibleCircle = 5, // We saw an incompatible circle out there.
-    kSOSInitialSyncFailed =6,  //we timed out when syncing during approving from another device
+    kSOSInitialSyncFailed = 6,  //we timed out when syncing during approving from another device
+    kSOSEntitlementMissing = 7,
 };
 
 //
@@ -76,6 +81,7 @@ extern const char * kSOSCCViewMembershipChangedNotification;
 extern const char * kSOSCCInitialSyncChangedNotification;
 extern const char * kSOSCCHoldLockForInitialSync;
 extern const char * kSOSCCPeerAvailable;
+extern const char * kSOSCCRecoveryKeyChanged;
 
 /*!
  @function SOSCCSetUserCredentials
@@ -179,7 +185,9 @@ SOSCCStatus SOSCCThisDeviceIsInCircle(CFErrorRef* error);
 /*!
  @function SOSCCIsIcloudKeychainSyncing
  @abstract determines whether baseline keychain syncing is occuring (V0/V2)
- @result true if we're in the circle. false otherwise.
+ @result true if we're in the circle and baseline keychain syncing views 
+    (kSOSViewAutofillPasswords/kSOSViewSafariCreditCards/kSOSViewWiFi/kSOSViewOtherSyncable
+    are enabled. false otherwise.
  */
 
 bool SOSCCIsIcloudKeychainSyncing(void);
@@ -187,7 +195,7 @@ bool SOSCCIsIcloudKeychainSyncing(void);
 /*!
  @function SOSCCIsSafariSyncing
  @abstract determines whether Safari keychain item syncing is occuring (kSOSViewAutofillPasswords/kSOSViewSafariCreditCards)
- @result true if we're in the circle. false otherwise.
+ @result true if we're in the circle and the kSOSViewAutofillPasswords/kSOSViewSafariCreditCards views are enabled. false otherwise.
  */
 
 bool SOSCCIsSafariSyncing(void);
@@ -195,7 +203,7 @@ bool SOSCCIsSafariSyncing(void);
 /*!
  @function SOSCCIsAppleTVSyncing
  @abstract determines whether appleTV keychain syncing is occuring (kSOSViewAppleTV)
- @result true if we're in the circle. false otherwise.
+ @result true if we're in the circle and the kSOSViewAppleTV view is enabled. false otherwise.
  */
 
 bool SOSCCIsAppleTVSyncing(void);
@@ -204,7 +212,7 @@ bool SOSCCIsAppleTVSyncing(void);
 /*!
  @function SOSCCIsHomeKitSyncing
  @abstract determines whether homekit keychain syncing is occuring (kSOSViewHomeKit)
- @result true if we're in the circle. false otherwise.
+ @result true if we're in the circle and the kSOSViewHomeKit view is enabled. false otherwise.
  */
 
 bool SOSCCIsHomeKitSyncing(void);
@@ -212,16 +220,17 @@ bool SOSCCIsHomeKitSyncing(void);
 
 /*!
  @function SOSCCIsWiFiSyncing
- @abstract determines whether homekit keychain syncing is occuring (kSOSViewWiFi)
- @result true if we're in the circle. false otherwise.
+ @abstract determines whether WiFi keychain syncing is occuring (kSOSViewWiFi)
+ @result true if we're in the circle and the kSOSViewWiFi view is enabled. false otherwise.
  */
 
 bool SOSCCIsWiFiSyncing(void);
 
 /*!
- @function SOSCCIsAlwaysOnNoInitialSyncSyncing
- @abstract determines whether homekit keychain syncing is occuring (kSOSViewHomeKit)
- @result true if we're in the circle. false otherwise.
+ @function SOSCCIsContinuityUnlockSyncing
+ @abstract determines whether Continuity Unlock keychain syncing is occuring (kSOSViewContinuityUnlock)
+ @result true if we're in the circle and the kSOSViewContinuityUnlock view is enabled. false otherwise.
+.
  */
 
 bool SOSCCIsContinuityUnlockSyncing(void);
@@ -385,13 +394,22 @@ CFArrayRef SOSCCCopyRetirementPeerInfo(CFErrorRef* error);
  */
 CFArrayRef SOSCCCopyViewUnawarePeerInfo(CFErrorRef* error);
 
-/*!
- @function SOSCCCopyEngineState
- @abstract Get the list of peers the engine knows about and their state.
- @param error What went wrong.
- @result Array of EnginePeerInfos for connected peers.
+/*
+ * Keys to find data in engine state dictionary
  */
-CFArrayRef SOSCCCopyEngineState(CFErrorRef* error);
+extern CFStringRef kSOSCCEngineStatePeerIDKey;
+extern CFStringRef kSOSCCEngineStateManifestCountKey;
+extern CFStringRef kSOSCCEngineStateSyncSetKey;
+extern CFStringRef kSOSCCEngineStateCoderKey;
+extern CFStringRef kSOSCCEngineStateManifestHashKey;
+
+/*!
+ @function SOSCCForEachEngineStateAsString
+ @abstract Get a string for each peer to dump to your favorite location.
+ @param error What went wrong.
+ @result if we had an error.
+ */
+bool SOSCCForEachEngineStateAsString(CFErrorRef* error, void (^block)(CFStringRef oneStateString));
 
 /*!
  @function SOSCCAcceptApplicants
@@ -421,25 +439,15 @@ bool SOSCCRejectApplicants(CFArrayRef applicants, CFErrorRef *error);
 CFArrayRef SOSCCCopyPeerPeerInfo(CFErrorRef* error);
 
 /*!
- @function SOSCCSetAutoAcceptInfo
- @abstract Arms auto-acceptance for the HSA2 data given.
- @param error What went wrong.
- @result true if the operation succeeded, otherwise false.
- */
-bool SOSCCSetAutoAcceptInfo(CFDataRef autoaccept, CFErrorRef *error);
-
-/*!
  @function SOSCCCheckPeerAvailability
- @abstract Prompts IDSKeychainSyncingProxy to query all devices in the circle with the same view.
+ @abstract Prompts KeychainSyncingOverIDSProxy to query all devices in the circle with the same view.
  @param error What went wrong.
  @result true if the operation succeeded, otherwise false.
  */
 bool SOSCCCheckPeerAvailability(CFErrorRef *error);
 
-/*!
- @function SOSCCGetLastDepartureReason
- @abstract Returns the code of why you left the circle.
- @param error What went wrong if we returned kSOSDepartureReasonError.
+/*
+ * Return values for SOSCCGetLastDepartureReason
  */
 enum DepartureReason {
     kSOSDepartureReasonError = 0,
@@ -455,12 +463,17 @@ enum DepartureReason {
 	kSOSNumDepartureReasons,   // ACHTUNG: this *MUST* be the last entry - ALWAYS!
 };
 
+/*!
+ @function SOSCCGetLastDepartureReason
+ @abstract Returns the code of why you left the circle.
+ @param error What went wrong if we returned kSOSDepartureReasonError.
+ */
 enum DepartureReason SOSCCGetLastDepartureReason(CFErrorRef *error);
 
 /*!
  @function SOSCCSetLastDepartureReason
  @abstract Manually set the code of why the circle was left.
- @param DepartureReason Custom departure reason be be set.
+ @param reason Custom departure reason be be set.
  @param error What went wrong if we returned false.
  */
 
@@ -538,11 +551,18 @@ extern const CFStringRef kSOSViewAppleTV;
 extern const CFStringRef kSOSViewHomeKit;
 extern const CFStringRef kSOSViewContinuityUnlock;
 extern const CFStringRef kSOSViewAccessoryPairing;
+extern const CFStringRef kSOSViewNanoRegistry;
+extern const CFStringRef kSOSViewWatchMigration;
+extern const CFStringRef kCKKSViewEngram;
+extern const CFStringRef kCKKSViewManatee;
+extern const CFStringRef kCKKSViewAutoUnlock;
+extern const CFStringRef kCKKSViewHealth;
+
 
 /*!
  @function SOSCCView
  @abstract Enable, disable or query status of a View for this peer.
- @param dataSource The View for which the action should be performed.
+ @param view The View for which the action should be performed.
  @param action The action code to take with the View
  @param error More description of the error if one occurred.
  @discussion
@@ -570,9 +590,8 @@ SOSViewResultCode SOSCCView(CFStringRef view, SOSViewActionCode action, CFErrorR
 /*!
  @function SOSCCViewSet
  @abstract Enable, disable or query status of a views for this peer.
- @param dataSource The views (as CFSet) for which the action should be performed.
- @param action The action code to take with the views
- @param error More description of the error if one occurred.
+ @param enabledviews The views (as CFSet) for which the action should be performed.
+ @param disabledviews TODO
  @discussion
    This call enables bulk setting of views for a peer.  This is done for convenience as well as
    better performance; it requires less circle changes by grouping all the view enabling/disabling.
@@ -636,7 +655,7 @@ SOSPeerInfoRef SOSCCCopyMyPeerWithNewDeviceRecoverySecret(CFDataRef secret, CFEr
 
 /*!
  @function SOSCCRegisterSingleRecoverySecret
- @param aks_bag
+ @param aks_bag TODO
  @param error What went wrong trying to register the new secret
  @result true if we saved the bag, false if we had an error
  @discussion Asserts the keybag for use for backups when having a single secret. All views get backed up with this single bag.
@@ -664,8 +683,6 @@ bool SOSCCSetEscrowRecord(CFStringRef escrow_label, uint64_t tries, CFErrorRef *
 
 /*!
  @function SOSCCCopyEscrowRecord
- @param dsid Account DSID
- @param escrow_label Account label
  @param error What went wrong trying to set the escrow label
  @result dictionary of the escrow record, false if we had an error, dictionary will be of format: [account label: <dictionary>], dictionary will contain (ex):   "Burned Recovery Attempt Attestation Date" = "[2015-08-19 15:21]";
                                      "Burned Recovery Attempt Count" = 8;
@@ -696,7 +713,7 @@ CFDataRef SOSCCCopyCircleJoiningBlob(SOSPeerInfoRef applicant, CFErrorRef *error
  @result true if this succeeded.
  */
 
-bool SOSCCJoinWithCircleJoiningBlob(CFDataRef joiningBlob, CFErrorRef *error);
+bool SOSCCJoinWithCircleJoiningBlob(CFDataRef joiningBlob, PiggyBackProtocolVersion version, CFErrorRef *error);
 
 /*!
  @function: bool SOSCCPeersHaveViewsEnabled(CFSetRef viewNames)
@@ -706,6 +723,51 @@ bool SOSCCJoinWithCircleJoiningBlob(CFDataRef joiningBlob, CFErrorRef *error);
          NULL if we have an error.
  */
 CFBooleanRef SOSCCPeersHaveViewsEnabled(CFArrayRef viewNames, CFErrorRef *error);
+
+/*!
+ @function: bool SOSCCRegisterRecoveryPublicKey(CFDataRef recovery_key, CFErrorRef *error);
+ @param recovery_key the cf data representation of the recovery public key
+ Can be passed in as NULL to indicate the CFDataRef should be removed from the keychain
+ @result CFBooleanTrue if the public key was successfully stored in the syncable keychain
+ CFBooleanFalse if securityd could not store the recovery key (locked?)
+ NULL if we have an error.
+ */
+bool SOSCCRegisterRecoveryPublicKey(CFDataRef recovery_key, CFErrorRef *error);
+
+/*!
+ @function: bool SOSCCMessageFromPeerIsPending(SOSPeerInfoRef peer, CFErrorRef *error)
+ @param peer PeerInfo for the peer to ask about
+ @param error failure if we fail
+ @result true if we have a message pending that we haven't processed, false if we don't have one queued right now or an error occurred.
+ */
+bool SOSCCMessageFromPeerIsPending(SOSPeerInfoRef peer, CFErrorRef *error);
+
+/*!
+ @function: bool SOSCCSendToPeerIsPending(SOSPeerInfoRef peer, CFErrorRef *error)
+ @param peer PeerInfo for the peer to ask about
+ @param error failure if we fail
+ @result true if we have an attempt to sync pending that we haven't processed, false if we don't have one queued right now or an error occurred.
+ */
+bool SOSCCSendToPeerIsPending(SOSPeerInfoRef peer, CFErrorRef *error);
+
+#if __OBJC__
+/*
+ @function: SOSCCAccountGetPublicKey
+ @param reply fetch the current user public key as SubjectPublicKeyInfoi
+ */
+void SOSCCAccountGetPublicKey(void (^reply)(BOOL trusted, NSData *data, NSError *error));
+
+/*
+ @function: SOSCCAccountGetAccountPrivateCredential
+ @param reply fetch the current user public key as SubjectPublicKeyInfoi
+ */
+void SOSCCAccountGetAccountPrivateCredential(void (^complete)(NSData *data, NSError *error));
+
+void SOSCCAccountGetKeyCircleGeneration(void (^reply)(NSData *data, NSError *error));
+
+CFDataRef SOSCCCopyInitialSyncData(CFErrorRef *error);
+    
+#endif
 
 __END_DECLS
 

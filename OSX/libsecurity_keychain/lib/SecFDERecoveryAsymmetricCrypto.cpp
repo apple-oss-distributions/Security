@@ -34,7 +34,7 @@
 #include <Security/SecKey.h>
 
 static void encodePrivateKeyHeader(const CssmData &inBlob, CFDataRef certificate, FVPrivateKeyHeader &outHeader);
-static CFDataRef decodePrivateKeyHeader(SecKeychainRef keychainName, const FVPrivateKeyHeader &inHeader);
+static CFDataRef CF_RETURNS_RETAINED decodePrivateKeyHeader(SecKeychainRef keychainName, const FVPrivateKeyHeader &inHeader);
 static void throwIfError(CSSM_RETURN rv);
 
 #pragma mark ----- Public SPI -----
@@ -136,7 +136,7 @@ CFDataRef decodePrivateKeyHeader(SecKeychainRef keychain, const FVPrivateKeyHead
     CSSM_CC_HANDLE cc = 0;
 	
 	SecKeychainSearchRef _searchRef;
-	throwIfError(SecKeychainSearchCreateFromAttributes(keychain, CSSM_DL_DB_RECORD_PRIVATE_KEY, &attrList, &_searchRef));
+	throwIfError(SecKeychainSearchCreateFromAttributes(keychain, (SecItemClass) CSSM_DL_DB_RECORD_PRIVATE_KEY, &attrList, &_searchRef));
 	CFRef<SecKeychainSearchRef> searchRef(_searchRef);
 	
 	SecKeychainItemRef _item;

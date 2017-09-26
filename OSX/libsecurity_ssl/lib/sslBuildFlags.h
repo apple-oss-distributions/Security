@@ -83,16 +83,16 @@ extern "C" {
 /* Experimental */
 #define ENABLE_DTLS                 1
 
-#define ENABLE_3DES			1		/* normally enabled */
-#define ENABLE_RC4			1		/* normally enabled */
-#define ENABLE_DES			0		/* normally disabled */
-#define ENABLE_RC2			0		/* normally disabled */
-#define ENABLE_AES			1		/* normally enabled, our first preference */
-#define ENABLE_AES256		1		/* normally enabled */
-#define ENABLE_ECDHE		1
-#define ENABLE_ECDHE_RSA	1
-#define ENABLE_ECDH			1
-#define ENABLE_ECDH_RSA		1
+#define ENABLE_3DES                 1		/* normally enabled */
+#define ENABLE_RC4                  1		/* normally enabled */
+#define ENABLE_DES                  0		/* normally disabled */
+#define ENABLE_RC2                  0		/* normally disabled */
+#define ENABLE_AES                  1		/* normally enabled, our first preference */    
+#define ENABLE_AES256               1		/* normally enabled */
+#define ENABLE_ECDHE                1
+#define ENABLE_ECDHE_RSA            1
+#define ENABLE_ECDH                 1
+#define ENABLE_ECDH_RSA             1
 
 #if defined(__cplusplus)
 }

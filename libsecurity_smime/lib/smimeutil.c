@@ -46,6 +46,7 @@
 #include <security_asn1/secerr.h>
 #include <Security/SecSMIME.h>
 #include <Security/SecKeyPriv.h>
+#include <Security/SecCertificatePriv.h>
 
 SEC_ASN1_MKSUB(CERT_IssuerAndSNTemplate)
 SEC_ASN1_MKSUB(SEC_OctetStringTemplate)
@@ -193,8 +194,7 @@ SecSMIMEEnableCipher(unsigned long which, Boolean on)
 	return SECFailure;
     }
 
-    if (smime_cipher_map[mapi].enabled != on)
-	smime_cipher_map[mapi].enabled = on;
+    smime_cipher_map[mapi].enabled = on;
 
     return SECSuccess;
 }
@@ -221,8 +221,7 @@ SecSMIMEAllowCipher(unsigned long which, Boolean on)
 	/* XXX set an error */
 	return SECFailure;
 
-    if (smime_cipher_map[mapi].allowed != on)
-	smime_cipher_map[mapi].allowed = on;
+    smime_cipher_map[mapi].allowed = on;
 
     return SECSuccess;
 }
@@ -589,6 +588,9 @@ SecSMIMEFindBulkAlgForRecipients(SecCertificateRef *rcerts, SECOidTag *bulkalgta
 
     cipher = smime_choose_cipher(NULL, rcerts);
     mapi = smime_mapi_by_cipher(cipher);
+    if (mapi < 0) {
+        return SECFailure;
+    }
 
     *bulkalgtag = smime_cipher_map[mapi].algtag;
     *keysize = smime_keysize_by_cipher(smime_cipher_map[mapi].cipher);
@@ -746,7 +748,28 @@ loser:
     return (dummy == NULL) ? SECFailure : SECSuccess;
 }
 
-#if 0
+static CFArrayRef CF_RETURNS_RETAINED copyCertsFromRawCerts(SecAsn1Item **rawCerts) {
+    CFMutableArrayRef certs = NULL;
+    SecCertificateRef certificate = NULL;
+    int numRawCerts = SecCmsArrayCount((void **)rawCerts);
+    int dex;
+
+    certs = CFArrayCreateMutable(NULL, numRawCerts, &kCFTypeArrayCallBacks);
+
+    for(dex=0; dex<numRawCerts; dex++) {
+        certificate = SecCertificateCreateWithBytes(NULL, rawCerts[dex]->Data, rawCerts[dex]->Length);
+        CFArrayAppendValue(certs, certificate);
+        CFRelease(certificate);
+        certificate = NULL;
+    }
+
+    if (CFArrayGetCount(certs) == 0) {
+        CFRelease(certs);
+        return NULL;
+    }
+    return certs;
+}
+
 /*
  * SecSMIMEGetCertFromEncryptionKeyPreference -
  *				find cert marked by EncryptionKeyPreference attribute
@@ -758,11 +781,12 @@ loser:
  * they are assumed to have been imported already.
  */
 SecCertificateRef
-SecSMIMEGetCertFromEncryptionKeyPreference(SecKeychainRef keychainOrArray, SecAsn1Item *DERekp)
+SecSMIMEGetCertFromEncryptionKeyPreference(SecAsn1Item **rawCerts, SecAsn1Item *DERekp)
 {
     PLArenaPool *tmppoolp = NULL;
     SecCertificateRef cert = NULL;
     NSSSMIMEEncryptionKeyPreference ekp;
+    CFArrayRef certs = NULL;
 
     tmppoolp = PORT_NewArena(1024);
     if (tmppoolp == NULL)
@@ -772,24 +796,25 @@ SecSMIMEGetCertFromEncryptionKeyPreference(SecKeychainRef keychainOrArray, SecAs
     if (SEC_ASN1DecodeItem(tmppoolp, &ekp, smime_encryptionkeypref_template, DERekp) != SECSuccess)
 	goto loser;
 
+    certs = copyCertsFromRawCerts(rawCerts);
+
     /* find cert */
     switch (ekp.selector) {
     case NSSSMIMEEncryptionKeyPref_IssuerSN:
-	cert = CERT_FindCertByIssuerAndSN(keychainOrArray, ekp.id.issuerAndSN);
+	cert = CERT_FindCertificateByIssuerAndSN(certs, ekp.id.issuerAndSN);
 	break;
     case NSSSMIMEEncryptionKeyPref_RKeyID:
     case NSSSMIMEEncryptionKeyPref_SubjectKeyID:
-	/* XXX not supported yet - we need to be able to look up certs by SubjectKeyID */
+            cert = CERT_FindCertificateBySubjectKeyID(certs, ekp.id.subjectKeyID);
 	break;
     default:
 	PORT_Assert(0);
     }
 loser:
     if (tmppoolp) PORT_FreeArena(tmppoolp, PR_FALSE);
-
+    CFRelease(certs);
     return cert;
 }
-#endif
 
 #if 0
 extern const char __nss_smime_rcsid[];

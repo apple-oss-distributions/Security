@@ -24,7 +24,7 @@
 
 #include "SecdTestKeychainUtilities.h"
 
-#include <test/testmore.h>
+#include <regressions/test/testmore.h>
 #include <utilities/SecFileLocations.h>
 #include <utilities/SecCFWrappers.h>
 #include <securityd/SecItemServer.h>
@@ -49,9 +49,7 @@ void secd_test_setup_temp_keychain(const char* test_prefix, dispatch_block_t do_
     
     
     /* set custom keychain dir, reset db */
-    CFStringPerformWithCString(tmp_dir, ^(const char *tmp_dir_string) {
-        SetCustomHomeURL(tmp_dir_string);
-    });
+    SetCustomHomeURLString(tmp_dir);
 
     SecKeychainDbReset(do_in_reset);
 

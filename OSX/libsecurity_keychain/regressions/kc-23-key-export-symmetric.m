@@ -75,6 +75,7 @@ static SecKeyRef generateSymmetricKey(SecKeychainRef keychainRef, CFStringRef la
 
 	num = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &rawnum);
 	CFDictionarySetValue(parameters, kSecAttrKeySizeInBits, num);
+    CFReleaseNull(num);
 
 	// Store in keychain
 	CFDictionarySetValue(parameters, kSecUseKeychain, keychainRef);
@@ -103,12 +104,12 @@ int kc_23_key_export_symmetric(int argc, char *const *argv)
     
     SecKeychainRef kc = getPopulatedTestKeychain();
 
-	NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 	SecKeyRef cryptokey;
 	OSStatus status;
 
-	CFStringRef label = (CFStringRef)([NSString stringWithFormat:@"Symmetric Cryptotest %ld %d", (long)time(NULL), arc4random(), nil]);
+	CFStringRef label = (__bridge_retained CFStringRef)([NSString stringWithFormat:@"Symmetric Cryptotest %ld %d", (long)time(NULL), arc4random(), nil]);
 	cryptokey = generateSymmetricKey(kc, label);
+    CFReleaseNull(label);
 
 	// Using SecItemExport
 	CFMutableArrayRef keyUsage = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
@@ -128,14 +129,14 @@ int kc_23_key_export_symmetric(int argc, char *const *argv)
 	status = SecItemExport(cryptokey, kSecFormatRawKey, 0, &exportParams, (CFDataRef *)&exportedKey2);
     ok_status(status, "%s: SecItemExport", testName);
 
+    CFReleaseNull(cryptokey);
+
     is(CFDataGetLength(exportedKey2), 32, "%s: wrong AES-256 key size", testName);
 
     CFRelease(exportedKey2);
 
     ok_status(SecKeychainDelete(kc), "%s: SecKeychainDelete", testName);
     CFReleaseNull(kc);
-
-    [pool drain];
 
     deleteTestFiles();
 	return 0;

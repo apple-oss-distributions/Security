@@ -2,7 +2,7 @@
  1) add it here
  2) Add it as command line argument for SecurityTest.app in the Release and Debug schemes
  */
-#include <test/testmore.h>
+#include <regressions/test/testmore.h>
 
 ONE_TEST(kc_01_keychain_creation)
 ONE_TEST(kc_02_unlock_noui)
@@ -27,7 +27,9 @@ ONE_TEST(kc_20_identity_persistent_refs)
 ONE_TEST(kc_20_identity_key_attributes)
 ONE_TEST(kc_20_identity_find_stress)
 ONE_TEST(kc_20_key_find_stress)
+ONE_TEST(kc_20_item_add_stress)
 ONE_TEST(kc_20_item_find_stress)
+ONE_TEST(kc_20_item_delete_stress)
 ONE_TEST(kc_21_item_use_callback)
 ONE_TEST(kc_21_item_xattrs)
 ONE_TEST(kc_23_key_export_symmetric)
@@ -41,6 +43,7 @@ ONE_TEST(kc_40_seckey)
 ONE_TEST(kc_41_sececkey)
 ONE_TEST(kc_42_trust_revocation)
 ONE_TEST(kc_43_seckey_interop)
+ONE_TEST(kc_44_secrecoverypassword)
 ONE_TEST(si_20_sectrust_provisioning)
 ONE_TEST(si_33_keychain_backup)
 ONE_TEST(si_34_one_true_keychain)

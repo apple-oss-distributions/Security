@@ -3,44 +3,46 @@
 //  sec
 //
 //
-#include <Security/SecureObjectSync/SOSAccount.h>
+#ifndef sec_SOSTransportMessageIDS_h
+#define sec_SOSTransportMessageIDS_h
+
+@class SOSMessage;
 
 typedef enum {
     kIDSStartPingTestMessage = 1,
     kIDSEndPingTestMessage= 2,
     kIDSSendOneMessage = 3,
-    kIDSSyncMessagesRaw = 4,
-    kIDSSyncMessagesCompact = 5,
+    kIDSPeerReceivedACK = 4,
     kIDSPeerAvailability = 6,
     kIDSPeerAvailabilityDone = 7,
-    kIDSKeychainSyncIDSFragmentation = 8
+    kIDSKeychainSyncIDSFragmentation = 8,
+    kIDSPeerUsesACK = 9
 } idsOperation;
-
-//error handling stuff
-
-typedef enum {
-    kSecIDSErrorNoDeviceID = -1, //default case
-    kSecIDSErrorNotRegistered = -2,
-    kSecIDSErrorFailedToSend=-3,
-    kSecIDSErrorCouldNotFindMatchingAuthToken = -4,
-    kSecIDSErrorDeviceIsLocked = -5,
-    kSecIDSErrorNoPeersAvailable = -6
-    
-} idsError;
 
 
 extern const CFStringRef kSecIDSErrorDomain;
 extern const CFStringRef kIDSOperationType;
 extern const CFStringRef kIDSMessageToSendKey;
+extern const CFStringRef kIDSMessageUniqueID;
+extern const CFStringRef kIDSMessageRecipientPeerID;
+extern const CFStringRef kIDSMessageRecipientDeviceID;
+extern const CFStringRef kIDSMessageUsesAckModel;
 
-typedef struct __OpaqueSOSTransportMessageIDS *SOSTransportMessageIDSRef;
 
-SOSTransportMessageIDSRef SOSTransportMessageIDSCreate(SOSAccountRef account, CFStringRef circleName, CFErrorRef *error);
+@interface SOSMessageIDS : SOSMessage
+{
+    CFBooleanRef useFragmentation;
+}
+@property (atomic)  CFBooleanRef useFragmentation;
 
-HandleIDSMessageReason SOSTransportMessageIDSHandleMessage(SOSAccountRef account, CFDictionaryRef message, CFErrorRef *error);
+-(id) initWithAcount:(SOSAccount*)acct circleName:(CFStringRef)name;
 
-void SOSTransportMessageIDSGetIDSDeviceID(SOSAccountRef account);
+-(HandleIDSMessageReason) SOSTransportMessageIDSHandleMessage:(SOSAccount*)account m:(CFDictionaryRef) message err:(CFErrorRef *)error;
 
-void SOSTransportMessageIDSSetFragmentationPreference(SOSTransportMessageRef transport, CFBooleanRef preference);
-CFBooleanRef SOSTransportMessageIDSGetFragmentationPreference(SOSTransportMessageRef transport);
+-(bool) SOSTransportMessageIDSGetIDSDeviceID:(SOSAccount*)acct;
 
+-(void) SOSTransportMessageIDSSetFragmentationPreference:(SOSMessage*) transport pref:(CFBooleanRef) preference;
+-(CFBooleanRef) SOSTransportMessageIDSGetFragmentationPreference:(SOSMessage*) transport;
+
+@end
+#endif

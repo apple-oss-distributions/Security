@@ -163,13 +163,10 @@ static void _query_string_apply(CFMutableStringRef query_string, const void *key
         CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, 
             (CFStringRef)value, NULL, CFSTR("+/="), kCFStringEncodingUTF8);
     
-    CFStringRef format;
     if (CFStringGetLength(query_string) > 1)
-        format = CFSTR("&%@=%@");
-    else
-        format = CFSTR("%@=%@");
+        CFStringAppend(query_string, CFSTR("&"));
 
-    CFStringAppendFormat(query_string, NULL, format, escaped_key, escaped_value);
+    CFStringAppendFormat(query_string, NULL, CFSTR("%@=%@"), escaped_key, escaped_value);
     CFRelease(escaped_key);
     CFRelease(escaped_value);
 }
@@ -470,6 +467,7 @@ extern int command_scep(int argc, char * const *argv)
                 CFShow(caps_data);
             }
             CFRelease(caps_data);
+            CFRelease(caps_data_string);
         }
     } else {
         caps = CFStringCreateArrayBySeparatingStrings(kCFAllocatorDefault, scep_capabilities, CFSTR(","));
@@ -490,6 +488,7 @@ extern int command_scep(int argc, char * const *argv)
         // but for now to quiet the analyzer we reference them here. see <rdar://problem/15010402> scep.c, command_scep assumes 3des and sha1
         (void) scep_use_3des;
         (void) scep_can_use_sha1;
+        CFRelease(caps);
     }
 
     scep_use_3des = true;

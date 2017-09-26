@@ -80,18 +80,18 @@ static const char *X509ANCHORS_SYSTEM_PATH = "/System/Library/Keychains/X509Anch
 //
 // Static functions
 //
-static CFArrayRef _allowedRootCertificatesForOidString(CFStringRef oidString);
+static CFArrayRef CF_RETURNS_RETAINED _allowedRootCertificatesForOidString(CFStringRef oidString);
 static CSSM_DATA_PTR _copyFieldDataForOid(CSSM_OID_PTR oid, CSSM_DATA_PTR cert, CSSM_CL_HANDLE clHandle);
-static CFStringRef _decimalStringForOid(CSSM_OID_PTR oid);
-static CFDictionaryRef _evCAOidDict();
+static CFStringRef CF_RETURNS_RETAINED _decimalStringForOid(CSSM_OID_PTR oid);
+static CFDictionaryRef CF_RETURNS_RETAINED _evCAOidDict();
 static void _freeFieldData(CSSM_DATA_PTR value, CSSM_OID_PTR oid, CSSM_CL_HANDLE clHandle);
-static CFStringRef _oidStringForCertificatePolicies(const CE_CertPolicies *certPolicies);
+static CFStringRef CF_RETURNS_RETAINED _oidStringForCertificatePolicies(const CE_CertPolicies *certPolicies);
 static SecCertificateRef _rootCertificateWithSubjectOfCertificate(SecCertificateRef certificate);
 static SecCertificateRef _rootCertificateWithSubjectKeyIDOfCertificate(SecCertificateRef certificate);
 
 // utility function to safely release (and clear) the given CFTypeRef variable.
 //
-static void SafeCFRelease(void *cfTypeRefPtr)
+static void SafeCFRelease(void * CF_CONSUMED cfTypeRefPtr)
 {
 	CFTypeRef *obj = (CFTypeRef *)cfTypeRefPtr;
 	if (obj && *obj) {
@@ -103,7 +103,7 @@ static void SafeCFRelease(void *cfTypeRefPtr)
 // utility function to create a CFDataRef from the contents of the specified file;
 // caller must release
 //
-static CFDataRef dataWithContentsOfFile(const char *fileName)
+static CFDataRef CF_RETURNS_RETAINED dataWithContentsOfFile(const char *fileName)
 {
 	int rtn;
 	int fd;
@@ -194,7 +194,7 @@ static SecKeychainRef systemRootStore()
 
 // returns a CFDictionaryRef created from the specified XML plist file; caller must release
 //
-static CFDictionaryRef dictionaryWithContentsOfPlistFile(const char *fileName)
+static CFDictionaryRef CF_RETURNS_RETAINED dictionaryWithContentsOfPlistFile(const char *fileName)
 {
 	CFDictionaryRef resultDict = NULL;
 	CFDataRef fileData = dataWithContentsOfFile(fileName);
@@ -554,7 +554,7 @@ static SecCertificateRef _rootCertificateWithSubjectKeyIDOfCertificate(SecCertif
 // for the given EV OID (a hex string); caller must release the array
 //
 static
-CFArrayRef _possibleRootCertificatesForOidString(CFStringRef oidString)
+CFArrayRef CF_RETURNS_RETAINED _possibleRootCertificatesForOidString(CFStringRef oidString)
 {
 	StLock<Mutex> _(SecTrustKeychainsGetMutex());
 
@@ -648,19 +648,15 @@ CFArrayRef _allowedRootCertificatesForOidString(CFStringRef oidString)
 		CFIndex idx, count = CFArrayGetCount(possibleRootCertificates);
 		for (idx=0; idx<count; idx++) {
 			SecCertificateRef cert = (SecCertificateRef) CFArrayGetValueAtIndex(possibleRootCertificates, idx);
-#if SECTRUST_OSX
 			/* Need a unified SecCertificateRef instance to hand to SecTrustSettingsCertHashStrFromCert */
 			SecCertificateRef certRef = SecCertificateCreateFromItemImplInstance(cert);
-#else
-			SecCertificateRef certRef = (SecCertificateRef)((cert) ? CFRetain(cert) : NULL);
-#endif
 			CFStringRef hashStr = SecTrustSettingsCertHashStrFromCert(certRef);
 			if (hashStr) {
 				bool foundMatch = false;
 				bool foundAny = false;
 				CSSM_RETURN *errors = NULL;
 				uint32 errorCount = 0;
-				SecTrustSettingsDomain foundDomain = 0;
+				SecTrustSettingsDomain foundDomain = kSecTrustSettingsDomainUser;
 				SecTrustSettingsResult result = kSecTrustSettingsResultInvalid;
 				OSStatus status = SecTrustSettingsEvaluateCert(
 					hashStr,		/* certHashStr */
@@ -828,37 +824,6 @@ bool isRevocationStatusCode(CSSM_RETURN statusCode)
         return true;
     else
         return false;
-}
-
-// returns true if the given revocation status code can be ignored.
-//
-bool ignorableRevocationStatusCode(CSSM_RETURN statusCode)
-{
-    if (!isRevocationStatusCode(statusCode))
-		return false;
-
-	// if OCSP and/or CRL revocation info was unavailable for this certificate,
-	// and revocation checking is not required, we can ignore this status code.
-
-	CFStringRef ocsp_val = (CFStringRef) CFPreferencesCopyValue(kSecRevocationOcspStyle, CFSTR(kSecRevocationDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-	CFStringRef crl_val = (CFStringRef) CFPreferencesCopyValue(kSecRevocationCrlStyle, CFSTR(kSecRevocationDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-	bool ocspRequired = (ocsp_val && CFEqual(ocsp_val, kSecRevocationRequireForAll));
-	bool crlRequired = (crl_val && CFEqual(crl_val, kSecRevocationRequireForAll));
-	if (!ocspRequired && ocsp_val && CFEqual(ocsp_val, kSecRevocationRequireIfPresent))
-		ocspRequired = (statusCode != CSSMERR_APPLETP_OCSP_UNAVAILABLE);
-	if (!crlRequired && crl_val && CFEqual(crl_val, kSecRevocationRequireIfPresent))
-		crlRequired = (statusCode != CSSMERR_APPLETP_CRL_NOT_FOUND);
-	if (ocsp_val)
-		CFRelease(ocsp_val);
-	if (crl_val)
-		CFRelease(crl_val);
-
-	if (isOCSPStatusCode(statusCode))
-		return (ocspRequired) ? false : true;
-	if (isCRLStatusCode(statusCode))
-		return (crlRequired) ? false : true;
-
-	return false;
 }
 
 // returns a CFArrayRef of allowed root certificates for the provided leaf certificate
@@ -1207,7 +1172,7 @@ static void _freeFieldData(CSSM_DATA_PTR value, CSSM_OID_PTR oid, CSSM_CL_HANDLE
 
 static ModuleNexus<Mutex> gOidStringForCertificatePoliciesMutex;
 
-static CFStringRef _oidStringForCertificatePolicies(const CE_CertPolicies *certPolicies)
+static CFStringRef CF_RETURNS_RETAINED _oidStringForCertificatePolicies(const CE_CertPolicies *certPolicies)
 {
 	StLock<Mutex> _(gOidStringForCertificatePoliciesMutex());
 

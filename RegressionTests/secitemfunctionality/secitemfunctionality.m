@@ -14,16 +14,12 @@
 #include <Security/SecItemPriv.h>
 #include <Security/SecBasePriv.h>
 #include <Security/SecIdentityPriv.h>
+#include <mach/mach_time.h>
 #include <err.h>
 #include <strings.h>
 
-#if !TARGET_OS_IPHONE
-/*
- * Becuase this file uses the iOS headers and we have no unified the headers
- * yet, its not possible to include <Security/SecKeychain.h> here because
- * of missing type. Pull in prototype needed.
- */
-extern OSStatus SecKeychainUnlock(CFTypeRef keychain, UInt32 passwordLength, const void *password, Boolean usePassword);
+#if SEC_OS_OSX_INCLUDES
+#include <Security/SecKeychain.h>
 #endif
 
 static void
@@ -34,8 +30,10 @@ static void
 fail(const char *fmt, ...)
 {
     va_list ap;
+    printf("[FAIL]\n");
+    fflush(stdout);
+
     va_start(ap, fmt);
-    printf("[FAIL] ");
     verrx(1, fmt, ap);
     va_end(ap);
 }
@@ -49,7 +47,7 @@ CheckItemAddDeleteMaybeLegacyKeychainNoData(void)
 {
     OSStatus status;
 
-    printf("[TEST] %s\n", __FUNCTION__);
+    printf("[BEGIN] %s\n", __FUNCTION__);
 
     NSDictionary *query = @{
         (id)kSecClass : (id)kSecClassGenericPassword,
@@ -86,7 +84,7 @@ CheckItemAddDeleteNoData(void)
 {
     OSStatus status;
 
-    printf("[TEST] %s\n", __FUNCTION__);
+    printf("[BEGIN] %s\n", __FUNCTION__);
 
     NSDictionary *query = @{
         (id)kSecClass : (id)kSecClassGenericPassword,
@@ -122,7 +120,7 @@ CheckItemUpdateAccessGroupGENP(void)
 {
     OSStatus status;
 
-    printf("[TEST] %s\n", __FUNCTION__);
+    printf("[BEGIN] %s\n", __FUNCTION__);
 
     NSDictionary *clean1 = @{
         (id)kSecClass : (id)kSecClassGenericPassword,
@@ -295,7 +293,7 @@ CheckItemUpdateAccessGroupIdentity(void)
     OSStatus status;
     CFTypeRef ref = NULL;
 
-    printf("[TEST] %s\n", __FUNCTION__);
+    printf("[BEGIN] %s\n", __FUNCTION__);
 
     NSDictionary *clean1 = @{
         (id)kSecClass : (id)kSecClassIdentity,
@@ -422,7 +420,7 @@ CheckFindIdentityByReference(void)
     OSStatus status;
     CFDataRef pref = NULL, pref2 = NULL;
 
-    printf("[TEST] %s\n", __FUNCTION__);
+    printf("[BEGIN] %s\n", __FUNCTION__);
 
     /*
      * Clean identities
@@ -532,23 +530,204 @@ CheckFindIdentityByReference(void)
     printf("[PASS] %s\n", __FUNCTION__);
 }
 
+static uint64_t
+timeDiff(uint64_t start, uint64_t stop)
+{
+    static uint64_t time_overhead_measured = 0;
+    static double timebase_factor = 0;
+
+    if (time_overhead_measured == 0) {
+        uint64_t t0 = mach_absolute_time();
+        time_overhead_measured = mach_absolute_time() - t0;
+
+        struct mach_timebase_info timebase_info = {};
+        mach_timebase_info(&timebase_info);
+        timebase_factor = ((double)timebase_info.numer)/((double)timebase_info.denom);
+    }
+
+    return ((stop - start - time_overhead_measured) * timebase_factor) / NSEC_PER_USEC;
+}
+
+static void
+RunCopyPerfTest(NSString *name, NSDictionary *query)
+{
+    uint64_t start = mach_absolute_time();
+    OSStatus status;
+    CFTypeRef result = NULL;
+
+    status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    uint64_t stop = mach_absolute_time();
+
+    if (status != 0) {
+        printf("SecItemCopyMatching failed with: %d\n", (int)status);
+        fflush(stdout);
+        abort();
+    }
+
+    if (result)
+        CFRelease(result);
+
+    uint64_t us = timeDiff(start, stop);
+
+    puts([[NSString stringWithFormat:@"[RESULT_KEY] SecItemCopyMatching-%@\n[RESULT_VALUE] %lu\n",
+           name, (unsigned long)us] UTF8String]);
+}
+
+static void
+RunDigestPerfTest(NSString *name, NSString *itemClass, NSString *accessGroup, NSUInteger expectedCount)
+{
+    uint64_t start = mach_absolute_time();
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block uint64_t stop;
+
+    _SecItemFetchDigests(itemClass, accessGroup, ^(NSArray *items, NSError *error) {
+        stop = mach_absolute_time();
+        if (error) {
+            printf("_SecItemFetchDigests failed with: %ld\n", (long)error.code);
+            fflush(stdout);
+            abort();
+        }
+        dispatch_semaphore_signal(sema);
+
+        if (expectedCount != [items count]) {
+            printf("_SecItemFetchDigests didn't return expected items: %ld\n", (long)[items count]);
+            fflush(stdout);
+            abort();
+        }
+    });
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+
+
+    uint64_t us = timeDiff(start, stop);
+
+    puts([[NSString stringWithFormat:@"[RESULT_KEY] SecItemCopyDigest-%@\n[RESULT_VALUE] %lu\n",
+           name, (unsigned long)us] UTF8String]);
+}
+
+
+static void
+CheckItemPerformance(void)
+{
+    unsigned n;
+
+    printf("[BEGIN] %s\n", __FUNCTION__);
+
+    /*
+     * Clean identities
+     */
+    NSDictionary *clean1 = @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecAttrAccessGroup : @"keychain-test1",
+        (id)kSecAttrNoLegacy : (id)kCFBooleanTrue,
+    };
+    (void)SecItemDelete((__bridge CFDictionaryRef)clean1);
+
+    NSData *data = [NSData dataWithBytes:"password" length:8];
+
+    for (n = 0; n < 1000; n++) {
+        NSDictionary *item = @{
+            (id)kSecClass : (id)kSecClassGenericPassword,
+            (id)kSecAttrAccount : [NSString stringWithFormat:@"account-%d", n],
+            (id)kSecAttrService : @"service",
+            (id)kSecAttrNoLegacy : (id)kCFBooleanTrue,
+            (id)kSecAttrAccessGroup : @"keychain-test1",
+            (id)kSecAttrNoLegacy : (id)kCFBooleanTrue,
+            (id)kSecValueData : data,
+        };
+        SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    }
+
+
+    RunCopyPerfTest(@"FindOneItemLimit", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecMatchLimit : (id)kSecMatchLimitOne,
+    });
+    RunCopyPerfTest(@"FindOneItemUnique", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrAccount : @"account-0",
+        (id)kSecAttrService : @"service",
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunCopyPerfTest(@"Find1000Items", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunDigestPerfTest(@"Digest1000Items", (id)kSecClassGenericPassword, @"keychain-test1", 1000);
+    RunCopyPerfTest(@"GetAttrOneItemUnique", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrAccount : @"account-0",
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnAttributes : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunCopyPerfTest(@"GetData1000Items", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnData : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunCopyPerfTest(@"GetDataOneItemUnique", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrAccount : @"account-0",
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnData : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunCopyPerfTest(@"GetDataAttrOneItemUnique", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrAccount : @"account-0",
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnData : (id)kCFBooleanTrue,
+        (id)kSecReturnAttributes : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+#if TARGET_OS_IPHONE /* macOS doesn't support fetching data for more then one item */
+    RunCopyPerfTest(@"GetData1000Items", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnData : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+    RunCopyPerfTest(@"GetDataAttr1000Items", @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrService : @"service",
+        (id)kSecReturnData : (id)kCFBooleanTrue,
+        (id)kSecReturnAttributes : (id)kCFBooleanTrue,
+        (id)kSecMatchLimit : (id)kSecMatchLimitAll,
+    });
+#endif
+
+    (void)SecItemDelete((__bridge CFDictionaryRef)clean1);
+
+
+    printf("[PASS] %s\n", __FUNCTION__);
+}
+
 int
 main(int argc, const char ** argv)
 {
-#if !TARGET_OS_IPHONE
+    printf("[TEST] secitemfunctionality\n");
+
+#if TARGET_OS_OSX
     char *user = getenv("USER");
     if (user && strcmp("bats", user) == 0) {
         (void)SecKeychainUnlock(NULL, 4, "bats", true);
     }
 #endif
+    CheckItemPerformance();
+
     CheckFindIdentityByReference();
 
-    if (random() == 17) {
-        CheckItemAddDeleteMaybeLegacyKeychainNoData();
-        CheckItemAddDeleteNoData();
-        CheckItemUpdateAccessGroupGENP();
-        CheckItemUpdateAccessGroupIdentity();
-    }
+    CheckItemAddDeleteMaybeLegacyKeychainNoData();
+    CheckItemAddDeleteNoData();
+    CheckItemUpdateAccessGroupGENP();
+    CheckItemUpdateAccessGroupIdentity();
+
+    printf("[SUMMARY]\n");
+    printf("test completed\n");
 
     return 0;
 }

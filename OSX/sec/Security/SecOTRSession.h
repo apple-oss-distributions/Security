@@ -101,7 +101,7 @@ void SecOTRSPrecalculateKeys(SecOTRSessionRef session);
  @function
  @abstract   Encrypts and Signs a message with OTR credentials.
  @param      session                OTRSession receiving message
- @param      incomingMessage        Cleartext message to protect
+ @param      sourceMessage          Cleartext message to protect
  @param      protectedMessage       Data to append the encoded protected message to
  @result     OSStatus               errSecAuthFailed -> bad signature, no data appended.
  */
@@ -130,6 +130,7 @@ const char *SecOTRPacketTypeString(CFDataRef message);
 CFDataRef SecOTRSessionCreateRemote(CFDataRef publicPeerId, CFErrorRef *error);
 bool SecOTRSessionProcessPacketRemote(CFDataRef sessionData, CFDataRef inputPacket, CFDataRef* outputSessionData, CFDataRef* outputPacket, bool *readyForMessages, CFErrorRef *error);
 
+bool SecOTRSessionIsSessionInAwaitingState(SecOTRSessionRef session);
 
 __END_DECLS
 

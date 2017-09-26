@@ -38,6 +38,10 @@
 #include <securityd/asynchttp.h>
 #include <stdlib.h>
 
+#define MAX_CA_ISSUERS 3
+#define CA_ISSUERS_REQUEST_THRESHOLD 10
+
+
 /* CA Issuer lookup code. */
 
 typedef struct SecCAIssuerRequest *SecCAIssuerRequestRef;
@@ -57,7 +61,14 @@ static void SecCAIssuerRequestRelease(SecCAIssuerRequestRef request) {
 }
 
 static bool SecCAIssuerRequestIssue(SecCAIssuerRequestRef request) {
-    while (request->issuerIX < CFArrayGetCount(request->issuers)) {
+    CFIndex count = CFArrayGetCount(request->issuers);
+    if (count >= CA_ISSUERS_REQUEST_THRESHOLD) {
+        secnotice("caissuer", "too many caIssuer entries (%ld)", (long)count);
+        request->callback(request->context, NULL);
+        SecCAIssuerRequestRelease(request);
+        return true;
+    }
+    while (request->issuerIX < count && request->issuerIX < MAX_CA_ISSUERS) {
         CFURLRef issuer = CFArrayGetValueAtIndex(request->issuers,
                                                  request->issuerIX++);
         CFStringRef scheme = CFURLCopyScheme(issuer);
@@ -92,8 +103,8 @@ static bool SecCAIssuerRequestIssue(SecCAIssuerRequestRef request) {
 /* Releases parent unconditionally, and return a CFArrayRef containing
    parent if the normalized subject of parent matches the normalized issuer
    of certificate. */
-static CFArrayRef SecCAIssuerConvertToParents(SecCertificateRef certificate,
-    SecCertificateRef parent) {
+static CF_RETURNS_RETAINED CFArrayRef SecCAIssuerConvertToParents(SecCertificateRef certificate,
+    SecCertificateRef CF_CONSUMED parent) {
     CFDataRef nic = SecCertificateGetNormalizedIssuerContent(certificate);
     CFArrayRef parents = NULL;
     if (parent) {
@@ -128,8 +139,9 @@ static void SecCAIssuerRequestCompleted(asynchttp_t *http,
         if (!parent) {
             CFArrayRef certificates = NULL;
             certificates = SecCMSCertificatesOnlyMessageCopyCertificates(data);
+            /* @@@ Technically these can have more than one certificate */
             if (certificates && CFArrayGetCount(certificates) == 1) {
-                parent = (SecCertificateRef)CFRetainSafe(CFArrayGetValueAtIndex(certificates, 0));
+                parent = CFRetainSafe((SecCertificateRef)CFArrayGetValueAtIndex(certificates, 0));
             }
             CFReleaseNull(certificates);
         }
@@ -163,6 +175,8 @@ static void SecCAIssuerRequestCompleted(asynchttp_t *http,
 
     secdebug("caissuer", "response: %@ not parent, trying next caissuer",
         http->response);
+    /* We're re-using this http object, so we need to free all the old memory. */
+    asynchttp_free(&request->http);
     SecCAIssuerRequestIssue(request);
 }
 

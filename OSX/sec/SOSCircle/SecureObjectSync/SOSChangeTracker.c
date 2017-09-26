@@ -27,7 +27,7 @@
 
 #include <Security/SecureObjectSync/SOSChangeTracker.h>
 #include <Security/SecureObjectSync/SOSDigestVector.h>
-#include <Security/SecureObjectSync/SOSEngine.h>
+#include <Security/SecureObjectSync/SOSEnginePriv.h>
 #include <Security/SecureObjectSync/SOSManifest.h>
 #include <Security/SecureObjectSync/SOSInternal.h>
 #include <utilities/SecCFError.h>
@@ -72,7 +72,7 @@ CFStringRef SOSChangesCopyDescription(CFArrayRef changes) {
     if (changes) CFArrayForEachC(changes, change) {
         CFStringRef changeDesc = SOSChangeCopyDescription(change);
         CFStringAppend(desc, changeDesc);
-        CFRetainSafe(changeDesc);
+        CFReleaseNull(changeDesc);
     }
     CFStringAppend(desc, CFSTR(")"));
     return desc;
@@ -210,7 +210,12 @@ bool SOSChangeTrackerTrackChanges(SOSChangeTrackerRef ct, SOSEngineRef engine, S
     bool ok = true;
     if (changes && CFArrayGetCount(changes)) {
         CFStringRef changesDesc = SOSChangesCopyDescription(changes);
-        secnotice("tracker", "%@ %s %s changes: %@", ct, phase == kSOSDataSourceTransactionWillCommit ? "will-commit" : phase == kSOSDataSourceTransactionDidCommit ? "did-commit" : "did-rollback", source == kSOSDataSourceSOSTransaction ? "sos" : "api", changesDesc);
+        secnotice("tracker", "%@ %s %s changes: %@", ct, phase == kSOSDataSourceTransactionWillCommit ? "will-commit" : phase == kSOSDataSourceTransactionDidCommit ? "did-commit" : "did-rollback",
+                  source == kSOSDataSourceSOSTransaction ? "sos" :
+                  source == kSOSDataSourceCKKSTransaction ? "ckks" :
+                  source == kSOSDataSourceAPITransaction ? "api" :
+                  "unknown",
+                  changesDesc);
         CFReleaseSafe(changesDesc);
         if (ct->manifest || ct->manifestChildren) {
             SOSManifestRef additions = NULL;

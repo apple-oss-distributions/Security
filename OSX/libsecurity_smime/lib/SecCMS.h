@@ -37,11 +37,16 @@ extern const void * kSecCMSAdditionalCerts;
 extern const void * kSecCMSSignedAttributes;
 extern const void * kSecCMSSignDate;
 extern const void * kSecCMSAllCerts;
+extern const void * kSecCMSHashAgility;
 
 extern const void * kSecCMSHashingAlgorithmSHA1;
 extern const void * kSecCMSHashingAlgorithmSHA256;
 extern const void * kSecCMSHashingAlgorithmSHA384;
 extern const void * kSecCMSHashingAlgorithmSHA512;
+
+extern const void * kSecCMSBulkEncryptionAlgorithm;
+extern const void * kSecCMSEncryptionAlgorithmDESCBC;
+extern const void * kSecCMSEncryptionAlgorithmAESCBC;
 
 /* Return an array of certificates contained in message, if message is of the
  type SignedData and has no signers, return NULL otherwise.   Not that if
@@ -92,6 +97,35 @@ OSStatus SecCMSVerifySignedData(CFDataRef message, CFDataRef detached_contents,
                                 CFDataRef *attached_contents, CFDictionaryRef *message_attributes);
 
 /*!
+ @function SecCMSSignDataAndAttributes
+ @abstract create a signed data cms blob.
+ @param identity signer
+ @param data message to be signed
+ @param detached sign detached or not
+ @param signed_data (output) return signed message.
+ @param signed_attributes (input/optional) signed attributes to insert
+ as a CFDictionary from oids (CFData) to value (CFData).
+ @result A result code.  See "Security Error Codes" (SecBase.h).
+ errSecParam garbage in, garbage out.
+ */
+OSStatus SecCMSSignDataAndAttributes(SecIdentityRef identity, CFDataRef data,
+                                     bool detached, CFMutableDataRef signed_data, CFDictionaryRef signed_attributes);
+
+/*!
+ @function SecCMSSignDigestAndAttributes
+ @abstract create a detached signed data cms blob for a SHA-1 hash.
+ @param identity signer
+ @param digest SHA-1 digest of message to be signed
+ @param signed_data (output) return signed message.
+ @param signed_attributes (input/optional) signed attributes to insert
+ as a CFDictionary from oids (CFData) to value (CFData).
+ @result A result code.  See "Security Error Codes" (SecBase.h).
+ errSecParam garbage in, garbage out.
+ */
+OSStatus SecCMSSignDigestAndAttributes(SecIdentityRef identity, CFDataRef digest,
+                                       CFMutableDataRef signed_data, CFDictionaryRef signed_attributes);
+
+/*!
 	@function SecCMSCreateSignedData
  @abstract create a signed data cms blob.
  @param identity signer
@@ -106,5 +140,31 @@ OSStatus SecCMSVerifySignedData(CFDataRef message, CFDataRef detached_contents,
 OSStatus SecCMSCreateSignedData(SecIdentityRef identity, CFDataRef data,
                                 CFDictionaryRef parameters, CFDictionaryRef signed_attributes,
                                 CFMutableDataRef signed_data);
+
+/*!
+ @function SecCMSCreateEnvelopedData
+ @abstract create a enveloped cms blob for recipients
+ @param recipient_or_cfarray_thereof SecCertificateRef for each recipient
+ @param params CFDictionaryRef with encryption parameters
+ @param data Data to be encrypted
+ @param enveloped_data (output) return enveloped message.
+ @result A result code.  See "Security Error Codes" (SecBase.h).
+ errSecParam garbage in, garbage out.
+ */
+OSStatus SecCMSCreateEnvelopedData(CFTypeRef recipient_or_cfarray_thereof,
+                                   CFDictionaryRef params, CFDataRef data, CFMutableDataRef enveloped_data);
+
+
+/*!
+ @function SecCMSDecryptEnvelopedData
+ @abstract open an enveloped cms blob. expects recipients identity in keychain.
+ @param message Eveloped message
+ @param data (output) return decrypted message.
+ @param recipient (output/optional) return addressed recipient
+ @result A result code.  See "Security Error Codes" (SecBase.h).
+ errSecParam garbage in, garbage out.
+ */
+OSStatus SecCMSDecryptEnvelopedData(CFDataRef message,
+                                    CFMutableDataRef data, SecCertificateRef *recipient);
 
 #endif

@@ -71,7 +71,6 @@ using namespace KeychainCore;
 // BEGIN_SECKCITEMAPI
 // Note: this macro assumes an input parameter named "itemRef"
 //
-#if SECTRUST_OSX
 #define BEGIN_SECKCITEMAPI \
 	OSStatus __secapiresult=errSecSuccess; \
 	SecKeychainItemRef __itemImplRef=NULL; \
@@ -90,12 +89,7 @@ using namespace KeychainCore;
 		__itemImplRef=(SecKeychainItemRef)((itemRef) ? CFRetain(itemRef) : NULL); \
 	} \
 	try {
-#else
-#define BEGIN_SECKCITEMAPI \
-	OSStatus __secapiresult=errSecSuccess; \
-	SecKeychainItemRef __itemImplRef=(SecKeychainItemRef)((itemRef) ? CFRetain(itemRef) : NULL); \
-	try {
-#endif
+
 //
 // END_SECKCITEMAPI
 //
@@ -112,7 +106,6 @@ using namespace KeychainCore;
 // BEGIN_SECCERTAPI
 // Note: this macro assumes an input parameter named "certificate"
 //
-#if SECTRUST_OSX
 #define BEGIN_SECCERTAPI \
 	OSStatus __secapiresult=errSecSuccess; \
 	SecCertificateRef __itemImplRef=NULL; \
@@ -121,12 +114,7 @@ using namespace KeychainCore;
 	if (!__itemImplRef && certificate) { __itemImplRef=SecCertificateCreateItemImplInstance(certificate); \
 		(void)SecCertificateSetKeychainItem(certificate,__itemImplRef); } \
 	try {
-#else
-#define BEGIN_SECCERTAPI \
-	OSStatus __secapiresult=errSecSuccess; \
-	SecCertificateRef __itemImplRef=(SecCertificateRef)((certificate)?CFRetain(certificate):NULL); \
-	try {
-#endif
+
 //
 // END_SECCERTAPI
 //
@@ -149,7 +137,11 @@ extern "C" bool SecError(OSStatus status, CFErrorRef *error, CFStringRef format,
 
 #define END_SECKEYAPI }\
 catch (const MacOSError &err) { SecError(err.osStatus(), error, CFSTR("%s"), err.what()); result = NULL; } \
-catch (const CommonError &err) { SecError(SecKeychainErrFromOSStatus(err.osStatus()), error, CFSTR("%s"), err.what()); result = NULL; } \
+catch (const CommonError &err) { \
+	if (err.osStatus() != CSSMERR_CSP_INVALID_DIGEST_ALGORITHM) { \
+    	OSStatus status = SecKeychainErrFromOSStatus(err.osStatus()); if (status == errSecInputLengthError) status = errSecParam; \
+    	SecError(status, error, CFSTR("%s"), err.what()); result = NULL; } \
+	} \
 catch (const std::bad_alloc &) { SecError(errSecAllocate, error, CFSTR("allocation failed")); result = NULL; } \
 catch (...) { SecError(errSecInternalComponent, error, CFSTR("internal error")); result = NULL; } \
 return result;

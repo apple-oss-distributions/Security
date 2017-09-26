@@ -6,10 +6,11 @@
  This file contains iOS only tests that are built in libSecurityRegression.a
  For test shared between OSX and iOS, see shared_regressions.h
  */
-#include <test/testmore.h>
+#include <regressions/test/testmore.h>
 
 ONE_TEST(pbkdf2_00_hmac_sha1)
 ONE_TEST(spbkdf_00_hmac_sha1)
+ONE_TEST(spbkdf_01_hmac_sha256)
 
 ONE_TEST(si_00_find_nothing)
 ONE_TEST(si_05_add)
@@ -18,7 +19,7 @@ ONE_TEST(si_11_update_data)
 ONE_TEST(si_12_item_stress)
 ONE_TEST(si_13_item_system)
 ONE_TEST(si_14_dateparse)
-ONE_TEST(si_15_delete_access_group)
+DISABLED_ONE_TEST(si_15_delete_access_group)
 ONE_TEST(si_17_item_system_bluetooth)
 DISABLED_ONE_TEST(si_30_keychain_upgrade) //obsolete, needs updating
 DISABLED_ONE_TEST(si_31_keychain_bad)
@@ -30,14 +31,7 @@ ONE_TEST(si_41_sececkey)
 ONE_TEST(si_42_identity)
 ONE_TEST(si_43_persistent)
 ONE_TEST(si_50_secrandom)
-ONE_TEST(si_60_cms)
-ONE_TEST(si_61_pkcs12)
-ONE_TEST(si_62_csr)
 ONE_TEST(si_63_scep)
-ONE_TEST(si_64_ossl_cms)
-ONE_TEST(si_65_cms_cert_policy)
-ONE_TEST(si_66_smime)
-ONE_TEST(si_68_secmatchissuer)
 ONE_TEST(si_69_keydesc)
 ONE_TEST(si_72_syncableitems)
 ONE_TEST(si_73_secpasswordgenerate)

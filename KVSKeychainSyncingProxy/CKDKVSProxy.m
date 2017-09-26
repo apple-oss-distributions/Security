@@ -32,16 +32,41 @@
 #import <os/activity.h>
 
 #import "CKDKVSProxy.h"
-#import "CKDPersistentState.h"
 #import "CKDKVSStore.h"
+#import "CKDAKSLockMonitor.h"
 #import "CKDSecuritydAccount.h"
+#import "NSURL+SOSPlistStore.h"
 
 #include <Security/SecureObjectSync/SOSARCDefines.h>
-#include <Security/SecureObjectSync/SOSKVSKeys.h>
+#include <utilities/SecCFWrappers.h>
+#include <utilities/SecPLWrappers.h>
 
 #include "SOSCloudKeychainConstants.h"
 
 #include <utilities/SecAKSWrappers.h>
+#include <utilities/SecADWrapper.h>
+#include <utilities/SecNSAdditions.h>
+#import "XPCNotificationDispatcher.h"
+
+
+CFStringRef const CKDAggdIncreaseThrottlingKey = CFSTR("com.apple.cloudkeychainproxy.backoff.increase");
+CFStringRef const CKDAggdDecreaseThrottlingKey = CFSTR("com.apple.cloudkeychainproxy.backoff.decrease");
+
+@interface NSSet (CKDLogging)
+- (NSString*) logKeys;
+- (NSString*) logIDs;
+@end
+
+@implementation NSSet (CKDLogging)
+- (NSString*) logKeys {
+    return [self sortedElementsJoinedByString:@" "];
+}
+
+- (NSString*) logIDs {
+    return [self sortedElementsTruncated:8 JoinedByString:@" "];
+}
+@end
+
 
 /*
  The total space available in your app’s iCloud key-value storage is 1 MB.
@@ -51,8 +76,6 @@
  available storage. If you store 1 KB of data for each key, you can use
  1,000 key-value pairs.
  */
-
-static const char *kStreamName = "com.apple.notifyd.matching";
 
 static NSString *kKeyKeyParameterKeys = @"KeyParameterKeys";
 static NSString *kKeyCircleKeys = @"CircleKeys";
@@ -65,9 +88,14 @@ static NSString *kKeyPendingKeys = @"PendingKeys";
 static NSString *kKeyUnsentChangedKeys = @"unsentChangedKeys";
 static NSString *kKeyUnlockNotificationRequested = @"unlockNotificationRequested";
 static NSString *kKeySyncWithPeersPending = @"SyncWithPeersPending";
+
+static NSString *kKeyPendingSyncPeerIDs = @"SyncPeerIDs";
+static NSString *kKeyPendingSyncBackupPeerIDs = @"SyncBackupPeerIDs";
+
 static NSString *kKeyEnsurePeerRegistration = @"EnsurePeerRegistration";
 static NSString *kKeyDSID = @"DSID";
 static NSString *kMonitorState = @"MonitorState";
+static NSString *kKeyAccountUUID = @"MonitorState";
 
 static NSString *kMonitorPenaltyBoxKey = @"Penalty";
 static NSString *kMonitorMessageKey = @"Message";
@@ -84,55 +112,37 @@ static NSString *kMonitorThirdMinute = @"CThirdMinute";
 static NSString *kMonitorFourthMinute = @"DFourthMinute";
 static NSString *kMonitorFifthMinute = @"EFifthMinute";
 static NSString *kMonitorWroteInTimeSlice = @"TimeSlice";
+const CFStringRef kSOSKVSKeyParametersKey = CFSTR(">KeyParameters");
+const CFStringRef kSOSKVSInitialSyncKey = CFSTR("^InitialSync");
+const CFStringRef kSOSKVSAccountChangedKey = CFSTR("^AccountChanged");
+const CFStringRef kSOSKVSRequiredKey = CFSTR("^Required");
+const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
 
 #define kSecServerKeychainChangedNotification "com.apple.security.keychainchanged"
 
-static int max_penalty_timeout = 32;
-static int seconds_per_minute = 60;
-
-static const int64_t kMinSyncDelay = (NSEC_PER_MSEC * 500);         // 500ms minimum delay before a syncWithAllPeers call.
-static const int64_t kMaxSyncDelay = (NSEC_PER_SEC * 5);            //   5s  maximun delay for a given request
-static const int64_t kMinSyncInterval = (NSEC_PER_SEC * 15);        //  15s  minimum time between successive syncWithAllPeers calls.
-static const int64_t kSyncTimerLeeway = (NSEC_PER_MSEC * 250);      // 250ms leeway for sync events.
-
-static NSString* asNSString(NSObject* object) {
-    return [object isKindOfClass:[NSString class]] ? (NSString*) object : nil;
-}
-
-@interface NSMutableDictionary (FindAndRemove)
--(NSObject*)extractObjectForKey:(NSString*)key;
-@end
-
-@implementation NSMutableDictionary (FindAndRemove)
--(NSObject*)extractObjectForKey:(NSString*)key {
-    NSObject* result = [self objectForKey:key];
-    [self removeObjectForKey: key];
-    return result;
-}
+@interface UbiqitousKVSProxy ()
+@property (nonatomic) NSDictionary* persistentData;
+- (void) doSyncWithAllPeers;
+- (void) persistState;
 @end
 
 @implementation UbiqitousKVSProxy
 
-- (void)persistState
++ (instancetype)withAccount:(NSObject<CKDAccount>*) account
+                      store:(NSObject<CKDStore>*) store
+                lockMonitor:(NSObject<CKDLockMonitor>*) lockMonitor
+                persistence:(NSURL*) localPersistence
 {
-    [SOSPersistentState setRegisteredKeys:[self exportKeyInterests]];
+    return [[self alloc] initWithAccount:account
+                                   store:store
+                             lockMonitor:lockMonitor
+                             persistence:localPersistence];
 }
 
-+ (UbiqitousKVSProxy *) sharedKVSProxy
-{
-    static UbiqitousKVSProxy *sharedKVSProxy;
-    if (!sharedKVSProxy) {
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            sharedKVSProxy = [[self alloc] initWithAccount: [CKDSecuritydAccount securitydAccount]
-                                                     store: [CKDKVSStore kvsInterface]];
-        });
-    }
-    return sharedKVSProxy;
-}
-
-- (id)initWithAccount:(NSObject<CKDAccount>*) account
-                store:(NSObject<CKDStore>*) store
+- (instancetype)initWithAccount:(NSObject<CKDAccount>*) account
+                          store:(NSObject<CKDStore>*) store
+                    lockMonitor:(NSObject<CKDLockMonitor>*) lockMonitor
+                    persistence:(NSURL*) localPersistence
 {
     if (self = [super init])
     {
@@ -145,52 +155,44 @@ static NSString* asNSString(NSObject* object) {
             return NULL;
         }
 #endif
-        _unlockedSinceBoot = NO;
-        _isLocked = YES;                // until we know for sure
         _ensurePeerRegistration = NO;
-        _syncWithPeersPending = NO;
 
+        _pendingSyncPeerIDs = [NSMutableSet set];
+        _pendingSyncBackupPeerIDs = [NSMutableSet set];
+        _shadowPendingSyncPeerIDs = nil;
+        _shadowPendingSyncBackupPeerIDs = nil;
+
+        _persistenceURL = localPersistence;
 
         _account = account;
         _store = store;
+        _lockMonitor = lockMonitor;
+
 
         _calloutQueue = dispatch_queue_create("CKDCallout", DISPATCH_QUEUE_SERIAL);
-        _ckdkvsproxy_queue = dispatch_get_main_queue();
+        _ckdkvsproxy_queue = dispatch_queue_create("CKDKVSProxy", DISPATCH_QUEUE_SERIAL);
 
         _freshnessCompletions = [NSMutableArray<FreshnessResponseBlock> array];
 
-        _syncTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _ckdkvsproxy_queue);
-        dispatch_source_set_timer(_syncTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, kSyncTimerLeeway);
-        dispatch_source_set_event_handler(_syncTimer, ^{
-            [self timerFired];
-        });
-        dispatch_resume(_syncTimer);
-
         _monitor = [NSMutableDictionary dictionary];
+
+        [[XPCNotificationDispatcher dispatcher] addListener: self];
 
         int notificationToken;
         notify_register_dispatch(kSecServerKeychainChangedNotification, &notificationToken, _ckdkvsproxy_queue,
                                  ^ (int token __unused)
                                  {
                                      secinfo("backoff", "keychain changed, wiping backoff monitor state");
-                                     _monitor = [NSMutableDictionary dictionary];
+                                     self->_monitor = [NSMutableDictionary dictionary];
                                  });
 
-        [self importKeyInterests: [SOSPersistentState registeredKeys]];
+        [self setPersistentData: [self.persistenceURL readPlist]];
 
-        // Register for lock state changes
-        xpc_set_event_stream_handler(kStreamName, _ckdkvsproxy_queue,
-                                     ^(xpc_object_t notification){
-                                         [self streamEvent:notification];
-                                     });
         _dsid =  @"";
-
-        [self updateUnlockedSinceBoot];
-        [self updateIsLocked];
-        if (!_isLocked)
-            [self keybagDidUnlock];
+        _accountUUID = @"";
 
         [[self store] connectToProxy: self];
+        [[self lockMonitor] connectTo:self];
 
         secdebug(XPROXYSCOPE, "%@ done", self);
     }
@@ -199,16 +201,15 @@ static NSString* asNSString(NSObject* object) {
 
 - (NSString *)description
 {
-    return [NSString stringWithFormat:@"<%s%s%s%s%s%s%s%s%s%s%s>",
-            _isLocked ? "L" : "U",
-            _unlockedSinceBoot ? "B" : "-",
+    return [NSString stringWithFormat:@"<%s%s%s%s%s%s%s%s%s%s>",
+            [[self lockMonitor] locked] ? "L" : "U",
+            [[self lockMonitor] unlockedSinceBoot] ? "B" : "-",
             _seenKVSStoreChange ? "K" : "-",
-            _syncTimerScheduled ? "T" : "-",
-            _syncWithPeersPending ? "s" : "-",
+            [self hasPendingNonShadowSyncIDs] ? "s" : "-",
             _ensurePeerRegistration ? "e" : "-",
             [_pendingKeys count] ? "p" : "-",
             _inCallout ? "C" : "-",
-            _shadowSyncWithPeersPending ? "S" : "-",
+            [self hasPendingShadowSyncIDs] ? "S" : "-",
             _shadowEnsurePeerRegistration ? "E" : "-",
             [_shadowPendingKeys count] ? "P" : "-"];
 }
@@ -231,11 +232,10 @@ static NSString* asNSString(NSObject* object) {
     return [self.store copyAsDictionary];
 }
 
-//
-//
-//
-- (void)processAllItems
+- (void)_queue_processAllItems
 {
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
     NSDictionary *allItems = [self.store copyAsDictionary];
     if (allItems)
     {
@@ -258,296 +258,65 @@ static NSString* asNSString(NSObject* object) {
                                                   object:nil];
 }
 
-// MARK: Penalty measurement and handling
--(dispatch_source_t)setNewTimer:(int)timeout key:(NSString*)key
+// MARK: Persistence
+
+- (NSDictionary*) persistentData
 {
-    __block dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _ckdkvsproxy_queue);
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, timeout * NSEC_PER_SEC * seconds_per_minute), DISPATCH_TIME_FOREVER, kSyncTimerLeeway);
-    dispatch_source_set_event_handler(timer, ^{
-        [self penaltyTimerFired:key];
-    });
-    dispatch_resume(timer);
-    return timer;
+    return @{ kKeyAlwaysKeys:[_alwaysKeys allObjects],
+              kKeyFirstUnlockKeys:[_firstUnlockKeys allObjects],
+              kKeyUnlockedKeys:[_unlockedKeys allObjects],
+              kKeyPendingKeys:[_pendingKeys allObjects],
+              kKeyPendingSyncPeerIDs:[_pendingSyncPeerIDs allObjects],
+              kKeyPendingSyncBackupPeerIDs:[_pendingSyncBackupPeerIDs allObjects],
+              kMonitorState:_monitor,
+              kKeyEnsurePeerRegistration:[NSNumber numberWithBool:_ensurePeerRegistration],
+              kKeyDSID:_dsid,
+              kKeyAccountUUID:_accountUUID
+              };
 }
 
--(void) increasePenalty:(NSNumber*)currentPenalty key:(NSString*)key keyEntry:(NSMutableDictionary**)keyEntry
+- (void) setPersistentData: (NSDictionary*) interests
 {
-    secnotice("backoff", "increasing penalty!");
-    int newPenalty = 0;
-    if([currentPenalty intValue] == max_penalty_timeout){
-        newPenalty = max_penalty_timeout;
-    }
-    else if ([currentPenalty intValue] == 0)
-        newPenalty = 1;
-    else
-        newPenalty = [currentPenalty intValue]*2;
-    
-    secnotice("backoff", "key %@, waiting %d minutes long to send next messages", key, newPenalty);
-    
-    NSNumber* penalty_timeout = [[NSNumber alloc]initWithInt:newPenalty];
-    dispatch_source_t existingTimer = [*keyEntry valueForKey:kMonitorPenaltyTimer];
-    
-    if(existingTimer != nil){
-        [*keyEntry removeObjectForKey:kMonitorPenaltyTimer];
-        dispatch_suspend(existingTimer);
-        dispatch_source_set_timer(existingTimer,dispatch_time(DISPATCH_TIME_NOW, newPenalty * NSEC_PER_SEC * seconds_per_minute), DISPATCH_TIME_FOREVER, kSyncTimerLeeway);
-        dispatch_resume(existingTimer);
-        [*keyEntry setObject:existingTimer forKey:kMonitorPenaltyTimer];
-    }
-    else{
-        dispatch_source_t timer = [self setNewTimer:newPenalty key:key];
-        [*keyEntry setObject:timer forKey:kMonitorPenaltyTimer];
-    }
-    
-    [*keyEntry setObject:penalty_timeout forKey:kMonitorPenaltyBoxKey];
-    [_monitor setObject:*keyEntry forKey:key];
-}
+    _alwaysKeys = [NSMutableSet setWithArray: interests[kKeyAlwaysKeys]];
+    _firstUnlockKeys = [NSMutableSet setWithArray: interests[kKeyFirstUnlockKeys]];
+    _unlockedKeys = [NSMutableSet setWithArray: interests[kKeyUnlockedKeys]];
 
--(void) decreasePenalty:(NSNumber*)currentPenalty key:(NSString*)key keyEntry:(NSMutableDictionary**)keyEntry
-{
-    int newPenalty = 0;
-    secnotice("backoff","decreasing penalty!");
-    if([currentPenalty intValue] == 0 || [currentPenalty intValue] == 1)
-        newPenalty = 0;
-    else
-        newPenalty = [currentPenalty intValue]/2;
-    
-    secnotice("backoff","key %@, waiting %d minutes long to send next messages", key, newPenalty);
-    
-    NSNumber* penalty_timeout = [[NSNumber alloc]initWithInt:newPenalty];
-    
-    dispatch_source_t existingTimer = [*keyEntry valueForKey:kMonitorPenaltyTimer];
-    if(existingTimer != nil){
-        [*keyEntry removeObjectForKey:kMonitorPenaltyTimer];
-        dispatch_suspend(existingTimer);
-        if(newPenalty != 0){
-            dispatch_source_set_timer(existingTimer,dispatch_time(DISPATCH_TIME_NOW, newPenalty * NSEC_PER_SEC * seconds_per_minute), DISPATCH_TIME_FOREVER, kSyncTimerLeeway);
-            dispatch_resume(existingTimer);
-            [*keyEntry setObject:existingTimer forKey:kMonitorPenaltyTimer];
-        }
-        else{
-            dispatch_resume(existingTimer);
-            dispatch_source_cancel(existingTimer);
-        }
-    }
-    else{
-        if(newPenalty != 0){
-            dispatch_source_t timer = [self setNewTimer:newPenalty key:key];
-            [*keyEntry setObject:timer forKey:kMonitorPenaltyTimer];
-        }
-    }
-    
-    [*keyEntry setObject:penalty_timeout forKey:kMonitorPenaltyBoxKey];
-    [_monitor setObject:*keyEntry forKey:key];
-    
-}
+    _pendingKeys = [NSMutableSet setWithArray: interests[kKeyPendingKeys]];
 
-- (void)penaltyTimerFired:(NSString*)key
-{
-    secnotice("backoff", "key: %@, !!!!!!!!!!!!!!!!penalty timeout is up!!!!!!!!!!!!", key);
+    _pendingSyncPeerIDs = [NSMutableSet setWithArray: interests[kKeyPendingSyncPeerIDs]];
+    _pendingSyncBackupPeerIDs = [NSMutableSet setWithArray: interests[kKeyPendingSyncBackupPeerIDs]];
 
-    NSMutableDictionary *keyEntry = [_monitor objectForKey:key];
-    NSMutableDictionary *queuedMessages = [keyEntry objectForKey:kMonitorMessageQueue];
-    secnotice("backoff","key: %@, queuedMessages: %@", key, queuedMessages);
-    if(queuedMessages && [queuedMessages count] != 0){
-        secnotice("backoff","key: %@, message queue not empty, writing to KVS!", key);
-        [self setObjectsFromDictionary:queuedMessages];
-        [keyEntry setObject:[NSMutableDictionary dictionary] forKey:kMonitorMessageQueue];
-    }
-    
-    NSNumber *penalty_timeout = [keyEntry valueForKey:kMonitorPenaltyBoxKey];
-    secnotice("backoff", "key: %@, current penalty timeout: %@", key, penalty_timeout);
+    _monitor = interests[kMonitorState];
+    if(_monitor == nil)
+        _monitor = [NSMutableDictionary dictionary];
 
-    NSString* didWriteDuringTimeout = [keyEntry objectForKey:kMonitorDidWriteDuringPenalty];
-    if( didWriteDuringTimeout && [didWriteDuringTimeout isEqualToString:@"YES"] )
-    {
-        //increase timeout since we wrote during out penalty timeout
-        [self increasePenalty:penalty_timeout key:key keyEntry:&keyEntry];
-    }
-    else{
-        //decrease timeout since we successfully wrote messages out
-        [self decreasePenalty:penalty_timeout key:key keyEntry:&keyEntry];
-    }
-    
-    //resetting the check
-    [keyEntry setObject: @"NO" forKey:kMonitorDidWriteDuringPenalty];
-    
-    //recompute the timetable and number of consecutive writes to KVS
-    NSMutableDictionary *timetable = [keyEntry valueForKey:kMonitorTimeTable];
-    NSNumber *consecutiveWrites = [keyEntry valueForKey:kMonitorConsecutiveWrites];
-    [self recordTimestampForAppropriateInterval:&timetable key:key consecutiveWrites:&consecutiveWrites];
-    
-    [keyEntry setObject:consecutiveWrites forKey:kMonitorConsecutiveWrites];
-    [keyEntry setObject:timetable forKey:kMonitorTimeTable];
-    [_monitor setObject:keyEntry forKey:key];
-}
+    _ensurePeerRegistration = [interests[kKeyEnsurePeerRegistration] boolValue];
 
--(NSMutableDictionary*)initializeTimeTable:(NSString*)key
-{
-    NSDate *currentTime = [NSDate date];
-    NSMutableDictionary *firstMinute = [NSMutableDictionary dictionaryWithObjectsAndKeys:[currentTime dateByAddingTimeInterval: seconds_per_minute], kMonitorFirstMinute, @"YES", kMonitorWroteInTimeSlice, nil];
-    NSMutableDictionary *secondMinute = [NSMutableDictionary dictionaryWithObjectsAndKeys:[currentTime dateByAddingTimeInterval: seconds_per_minute * 2],kMonitorSecondMinute, @"NO", kMonitorWroteInTimeSlice, nil];
-    NSMutableDictionary *thirdMinute = [NSMutableDictionary dictionaryWithObjectsAndKeys:[currentTime dateByAddingTimeInterval: seconds_per_minute * 3], kMonitorThirdMinute, @"NO",kMonitorWroteInTimeSlice, nil];
-    NSMutableDictionary *fourthMinute = [NSMutableDictionary dictionaryWithObjectsAndKeys:[currentTime dateByAddingTimeInterval: seconds_per_minute * 4],kMonitorFourthMinute, @"NO", kMonitorWroteInTimeSlice, nil];
-    NSMutableDictionary *fifthMinute = [NSMutableDictionary dictionaryWithObjectsAndKeys:[currentTime dateByAddingTimeInterval: seconds_per_minute * 5], kMonitorFifthMinute, @"NO", kMonitorWroteInTimeSlice, nil];
-    
-    NSMutableDictionary *timeTable = [NSMutableDictionary dictionaryWithObjectsAndKeys: firstMinute, kMonitorFirstMinute,
-                                      secondMinute, kMonitorSecondMinute,
-                                      thirdMinute, kMonitorThirdMinute,
-                                      fourthMinute, kMonitorFourthMinute,
-                                      fifthMinute, kMonitorFifthMinute, nil];
-    return timeTable;
-}
+    _dsid = interests[kKeyDSID];
+    _accountUUID = interests[kKeyAccountUUID];
 
-- (void)initializeKeyEntry:(NSString*)key
-{
-    NSMutableDictionary *timeTable = [self initializeTimeTable:key];
-    NSDate *currentTime = [NSDate date];
-    
-    NSMutableDictionary *keyEntry = [NSMutableDictionary dictionaryWithObjectsAndKeys: key, kMonitorMessageKey, @0, kMonitorConsecutiveWrites, currentTime, kMonitorLastWriteTimestamp, @0, kMonitorPenaltyBoxKey, timeTable, kMonitorTimeTable,[NSMutableDictionary dictionary], kMonitorMessageQueue, nil];
-    
-    [_monitor setObject:keyEntry forKey:key];
-    
-}
-
-- (void)recordTimestampForAppropriateInterval:(NSMutableDictionary**)timeTable key:(NSString*)key consecutiveWrites:(NSNumber**)consecutiveWrites
-{
-    NSDate *currentTime = [NSDate date];
-    __block int cWrites = [*consecutiveWrites intValue];
-    __block BOOL foundTimeSlot = NO;
-    __block NSMutableDictionary *previousTable = nil;
-    NSArray *sorted = [[*timeTable allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    [sorted enumerateObjectsUsingBlock:^(id sortedKey, NSUInteger idx, BOOL *stop)
-     {
-         if(foundTimeSlot == YES)
-             return;
-         [*timeTable enumerateKeysAndObjectsUsingBlock: ^(id minute, id obj, BOOL *stop2)
-          {
-              if(foundTimeSlot == YES)
-                  return;
-              if([sortedKey isEqualToString:minute]){
-                  NSMutableDictionary *minutesTable = (NSMutableDictionary*)obj;
-                  NSString *minuteKey = (NSString*)minute;
-                  NSDate *date = [minutesTable valueForKey:minuteKey];
-                  if([date compare:currentTime] == NSOrderedDescending){
-                      foundTimeSlot = YES;
-                      NSString* written = [minutesTable valueForKey:kMonitorWroteInTimeSlice];
-                      if([written isEqualToString:@"NO"]){
-                          [minutesTable setObject:@"YES" forKey:kMonitorWroteInTimeSlice];
-                          if(previousTable != nil){
-                              written = [previousTable valueForKey:kMonitorWroteInTimeSlice];
-                              if([written isEqualToString:@"YES"]){
-                                  cWrites++;
-                              }
-                              else if ([written isEqualToString:@"NO"]){
-                                  cWrites = 0;
-                              }
-                          }
-                      }
-                      return;
-                  }
-                  previousTable = minutesTable;
-              }
-          }];
-     }];
-    
-    if(foundTimeSlot == NO){
-        //reset the time table
-        secnotice("backoff","didn't find a time slot, resetting the table");
-        NSMutableDictionary *lastTable = [*timeTable valueForKey:kMonitorFifthMinute];
-        NSDate *lastDate = [lastTable valueForKey:kMonitorFifthMinute];
-        
-        if((double)[currentTime timeIntervalSinceDate: lastDate] >= seconds_per_minute){
-            *consecutiveWrites = [[NSNumber alloc]initWithInt:0];
-        }
-        else{
-            NSString* written = [lastTable valueForKey:kMonitorWroteInTimeSlice];
-            if([written isEqualToString:@"YES"]){
-                cWrites++;
-                *consecutiveWrites = [[NSNumber alloc]initWithInt:cWrites];
-            }
-            else{
-                *consecutiveWrites = [[NSNumber alloc]initWithInt:0];
-            }
-        }
-        
-        *timeTable  = [self initializeTimeTable:key];
-        return;
-    }
-    *consecutiveWrites = [[NSNumber alloc]initWithInt:cWrites];
-}
-- (void)recordWriteToKVS:(NSDictionary *)values
-{
-    if([_monitor count] == 0){
-        [values enumerateKeysAndObjectsUsingBlock: ^(id key, id obj, BOOL *stop)
-         {
-             [self initializeKeyEntry: key];
-         }];
-    }
-    else{
-        [values enumerateKeysAndObjectsUsingBlock: ^(id key, id obj, BOOL *stop)
-         {
-             NSMutableDictionary *keyEntry = [_monitor objectForKey:key];
-             if(keyEntry == nil){
-                 [self initializeKeyEntry: key];
-             }
-             else{
-                 NSNumber *penalty_timeout = [keyEntry objectForKey:kMonitorPenaltyBoxKey];
-                 NSDate *lastWriteTimestamp = [keyEntry objectForKey:kMonitorLastWriteTimestamp];
-                 NSMutableDictionary *timeTable = [keyEntry objectForKey: kMonitorTimeTable];
-                 NSNumber *existingWrites = [keyEntry objectForKey: kMonitorConsecutiveWrites];
-                 NSDate *currentTime = [NSDate date];
-                 
-                 [self recordTimestampForAppropriateInterval:&timeTable key:key consecutiveWrites:&existingWrites];
-                 
-                 int consecutiveWrites = [existingWrites intValue];
-                 secnotice("backoff","consecutive writes: %d", consecutiveWrites);
-                 [keyEntry setObject:existingWrites forKey:kMonitorConsecutiveWrites];
-                 [keyEntry setObject:timeTable forKey:kMonitorTimeTable];
-                 [keyEntry setObject:currentTime forKey:kMonitorLastWriteTimestamp];
-                 [_monitor setObject:keyEntry forKey:key];
-                 
-                 if([penalty_timeout intValue] != 0 || ((double)[currentTime timeIntervalSinceDate: lastWriteTimestamp] <= 60 && consecutiveWrites >= 5)){
-                     if([penalty_timeout intValue] != 0 && consecutiveWrites == 5){
-                         secnotice("backoff","written for 5 consecutive minutes, time to start throttling");
-                         [self increasePenalty:penalty_timeout key:key keyEntry:&keyEntry];
-                     }
-                     else
-                         secnotice("backoff","monitor: keys have been written for 5 or more minutes, recording we wrote during timeout");
-                   
-                     //record we wrote during a timeout
-                     [keyEntry setObject: @"YES" forKey:kMonitorDidWriteDuringPenalty];
-                 }
-                 //keep writing freely but record it
-                 else if((double)[currentTime timeIntervalSinceDate: lastWriteTimestamp] <= 60 && consecutiveWrites < 5){
-                     secnotice("backoff","monitor: still writing freely");
-                 }
-             }
-         }];
+    // If we had a sync pending, we kick it off and migrate to sync with these peers
+    if ([interests[kKeySyncWithPeersPending] boolValue]) {
+        [self doSyncWithAllPeers];
     }
 }
 
-- (NSDictionary*)recordHaltedValuesAndReturnValuesToSafelyWrite:(NSDictionary *)values
+- (void)persistState
 {
-    NSMutableDictionary *SafeMessages = [NSMutableDictionary dictionary];
-    [values enumerateKeysAndObjectsUsingBlock: ^(id key, id obj, BOOL *stop)
-     {
-         NSMutableDictionary *keyEntry = [_monitor objectForKey:key];
-         NSNumber *penalty = [keyEntry objectForKey:kMonitorPenaltyBoxKey];
-         if([penalty intValue] != 0){
-             NSMutableDictionary* existingQueue = [keyEntry valueForKey:kMonitorMessageQueue];
-             
-             [existingQueue setObject:obj forKey:key];
-             
-             [keyEntry setObject:existingQueue forKey:kMonitorMessageQueue];
-             [_monitor setObject:keyEntry forKey:key];
-         }
-         else{
-             [SafeMessages setObject:obj forKey:key];
-         }
-     }];
-    return SafeMessages;
+    NSDictionary* dataToSave = self.persistentData;
+
+    secdebug("persistence", "Writing registeredKeys: %@", [dataToSave compactDescription]);
+    if (![self.persistenceURL writePlist:dataToSave]) {
+        secerror("Failed to write persistence data to %@", self.persistenceURL);
+    }
 }
+
+- (void)perfCounters:(void(^)(NSDictionary *counters))callback
+{
+    /* Collect and merge perf counters from other layers here too */
+    [self.store perfCounters:callback];
+}
+
 
 // MARK: Object setting
 
@@ -593,20 +362,17 @@ static NSString* asNSString(NSObject* object) {
                      [self.store removeObjectForKey:key];
                  }
              }
+             [[self store] addOneToOutGoing];
              [self.store setObject:obj forKey:key];
          }
      }];
-
+    
     [self.store pushWrites];
 }
 
 - (void)setObjectsFromDictionary:(NSDictionary<NSString*, NSObject*> *)values
 {
-    [[UbiqitousKVSProxy sharedKVSProxy] recordWriteToKVS: values];
-    NSDictionary *safeValues = [[UbiqitousKVSProxy sharedKVSProxy] recordHaltedValuesAndReturnValuesToSafelyWrite: values];
-    if([safeValues count] !=0){
-        [[UbiqitousKVSProxy sharedKVSProxy] setStoreObjectsFromDictionary:safeValues];
-    }
+    [self setStoreObjectsFromDictionary:values];
 }
 
 - (void)waitForSynchronization:(void (^)(NSDictionary<NSString*, NSObject*> *results, NSError *err))handler
@@ -625,7 +391,7 @@ static NSString* asNSString(NSObject* object) {
             NSError *error = nil;
             bool success = [self.store pullUpdates:&error];
 
-            dispatch_async(_ckdkvsproxy_queue, ^{
+            dispatch_async(self->_ckdkvsproxy_queue, ^{
                 [self waitForSyncDone: success error: error];
             });
         });
@@ -652,36 +418,6 @@ static NSString* asNSString(NSObject* object) {
 // MARK: ----- KVS key lists -----
 //
 
-
-- (NSDictionary*) exportKeyInterests
-{
-    return @{ kKeyAlwaysKeys:[_alwaysKeys allObjects],
-              kKeyFirstUnlockKeys:[_firstUnlockKeys allObjects],
-              kKeyUnlockedKeys:[_unlockedKeys allObjects],
-              kMonitorState:_monitor,
-              kKeyPendingKeys:[_pendingKeys allObjects],
-              kKeySyncWithPeersPending:[NSNumber numberWithBool:_syncWithPeersPending],
-              kKeyEnsurePeerRegistration:[NSNumber numberWithBool:_ensurePeerRegistration],
-              kKeyDSID:_dsid
-              };
-}
-
-- (void) importKeyInterests: (NSDictionary*) interests
-{
-    _alwaysKeys = [NSMutableSet setWithArray: interests[kKeyAlwaysKeys]];
-    _firstUnlockKeys = [NSMutableSet setWithArray: interests[kKeyFirstUnlockKeys]];
-    _unlockedKeys = [NSMutableSet setWithArray: interests[kKeyUnlockedKeys]];
-
-    _pendingKeys = [NSMutableSet setWithArray: interests[kKeyPendingKeys]];
-    _syncWithPeersPending = [interests[kKeySyncWithPeersPending] boolValue];
-    _ensurePeerRegistration = [interests[kKeyEnsurePeerRegistration] boolValue];
-    _dsid = interests[kKeyDSID];
-    _monitor = interests[kMonitorState];
-    if(_monitor == nil)
-        _monitor = [NSMutableDictionary dictionary];
-    
-}
-
 - (NSMutableSet *)copyAllKeyInterests
 {
     NSMutableSet *allKeys = [NSMutableSet setWithSet: _alwaysKeys];
@@ -707,12 +443,37 @@ static NSString* asNSString(NSObject* object) {
         [_unlockedKeys unionSet: [NSMutableSet setWithArray: whenUnlockedKeysArray]];
 }
 
+- (void)removeKeys: (NSArray*)keys forAccount: (NSString*) accountUUID
+{
+    secdebug(XPROXYSCOPE, "removeKeys: keys: %@", keys);
+    
+    // We only reset when we know the ID and they send the ID and it changes.
+    bool newAccount = accountUUID != nil && self.accountUUID != nil && ![accountUUID isEqualToString: self.accountUUID];
+    
+    if(newAccount){
+        secnotice(XPROXYSCOPE, "not removing keys, account UUID is for a new account");
+        return;
+    }
+    [keys enumerateObjectsUsingBlock:^(NSString*  _Nonnull key, NSUInteger idx, BOOL * _Nonnull stop) {
+        secnotice(XPROXYSCOPE, "removing from KVS store: %@", key);
+        [self.store removeObjectForKey:key];
+    }];
+}
 
-- (void)registerKeys: (NSDictionary*)keys
+- (void)registerKeys: (NSDictionary*)keys forAccount: (NSString*) accountUUID
 {
     secdebug(XPROXYSCOPE, "registerKeys: keys: %@", keys);
-    
-    NSMutableSet *allOldKeys = [self copyAllKeyInterests];
+
+    // We only reset when we know the ID and they send the ID and it changes.
+    bool newAccount = accountUUID != nil && self.accountUUID != nil && ![accountUUID isEqualToString: self.accountUUID];
+
+    if (accountUUID) {
+        self.accountUUID = accountUUID;
+    }
+
+    // If we're a new account we don't exclude the old keys
+    NSMutableSet *allOldKeys = newAccount ? [NSMutableSet set] : [self copyAllKeyInterests];
+
 
     NSDictionary *keyparms = [keys valueForKey: [NSString stringWithUTF8String: kMessageKeyParameter]];
     NSDictionary *circles = [keys valueForKey: [NSString stringWithUTF8String: kMessageCircle]];
@@ -751,29 +512,23 @@ static NSString* asNSString(NSObject* object) {
 
 // MARK: ----- Event Handling -----
 
-- (void)streamEvent:(xpc_object_t)notification
+- (void)_queue_handleNotification:(const char *) name
 {
-#if (!TARGET_IPHONE_SIMULATOR)
-    const char *notificationName = xpc_dictionary_get_string(notification, "Notification");
-    if (!notificationName) {
-    } else if (strcmp(notificationName, kUserKeybagStateChangeNotification)==0) {
-        return [self keybagStateChange];
-    } else if (strcmp(notificationName, kCloudKeychainStorechangeChangeNotification)==0) {
-        return [self kvsStoreChange];
-    } else if (strcmp(notificationName, kNotifyTokenForceUpdate)==0) {
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
+    if (strcmp(name, kNotifyTokenForceUpdate)==0) {
         // DEBUG -- Possibly remove in future
-        return [self processAllItems];
+        [self _queue_processAllItems];
+    } else if (strcmp(name, kCloudKeychainStorechangeChangeNotification)==0) {
+        // DEBUG -- Possibly remove in future
+        [self _queue_kvsStoreChange];
     }
-    const char *eventName = xpc_dictionary_get_string(notification, "XPCEventName");
-    char *desc = xpc_copy_description(notification);
-    secnotice("event", "%@ event: %s name: %s desc: %s", self, eventName, notificationName, desc);
-    if (desc)
-        free((void *)desc);
-#endif
 }
 
-- (void)storeKeysChanged: (NSSet<NSString*>*) changedKeys initial: (bool) initial
+- (void)_queue_storeKeysChanged: (NSSet<NSString*>*) changedKeys initial: (bool) initial
 {
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
     // Mark that our store is talking to us, so we don't have to make up for missing anything previous.
     _seenKVSStoreChange = YES;
 
@@ -796,8 +551,10 @@ static NSString* asNSString(NSObject* object) {
         [self processKeyChangedEvent:changedValues];
 }
 
-- (void)storeAccountChanged
+- (void)_queue_storeAccountChanged
 {
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
     secnotice("event", "%@", self);
 
     NSDictionary *changedValues = nil;
@@ -818,7 +575,7 @@ static NSString* asNSString(NSObject* object) {
         _shadowFlushBlock = block;
 }
 
-- (void) calloutWith: (void(^)(NSSet *pending, bool syncWithPeersPending, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, bool handledSyncWithPeers, bool handledEnsurePeerRegistration))) callout
+- (void) calloutWith: (void(^)(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* error))) callout
 {
     // In CKDKVSProxy's serial queue
 
@@ -827,51 +584,75 @@ static NSString* asNSString(NSObject* object) {
     xpc_transaction_begin();
     dispatch_async(_calloutQueue, ^{
         __block NSSet *myPending;
-        __block bool mySyncWithPeersPending;
+        __block NSSet *mySyncPeerIDs;
+        __block NSSet *mySyncBackupPeerIDs;
         __block bool myEnsurePeerRegistration;
         __block bool wasLocked;
-        dispatch_sync(_ckdkvsproxy_queue, ^{
-            myPending = [_pendingKeys copy];
-            mySyncWithPeersPending = _syncWithPeersPending;
-            myEnsurePeerRegistration = _ensurePeerRegistration;
-            wasLocked = _isLocked;
+        dispatch_sync(self->_ckdkvsproxy_queue, ^{
+            myPending = [self->_pendingKeys copy];
+            mySyncPeerIDs = [self->_pendingSyncPeerIDs copy];
+            mySyncBackupPeerIDs = [self->_pendingSyncBackupPeerIDs copy];
 
-            _inCallout = YES;
+            myEnsurePeerRegistration = self->_ensurePeerRegistration;
+            wasLocked = [self.lockMonitor locked];
 
-            _shadowPendingKeys = [NSMutableSet set];
-            _shadowSyncWithPeersPending = NO;
+            self->_inCallout = YES;
+
+            self->_shadowPendingKeys = [NSMutableSet set];
+            self->_shadowPendingSyncPeerIDs = [NSMutableSet set];
+            self->_shadowPendingSyncBackupPeerIDs = [NSMutableSet set];
         });
 
-        callout(myPending, mySyncWithPeersPending, myEnsurePeerRegistration, _ckdkvsproxy_queue, ^(NSSet *handledKeys, bool handledSyncWithPeers, bool handledEnsurePeerRegistration) {
-            secdebug("event", "%@ %s%s before callout handled: %s%s", self, mySyncWithPeersPending ? "S" : "s", myEnsurePeerRegistration ? "E" : "e", handledSyncWithPeers ? "S" : "s", handledEnsurePeerRegistration ? "E" : "e");
+        callout(myPending, mySyncPeerIDs, mySyncBackupPeerIDs, myEnsurePeerRegistration, self->_ckdkvsproxy_queue, ^(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* failure) {
+            secdebug("event", "%@ %s%s before callout handled: %s%s", self,
+                     ![mySyncPeerIDs isEmpty] || ![mySyncBackupPeerIDs isEmpty] ? "S" : "s",
+                     myEnsurePeerRegistration ? "E" : "e",
+                     ![handledKeys isEmpty] ? "S" : "s",
+                     handledEnsurePeerRegistration ? "E" : "e");
             
             // In CKDKVSProxy's serial queue
-            _inCallout = NO;
-            
-            // Update ensurePeerRegistration
-            _ensurePeerRegistration = ((myEnsurePeerRegistration && !handledEnsurePeerRegistration) || _shadowEnsurePeerRegistration);
-            
-            _shadowEnsurePeerRegistration = NO;
-            
-            if(_ensurePeerRegistration && !_isLocked)
-                [self doEnsurePeerRegistration];
-            
-            // Update SyncWithPeers stuff.
-            _syncWithPeersPending = ((mySyncWithPeersPending && (!handledSyncWithPeers)) || _shadowSyncWithPeersPending);
-            
-            _shadowSyncWithPeersPending = NO;
-            if (handledSyncWithPeers)
-                _lastSyncTime = dispatch_time(DISPATCH_TIME_NOW, 0);
-            
-            // Update pendingKeys and handle them
-            [_pendingKeys removeObject: [NSNull null]]; // Don't let NULL hang around
+            self->_inCallout = NO;
 
-            [_pendingKeys minusSet: handledKeys];
-            bool hadShadowPendingKeys = [_shadowPendingKeys count];
+            // Update ensurePeerRegistration
+            self->_ensurePeerRegistration = ((self->_ensurePeerRegistration && !handledEnsurePeerRegistration) || self->_shadowEnsurePeerRegistration);
+            
+            self->_shadowEnsurePeerRegistration = NO;
+            
+            if(self->_ensurePeerRegistration && ![self.lockMonitor locked])
+                [self doEnsurePeerRegistration];
+
+            bool hadShadowPeerIDs = ![self->_shadowPendingSyncPeerIDs isEmpty] || ![self->_shadowPendingSyncBackupPeerIDs isEmpty];
+
+            // Update SyncWithPeers stuff.
+            if (handledSyncs) {
+                [self->_pendingSyncPeerIDs minusSet: handledSyncs];
+                [self->_pendingSyncBackupPeerIDs minusSet: handledSyncs];
+
+                if (![handledSyncs isEmpty]) {
+                    secnotice("sync-ids", "handled syncIDs: %@", [handledSyncs logIDs]);
+                    secnotice("sync-ids", "remaining peerIDs: %@", [self->_pendingSyncPeerIDs logIDs]);
+                    secnotice("sync-ids", "remaining backupIDs: %@", [self->_pendingSyncBackupPeerIDs logIDs]);
+
+                    if (hadShadowPeerIDs) {
+                        secnotice("sync-ids", "signaled peerIDs: %@", [self->_shadowPendingSyncPeerIDs logIDs]);
+                        secnotice("sync-ids", "signaled backupIDs: %@", [self->_shadowPendingSyncBackupPeerIDs logIDs]);
+                    }
+                }
+
+                self->_shadowPendingSyncPeerIDs = nil;
+                self->_shadowPendingSyncBackupPeerIDs = nil;
+            }
+
+
+            // Update pendingKeys and handle them
+            [self->_pendingKeys removeObject: [NSNull null]]; // Don't let NULL hang around
+
+            [self->_pendingKeys minusSet: handledKeys];
+            bool hadShadowPendingKeys = [self->_shadowPendingKeys count];
             // Move away shadownPendingKeys first, because pendKeysAndGetPendingForCurrentLockState
             // will look at them. See rdar://problem/20733166.
-            NSSet *oldShadowPendingKeys = _shadowPendingKeys;
-            _shadowPendingKeys = nil;
+            NSSet *oldShadowPendingKeys = self->_shadowPendingKeys;
+            self->_shadowPendingKeys = nil;
 
             NSSet *filteredKeys = [self pendKeysAndGetPendingForCurrentLockState:oldShadowPendingKeys];
 
@@ -881,10 +662,13 @@ static NSString* asNSString(NSObject* object) {
 
             // Write state to disk
             [self persistState];
-            
+
             // Handle shadow pended stuff
-            if (_syncWithPeersPending && !_isLocked)
-                [self scheduleSyncRequestTimer];
+
+            // We only kick off another sync if we got new stuff during handling
+            if (hadShadowPeerIDs && ![self.lockMonitor locked])
+                [self newPeersToSyncWith];
+
             /* We don't want to call processKeyChangedEvent if we failed to
              handle pending keys and the device didn't unlock nor receive
              any kvs changes while we were in our callout.
@@ -892,15 +676,19 @@ static NSString* asNSString(NSObject* object) {
              talking to each other forever in a tight loop if securityd
              repeatedly returns an error processing the same message.
              Instead we leave any old pending keys until the next event. */
-
-            if (hadShadowPendingKeys || (!_isLocked && wasLocked)){
+            if (hadShadowPendingKeys || (![self.lockMonitor locked] && wasLocked)){
                 [self processKeyChangedEvent:[self copyValues:filteredKeys]];
-                if(_shadowFlushBlock != NULL)
+                if(self->_shadowFlushBlock != NULL)
                     secerror("Flush block is not null and sending new keys");
             }
-            if(_shadowFlushBlock != NULL){
-                dispatch_async(_calloutQueue, _shadowFlushBlock);
-                _shadowFlushBlock = NULL;
+
+            if(self->_shadowFlushBlock != NULL){
+                dispatch_async(self->_calloutQueue, self->_shadowFlushBlock);
+                self->_shadowFlushBlock = NULL;
+            }
+
+            if (failure) {
+                [self.lockMonitor recheck];
             }
             
             xpc_transaction_end();
@@ -909,7 +697,7 @@ static NSString* asNSString(NSObject* object) {
 }
 
 - (void) sendKeysCallout: (NSSet *(^)(NSSet* pending, NSError** error)) handleKeys {
-    [self calloutWith: ^(NSSet *pending, bool syncWithPeersPending, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *, bool, bool)) {
+    [self calloutWith: ^(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* error)) {
         NSError* error = NULL;
 
         secnotice("CloudKeychainProxy", "send keys: %@", pending);
@@ -920,7 +708,7 @@ static NSString* asNSString(NSObject* object) {
                 secerror("%@ ensurePeerRegistration failed: %@", self, error);
             }
 
-            done(handled, NO, NO);
+            done(handled, nil, NO, error);
         });
     }];
 }
@@ -928,12 +716,37 @@ static NSString* asNSString(NSObject* object) {
 - (void) doEnsurePeerRegistration
 {
     NSObject<CKDAccount>* accountDelegate = [self account];
-    [self calloutWith:^(NSSet *pending, bool syncWithPeersPending, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *, bool, bool)) {
+    [self calloutWith:^(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* error)) {
         NSError* error = nil;
         bool handledEnsurePeerRegistration = [accountDelegate ensurePeerRegistration:&error];
         secnotice("EnsurePeerRegistration", "%@ ensurePeerRegistration called, %@ (%@)", self, handledEnsurePeerRegistration ? @"success" : @"failure", error);
+        if (!handledEnsurePeerRegistration) {
+            [self.lockMonitor recheck];
+            handledEnsurePeerRegistration = ![self.lockMonitor locked]; // If we're unlocked we handled it, if we're locked we didn't.
+                                                              // This means we get to fail once per unlock and then cut that spinning out.
+        }
         dispatch_async(queue, ^{
-            done(nil, NO, handledEnsurePeerRegistration);
+            done(nil, nil, handledEnsurePeerRegistration, error);
+        });
+    }];
+}
+
+- (void) doSyncWithPendingPeers
+{
+    NSObject<CKDAccount>* accountDelegate = [self account];
+    [self calloutWith:^(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* error)) {
+        NSError* error = NULL;
+        secnotice("syncwith", "%@ syncwith peers: %@", self, [[pendingSyncIDs allObjects] componentsJoinedByString:@" "]);
+        secnotice("syncwith", "%@ syncwith backups: %@", self, [[pendingBackupSyncIDs allObjects] componentsJoinedByString:@" "]);
+        NSSet<NSString*>* handled = [accountDelegate syncWithPeers:pendingSyncIDs backups:pendingBackupSyncIDs error:&error];
+        secnotice("syncwith", "%@ syncwith handled: %@", self, [[handled allObjects] componentsJoinedByString:@" "]);
+        dispatch_async(queue, ^{
+            if (!handled) {
+                // We might be confused about lock state
+                [self.lockMonitor recheck];
+            }
+
+            done(nil, handled, false, error);
         });
     }];
 }
@@ -941,102 +754,86 @@ static NSString* asNSString(NSObject* object) {
 - (void) doSyncWithAllPeers
 {
     NSObject<CKDAccount>* accountDelegate = [self account];
-    [self calloutWith:^(NSSet *pending, bool syncWithPeersPending, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *, bool, bool)) {
+    [self calloutWith:^(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError*error)) {
         NSError* error = NULL;
-        SyncWithAllPeersReason reason = [accountDelegate syncWithAllPeers: &error];
+        bool handled = [accountDelegate syncWithAllPeers:&error];
+        if (!handled) {
+            secerror("Failed to syncWithAllPeers: %@", error);
+        }
         dispatch_async(queue, ^{
-            bool handledSyncWithPeers = NO;
-            if (reason == kSyncWithAllPeersSuccess) {
-                handledSyncWithPeers = YES;
-                secnotice("event", "%@ syncWithAllPeers succeeded", self);
-            } else if (reason == kSyncWithAllPeersLocked) {
-                secnotice("event", "%@ syncWithAllPeers attempted while locked - waiting for unlock", self);
-                handledSyncWithPeers = NO;
-                [self updateIsLocked];
-            } else if (reason == kSyncWithAllPeersOtherFail) {
-                // Pretend we handled syncWithPeers, by pushing out the _lastSyncTime
-                // This will cause us to wait for kMinSyncInterval seconds before
-                // retrying, so we don't spam securityd if sync is failing
-                secerror("%@ syncWithAllPeers %@, rescheduling timer", self, error);
-                _lastSyncTime = dispatch_time(DISPATCH_TIME_NOW, 0);
-            } else {
-                secerror("%@ syncWithAllPeers %@, unknown reason: %d", self, error, reason);
-            }
-            
-            done(nil, handledSyncWithPeers, false);
+            done(nil, nil, false, error);
         });
     }];
 }
 
-- (void)timerFired
+- (void)newPeersToSyncWith
 {
-    secnotice("event", "%@ syncWithPeersPending: %d inCallout: %d isLocked: %d", self, _syncWithPeersPending, _inCallout, _isLocked);
-    _syncTimerScheduled = NO;
+    secnotice("event", "%@ syncWithPeersPending: %d inCallout: %d isLocked: %d", self, [self hasPendingSyncIDs], _inCallout, [self.lockMonitor locked]);
     if(_ensurePeerRegistration){
         [self doEnsurePeerRegistration];
     }
-    if (_syncWithPeersPending && !_inCallout && !_isLocked){
-        [self doSyncWithAllPeers];
+    if ([self hasPendingSyncIDs] && !_inCallout && ![self.lockMonitor locked]){
+        [self doSyncWithPendingPeers];
     }
 }
 
-- (dispatch_time_t) nextSyncTime
+- (bool)hasPendingNonShadowSyncIDs {
+    return ![_pendingSyncPeerIDs isEmpty] || ![_pendingSyncBackupPeerIDs isEmpty];
+}
+
+- (bool)hasPendingShadowSyncIDs {
+    return (_shadowPendingSyncPeerIDs && ![_shadowPendingSyncPeerIDs isEmpty]) ||
+    (_shadowPendingSyncBackupPeerIDs && ![_shadowPendingSyncBackupPeerIDs isEmpty]);
+}
+
+- (bool)hasPendingSyncIDs
 {
-    dispatch_time_t nextSync = dispatch_time(DISPATCH_TIME_NOW, kMinSyncDelay);
-    
-    // Don't sync again unless we waited at least kMinSyncInterval
-    if (_lastSyncTime) {
-        dispatch_time_t soonest = dispatch_time(_lastSyncTime, kMinSyncInterval);
-        if (nextSync < soonest || _deadline < soonest) {
-            secdebug("timer", "%@ backing off", self);
-            return soonest;
-        }
+    bool pendingIDs = [self hasPendingNonShadowSyncIDs];
+
+    if (_inCallout) {
+        pendingIDs |= [self hasPendingShadowSyncIDs];
     }
-    
-    // Don't delay more than kMaxSyncDelay after the first request.
-    if (nextSync > _deadline) {
-        secdebug("timer", "%@ hit deadline", self);
-        return _deadline;
-    }
-    
-    // Bump the timer by kMinSyncDelay
-    if (_syncTimerScheduled)
-        secdebug("timer", "%@ bumped timer", self);
-    else
-        secdebug("timer", "%@ scheduled timer", self);
-    
-    return nextSync;
+
+    return pendingIDs;
 }
 
-- (void)scheduleSyncRequestTimer
+- (void)requestSyncWithPeerIDs: (NSArray<NSString*>*) peerIDs backupPeerIDs: (NSArray<NSString*>*) backupPeerIDs
 {
-    dispatch_source_set_timer(_syncTimer, [self nextSyncTime], DISPATCH_TIME_FOREVER, kSyncTimerLeeway);
-    _syncTimerScheduled = YES;
-}
+    if ([peerIDs count] == 0 && [backupPeerIDs count] == 0)
+        return; // Nothing to do;
 
-- (void)requestSyncWithAllPeers // secd calling SOSCCSyncWithAllPeers invokes this
-{
-#if !defined(NDEBUG)
-    NSString *desc = [self description];
-#endif
-        
-    if (!_syncWithPeersPending || (_inCallout && !_shadowSyncWithPeersPending))
-        _deadline = dispatch_time(DISPATCH_TIME_NOW, kMaxSyncDelay);
-    
-    if (!_syncWithPeersPending) {
-        _syncWithPeersPending = YES;
-        [self persistState];
+    NSSet<NSString*>* peerIDsSet = [NSSet setWithArray: peerIDs];
+    NSSet<NSString*>* backupPeerIDsSet = [NSSet setWithArray: backupPeerIDs];
+
+    [_pendingSyncPeerIDs unionSet: peerIDsSet];
+    [_pendingSyncBackupPeerIDs unionSet: backupPeerIDsSet];
+
+    if (_inCallout) {
+        [_shadowPendingSyncPeerIDs unionSet: peerIDsSet];
+        [_shadowPendingSyncBackupPeerIDs unionSet: backupPeerIDsSet];
     }
-    
-    if (_inCallout)
-        _shadowSyncWithPeersPending = YES;
-    else if (!_isLocked)
-        [self scheduleSyncRequestTimer];
-    
-    secdebug("event", "%@ %@", desc, self);
+
+    [self persistState];
+
+    if(_ensurePeerRegistration){
+        [self doEnsurePeerRegistration];
+    }
+    if ([self hasPendingSyncIDs] && !_inCallout && ![self.lockMonitor locked]){
+        [self doSyncWithPendingPeers];
+    }
 }
 
-- (void)requestEnsurePeerRegistration // secd calling SOSCCSyncWithAllPeers invokes this
+- (BOOL)hasSyncPendingFor: (NSString*) peerID {
+    return [_pendingSyncPeerIDs containsObject: peerID] ||
+    (_shadowPendingSyncPeerIDs && [_shadowPendingSyncPeerIDs containsObject: peerID]);
+}
+
+- (BOOL)hasPendingKey: (NSString*) keyName {
+    return [self.pendingKeys containsObject: keyName]
+        || (_shadowPendingKeys && [self.shadowPendingKeys containsObject: keyName]);
+}
+
+- (void)requestEnsurePeerRegistration
 {
 #if !defined(NDEBUG)
     NSString *desc = [self description];
@@ -1046,7 +843,7 @@ static NSString* asNSString(NSObject* object) {
         _shadowEnsurePeerRegistration = YES;
     } else {
         _ensurePeerRegistration = YES;
-        if (!_isLocked){
+        if (![self.lockMonitor locked]){
             [self doEnsurePeerRegistration];
         }
         [self persistState];
@@ -1055,55 +852,18 @@ static NSString* asNSString(NSObject* object) {
     secdebug("event", "%@ %@", desc, self);
 }
 
-
-- (BOOL) updateUnlockedSinceBoot
+- (void)_queue_locked
 {
-    CFErrorRef aksError = NULL;
-    if (!SecAKSGetHasBeenUnlocked(&_unlockedSinceBoot, &aksError)) {
-        secerror("%@ Got error from SecAKSGetHasBeenUnlocked: %@", self, aksError);
-        CFReleaseSafe(aksError);
-        return NO;
-    }
-    return YES;
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
+    secnotice("event", "%@ Locked", self);
 }
 
-- (BOOL) updateIsLocked
+- (void)_queue_unlocked
 {
-    CFErrorRef aksError = NULL;
-    if (!SecAKSGetIsLocked(&_isLocked, &aksError)) {
-        _isLocked = YES;
-        secerror("%@ Got error querying lock state: %@", self, aksError);
-        CFReleaseSafe(aksError);
-        return NO;
-    }
-    if (!_isLocked)
-        _unlockedSinceBoot = YES;
-    return YES;
-}
+    dispatch_assert_queue(_ckdkvsproxy_queue);
 
-- (void) keybagStateChange
-{
-    os_activity_initiate("keybagStateChanged", OS_ACTIVITY_FLAG_DEFAULT, ^{
-        BOOL wasLocked = _isLocked;
-        if ([self updateIsLocked]) {
-            if (wasLocked == _isLocked)
-                secdebug("event", "%@ still %s ignoring", self, _isLocked ? "locked" : "unlocked");
-            else if (_isLocked)
-                [self keybagDidLock];
-            else
-                [self keybagDidUnlock];
-        }
-    });
-}
-
-- (void) keybagDidLock
-{
-    secnotice("event", "%@", self);
-}
-
-- (void) keybagDidUnlock
-{
-    secnotice("event", "%@", self);
+    secnotice("event", "%@ Unlocked", self);
     if (_ensurePeerRegistration) {
         [self doEnsurePeerRegistration];
     }
@@ -1112,14 +872,16 @@ static NSString* asNSString(NSObject* object) {
     [self processPendingKeysForCurrentLockState];
     
     // Then, tickle securityd to perform a sync if needed.
-    if (_syncWithPeersPending && !_syncTimerScheduled) {
-        [self doSyncWithAllPeers];
+    if ([self hasPendingSyncIDs]) {
+        [self doSyncWithPendingPeers];
     }
 }
 
-- (void) kvsStoreChange {
+- (void) _queue_kvsStoreChange {
+    dispatch_assert_queue(_ckdkvsproxy_queue);
+
     os_activity_initiate("kvsStoreChange", OS_ACTIVITY_FLAG_DEFAULT, ^{
-        if (!_seenKVSStoreChange) {
+        if (!self->_seenKVSStoreChange) {
             secnotice("event", "%@ received darwin notification before first NSNotification", self);
             // TODO This might not be needed if we always get the NSNotification
             // deleived even if we were launched due to a kvsStoreChange
@@ -1132,19 +894,68 @@ static NSString* asNSString(NSObject* object) {
     });
 }
 
+#pragma mark -
+#pragma mark XPCNotificationListener
+
+- (void)handleNotification:(const char *) name
+{
+    // sync because we cannot ensure the lifetime of name
+    dispatch_sync(_ckdkvsproxy_queue, ^{
+        [self _queue_handleNotification:name];
+    });
+}
+
+#pragma mark -
+#pragma mark Calls from -[CKDKVSStore kvsStoreChanged:]
+
+- (void)storeKeysChanged: (NSSet<NSString*>*) changedKeys initial: (bool) initial
+{
+    // sync, caller must wait to ensure correct state
+    dispatch_sync(_ckdkvsproxy_queue, ^{
+        [self _queue_storeKeysChanged:changedKeys initial:initial];
+    });
+}
+
+- (void)storeAccountChanged
+{
+    // sync, caller must wait to ensure correct state
+    dispatch_sync(_ckdkvsproxy_queue, ^{
+        [self _queue_storeAccountChanged];
+    });
+}
+
+#pragma mark -
+#pragma mark CKDLockListener
+
+- (void) locked
+{
+    // sync, otherwise tests fail
+    dispatch_sync(_ckdkvsproxy_queue, ^{
+        [self _queue_locked];
+    });
+}
+
+- (void) unlocked
+{
+    // sync, otherwise tests fail
+    dispatch_sync(_ckdkvsproxy_queue, ^{
+        [self _queue_unlocked];
+    });
+}
+
 //
 // MARK: ----- Key Filtering -----
 //
 
 - (NSSet*) keysForCurrentLockState
 {
-    secdebug("filtering", "%@ Filtering: unlockedSinceBoot: %d\n unlocked: %d\n, keysOfInterest: <%@>", self, (int) _unlockedSinceBoot, (int) !_isLocked, [SOSPersistentState dictionaryDescription: [self exportKeyInterests]]);
+    secdebug("filtering", "%@ Filtering: unlockedSinceBoot: %d\n unlocked: %d\n, keysOfInterest: <%@>", self, (int) [self.lockMonitor unlockedSinceBoot], (int) ![self.lockMonitor locked], [self.persistentData compactDescription]);
 
     NSMutableSet *currentStateKeys = [NSMutableSet setWithSet: _alwaysKeys];
-    if (_unlockedSinceBoot)
+    if ([self.lockMonitor unlockedSinceBoot])
         [currentStateKeys unionSet: _firstUnlockKeys];
     
-    if (!_isLocked)
+    if (![self.lockMonitor locked])
         [currentStateKeys unionSet: _unlockedKeys];
     
     return currentStateKeys;

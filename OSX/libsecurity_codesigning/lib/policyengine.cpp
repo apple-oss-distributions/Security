@@ -163,6 +163,7 @@ void PolicyEngine::evaluateCodeItem(SecStaticCodeRef code, CFURLRef path, Author
 	SQLite3::int64 latentID = 0;		// first (highest priority) disabled matching ID
 	std::string latentLabel;			// ... and associated label, if any
 
+    secdebug("gk", "evaluateCodeItem type=%d flags=0x%x nested=%d path=%s", type, int(flags), nested, cfString(path).c_str());
 	while (query.nextRow()) {
 		bool allow = int(query[0]);
 		const char *reqString = query[1];
@@ -174,6 +175,7 @@ void PolicyEngine::evaluateCodeItem(SecStaticCodeRef code, CFURLRef path, Author
 //		const char *filter = query[7];
 //		const char *remarks = query[8];
 		
+        secdebug("gk", "considering rule %d(%s) requirement %s", int(id), label ? label : "UNLABELED", reqString);
 		CFRef<SecRequirementRef> requirement;
 		MacOSError::check(SecRequirementCreateWithString(CFTempString(reqString), kSecCSDefaultFlags, &requirement.aref()));
 		switch (OSStatus rc = SecStaticCodeCheckValidity(code, kSecCSBasicValidateOnly | kSecCSCheckGatekeeperArchitectures, requirement)) {
@@ -195,6 +197,7 @@ void PolicyEngine::evaluateCodeItem(SecStaticCodeRef code, CFURLRef path, Author
 		}
 		
 		// current rule is first rule (in priority order) that matched. Apply it
+        secnotice("gk", "rule %d applies - allow=%d", int(id), allow);
 		if (nested && allow)			// success, nothing to record
 			return;
 
@@ -240,6 +243,7 @@ void PolicyEngine::evaluateCodeItem(SecStaticCodeRef code, CFURLRef path, Author
 	}
 	
 	// no applicable authority (but signed, perhaps temporarily). Deny by default
+    secnotice("gk", "rejecting due to lack of matching active rule");
 	CFRef<CFDictionaryRef> info;
 	MacOSError::check(SecCodeCopySigningInformation(code, kSecCSSigningInformation, &info.aref()));
 	if (flags & kSecAssessmentFlagRequestOrigin) {
@@ -269,21 +273,25 @@ void PolicyEngine::adjustValidation(SecStaticCodeRef code)
 
 bool PolicyEngine::temporarySigning(SecStaticCodeRef code, AuthorityType type, CFURLRef path, SecAssessmentFlags matchFlags)
 {
-	if (matchFlags == 0) {	// playback; consult authority table for matches
-		std::string screen = createWhitelistScreen(code);
-		SQLite::Statement query(*this,
-			"SELECT flags FROM authority "
-			"WHERE type = :type"
-			" AND NOT flags & :flag"
-			" AND CASE WHEN filter_unsigned IS NULL THEN remarks = :remarks ELSE filter_unsigned = :screen END");
-		query.bind(":type").integer(type);
-		query.bind(":flag").integer(kAuthorityFlagDefault);
-		query.bind(":screen") = screen;
-		query.bind(":remarks") = cfString(path);
-		if (!query.nextRow())	// guaranteed no matching rule
-			return false;
-		matchFlags = SQLite3::int64(query[0]);
-	}
+    secnotice("gk", "temporarySigning type=%d matchFlags=0x%x path=%s", type, int(matchFlags), cfString(path).c_str());
+
+    // see if we have a screened record to take matchFlags from
+    std::string screen = createWhitelistScreen(code);
+    SQLite::Statement query(*this,
+        "SELECT flags FROM authority "
+        "WHERE type = :type"
+        " AND NOT flags & :flag"
+        " AND CASE WHEN filter_unsigned IS NULL THEN remarks = :remarks ELSE filter_unsigned = :screen END");
+    query.bind(":type").integer(type);
+    query.bind(":flag").integer(kAuthorityFlagDefault);
+    query.bind(":screen") = screen;
+    query.bind(":remarks") = cfString(path);
+    secdebug("gk", "match screen=%s", screen.c_str());
+    if (query.nextRow())	// got a matching rule
+        matchFlags = SQLite3::int64(query[0]);
+    else if (matchFlags == 0)  // lazy and no match
+        return false;
+    secdebug("gk", "matchFlags found=0x%x", int(matchFlags));
 
 	try {
 		// ad-hoc sign the code and attach the signature
@@ -302,7 +310,8 @@ bool PolicyEngine::temporarySigning(SecStaticCodeRef code, AuthorityType type, C
 		SecCodeCopyDesignatedRequirement(code, kSecCSDefaultFlags, &dr);
 		CFStringRef drs = NULL;
 		SecRequirementCopyString(dr, kSecCSDefaultFlags, &drs);
-
+        secnotice("gk", "successfully created temporary signature - requirement=%s", cfString(drs).c_str());
+        
 		// if we're in GKE recording mode, save that signature and report its location
 		if (SYSPOLICY_RECORDER_MODE_ENABLED()) {
 			int status = recorder_code_unable;	// ephemeral signature (not recorded)
@@ -616,49 +625,16 @@ void PolicyEngine::evaluateInstall(CFURLRef path, SecAssessmentFlags flags, CFDi
 //
 // Create a suitable policy array for verification of installer signatures.
 //
-#if !SECTRUST_OSX
-static SecPolicyRef makeCRLPolicy()
-{
-	CFRef<SecPolicyRef> policy;
-	MacOSError::check(SecPolicyCopy(CSSM_CERT_X_509v3, &CSSMOID_APPLE_TP_REVOCATION_CRL, &policy.aref()));
-	CSSM_APPLE_TP_CRL_OPTIONS options;
-	memset(&options, 0, sizeof(options));
-	options.Version = CSSM_APPLE_TP_CRL_OPTS_VERSION;
-	options.CrlFlags = CSSM_TP_ACTION_FETCH_CRL_FROM_NET | CSSM_TP_ACTION_CRL_SUFFICIENT;
-	CSSM_DATA optData = { sizeof(options), (uint8 *)&options };
-	MacOSError::check(SecPolicySetValue(policy, &optData));
-	return policy.yield();
-}
-
-static SecPolicyRef makeOCSPPolicy()
-{
-	CFRef<SecPolicyRef> policy;
-	MacOSError::check(SecPolicyCopy(CSSM_CERT_X_509v3, &CSSMOID_APPLE_TP_REVOCATION_OCSP, &policy.aref()));
-	CSSM_APPLE_TP_OCSP_OPTIONS options;
-	memset(&options, 0, sizeof(options));
-	options.Version = CSSM_APPLE_TP_OCSP_OPTS_VERSION;
-	options.Flags = CSSM_TP_ACTION_OCSP_SUFFICIENT;
-	CSSM_DATA optData = { sizeof(options), (uint8 *)&options };
-	MacOSError::check(SecPolicySetValue(policy, &optData));
-	return policy.yield();
-}
-#else
 static SecPolicyRef makeRevocationPolicy()
 {
 	CFRef<SecPolicyRef> policy(SecPolicyCreateRevocation(kSecRevocationUseAnyAvailableMethod));
 	return policy.yield();
 }
-#endif
 
 static CFTypeRef installerPolicy()
 {
 	CFRef<SecPolicyRef> base = SecPolicyCreateBasicX509();
-#if !SECTRUST_OSX
-	CFRef<SecPolicyRef> crl = makeCRLPolicy();
-	CFRef<SecPolicyRef> ocsp = makeOCSPPolicy();
-#else
 	CFRef<SecPolicyRef> revoc = makeRevocationPolicy();
-#endif
 	return makeCFArray(2, base.get(), revoc.get());
 }
 

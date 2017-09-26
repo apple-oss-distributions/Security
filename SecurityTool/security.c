@@ -1,15 +1,15 @@
 /*
- * Copyright (c) 2003-2014 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2003-2017 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -17,7 +17,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  *
  * security.c
@@ -26,7 +26,7 @@
 #include "security_tool.h"
 
 #include "leaks.h"
-#include "readline.h"
+#include "readline_cssm.h"
 
 #include "cmsutil.h"
 #include "db_commands.h"
@@ -87,10 +87,6 @@ typedef struct command
 /* The default prompt. */
 const char *prompt_string = "security> ";
 
-/* The name of this program. */
-const char *prog_name;
-
-
 /* Forward declarations of static functions. */
 static int help(int argc, char * const *argv);
 
@@ -114,7 +110,7 @@ const command commands[] =
 	  "Display or manipulate the keychain search list." },
 
     { "list-smartcards", ctk_list,
-      "With no parameters, display IDs of available smartcards.",
+      "Display IDs of available smartcards.",
       "Display available smartcards." },
 
 	{ "default-keychain", keychain_default,
@@ -310,7 +306,7 @@ const command commands[] =
         "    -k  The password for the keychain (required)\n"
         "If no keychains are specified to search, the default search list is used.\n"
         "Use of the -k option is insecure. Omit it to be prompted.\n",
-        "Set the partition ID list of a generic password item."},
+        "Set the partition list of a generic password item."},
 
 	{ "find-internet-password", keychain_find_internet_password,
 	  "[-a account] [-s server] [options...] [-g] [keychain...]\n"
@@ -367,7 +363,7 @@ const command commands[] =
 
         "If no keychains are specified to search, the default search list is used.\n"
         "Use of the -k option is insecure. Omit it to be prompted.\n",
-        "Set the partition ID list of a internet password item."},
+        "Set the partition list of a internet password item."},
 
     { "find-key", keychain_find_key,
         "[options...] [keychain...]\n"
@@ -407,7 +403,7 @@ const command commands[] =
         "    -k  password for keychain (required)\n"
 
         "If no keychains are specified to search, the default search list is used.",
-        "Set the partition ID list of a key."},
+        "Set the partition list of a key."},
 
 	{ "find-certificate", keychain_find_certificate,
 	  "[-a] [-c name] [-e emailAddress] [-m] [-p] [-Z] [keychain...]\n"
@@ -440,6 +436,16 @@ const command commands[] =
 	  "string found in its common name, or by its SHA-1 hash.\n"
 	  "If no keychains are specified to search, the default search list is used.",
 	  "Delete a certificate from a keychain."},
+
+	{ "delete-identity", keychain_delete_identity,
+	  "[-c name] [-Z hash] [-t] [keychain...]\n"
+	  "    -c  Specify certificate to delete by its common name\n"
+	  "    -Z  Specify certificate to delete by its SHA-1 hash value\n"
+	  "    -t  Also delete user trust settings for this identity certificate\n"
+	  "The identity to be deleted must be uniquely specified either by a\n"
+	  "string found in its common name, or by its SHA-1 hash.\n"
+	  "If no keychains are specified to search, the default search list is used.",
+	  "Delete an identity (certificate + private key) from a keychain."},
 
 	{ "set-identity-preference", set_identity_preference,
 	  "[-n] [-c identity] [-s service] [-u keyUsage] [-Z hash] [keychain...]\n"
@@ -573,7 +579,6 @@ const command commands[] =
 	  "    -k keychain         Specify keychain to which cert is added\n"
 	  "    -i settingsFileIn   Input trust settings file; default is user domain\n"
 	  "    -o settingsFileOut  Output trust settings file; default is user domain\n"
-	  "    -D                  Add default setting instead of per-cert setting\n"
 	  "    certFile            Certificate(s)",
 	  "Add trusted certificate(s)." },
 
@@ -613,17 +618,28 @@ const command commands[] =
 	  "    -c certFile         Certificate to verify. Can be specified multiple times, leaf first.\n"
 	  "    -r rootCertFile     Root Certificate. Can be specified multiple times.\n"
 	  "    -p policy           Verify Policy (basic, ssl, smime, codeSign, IPSec, swUpdate, pkgSign,\n"
-	  "                                       eap, appleID, macappstore, timestamping); default is basic.\n"
-      "    -d date             Set date and time to use when verifying certificate,\n"
-      "                        provided in the form of YYYY-MM-DD-hh:mm:ss (time optional) in GMT.\n"
-      "                        e.g: 2016-04-25-15:59:59 for April 25, 2016 at 3:59:59 pm in GMT\n"
-	  "    -k keychain         Keychain. Can be called multiple times. Default is default search list.\n"
-	  "    -n                  No keychain search list.\n"
+	  "                        eap, appleID, macappstore, timestamping); default is basic.\n"
+	  "    -C                  Set client policy to true. Default is server policy. (ssl, IPSec, eap)\n"
+	  "    -d date             Set date and time to use when verifying certificate,\n"
+	  "                        provided in the form of YYYY-MM-DD-hh:mm:ss (time optional) in GMT.\n"
+	  "                        e.g: 2016-04-25-15:59:59 for April 25, 2016 at 3:59:59 pm in GMT\n"
+	  "    -k keychain         Keychain. Can be specified multiple times. Default is default search list.\n"
+	  "    -n name             Name to be verified. (ssl, IPSec, smime)\n"
+	  "    -N                  No keychain search list. (For backward compatibility, -n without a\n"
+	  "                        subsequent name argument is interpreted as equivalent to -N.)\n"
 	  "    -L                  Local certificates only (do not try to fetch missing CA certs from net).\n"
 	  "    -l                  Leaf cert is a CA (normally an error, unless this option is given).\n"
-	  "    -e emailAddress     Email address for smime policy.\n"
-	  "    -s sslHost          SSL host name for ssl policy.\n"
-	  "    -q                  Quiet.\n",
+	  "    -e emailAddress     Email address for smime policy. (Deprecated; use -n instead.)\n"
+	  "    -s sslHost          SSL host name for ssl policy. (Deprecated; use -n instead.)\n"
+	  "    -q                  Quiet.\n"
+	  "    -R revCheckOption   Perform revocation checking with one of the following options:\n"
+	  "                            ocsp     Check revocation status using OCSP method.\n"
+	  "                            crl      Check revocation status using CRL method.\n"
+	  "                            require  Require a positive response for successful verification.\n"
+	  "                            offline  Consult cached responses only (no network requests).\n"
+	  "                        Can be specified multiple times; e.g. to enable revocation checking\n"
+	  "                        via either OCSP or CRL methods and require a positive response, use\n"
+	  "                        \"-R ocsp -R crl -R require\".\n",
 	  "Verify certificate(s)." },
 
 	{ "authorize" , authorize,
@@ -889,7 +905,7 @@ usage(void)
 		"    -p    Set the prompt to \"prompt\" (implies -i).\n"
 		"    -q    Be less verbose.\n"
 		"    -v    Be more verbose about what's going on.\n"
-		"%s commands are:\n", prog_name, prog_name);
+		"%s commands are:\n", getprogname(), getprogname());
 	help(0, NULL);
 	return 2;
 }
@@ -969,7 +985,7 @@ sec_error(const char *msg, ...)
 {
     va_list args;
 
-    fprintf(stderr, "%s: ", prog_name);
+    fprintf(stderr, "%s: ", getprogname());
 
     va_start(args, msg);
     vfprintf(stderr, msg, args);
@@ -993,10 +1009,6 @@ main(int argc, char * const *argv)
 	int do_leaks = 0;
 	int ch;
 
-
-	/* Remember my name. */
-	prog_name = strrchr(argv[0], '/');
-	prog_name = prog_name ? prog_name + 1 : argv[0];
 
 	/* Do getopt stuff for global options. */
 	optind = 1;

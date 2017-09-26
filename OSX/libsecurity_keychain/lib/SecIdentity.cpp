@@ -35,8 +35,10 @@
 #include <security_keychain/KCCursor.h>
 #include <security_cdsa_utilities/Schema.h>
 #include <security_utilities/simpleprefs.h>
+#include <utilities/SecCFRelease.h>
 #include <sys/param.h>
 #include <syslog.h>
+#include <os/activity.h>
 
 /* private function declarations */
 OSStatus
@@ -107,6 +109,9 @@ CFTypeID
 SecIdentityGetTypeID(void)
 {
 	BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityGetTypeID", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	return gTypes().Identity.typeID;
 
@@ -120,6 +125,9 @@ SecIdentityCopyCertificate(
             SecCertificateRef *certificateRef)
 {
 	BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityCopyCertificate", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	if (!identityRef || !certificateRef) {
 		return errSecParam;
@@ -128,7 +136,7 @@ SecIdentityCopyCertificate(
 	if (itemType == SecIdentityGetTypeID()) {
 		SecPointer<Certificate> certificatePtr(Identity::required(identityRef)->certificate());
 		Required(certificateRef) = certificatePtr->handle();
-#if SECTRUST_OSX
+
 		/* convert outgoing certificate item to a unified SecCertificateRef */
 		CssmData certData = certificatePtr->data();
 		CFDataRef data = NULL;
@@ -149,16 +157,12 @@ SecIdentityCopyCertificate(
 		if (tmpRef) {
 			CFRelease(tmpRef);
 		}
-#endif
 	}
 	else if (itemType == SecCertificateGetTypeID()) {
 		// rdar://24483382
 		// reconstituting a persistent identity reference could return the certificate
 		SecCertificateRef certificate = (SecCertificateRef)identityRef;
-#if !SECTRUST_OSX
-		SecPointer<Certificate> certificatePtr(Certificate::required(certificate));
-		Required(certificateRef) = certificatePtr->handle();
-#else
+
 		/* convert outgoing certificate item to a unified SecCertificateRef, if needed */
 		if (SecCertificateIsItemImplInstance(certificate)) {
 			*certificateRef = SecCertificateCreateFromItemImplInstance(certificate);
@@ -166,7 +170,6 @@ SecIdentityCopyCertificate(
 		else {
 			*certificateRef = (SecCertificateRef) CFRetain(certificate);
 		}
-#endif
 		return errSecSuccess;
 	}
 	else {
@@ -183,6 +186,9 @@ SecIdentityCopyPrivateKey(
             SecKeyRef *privateKeyRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityCopyPrivateKey", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	Required(privateKeyRef) = (SecKeyRef)CFRetain(Identity::required(identityRef)->privateKeyRef());
 
@@ -257,19 +263,20 @@ SecIdentityCompare(
 			return kCFCompareGreaterThan;
 	}
 
-	BEGIN_SECAPI
+    try {
+        SecPointer<Identity> id1(Identity::required(identity1));
+        SecPointer<Identity> id2(Identity::required(identity2));
 
-	SecPointer<Identity> id1(Identity::required(identity1));
-	SecPointer<Identity> id2(Identity::required(identity2));
+        if (id1 == id2)
+            return kCFCompareEqualTo;
+        else if (id1 < id2)
+            return kCFCompareLessThan;
+        else
+            return kCFCompareGreaterThan;
+    } catch(...)
+    {}
 
-	if (id1 == id2)
-		return kCFCompareEqualTo;
-	else if (id1 < id2)
-		return kCFCompareLessThan;
-	else
-		return kCFCompareGreaterThan;
-
-	END_SECAPI1(kCFCompareGreaterThan);
+    return kCFCompareGreaterThan;
 }
 
 static
@@ -425,25 +432,12 @@ OSStatus _SecIdentityCopyPreferenceMatchingName(
     }
 
 	// create identity reference, given certificate
-#if SECTRUST_OSX
-    status = SecIdentityCreateWithCertificate(NULL, (SecCertificateRef)certItemRef, identity);
-#else
-    try {
-        Item certItem = ItemImpl::required(SecKeychainItemRef(certItemRef));
-        SecPointer<Certificate> certificate(static_cast<Certificate *>(certItem.get()));
-        SecPointer<Identity> identity_ptr(new Identity(keychains, certificate));
-        if (certItemRef) {
-            CFRelease(certItemRef); // retained by identity
-        }
-        Required(identity) = identity_ptr->handle();
-    }
-    catch (const MacOSError &err)   { status=err.osStatus(); }
-    catch (const CommonError &err)  { status=SecKeychainErrFromOSStatus(err.osStatus()); }
-    catch (const std::bad_alloc &)  { status=errSecAllocate; }
-    catch (...)                     { status=errSecInvalidItemRef; }
-#endif
+	status = SecIdentityCreateWithCertificate(NULL, (SecCertificateRef)certItemRef, identity);
+	if (certItemRef) {
+		CFRelease(certItemRef);
+	}
 
-    return status;
+	return status;
 }
 
 SecIdentityRef SecIdentityCopyPreferred(CFStringRef name, CFArrayRef keyUsage, CFArrayRef validIssuers)
@@ -477,16 +471,21 @@ OSStatus SecIdentityCopyPreference(
     // (Note that behavior is unchanged if the specified name is not a URL.)
 
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityCopyPreference", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
     CFTypeRef val = (CFTypeRef)CFPreferencesCopyValue(CFSTR("LogIdentityPreferenceLookup"),
                     CFSTR("com.apple.security"),
                     kCFPreferencesCurrentUser,
                     kCFPreferencesAnyHost);
     Boolean logging = false;
-    if (val && CFGetTypeID(val) == CFBooleanGetTypeID()) {
-        logging = CFBooleanGetValue((CFBooleanRef)val);
-        CFRelease(val);
+    if (val) {
+        if (CFGetTypeID(val) == CFBooleanGetTypeID()) {
+            logging = CFBooleanGetValue((CFBooleanRef)val);
+        }
     }
+     CFReleaseNull(val);
 
     OSStatus status = errSecItemNotFound;
     CFArrayRef names = _SecIdentityCopyPossiblePaths(name);
@@ -572,8 +571,15 @@ OSStatus SecIdentitySetPreference(
 	}
 
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentitySetPreference", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
-	SecPointer<Certificate> certificate(Identity::required(identity)->certificate());
+    CFRef<SecCertificateRef>  certRef;
+    OSStatus status = SecIdentityCopyCertificate(identity, certRef.take());
+    if(status != errSecSuccess) {
+        MacOSError::throwMe(status);
+    }
 
 	// determine the account attribute
 	//
@@ -585,7 +591,7 @@ OSStatus SecIdentitySetPreference(
 	// If the key usage is 0 (i.e. the normal case), we omit the appended key usage string.
 	//
     CFStringRef labelStr = nil;
-	certificate->inferLabel(false, &labelStr);
+    SecCertificateInferLabel(certRef.get(), &labelStr);
 	if (!labelStr) {
         MacOSError::throwMe(errSecDataTooLarge); // data is "in a format which cannot be displayed"
 	}
@@ -633,7 +639,7 @@ OSStatus SecIdentitySetPreference(
 
 	// generic attribute (store persistent certificate reference)
 	CFDataRef pItemRef = nil;
-    certificate->copyPersistentReference(pItemRef);
+    SecKeychainItemCreatePersistentReference((SecKeychainItemRef)certRef.get(), &pItemRef);
 	if (!pItemRef) {
 		MacOSError::throwMe(errSecInvalidItemRef);
     }
@@ -681,6 +687,9 @@ SecIdentityFindPreferenceItem(
 	SecKeychainItemRef *itemRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityFindPreferenceItem", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	StorageManager::KeychainList keychains;
 	globals().storageManager.optionalSearchList(keychainOrArray, keychains);
@@ -719,6 +728,9 @@ SecIdentityFindPreferenceItemWithNameAndKeyUsage(
 	SecKeychainItemRef *itemRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityFindPreferenceItemWithNameAndKeyUsage", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	StorageManager::KeychainList keychains;
 	globals().storageManager.optionalSearchList(keychainOrArray, keychains);
@@ -762,7 +774,7 @@ OSStatus SecIdentityDeletePreferenceItemWithNameAndKeyUsage(
 	// cut things off at that point if we're still finding items (if they can't
 	// be deleted for some reason, we'd never break out of the loop.)
 
-	OSStatus status;
+	OSStatus status = errSecInternalError;
 	SecKeychainItemRef item = NULL;
 	int count = 0, maxUsages = 12;
 	while (++count <= maxUsages &&
@@ -886,6 +898,9 @@ OSStatus SecIdentityAddPreferenceItem(
     // (Note that behavior is unchanged if the specified idString is not a URL.)
 
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityAddPreferenceItem", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
     OSStatus status = errSecInternalComponent;
     CFArrayRef names = _SecIdentityCopyPossiblePaths(idString);
@@ -942,6 +957,9 @@ OSStatus SecIdentityUpdatePreferenceItem(
 			SecIdentityRef identityRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityUpdatePreferenceItem", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	if (!itemRef || !identityRef)
 		MacOSError::throwMe(errSecParam);
@@ -1010,6 +1028,9 @@ OSStatus SecIdentityCopyFromPreferenceItem(
 			SecIdentityRef *identityRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityCopyFromPreferenceItem", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	if (!itemRef || !identityRef)
 		MacOSError::throwMe(errSecParam);
@@ -1071,6 +1092,9 @@ OSStatus SecIdentityCopySystemIdentity(
    CFStringRef *actualDomain) /* optional */
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentityCopySystemIdentity", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	StLock<Mutex> _(systemIdentityLock());
 	auto_ptr<Dictionary> identDict;
@@ -1139,6 +1163,9 @@ OSStatus SecIdentitySetSystemIdentity(
    SecIdentityRef idRef)
 {
     BEGIN_SECAPI
+    os_activity_t activity = os_activity_create("SecIdentitySetSystemIdentity", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_IF_NONE_PRESENT);
+    os_activity_scope(activity);
+    os_release(activity);
 
 	StLock<Mutex> _(systemIdentityLock());
 	if(geteuid() != 0) {

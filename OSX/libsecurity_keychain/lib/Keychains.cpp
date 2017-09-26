@@ -46,7 +46,7 @@
 
 #include <Security/SecKeychainItemPriv.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include "DLDbListCFPref.h"
+#include "DLDBListCFPref.h"
 #include <fcntl.h>
 #include <glob.h>
 #include <sys/param.h>
@@ -250,7 +250,7 @@ KeychainSchemaImpl::getAttributeInfoForRecordType(CSSM_DB_RECORDTYPE recordType,
 			capacity *= 2;
 			if (capacity <= i) capacity = i + 1;
 			tagBuf=reinterpret_cast<UInt32 *>(realloc(tagBuf, (capacity*sizeof(UInt32))));
-			formatBuf=reinterpret_cast<UInt32 *>(realloc(tagBuf, (capacity*sizeof(UInt32))));
+			formatBuf=reinterpret_cast<UInt32 *>(realloc(formatBuf, (capacity*sizeof(UInt32))));
 		}
 		tagBuf[i]=rit->first;
 		formatBuf[i++]=rit->second;
@@ -431,12 +431,6 @@ Mutex*
 KeychainImpl::getKeychainMutex()
 {
 	return &mMutex;
-}
-
-ReadWriteLock*
-KeychainImpl::getKeychainReadWriteLock()
-{
-    return &mRWLock;
 }
 
 void KeychainImpl::aboutToDestruct()
@@ -739,6 +733,8 @@ KeychainImpl::authenticate(const CSSM_ACCESS_CREDENTIALS *cred)
 UInt32
 KeychainImpl::status() const
 {
+    StLock<Mutex>_(mMutex);
+
 	// @@@ We should figure out the read/write status though a DL passthrough
 	// or some other way. Also should locked be unlocked read only or just
 	// read-only?
@@ -809,6 +805,8 @@ void KeychainImpl::completeAdd(Item &inItem, PrimaryKey &primaryKey)
 void
 KeychainImpl::addCopy(Item &inItem)
 {
+    StLock<Mutex>_(mMutex);
+
 	Keychain keychain(this);
 	PrimaryKey primaryKey = inItem->addWithCopyInfo(keychain, true);
 	completeAdd(inItem, primaryKey);
@@ -818,6 +816,8 @@ KeychainImpl::addCopy(Item &inItem)
 void
 KeychainImpl::add(Item &inItem)
 {
+    StLock<Mutex>_(mMutex);
+
 	Keychain keychain(this);
 	PrimaryKey primaryKey = inItem->add(keychain);
 	completeAdd(inItem, primaryKey);
@@ -875,6 +875,8 @@ KeychainImpl::didUpdate(const Item &inItem, PrimaryKey &oldPK,
 void
 KeychainImpl::deleteItem(Item &inoutItem)
 {
+    StLock<Mutex>_(mMutex);
+
 	{
 		// item must be persistent
 		if (!inoutItem->isPersistent())
@@ -924,7 +926,7 @@ KeychainImpl::csp()
 {
 	StLock<Mutex>_(mMutex);
 	
-	if (!mDb->dl()->subserviceMask() & CSSM_SERVICE_CSP)
+	if (!(mDb->dl()->subserviceMask() & CSSM_SERVICE_CSP))
 		MacOSError::throwMe(errSecInvalidKeychain);
 
 	// Try to cast first to a CSPDL to handle case where we don't have an SSDb
@@ -1350,12 +1352,12 @@ KeychainImpl::setBatchMode(Boolean mode, Boolean rollback)
 		}
 
 		// notify that a keychain has changed in too many ways to count
-		KCEventNotifier::PostKeychainEvent(kSecKeychainLeftBatchModeEvent);
+		KCEventNotifier::PostKeychainEvent((SecKeychainEvent) kSecKeychainLeftBatchModeEvent);
 		mEventBuffer->clear();
 	}
 	else
 	{
-		KCEventNotifier::PostKeychainEvent(kSecKeychainEnteredBatchModeEvent);
+		KCEventNotifier::PostKeychainEvent((SecKeychainEvent) kSecKeychainEnteredBatchModeEvent);
 	}
 }
 void
@@ -1407,8 +1409,7 @@ void KeychainImpl::tickle() {
 
 
 bool KeychainImpl::performKeychainUpgradeIfNeeded() {
-    // Grab this keychain's mutex. This might not be sufficient, since the
-    // keychain might have outstanding cursors. We'll grab the RWLock later if needed.
+    // Grab this keychain's mutex.
     StLock<Mutex>_(mMutex);
 
     if(!globals().integrityProtection()) {
@@ -1423,7 +1424,7 @@ bool KeychainImpl::performKeychainUpgradeIfNeeded() {
 
     // We only want to upgrade file-based Apple keychains. Check the GUID.
     if(mDb->dl()->guid() != gGuidAppleCSPDL) {
-        secnotice("integrity", "skipping upgrade for %s due to guid mismatch\n", mDb->name());
+        secinfo("integrity", "skipping upgrade for %s due to guid mismatch\n", mDb->name());
         return false;
     }
 
@@ -1434,7 +1435,7 @@ bool KeychainImpl::performKeychainUpgradeIfNeeded() {
 
     // Don't upgrade the System root certificate keychain (to make old tp code happy)
     if(strncmp(mDb->name(), SYSTEM_ROOT_STORE_PATH, strlen(SYSTEM_ROOT_STORE_PATH)) == 0) {
-        secnotice("integrity", "skipping upgrade for %s\n", mDb->name());
+        secinfo("integrity", "skipping upgrade for %s\n", mDb->name());
         return false;
     }
 
@@ -1539,7 +1540,7 @@ bool KeychainImpl::performKeychainUpgradeIfNeeded() {
             secnotice("integrity", "Couldn't read System.keychain key, skipping update");
         }
     } else {
-        secnotice("integrity", "not attempting migration for %s version %d (%d %d %d)", path.c_str(), dbBlobVersion, inHomeLibraryKeychains, endsWithKeychainDb, isSystemKeychain);
+        secinfo("integrity", "not attempting migration for %s version %d (%d %d %d)", path.c_str(), dbBlobVersion, inHomeLibraryKeychains, endsWithKeychainDb, isSystemKeychain);
 
         // Since we don't believe any migration needs to be done here, mark the
         // migration as "attempted" to short-circuit future checks.
@@ -1596,17 +1597,9 @@ bool KeychainImpl::keychainMigration(const string oldPath, const uint32 dbBlobVe
     //
     // If the keychain is unlocked, try to upgrade it.
     // In either case, reload the database from disk.
-    // We need this keychain's read/write lock.
 
-    // Try to grab the keychain write lock.
-    StReadWriteLock lock(mRWLock, StReadWriteLock::TryWrite);
-
-    // If we didn't manage to grab the lock, there's readers out there
-    // currently reading this keychain. Abort the upgrade.
-    if(!lock.isLocked()) {
-        secnotice("integrity", "couldn't get read-write lock, aborting upgrade");
-        return false;
-    }
+    // Try to grab the keychain mutex (although we should already have it)
+    StLock<Mutex>_(mMutex);
 
     // Take the file lock on the existing database. We don't need to commit this txion, because we're not planning to
     // change the original keychain.
@@ -1743,6 +1736,9 @@ uint32 KeychainImpl::attemptKeychainMigration(const string oldPath, const uint32
                         // the database that have no matching key. If we get a DL_RECORD_NOT_FOUND error, delete the matching item record.
                         if (cssme.osStatus() == CSSMERR_DL_RECORD_NOT_FOUND) {
                             secnotice("integrity", "deleting corrupt (Not Found) record");
+                            keychain->deleteItem(item);
+                        } else if(cssme.osStatus() == CSSMERR_CSP_INVALID_KEY) {
+                            secnotice("integrity", "deleting corrupt key record");
                             keychain->deleteItem(item);
                         } else {
                             throw;
@@ -1889,6 +1885,8 @@ bool KeychainImpl::mayDelete()
 }
 
 bool KeychainImpl::hasIntegrityProtection() {
+    StLock<Mutex>_(mMutex);
+
     // This keychain only supports integrity if there's a database attached, that database is an Apple CSPDL, and the blob version is high enough
     if(mDb && (mDb->dl()->guid() == gGuidAppleCSPDL)) {
         if(mDb->dbBlobVersion() >= SecurityServer::DbBlob::version_partition) {
@@ -1901,6 +1899,5 @@ bool KeychainImpl::hasIntegrityProtection() {
         secnotice("integrity", "keychain guid does not support integrity");
         return false;
     }
-    return false;
 }
 

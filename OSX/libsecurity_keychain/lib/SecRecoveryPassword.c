@@ -29,6 +29,7 @@
 #include <Security/SecEncryptTransform.h>
 #include <Security/SecItem.h>
 #include <Security/SecKey.h>
+#include <Security/SecRandom.h>
 #include <CommonCrypto/CommonKeyDerivation.h>
 #include <CommonCrypto/CommonCryptor.h>
 #include <CoreFoundation/CFBase.h>
@@ -37,6 +38,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
+#include <utilities/SecCFRelease.h>
+#include <utilities/debugging.h>
 
 CFStringRef kSecRecVersionNumber = CFSTR("SRVersionNumber");
 CFStringRef kSecRecQuestions = CFSTR("SRQuestions");
@@ -87,19 +90,17 @@ sec_debug_imp(int level, const char *funcname, char *format, ...) {
 // Read /dev/random for random bytes
 
 static CFDataRef
-getRandomBytes(size_t len)
+createRandomBytes(size_t len)
 {
-	uint8_t *buffer;
-    CFDataRef randData = NULL;
- 	int fdrand;
-   
-    if((buffer = malloc(len)) == NULL) return NULL;
-	if((fdrand = open("/dev/random", O_RDONLY)) == -1) return NULL;
-    if(read(fdrand, buffer, len) == len) randData = CFDataCreate(kCFAllocatorDefault, (const UInt8 *) buffer, len);
-	close(fdrand);
-    
-	free(buffer);
-	return randData;
+    CFMutableDataRef data = CFDataCreateMutable(NULL, len);
+    if (data == NULL)
+        return NULL;
+    CFDataSetLength(data, len);
+    if (SecRandomCopyBytes(kSecRandomDefault, len, CFDataGetMutableBytePtr(data)) != noErr) {
+        CFRelease(data);
+        return NULL;
+    }
+    return data;
 }
 
 // This is the normalization routine - subject to change.  We need to make sure that whitespace is removed and
@@ -130,7 +131,8 @@ static void secNormalize(CFMutableStringRef theString, CFLocaleRef theLocale)
 #define MAXANSWERBUFF 4096
 #define PBKDF_ROUNDS 100000
 
-static SecKeyRef secDeriveKeyFromAnswers(CFArrayRef answers, CFLocaleRef theLocale)
+static SecKeyRef CF_RETURNS_RETAINED
+secDeriveKeyFromAnswers(CFArrayRef answers, CFLocaleRef theLocale)
 {
     static const uint8_t salt[16] = { 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x1F };
     static const int saltLen = sizeof(salt);
@@ -208,7 +210,7 @@ static SecKeyRef secDeriveKeyFromAnswers(CFArrayRef answers, CFLocaleRef theLoca
 // Single shot CFString processing routines for digests/encoding/encrypt/decrypt
 
 static CFDataRef
-digestString(CFStringRef str)
+createDigestString(CFStringRef str)
 {
 	CFDataRef retval = NULL;
  	CFErrorRef error = NULL;
@@ -221,16 +223,18 @@ digestString(CFStringRef str)
         if(error == NULL) {
         	retval = SecTransformExecute(digestTrans, &error);
             if(retval == NULL) {
-                secDebug(ASL_LEVEL_ERR, "Couldn't create digest %s\n", CFStringGetCStringPtr(CFErrorCopyFailureReason(error), kCFStringEncodingUTF8));
+                CFStringRef errorReason = CFErrorCopyFailureReason(error);
+                secDebug(ASL_LEVEL_ERR, "Couldn't create digest %s\n", CFStringGetCStringPtr(errorReason, kCFStringEncodingUTF8));
+                CFReleaseNull(errorReason);
             }
         }
-        CFRelease(digestTrans);
     }
-    CFRelease(inputString);
+    CFReleaseNull(digestTrans);
+    CFReleaseNull(inputString);
     return retval;
 }
 
-static CFDataRef
+static CFDataRef CF_RETURNS_RETAINED
 b64encode(CFDataRef input)
 {
 	CFDataRef retval = NULL;
@@ -242,7 +246,7 @@ b64encode(CFDataRef input)
     return retval;
 }
 
-static CFDataRef
+static CFDataRef CF_RETURNS_RETAINED
 b64decode(CFDataRef input)
 {
 	CFDataRef retval = NULL;
@@ -254,60 +258,94 @@ b64decode(CFDataRef input)
     return retval;
 }
 
-static CFDataRef
+static CFDataRef CF_RETURNS_RETAINED
 encryptString(SecKeyRef wrapKey, CFDataRef iv, CFStringRef str)
 {
 	CFDataRef retval = NULL;
  	CFErrorRef error = NULL;
     CFDataRef inputString = CFStringCreateExternalRepresentation(kCFAllocatorDefault, str, kCFStringEncodingMacRoman, 0xff);
+    SecTransformRef encrypt = NULL;
+    SecTransformRef encode = NULL;
+    SecTransformRef group = NULL;
 
- 	SecTransformRef encryptTrans = SecEncryptTransformCreate(wrapKey, &error);
-    if(error == NULL) {
-		SecTransformRef group = SecTransformCreateGroupTransform();
-		
-        SecTransformSetAttribute(encryptTrans, kSecEncryptionMode, kSecModeCBCKey, &error);
-        if(error == NULL) SecTransformSetAttribute(encryptTrans, kSecPaddingKey, kSecPaddingPKCS7Key, &error);
-        if(error == NULL) SecTransformSetAttribute(encryptTrans, kSecTransformInputAttributeName, inputString, &error);
-        if(error == NULL) SecTransformSetAttribute(encryptTrans, kSecIVKey, iv, &error);
-		SecTransformRef encodeTrans = SecEncodeTransformCreate(kSecBase64Encoding, &error);
-		SecTransformConnectTransforms(encryptTrans, kSecTransformOutputAttributeName, encodeTrans, kSecTransformInputAttributeName, group, &error);
-		CFRelease(encodeTrans);  
-		CFRelease(encryptTrans);
-		if(error == NULL) retval = SecTransformExecute(group, &error);
-        if(error != NULL) secDebug(ASL_LEVEL_ERR, "Failed to encrypt recovery password\n", NULL);
-        CFRelease(group);
+    encrypt = SecEncryptTransformCreate(wrapKey, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(encrypt, kSecEncryptionMode, kSecModeCBCKey, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(encrypt, kSecPaddingKey, kSecPaddingPKCS7Key, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(encrypt, kSecTransformInputAttributeName, inputString, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(encrypt, kSecIVKey, iv, &error);
+    if (error) goto out;
+    
+    encode = SecEncodeTransformCreate(kSecBase64Encoding, &error);
+    if (error) goto out;
+    
+    group = SecTransformCreateGroupTransform();
+    SecTransformConnectTransforms(encrypt, kSecTransformOutputAttributeName, encode, kSecTransformInputAttributeName, group, &error);
+    if (error) goto out;
+    retval = SecTransformExecute(group, &error);
+    if (error) goto out;
+    
+out:
+    if (error) {
+        secerror("Failed to encrypt recovery password: %@", error);
     }
+    
+    CFReleaseNull(error);
+    CFReleaseNull(inputString);
+    CFReleaseNull(encrypt);
+    CFReleaseNull(encode);
+    CFReleaseNull(group);
+    
     return retval;
 }
 
 
-static CFStringRef
+static CFStringRef CF_RETURNS_RETAINED
 decryptString(SecKeyRef wrapKey, CFDataRef iv, CFDataRef wrappedPassword)
 {
 	CFStringRef retval = NULL;
 	CFDataRef retData = NULL;
- 	CFErrorRef error = NULL;
+    CFErrorRef error = NULL;
+    SecTransformRef decode = NULL;
+    SecTransformRef decrypt = NULL;
+    SecTransformRef group = NULL;
 
-	SecTransformRef decryptTrans = SecDecryptTransformCreate(wrapKey, &error);
-    if(error == NULL) {
-  		SecTransformRef group = SecTransformCreateGroupTransform();
-      
-		SecTransformRef decodeTrans = SecDecodeTransformCreate(kSecBase64Encoding, &error);
-  		if(error == NULL) SecTransformSetAttribute(decodeTrans, kSecTransformInputAttributeName, wrappedPassword, &error);
-        
-		if(error == NULL) SecTransformSetAttribute(decryptTrans, kSecEncryptionMode, kSecModeCBCKey, &error);
- 		if(error == NULL) SecTransformSetAttribute(decryptTrans, kSecPaddingKey, kSecPaddingPKCS7Key, &error);
-		if(error == NULL) SecTransformSetAttribute(decryptTrans, kSecIVKey, iv, &error);
- 		SecTransformConnectTransforms(decodeTrans, kSecTransformOutputAttributeName, decryptTrans, kSecTransformInputAttributeName, group, &error);
-		CFRelease(decodeTrans);  
-		CFRelease(decryptTrans);
-        if(error == NULL) retData =  SecTransformExecute(group, &error);
-        
-        if(error == NULL) retval = CFStringCreateFromExternalRepresentation(kCFAllocatorDefault, retData, kCFStringEncodingMacRoman);
-        else secDebug(ASL_LEVEL_ERR, "Failed to decrypt recovery password\n", NULL);
-        CFRelease(group);
-	}
-   return retval;
+    decode = SecDecodeTransformCreate(kSecBase64Encoding, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(decode, kSecTransformInputAttributeName, wrappedPassword, &error);
+    if (error) goto out;
+    
+    decrypt = SecDecryptTransformCreate(wrapKey, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(decrypt, kSecEncryptionMode, kSecModeCBCKey, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(decrypt, kSecPaddingKey, kSecPaddingPKCS7Key, &error);
+    if (error) goto out;
+    SecTransformSetAttribute(decrypt, kSecIVKey, iv, &error);
+    if (error) goto out;
+    
+    group = SecTransformCreateGroupTransform();
+    SecTransformConnectTransforms(decode, kSecTransformOutputAttributeName, decrypt, kSecTransformInputAttributeName, group, &error);
+    if (error) goto out;
+    retData =  SecTransformExecute(group, &error);
+    if (error) goto out;
+    retval = CFStringCreateFromExternalRepresentation(kCFAllocatorDefault, retData, kCFStringEncodingMacRoman);
+    
+out:
+    if (error) {
+        secerror("Failed to decrypt recovery password: %@", error);
+    }
+    
+    CFReleaseNull(retData);
+    CFReleaseNull(error);
+    CFReleaseNull(decode);
+    CFReleaseNull(decrypt);
+    CFReleaseNull(group);
+    
+    return retval;
 }
 
 // IV for the recovery ref is currently the leftmost 16 bytes of the digest of the recovery password.
@@ -318,7 +356,7 @@ createIVFromPassword(CFStringRef password)
 {
     CFDataRef 		   hashedPassword, retval;
     CFMutableDataRef   iv;
- 	if((hashedPassword = digestString(password)) == NULL) return NULL;
+    if((hashedPassword = createDigestString(password)) == NULL) return NULL;
     iv = CFDataCreateMutableCopy(kCFAllocatorDefault, CFDataGetLength(hashedPassword)+1, hashedPassword);
     CFDataDeleteBytes(iv, CFRangeMake(IVBYTECOUNT, CFDataGetLength(iv)-IVBYTECOUNT));
     retval = CFDataCreateCopy(kCFAllocatorDefault, iv);
@@ -339,54 +377,66 @@ createIVFromPassword(CFStringRef password)
  *              recovery dictionary.
  */
 
-CFDictionaryRef
+CFDictionaryRef CF_RETURNS_RETAINED
 SecWrapRecoveryPasswordWithAnswers(CFStringRef password, CFArrayRef questions, CFArrayRef answers)
 {
     uint32_t 	vers = 1;
-    CFDataRef	iv;
-	CFDataRef	wrappedPassword;
+    CFDataRef	iv = NULL;
+	CFDataRef	wrappedPassword = NULL;
 	CFMutableDictionaryRef retval = NULL;
 	CFLocaleRef theLocale = CFLocaleCopyCurrent();
     CFStringRef theLocaleString = CFLocaleGetIdentifier(theLocale);
+    SecKeyRef wrapKey = NULL;
     
     CFIndex ix, limit;
     
-    if (!password || !questions || !answers)
-		return NULL;
+    if (!password || !questions || !answers) {
+        goto error;
+    }
     
     limit = CFArrayGetCount(answers);
-    if (limit != CFArrayGetCount(questions))
-		return NULL; // Error
+    if (limit != CFArrayGetCount(questions)) {
+        goto error;
+    }
 	CFTypeRef chkval;
     for (ix=0; ix<limit; ix++)
 	{
 		chkval =  CFArrayGetValueAtIndex(answers, ix);
-        if (!chkval || CFGetTypeID(chkval)!=CFStringGetTypeID() || CFEqual((CFStringRef)chkval, CFSTR(""))) 
-			return NULL;
+        if (!chkval || CFGetTypeID(chkval)!=CFStringGetTypeID() || CFEqual((CFStringRef)chkval, CFSTR(""))) {
+            goto error;
+        }
         chkval = CFArrayGetValueAtIndex(questions, ix);
-        if (!chkval || CFGetTypeID(chkval)!=CFStringGetTypeID() || CFEqual((CFStringRef)chkval, CFSTR(""))) 
-			return NULL;
+        if (!chkval || CFGetTypeID(chkval)!=CFStringGetTypeID() || CFEqual((CFStringRef)chkval, CFSTR(""))) {
+            goto error;
+        }
     }
 	
     iv = createIVFromPassword(password);
     
-	SecKeyRef wrapKey = secDeriveKeyFromAnswers(answers, theLocale);
+    wrapKey = secDeriveKeyFromAnswers(answers, theLocale);
 	
     if((wrappedPassword = encryptString(wrapKey, iv, password)) != NULL) {
         retval = CFDictionaryCreateMutable(kCFAllocatorDefault, 5, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-		CFDictionaryAddValue(retval, kSecRecVersionNumber, CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &vers));
+        CFNumberRef num = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &vers);
+		CFDictionaryAddValue(retval, kSecRecVersionNumber, num);
+        CFReleaseNull(num);
 		CFDictionaryAddValue(retval, kSecRecQuestions, questions);
 		CFDictionaryAddValue(retval, kSecRecLocale, theLocaleString);
-		CFDictionaryAddValue(retval, kSecRecIV, b64encode(iv));
+        CFDataRef ivdata = b64encode(iv);
+		CFDictionaryAddValue(retval, kSecRecIV, ivdata);
+        CFReleaseNull(ivdata);
 		CFDictionaryAddValue(retval, kSecRecWrappedPassword, wrappedPassword);
 	}
 	
- 	if(wrappedPassword) CFRelease(wrappedPassword);
- 	CFRelease(iv);
- 	CFRelease(wrapKey);
- 	CFRelease(theLocale);
- 	CFRelease(theLocaleString);
-	
+    CFReleaseNull(wrappedPassword);
+    goto out;
+error:
+    CFReleaseNull(retval);
+out:
+    CFReleaseNull(iv);
+    CFReleaseNull(wrapKey);
+    CFReleaseNull(theLocale);
+
   	return retval;
 }
 
@@ -396,7 +446,7 @@ SecWrapRecoveryPasswordWithAnswers(CFStringRef password, CFArrayRef questions, C
  * 				to generate a key.
  */
 
-CFStringRef
+CFStringRef CF_RETURNS_RETAINED
 SecUnwrapRecoveryPasswordWithAnswers(CFDictionaryRef recref, CFArrayRef answers)
 {    
 	if(answers == NULL || CFArrayGetCount(answers) < 3) return NULL;
@@ -412,7 +462,6 @@ SecUnwrapRecoveryPasswordWithAnswers(CFDictionaryRef recref, CFArrayRef answers)
 
     CFLocaleRef theLocale = CFLocaleCreate(kCFAllocatorDefault, theLocaleString);
 	SecKeyRef wrapKey = secDeriveKeyFromAnswers(answers, theLocale);
-	CFRelease(theLocaleString);
 	CFRelease(theLocale);
 	
     CFDataRef iv = b64decode(tmpIV);
@@ -445,7 +494,7 @@ SecCreateRecoveryPassword(void)
 	CFStringRef result = NULL;
 	CFErrorRef error = NULL;
  	CFDataRef encodedData = NULL;
-    CFDataRef randData = getRandomBytes(16);
+    CFDataRef randData = createRandomBytes(16);
 	int i;
 	
 	// base32FDE is a "private" base32 encoding, it has no 0/O or L/l/1 in it (it uses 8 and 9).
@@ -453,8 +502,8 @@ SecCreateRecoveryPassword(void)
     if(error == NULL) {
 		SecTransformSetAttribute(encodeTrans, kSecTransformInputAttributeName, randData, &error);
 		if(error == NULL) encodedData = SecTransformExecute(encodeTrans, &error);
-     	CFRelease(encodeTrans);
    	}
+    CFReleaseNull(encodeTrans);
     CFRelease(randData);
 
 	if(encodedData != NULL && error == NULL) {
@@ -468,10 +517,10 @@ SecCreateRecoveryPassword(void)
         result = CFStringCreateCopy(kCFAllocatorDefault, encodedString);
         CFRelease(encodedString);
         CFRelease(b32string);
-        CFRelease(encodedData);
 	} else {
         secDebug(ASL_LEVEL_ERR, "Failed to base32 encode random data for recovery password\n", NULL);
     }
+    CFReleaseNull(encodedData);
 
 	return result;
 	

@@ -563,8 +563,8 @@ SecCmsSignedDataVerifySignerInfo(SecCmsSignedDataRef sigd, int i,
         return status;
     }
 
-    /* Now verify the certificate.  We do this even if the signature failed to verify so we can
-       return a trustRef to the caller for display purposes.  */
+    /* Now verify the certificate.  We only do this when the signature verification succeeds. Note that this
+       behavior is different than the macOS code. */
     status = SecCmsSignerInfoVerifyCertificate(signerinfo, keychainOrArray, policies, trustRef);
 #if SECTRUST_VERBOSE_DEBUG
 	syslog(LOG_ERR, "SecCmsSignedDataVerifySignerInfo: SecCmsSignerInfoVerifyCertificate returned %d", (int)status);
@@ -766,6 +766,9 @@ SecCmsSignedDataGetDigestByAlgTag(SecCmsSignedDataRef sigd, SECOidTag algtag)
 {
     int idx;
 
+    if(sigd == NULL || sigd->digests == NULL) {
+        return NULL;
+    }
     idx = SecCmsAlgArrayGetIndexByAlgTag(sigd->digestAlgorithms, algtag);
     return (idx >= 0)?(sigd->digests)[idx]:NULL;
 }
@@ -800,9 +803,11 @@ SecCmsSignedDataSetDigests(SecCmsSignedDataRef sigd,
 {
     int cnt, i, idx;
 
-    if (sigd->digestAlgorithms == NULL) {
-	PORT_SetError(SEC_ERROR_INVALID_ARGS);
-	return SECFailure;
+    /* Check input structure and items in structure */
+    if (sigd == NULL || sigd->digestAlgorithms == NULL || sigd->contentInfo.cmsg == NULL ||
+        sigd->contentInfo.cmsg->poolp == NULL) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
     }
 
     /* Since we'll generate a empty digest for content-less messages

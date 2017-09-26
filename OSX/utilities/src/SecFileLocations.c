@@ -39,6 +39,8 @@
 #include <utilities/SecCFWrappers.h>
 #include <utilities/SecCFRelease.h>
 #include <sys/stat.h>
+#include <sys/param.h>
+#include <sys/errno.h>
 #include <uuid/uuid.h>
 #include <copyfile.h>
 #include <syslog.h>
@@ -47,7 +49,7 @@
 
 static CFURLRef sCustomHomeURL = NULL;
 
-static CFURLRef SecCopyHomeURL(void)
+CFURLRef SecCopyHomeURL(void)
 {
     // This returns a CFURLRef so that it can be passed as the second parameter
     // to CFURLCreateCopyAppendingPathComponent
@@ -204,14 +206,14 @@ done:
 
 CFURLRef SecCopyURLForFileInUserCacheDirectory(CFStringRef fileName)
 {
-#if (TARGET_OS_MAC && !(TARGET_OS_EMBEDDED || TARGET_OS_IPHONE))
+#if TARGET_OS_OSX
     Boolean isDirectory = (fileName == NULL);
     CFURLRef resultURL = NULL;
     CFStringRef cacheDirStr = NULL;
     char strBuffer[PATH_MAX + 1];
     size_t result = confstr(_CS_DARWIN_USER_CACHE_DIR, strBuffer, sizeof(strBuffer));
     if (result == 0) {
-        syslog(LOG_CRIT, "SecOCSPCacheCopyPath: confstr on _CS_DARWIN_USER_CACHE_DIR failed");
+        syslog(LOG_CRIT, "SecCopyURLForFileInUserCacheDirectory: confstr on _CS_DARWIN_USER_CACHE_DIR failed: %d", errno);
         return resultURL;
     }
     cacheDirStr = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%s/%@"), strBuffer, fileName);
@@ -253,17 +255,49 @@ CFURLRef SecCopyURLForFileInManagedPreferencesDirectory(CFStringRef fileName)
     return resultURL;
 }
 
-void WithPathInKeychainDirectory(CFStringRef fileName, void(^operation)(const char *utf8String))
+CFURLRef SecCopyURLForFileInRevocationInfoDirectory(CFStringRef fileName)
 {
-    CFURLRef fileURL = SecCopyURLForFileInKeychainDirectory(fileName);
+    CFURLRef resultURL = NULL;
+    CFStringRef path = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("/Library/Keychains/crls/%@"), fileName);
+    if (path) {
+        resultURL = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path, kCFURLPOSIXPathStyle, false);
+        CFReleaseSafe(path);
+    }
+    return resultURL;
+}
+
+static void WithPathInDirectory(CFURLRef fileURL, void(^operation)(const char *utf8String))
+{
+    /* Ownership of fileURL is taken by this function and so we release it. */
     if (fileURL) {
-        UInt8 buffer[MAXPATHLEN];
+        UInt8 buffer[PATH_MAX];
         CFURLGetFileSystemRepresentation(fileURL, false, buffer, sizeof(buffer));
 
         operation((const char*)buffer);
         CFRelease(fileURL);
     }
 }
+
+void WithPathInRevocationInfoDirectory(CFStringRef fileName, void(^operation)(const char *utf8String))
+{
+    WithPathInDirectory(SecCopyURLForFileInRevocationInfoDirectory(fileName), operation);
+}
+
+void WithPathInKeychainDirectory(CFStringRef fileName, void(^operation)(const char *utf8String))
+{
+    WithPathInDirectory(SecCopyURLForFileInKeychainDirectory(fileName), operation);
+}
+
+void WithPathInUserCacheDirectory(CFStringRef fileName, void(^operation)(const char *utf8String))
+{
+    WithPathInDirectory(SecCopyURLForFileInUserCacheDirectory(fileName), operation);
+}
+
+void SetCustomHomeURL(CFURLRef url)
+{
+    sCustomHomeURL = CFRetainSafe(url);
+}
+
 
 void SetCustomHomeURLString(CFStringRef home_path)
 {
@@ -273,7 +307,7 @@ void SetCustomHomeURLString(CFStringRef home_path)
     }
 }
 
-void SetCustomHomeURL(const char* path)
+void SetCustomHomePath(const char* path)
 {
     if (path) {
         CFStringRef path_cf = CFStringCreateWithCStringNoCopy(NULL, path, kCFStringEncodingUTF8, kCFAllocatorNull);

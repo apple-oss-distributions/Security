@@ -41,7 +41,7 @@ using Authorization::AuthItemSet;
 using Authorization::AuthValueVector;
 using Security::OSXCode;
 
-const uint64_t kMaximumAuthorizationTries = 10000;
+#define kMaximumAuthorizationTries (10000)
 
 //
 // base for classes talking to com.apple.security.agent and com.apple.security.authhost 
@@ -89,7 +89,7 @@ public:
 	virtual void disconnect();
 	virtual void terminate();
 	void create(const char *pluginId, const char *mechanismId);
-    OSStatus invoke();
+    void invoke();
     void setTerminateOnSleep(bool terminateOnSleep) {mTerminateOnSleep = terminateOnSleep;}
     bool getTerminateOnSleep() {return mTerminateOnSleep;}
     void setInput(const AuthItemSet& inHints, const AuthItemSet& inContext) { mInHints = inHints; mInContext = inContext; }

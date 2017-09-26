@@ -175,6 +175,7 @@ SecAccessControlRef SecAccessControlCreateWithFlags(CFAllocatorRef allocator, CF
             require_quiet(constraint = SecAccessConstraintCreateValueOfKofN(allocator, or?1:constraints_count, constraints, error), errOut);
             if (flags & kSecAccessControlPrivateKeyUsage) {
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpSign, constraint, error), errOut);
+                require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpComputeKey, constraint, error), errOut);
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpAttest, kCFBooleanTrue, error), errOut);
             }
             else {
@@ -189,6 +190,7 @@ SecAccessControlRef SecAccessControlCreateWithFlags(CFAllocatorRef allocator, CF
 #if TARGET_OS_IPHONE || (!RC_HIDE_J79 && !RC_HIDE_J80)
             if (flags & kSecAccessControlPrivateKeyUsage) {
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpSign, CFArrayGetValueAtIndex(constraints, 0), error), errOut);
+                require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpComputeKey, CFArrayGetValueAtIndex(constraints, 0), error), errOut);
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpAttest, kCFBooleanTrue, error), errOut);
             }
             else {
@@ -203,6 +205,7 @@ SecAccessControlRef SecAccessControlCreateWithFlags(CFAllocatorRef allocator, CF
 #if TARGET_OS_IPHONE || (!RC_HIDE_J79 && !RC_HIDE_J80)
             if (flags & kSecAccessControlPrivateKeyUsage) {
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpSign, kCFBooleanTrue, error), errOut);
+                require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpComputeKey, kCFBooleanTrue, error), errOut);
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpAttest, kCFBooleanTrue, error), errOut);
                 require_quiet(SecAccessControlAddConstraintForOperation(access_control, kAKSKeyOpDelete, kCFBooleanTrue, error), errOut);
             }
@@ -239,13 +242,13 @@ static bool checkItemInArray(CFTypeRef item, const CFTypeRef *values, CFIndex co
             return true;
         }
     }
-    return SecError(errSecParam, error, errMessage, item);
+    return SecError(errSecParam, error, CFSTR("%@: %@"), errMessage, item);
 }
 
 #define CheckItemInArray(item, values, msg) \
 { \
     const CFTypeRef vals[] = values; \
-    if (!checkItemInArray(item, vals, sizeof(vals)/sizeof(*vals), CFSTR(msg), error)) { \
+    if (!checkItemInArray(item, vals, sizeof(vals)/sizeof(*vals), msg, error)) { \
         return false; \
     } \
 }
@@ -261,7 +264,7 @@ bool SecAccessControlSetProtection(SecAccessControlRef access_control, CFTypeRef
                                                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
                                                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
                                                kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly),
-                         "SecAccessControl: invalid protection %@");
+                         CFSTR("SecAccessControl: invalid protection"));
     }
 
     // Protection valid, use it.
@@ -340,10 +343,10 @@ errOut:
 bool SecAccessControlAddConstraintForOperation(SecAccessControlRef access_control, CFTypeRef operation, CFTypeRef constraint, CFErrorRef *error) {
     CheckItemInArray(operation, ItemArray(kAKSKeyOpEncrypt, kAKSKeyOpDecrypt,
 #if TARGET_OS_IPHONE || (!RC_HIDE_J79 && !RC_HIDE_J80)
-                                          kAKSKeyOpSign, kAKSKeyOpAttest,
+                                          kAKSKeyOpSign, kAKSKeyOpAttest, kAKSKeyOpComputeKey,
 #endif
                                           kAKSKeyOpSync, kAKSKeyOpDefaultAcl, kAKSKeyOpDelete),
-                     "SecAccessControl: invalid operation %@");
+                     CFSTR("SecAccessControl: invalid operation"));
     if (!isDictionary(constraint) && !CFEqual(constraint, kCFBooleanTrue) && !CFEqual(constraint, kCFBooleanFalse) ) {
         return SecError(errSecParam, error, CFSTR("invalid constraint"));
     }

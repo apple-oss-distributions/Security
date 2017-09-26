@@ -29,15 +29,17 @@
 #include <Security/SecBase.h>
 #include <Security/SecItem.h>
 #include <Security/SecItemPriv.h>
+#include <utilities/SecCFRelease.h>
 #include <libaks.h>
 #include <AssertMacros.h>
 
+#define DATA_ARG(x) (x) ? CFDataGetBytePtr((x)) : NULL, (x) ? (int)CFDataGetLength((x)) : 0
 
 static CFDataRef create_keybag(keybag_handle_t bag_type, CFDataRef password)
 {
     keybag_handle_t handle = bad_keybag_handle;
     
-    if (aks_create_bag(NULL, 0, bag_type, &handle) == 0) {
+    if (aks_create_bag(DATA_ARG(password), bag_type, &handle) == 0) {
         void * keybag = NULL;
         int keybag_size = 0;
         if (aks_save_bag(handle, &keybag, &keybag_size) == 0) {
@@ -55,18 +57,20 @@ static void tests(void)
     CFNumberRef eighty = CFNumberCreate(NULL, kCFNumberSInt32Type, &v_eighty);
     const char *v_data = "test";
     CFDataRef pwdata = CFDataCreate(NULL, (UInt8 *)v_data, strlen(v_data));
-    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
     CFDictionaryAddValue(query, kSecClass, kSecClassInternetPassword);
     CFDictionaryAddValue(query, kSecAttrServer, CFSTR("members.spamcop.net"));
     CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("smith"));
-    CFDictionaryAddValue(query, kSecAttrPort, eighty);
+    CFDictionaryAddValue(query, kSecAttrPort, eighty); CFReleaseNull(eighty);
     CFDictionaryAddValue(query, kSecAttrProtocol, kSecAttrProtocolHTTP);
     CFDictionaryAddValue(query, kSecAttrAuthenticationType, kSecAttrAuthenticationTypeDefault);
-    CFDictionaryAddValue(query, kSecValueData, pwdata);
+    CFDictionaryAddValue(query, kSecValueData, pwdata); CFReleaseNull(pwdata);
     CFDictionaryAddValue(query, kSecAttrSynchronizable, kCFBooleanTrue);
     
-    CFDataRef keybag = NULL, password = NULL;
+    CFDataRef keybag = NULL;
+    const char *p = "sup3rsekretpassc0de";
+    CFDataRef password = CFDataCreate(NULL, (UInt8 *)p, strlen(p));
     
     keybag = create_keybag(kAppleKeyStoreAsymmetricBackupBag, password);
     
@@ -93,7 +97,10 @@ static void tests(void)
     
     ok_status(SecItemDelete(query), "delete restored item");
     
-    if (backup) { CFRelease(backup); }
+    CFReleaseNull(backup);
+    CFReleaseNull(keybag);
+    CFReleaseNull(query);
+    CFReleaseNull(password);
 }
 
 int si_33_keychain_backup(int argc, char *const *argv)

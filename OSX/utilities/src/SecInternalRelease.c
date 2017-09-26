@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2015-2016 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -21,46 +21,17 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include "SecInternalReleasePriv.h"
-
-
 #include <dispatch/dispatch.h>
 #include <AssertMacros.h>
 #include <strings.h>
+#include <os/variant_private.h>
 
-#if TARGET_OS_EMBEDDED
-#include <MobileGestalt.h>
-#else
-#include <sys/utsname.h>
-#endif
+#include "SecInternalReleasePriv.h"
 
-
-bool
-SecIsInternalRelease(void)
-{
+bool SecIsInternalRelease(void) {
     static bool isInternal = false;
 
+
     return isInternal;
-}
-
-bool SecIsProductionFused(void) {
-    static bool isProduction = true;
-#if TARGET_OS_EMBEDDED
-    static dispatch_once_t once = 0;
-
-    dispatch_once(&once, ^{
-        CFBooleanRef productionFused = MGCopyAnswer(kMGQSigningFuse, NULL);
-        if (productionFused) {
-            if (CFEqual(productionFused, kCFBooleanFalse)) {
-                isProduction = false;
-            }
-            CFRelease(productionFused);
-        }
-    });
-#else
-    /* Consider all Macs dev-fused. */
-    return false;
-#endif
-    return isProduction;
 }
 

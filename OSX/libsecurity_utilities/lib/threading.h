@@ -152,6 +152,13 @@ public:
 	~RecursiveMutex() {}
 };
 
+class NormalMutex : public Mutex
+{
+public:
+    NormalMutex() : Mutex(normal) {}
+    ~NormalMutex() {}
+};
+
 //
 // Condition variables
 //
@@ -287,7 +294,7 @@ public:
     };
     StReadWriteLock(ReadWriteLock &lck, Type type) : mType(type), mIsLocked(false), mRWLock(lck)
                        { lock(); }
-    ~StReadWriteLock() { if(mIsLocked) mRWLock.unlock(); }
+    ~StReadWriteLock() { if(mIsLocked) unlock(); }
 
     bool lock();
     void unlock();
@@ -373,25 +380,6 @@ public:
 //
 class Thread {
     NOCOPY(Thread)
-public:
-    class Identity {
-        friend class Thread;
-        
-        Identity(pthread_t id) : mIdent(id) { }
-    public:
-        Identity() { }
-        
-        static Identity current()	{ return pthread_self(); }
-
-        bool operator == (const Identity &other) const
-        { return pthread_equal(mIdent, other.mIdent); }
-        
-        bool operator != (const Identity &other) const
-        { return !(*this == other); }
-    
-    private:
-        pthread_t mIdent;
-    };
 
 public:
     Thread() { }				// constructor
@@ -405,8 +393,6 @@ protected:
     virtual void action() = 0; 	// the action to be performed
 
 private:
-    Identity self;				// my own identity (instance constant)
-
     static void *runner(void *); // argument to pthread_create
 };
 

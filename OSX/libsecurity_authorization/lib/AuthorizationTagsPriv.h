@@ -258,9 +258,13 @@
 #define AGENT_HINT_RETRY_REASON "reason"
 #define AGENT_HINT_AUTHORIZE_RULE "authorize-rule"
 #define AGENT_HINT_TOKEN_NAME "token-name"
-#define AGENT_HINT_PROCESS_SIGNED "process-apple-signed"
+#define AGENT_HINT_CLIENT_SIGNED "client-apple-signed"
+#define AGENT_HINT_CLIENT_FROM_APPLE "client-firstparty-signed"
+#define AGENT_HINT_CREATOR_SIGNED "creator-apple-signed"
+#define AGENT_HINT_CREATOR_FROM_APPLE "creator-firstparty-signed"
 #define AGENT_HINT_SHOW_RESET "show-reset"
 #define AGENT_HINT_PASSWORD_ONLY "password-only"
+#define AGENT_HINT_SHEET_CONTEXT "sheet-context"
 
 // Public Key Hash from certificate used for login
 #define AGENT_HINT_TOKEN_HASH "token-hash"
@@ -290,6 +294,9 @@
 #define AGENT_HINT_LOGIN_KC_CUST_STR1 "loginKCCreate:customStr1"
 #define AGENT_HINT_LOGIN_KC_CUST_STR2 "loginKCCreate:customStr2"
 #define AGENT_HINT_LOGIN_KC_USER_HAS_OTHER_KCS_STR "loginKCCreate:moreThanOneKeychainExists"
+
+#define AGENT_HINT_IGNORE_SESSION "ignore-session-state"
+#define AGENT_HINT_NO_UI_EXPECTED "no-ui-expected"
 
 /* Keychain synchronization */
 // iDisk keychain blob metainfo dictionary; follows "defaults" naming

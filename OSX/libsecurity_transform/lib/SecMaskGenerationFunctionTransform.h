@@ -33,15 +33,13 @@ extern "C" {
 /*!
  @function SecMaskGenerationFunctionTransformCreate
  @abstract			Creates a MGF computation object.
- @param maskGenerationFunctionType  The MGF algorigh to use, currently only kSecMaskGenerationFunctionMGF1
- @param digestType	The type of digest to compute the MGF with.  You may pass NULL
+ @param hashType	The type of digest to compute the MGF with.  You may pass NULL
  for this parameter, in which case an appropriate
  algorithm will be chosen for you (SHA1 for MGF1).
- @param digestLength	The desired digest length.  Note that certain
+ @param length	The desired digest length.  Note that certain
  algorithms may only support certain sizes. You may
  pass 0 for this parameter, in which case an
  appropriate length will be chosen for you.
- @param maskLength	The desired mask length.
  @param error		A pointer to a CFErrorRef.  This pointer will be set
  if an error occurred.  This value may be NULL if you
  do not want an error returned.

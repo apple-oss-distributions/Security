@@ -10,7 +10,8 @@ extern "C" {
 #include <bsm/audit.h>
 #include <mach/message.h>
 #include <stdbool.h>
-    
+#include <libaks.h>
+
 enum {
     KB_Success      = 0,
     KB_GeneralError,
@@ -26,9 +27,10 @@ typedef struct {
     uid_t s_uid;
     audit_token_t procToken;
 } service_context_t;
-    
+
 int service_client_kb_create(service_context_t *context, const void * secret, int secret_len);
 int service_client_kb_load(service_context_t *context);
+int service_client_kb_load_uid(uid_t uid);
 int service_client_kb_unload(service_context_t *context);
 int service_client_kb_save(service_context_t *context);
 int service_client_kb_unlock(service_context_t *context, const void * secret, int secret_len);
@@ -36,6 +38,8 @@ int service_client_kb_lock(service_context_t *context);
 int service_client_kb_change_secret(service_context_t *context, const void * secret, int secret_len, const void * new_secret, int new_secret_len);
 int service_client_kb_is_locked(service_context_t *context, bool *locked, bool *no_pin);
 int service_client_kb_reset(service_context_t *context, const void * secret, int secret_len);
+int service_client_kb_wrap_key(service_context_t *context, const void *key, int key_size, keyclass_t key_class, void **wrapped_key, int *wrapped_key_size, keyclass_t *wrapped_key_class);
+int service_client_kb_unwrap_key(service_context_t *context, const void *wrapped_key, int wrapped_key_size, keyclass_t wrapped_key_class, void **key, int *key_size);
 
 int service_client_stash_set_key(service_context_t *context, const void * key, int key_len);
 int service_client_stash_load_key(service_context_t *context, const void * key, int key_len);

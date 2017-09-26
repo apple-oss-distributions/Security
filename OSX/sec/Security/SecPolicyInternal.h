@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2015 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2008-2017 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -87,9 +87,15 @@ struct __SecPolicy {
 	@constant kSecPolicyCheckRevocationOCSP Use OCSP to perform revocation check.
 	@constant kSecPolicyCheckRevocationCRL Use CRL to perform revocation check.
 	@constant kSecPolicyCheckRevocationAny Use any available method (OCSP or CRL) to perform revocation check.
+	@constant kSecPolicyCheckRevocationOnline Force an "online" OCSP check.
 	@constant kSecPolicyCheckNoNetworkAccess @@@.
     @constant kSecPolicyCheckBlackListedLeaf @@@.
     @constant kSecPolicyCheckUsageConstraints @@@.
+    @constant kSecPolicyCheckSystemTrustedWeakHash Check whether the leaf or intermediates are using a weak hash in chains that end with a system-trusted anchor.
+    @constant kSecPolicyCheckSystemTrustedWeakKey Check whether the leaf or intermediates are using a weak key in chains that end with a system-trusted anchor.
+    @constant kSecPolicyCheckIntermediateOrganization Fails if any (non-leaf and non-root) certificates in the chain do not have a matching Organization string.
+    @constant kSecPolicyCheckIntermediateCountry Fails if any (non-leaf and non-root) certificates in the chain do not have a matching Country string.
+    @constant kSecPolicyCheckPinningRequired Fails if the binary Info plist required pinning but no pinning policies were used.
 */
 extern const CFStringRef kSecPolicyCheckBasicConstraints;
 extern const CFStringRef kSecPolicyCheckCriticalExtensions;
@@ -129,26 +135,38 @@ extern const CFStringRef kSecPolicyCheckRevocationResponseRequired;
 extern const CFStringRef kSecPolicyCheckRevocationOCSP;
 extern const CFStringRef kSecPolicyCheckRevocationCRL;
 extern const CFStringRef kSecPolicyCheckRevocationAny;
+extern const CFStringRef kSecPolicyCheckRevocationOnline;
 extern const CFStringRef kSecPolicyCheckNoNetworkAccess;
 extern const CFStringRef kSecPolicyCheckBlackListedLeaf;
 extern const CFStringRef kSecPolicyCheckBlackListedKey;
 extern const CFStringRef kSecPolicyCheckGrayListedLeaf;
 extern const CFStringRef kSecPolicyCheckLeafMarkerOid;
 extern const CFStringRef kSecPolicyCheckLeafMarkerOidWithoutValueCheck;
+extern const CFStringRef kSecPolicyCheckLeafMarkersProdAndQA;
 extern const CFStringRef kSecPolicyCheckIntermediateMarkerOid;
 extern const CFStringRef kSecPolicyCheckIntermediateSPKISHA256;
 extern const CFStringRef kSecPolicyCheckIntermediateEKU;
 extern const CFStringRef kSecPolicyCheckGrayListedKey;
 extern const CFStringRef kSecPolicyCheckCertificateTransparency;
 extern const CFStringRef kSecPolicyCheckUsageConstraints;
+extern const CFStringRef kSecPolicyCheckSystemTrustedWeakHash;
+extern const CFStringRef kSecPolicyCheckSystemTrustedWeakKey;
+extern const CFStringRef kSecPolicyCheckIntermediateOrganization;
+extern const CFStringRef kSecPolicyCheckIntermediateCountry;
+extern const CFStringRef kSecPolicyCheckPinningRequired;
 
 /*  Special option for checking Apple Anchors */
 extern const CFStringRef kSecPolicyAppleAnchorIncludeTestRoots;
+
+/* Special option for checking Prod and QA Markers */
+extern const CFStringRef kSecPolicyLeafMarkerProd;
+extern const CFStringRef kSecPolicyLeafMarkerQA;
 
 SecPolicyRef SecPolicyCreate(CFStringRef oid, CFStringRef name, CFDictionaryRef options);
 
 CFDictionaryRef SecPolicyGetOptions(SecPolicyRef policy);
 void SecPolicySetOptionsValue(SecPolicyRef policy, CFStringRef key, CFTypeRef value);
+void SecPolicySetName(SecPolicyRef policy, CFStringRef policyName);
 
 xpc_object_t SecPolicyArrayCopyXPCArray(CFArrayRef policies, CFErrorRef *error);
 CFArrayRef SecPolicyXPCArrayCopyArray(xpc_object_t xpc_policies, CFErrorRef *error);
@@ -161,6 +179,7 @@ CFArrayRef SecPolicyArrayCreateSerialized(CFArrayRef policies);
  */
 bool SecPolicyCheckCertKeyUsage(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertExtendedKeyUsage(SecCertificateRef cert, CFTypeRef pvcValue);
+bool SecPolicyCheckCertNonEmptySubject(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertSSLHostname(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertEmail(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertSubjectCommonNamePrefix(SecCertificateRef cert, CFTypeRef pvcValue);
@@ -173,6 +192,7 @@ bool SecPolicyCheckCertEAPTrustedServerNames(SecCertificateRef cert, CFTypeRef p
 bool SecPolicyCheckCertLeafMarkerOid(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertLeafMarkerOidWithoutValueCheck(SecCertificateRef cert, CFTypeRef pvcValue);
 bool SecPolicyCheckCertSignatureHashAlgorithms(SecCertificateRef cert, CFTypeRef pvcValue);
+bool SecPolicyCheckCertSubjectCountry(SecCertificateRef cert, CFTypeRef pvcValue);
 
 
 /*

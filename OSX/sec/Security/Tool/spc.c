@@ -216,13 +216,10 @@ static void _query_string_apply(const void *key, const void *value, void *contex
             (CFStringRef)value, NULL, NULL, kCFStringEncodingUTF8);
     CFMutableStringRef query_string = (CFMutableStringRef)context;
     
-    CFStringRef format;
     if (CFStringGetLength(query_string) > 1)
-        format = CFSTR("&%@=%@");
-    else
-        format = CFSTR("%@=%@");
+        CFStringAppend(query_string, CFSTR("&"));
 
-    CFStringAppendFormat(query_string, NULL, format, escaped_key, escaped_value);
+    CFStringAppendFormat(query_string, NULL, CFSTR("%@=%@"), escaped_key, escaped_value);
     CFRelease(escaped_key);
     CFRelease(escaped_value);
 }
@@ -243,7 +240,7 @@ out:
     return url;
 }
 
-static CFURLRef scep_url_operation(CFStringRef base, CFStringRef operation, CFStringRef message)
+static CF_RETURNS_RETAINED CFURLRef scep_url_operation(CFStringRef base, CFStringRef operation, CFStringRef message)
 {
     CFURLRef url = NULL;
     const void *keys[] = { CFSTR("operation"), CFSTR("message") };
@@ -395,7 +392,6 @@ static CF_RETURNS_RETAINED CFDictionaryRef get_encrypted_profile_packet(CFString
     if (error) {
         CFShow(error);
         errx(1, "failed to decode encrypted profile response");
-        CFRelease(error);
     }
     if (CFGetTypeID(result) != CFDictionaryGetTypeID())
     CFReleaseNull(result);
@@ -410,11 +406,16 @@ static SecCertificateRef get_ca_cert(CFStringRef scep_base_url, CFStringRef scep
     CFURLRef url = scep_url_operation(scep_base_url, CFSTR("GetCACert"), scep_ca_name);
     CFHTTPMessageRef request = CFHTTPMessageCreateRequest(kCFAllocatorDefault, 
         CFSTR("GET"), url, kCFHTTPVersion1_1);
+    CFReleaseSafe(url);
     CFHTTPMessageRef result = load_request(request, data, 1);
+    CFReleaseSafe(request);
 
-    if (!result)
+    if (!result) {
+        CFReleaseSafe(data);
         return NULL;
+    }
     CFStringRef contentTypeValue = CFHTTPMessageCopyHeaderFieldValue(result, CFSTR("Content-Type"));
+    CFReleaseSafe(result);
 //    CFHTTPMessageRef response = CFHTTPMessageCreateEmpty(kCFAllocatorDefault, false);
 //    CFHTTPMessageAppendBytes(response, CFDataGetBytePtr(data), CFDataGetLength(data));
 //    CFDataRef bodyValue = CFHTTPMessageCopyBody(response);
@@ -445,7 +446,10 @@ static SecIdentityRef perform_scep(CFDictionaryRef scep_dict)
     SecIdentityRef identity = NULL;
     CFDictionaryRef parameters = NULL, csr_parameters = NULL;
     CFStringRef scep_base_url = NULL, scep_instance_name = NULL,
-        scep_challenge = NULL, scep_subject = NULL, scep_subject_requested = NULL;
+    scep_challenge = NULL;
+#if 0
+    CFStringRef scep_subject = NULL, scep_subject_requested = NULL;
+#endif
     CFTypeRef scep_key_bitsize = NULL;
     CFNumberRef key_usage_num = NULL;
     SecCertificateRef ca_cert = NULL;
@@ -459,16 +463,6 @@ static SecIdentityRef perform_scep(CFDictionaryRef scep_dict)
         dict_get_value_of_type(scep_dict, CFSTR("NAME"), CFStringGetTypeID()), out);
     require(scep_challenge = 
         dict_get_value_of_type(scep_dict, CFSTR("CHALLENGE"), CFStringGetTypeID()), out);
-        
-    scep_subject_requested = 
-        dict_get_value_of_type(scep_dict, CFSTR("SUBJECT"), CFStringGetTypeID());
-    if (scep_subject_requested) {
-        CFArrayRef scep_subject_components = 
-            CFStringCreateArrayBySeparatingStrings(kCFAllocatorDefault, 
-                scep_subject_requested, CFSTR("="));
-        if (CFArrayGetCount(scep_subject_components) == 2)
-            scep_subject = CFArrayGetValueAtIndex(scep_subject_components, 1);
-    }
 
     scep_key_bitsize =
         dict_get_value_of_type(scep_dict, CFSTR("KEYSIZE"), CFNumberGetTypeID());
@@ -484,29 +478,25 @@ static SecIdentityRef perform_scep(CFDictionaryRef scep_dict)
 
     int key_usage = kSecKeyUsageDigitalSignature | kSecKeyUsageKeyEncipherment;
     key_usage_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &key_usage);
-    const void *key[] = { kSecCSRChallengePassword, kSecCertificateKeyUsage };
-    const void *val[] = { scep_challenge ? scep_challenge : CFSTR("magic"), key_usage_num };
-    csr_parameters = CFDictionaryCreate(kCFAllocatorDefault, key, val, array_size(key), NULL, NULL);
 
     ca_cert = get_ca_cert(scep_base_url, scep_instance_name ? scep_instance_name : CFSTR("test"));
     if (!ca_cert)
         errx(1, "no ca cert returned from scep server.");
 
-    identity = NULL; // enroll_scep(scep_base_url, scep_subject, csr_parameters, parameters, ca_cert);
+    identity = NULL;
     if (!identity)
         errx(1, "failed to get identity from scep server.");
     
 
 out:
     CFReleaseSafe(ca_cert);
-    CFReleaseSafe(scep_subject);
     CFReleaseSafe(key_usage_num);
     CFReleaseSafe(csr_parameters);
     CFReleaseSafe(parameters);
     return identity;
 }
 
-static CFDataRef CF_RETURNS_RETAINED get_profile(CFStringRef url_cfstring, SecIdentityRef identity)
+static CFDataRef copy_profile(CFStringRef url_cfstring, SecIdentityRef identity)
 {
     CFURLRef url = NULL;
     CFHTTPMessageRef request = NULL;
@@ -700,7 +690,7 @@ extern int command_spc(int argc, char * const *argv)
     require(profile_url = dict_get_value_of_type(payload_content,
         CFSTR("URL"), CFStringGetTypeID()), out);
         
-    require(profile_data = get_profile(profile_url, identity), out);
+    require(profile_data = copy_profile(profile_url, identity), out);
     if (debug)
         write_data("/tmp/profile.mobileconfig", profile_data);
     

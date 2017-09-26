@@ -44,6 +44,7 @@
 #include <os/trace.h>
 #include <os/log_private.h>
 #include <sqlite3.h>
+#include <os/lock_private.h>
 
 const char *api_trace = "api_trace";
 
@@ -412,52 +413,64 @@ static char *copyScopeStr(CFStringRef scope, char *alternative) {
     return scopeStr;
 }
 
-static os_log_t logObjForCFScope(CFStringRef scope) {
-    static dispatch_once_t onceToken = 0;
-    __block os_log_t retval = OS_LOG_DISABLED;
-    static dispatch_queue_t logObjectQueue = NULL;
+os_log_t
+secLogObjForCFScope(CFStringRef scope)
+{
+    os_log_t retval = OS_LOG_DISABLED;
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
     static CFMutableDictionaryRef scopeMap = NULL;
-    
-    if(scope == NULL) scope = CFSTR("logging");
-    
-    dispatch_once(&onceToken, ^{
-        logObjectQueue = dispatch_queue_create("logObjectQueue", DISPATCH_QUEUE_SERIAL);
-        scopeMap = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFCopyStringDictionaryKeyCallBacks, NULL);
-    });
 
-    dispatch_sync(logObjectQueue, ^{
-        retval = (os_log_t) CFDictionaryGetValue(scopeMap, scope);
-        if (retval) return;
-        
+    if (scope == NULL) {
+        scope = CFSTR("logging");
+    }
+
+    os_unfair_lock_lock_with_options(&lock, OS_UNFAIR_LOCK_DATA_SYNCHRONIZATION);
+
+    if (scopeMap == NULL) {
+        scopeMap = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFCopyStringDictionaryKeyCallBacks, NULL);
+    }
+
+    retval = (os_log_t)CFDictionaryGetValue(scopeMap, scope);
+    if (retval == NULL) {
         CFStringPerformWithCString(scope, ^(const char *scopeStr) {
             CFDictionaryAddValue(scopeMap, scope, os_log_create("com.apple.securityd", scopeStr));
         });
-        retval = (os_log_t) CFDictionaryGetValue(scopeMap, scope);
-    });
-    
+        retval = (os_log_t)CFDictionaryGetValue(scopeMap, scope);
+    }
+
+    os_unfair_lock_unlock(&lock);
+
     return retval;
 }
 
 static bool loggingEnabled = true;
+static pthread_mutex_t loggingMutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool secLogEnabled(void) {
-    return loggingEnabled;
+    bool r = false;
+    pthread_mutex_lock(&loggingMutex);
+    r = loggingEnabled;
+    pthread_mutex_unlock(&loggingMutex);
+    return r;
 }
 void secLogDisable(void) {
+    pthread_mutex_lock(&loggingMutex);
     loggingEnabled = false;
+    pthread_mutex_unlock(&loggingMutex);
 }
 
 void secLogEnable(void) {
+    pthread_mutex_lock(&loggingMutex);
     loggingEnabled = true;
+    pthread_mutex_unlock(&loggingMutex);
 }
 
-
-os_log_t logObjForScope(const char *scope) {
-    if (!loggingEnabled)
+os_log_t secLogObjForScope(const char *scope) {
+    if (!secLogEnabled())
         return OS_LOG_DISABLED;
     CFStringRef cfscope = NULL;
     if(scope) cfscope =  CFStringCreateWithCString(kCFAllocatorDefault, scope, kCFStringEncodingASCII);
-    os_log_t retval = logObjForCFScope(cfscope);
+    os_log_t retval = secLogObjForCFScope(cfscope);
     CFReleaseNull(cfscope);
     return retval;
 }
@@ -493,7 +506,6 @@ CFStringRef SecLogAPICreate(bool apiIn, const char *api, CFStringRef format, ...
 }
 
 #if TARGET_OS_OSX
-#ifdef NO_OS_LOG
 // Functions for weak-linking os_log functions
 #include <dlfcn.h>
 
@@ -535,6 +547,5 @@ weak_log_f(os_log_type_enabled, weak_os_log_type_enabled, bool, return false);
 
 #undef weak_log_f
 
-#endif // NO_OS_LOG
 #endif // TARGET_OS_OSX
 

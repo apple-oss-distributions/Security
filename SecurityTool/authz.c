@@ -26,6 +26,7 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <Security/AuthorizationPriv.h>
+#include <utilities/SecCFRelease.h>
 
 #include "authz.h"
 #include "security_tool.h"
@@ -37,7 +38,7 @@ read_auth_ref_from_stdin()
 {
 	AuthorizationRef auth_ref = NULL;
 	AuthorizationExternalForm extform;
-	size_t bytes_read;
+	ssize_t bytes_read;
 
 	while (kAuthorizationExternalFormLength != (bytes_read = read(STDIN_FILENO, &extform, kAuthorizationExternalFormLength)))
 	{
@@ -59,7 +60,7 @@ static int
 write_auth_ref_to_stdout(AuthorizationRef auth_ref)
 {
 	AuthorizationExternalForm extform;
-	size_t bytes_written;
+	ssize_t bytes_written;
 
 	if (AuthorizationMakeExternalForm(auth_ref, &extform))
 		return -1;
@@ -91,10 +92,10 @@ write_dict_to_stdout(CFDictionaryRef dict)
 	CFRelease(right_definition_xml);
 }
 
-static CFDictionaryRef
+static CFDictionaryRef CF_RETURNS_RETAINED
 read_dict_from_stdin()
 {
-	size_t bytes_read = 0;
+	ssize_t bytes_read = 0;
 	uint8_t buffer[4096];
 	CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
 	CFErrorRef err = NULL;
@@ -127,7 +128,7 @@ read_dict_from_stdin()
 	return right_dict;
 }
 
-static CFPropertyListRef
+static CFPropertyListRef CF_RETURNS_RETAINED
 read_plist_from_file(CFStringRef filePath)
 {
 	CFTypeRef         property = NULL;
@@ -225,6 +226,7 @@ write_plist_to_file(CFPropertyListRef propertyList, CFStringRef filePath)
 
 	status = TRUE;
 bail:
+    CFReleaseNull(property);
 	if (NULL != xmlData)
 		CFRelease(xmlData);
 	if (NULL != fileURL)

@@ -300,6 +300,10 @@ static const char *tpSubStr(
 	const char 	*substr,
 	uint32		substrLen)
 {
+    if(!bigstr || !substr || bigstrLen == 0 || substrLen == 0) {
+        return NULL;
+    }
+
 	/* stop searching substrLen chars before end of bigstr */
 	const char *endBigStr = bigstr + bigstrLen - substrLen;
 	for( ; bigstr <= endBigStr; ) {
@@ -516,7 +520,6 @@ CSSM_BOOL tpCompareHostNames(
 	} while(1);
 	/* NOT REACHED */
 	//assert(0):
-	return CSSM_FALSE;
 }
 
 /*

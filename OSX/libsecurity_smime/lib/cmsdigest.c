@@ -193,8 +193,6 @@ SecCmsDigestContextFinishMultiple(SecCmsDigestContextRef cmsdigcx, SecArenaPoolR
                 cmsdigcx->digobjs[i] = 0;
             }
 	rv = SECSuccess;
-	if (digestsp)
-	    *digestsp = NULL;
 	goto cleanup;
     }
 
@@ -263,6 +261,7 @@ loser:
 
 cleanup:
     if (cmsdigcx->digcnt > 0) {
+        SecCmsDigestContextCancel(cmsdigcx);
 	PORT_Free(cmsdigcx->digobjs);
         cmsdigcx->digobjs = NULL;
         cmsdigcx->digcnt = 0;

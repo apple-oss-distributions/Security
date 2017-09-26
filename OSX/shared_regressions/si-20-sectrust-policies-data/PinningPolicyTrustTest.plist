@@ -6,6 +6,32 @@
 		<key>MajorTestName</key>
 		<string>AST2</string>
 		<key>MinorTestName</key>
+		<string>NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.42</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p04-fmip.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>fmip</string>
+		<key>Intermediates</key>
+		<string>AppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2016-04-18T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>AST2</string>
+		<key>MinorTestName</key>
 		<string>PositiveTest</string>
 		<key>Policies</key>
 		<dict>
@@ -31,32 +57,6 @@
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
 		<string>AppleServerAuthenticationAllowUATAST2</string>
-	</dict>
-	<dict>
-		<key>MajorTestName</key>
-		<string>AST2</string>
-		<key>MinorTestName</key>
-		<string>NegativeTest</string>
-		<key>Policies</key>
-		<dict>
-			<key>PolicyIdentifier</key>
-			<string>1.2.840.113635.100.1.42</string>
-			<key>Properties</key>
-			<dict>
-				<key>SecPolicyName</key>
-				<string>idiagnostics-uat.apple.com</string>
-			</dict>
-		</dict>
-		<key>Leaf</key>
-		<string>ast2</string>
-		<key>Intermediates</key>
-		<string>TestAppleServerAuthentication</string>
-		<key>Anchors</key>
-		<string>TestAppleRootCA</string>
-		<key>VerifyDate</key>
-		<date>2015-12-16T00:19:45Z</date>
-		<key>ExpectedResult</key>
-		<integer>5</integer>
 	</dict>
 	<dict>
 		<key>MajorTestName</key>
@@ -100,17 +100,17 @@
 			<key>Properties</key>
 			<dict>
 				<key>SecPolicyName</key>
-				<string>p04-escrowproxy.icloud.com</string>
+				<string>p04-fmip.icloud.com</string>
 			</dict>
 		</dict>
 		<key>Leaf</key>
-		<string>escrow</string>
+		<string>fmip</string>
 		<key>Intermediates</key>
 		<string>AppleServerAuthentication</string>
 		<key>Anchors</key>
 		<string>AppleRootCA</string>
 		<key>VerifyDate</key>
-		<date>2016-01-14T00:16:53Z</date>
+		<date>2017-02-14T00:16:53Z</date>
 		<key>ExpectedResult</key>
 		<integer>5</integer>
 	</dict>
@@ -156,11 +156,11 @@
 			<key>Properties</key>
 			<dict>
 				<key>SecPolicyName</key>
-				<string>p04-fmip.icloud.com</string>
+				<string>p04-escrowproxy.icloud.com</string>
 			</dict>
 		</dict>
 		<key>Leaf</key>
-		<string>fmip</string>
+		<string>escrowproxy</string>
 		<key>Intermediates</key>
 		<string>AppleServerAuthentication</string>
 		<key>Anchors</key>
@@ -412,6 +412,40 @@
 		<key>MajorTestName</key>
 		<string>AppleSSLPinned</string>
 		<key>MinorTestName</key>
+		<string>PositiveTest-Test-NewOidStyle</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.63</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyPolicyName</key>
+				<string>TLSPinningTest</string>
+				<key>SecPolicyLeafMarkerOid</key>
+				<string>1.2.840.113635.100.6.27.42</string>
+				<key>SecPolicyName</key>
+				<string>tlspinningtest.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>test_new_oids</string>
+		<key>Intermediates</key>
+		<string>TestAppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2016-09-01T16:56:50Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>EnableTestCertificates</key>
+		<string>ApplePinningAllowTestCertsTLSPinningTest</string>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>AppleSSLPinned</string>
+		<key>MinorTestName</key>
 		<string>NegativeTest-Prod-DefaultIntOid</string>
 		<key>Policies</key>
 		<dict>
@@ -442,37 +476,7 @@
 		<key>MajorTestName</key>
 		<string>AppleSSLPinned</string>
 		<key>MinorTestName</key>
-		<string>NegativeTest-TestHierarchy</string>
-		<key>Policies</key>
-		<dict>
-			<key>PolicyIdentifier</key>
-			<string>1.2.840.113635.100.1.63</string>
-			<key>Properties</key>
-			<dict>
-				<key>SecPolicyPolicyName</key>
-				<string>TestAST2ServerAuth</string>
-				<key>SecPolicyLeafMarkerOid</key>
-				<string>1.2.840.113635.100.6.27.8.2</string>
-				<key>SecPolicyName</key>
-				<string>idiagnostics-uat.apple.com</string>
-			</dict>
-		</dict>
-		<key>Leaf</key>
-		<string>ast2</string>
-		<key>Intermediates</key>
-		<string>TestAppleServerAuthentication</string>
-		<key>Anchors</key>
-		<string>TestAppleRootCA</string>
-		<key>VerifyDate</key>
-		<date>2016-02-12T17:56:50Z</date>
-		<key>ExpectedResult</key>
-		<integer>5</integer>
-	</dict>
-	<dict>
-		<key>MajorTestName</key>
-		<string>AppleSSLPinned</string>
-		<key>MinorTestName</key>
-		<string>NegativeTest-TestHierarchy</string>
+		<string>PositiveTest-TestHierarchy</string>
 		<key>Policies</key>
 		<dict>
 			<key>PolicyIdentifier</key>
@@ -830,8 +834,6 @@
 		<integer>4</integer>
 		<key>ChainLength</key>
 		<integer>3</integer>
-		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsAppleSMPEncryption</string>
 	</dict>
 	<dict>
 		<key>MajorTestName</key>
@@ -964,7 +966,7 @@
 		<integer>4</integer>
 		<key>ChainLength</key>
 		<integer>3</integer>
-		<key>EnableTestCerts</key>
+		<key>EnableTestCertificates</key>
 		<string>ApplePinningAllowTestCertsiPhoneApplicationSigning</string>
 	</dict>
 	<dict>
@@ -994,7 +996,7 @@
 		<key>MajorTestName</key>
 		<string>iPhoneApplicationSigning</string>
 		<key>MinorTestName</key>
-		<string>PositiveTest-vpn</string>
+		<string>NegativeTest-vpn</string>
 		<key>Policies</key>
 		<dict>
 			<key>PolicyIdentifier</key>
@@ -1009,9 +1011,7 @@
 		<key>VerifyDate</key>
 		<date>2008-03-26T17:07:46Z</date>
 		<key>ExpectedResult</key>
-		<integer>4</integer>
-		<key>ChainLength</key>
-		<integer>3</integer>
+		<integer>5</integer>
 	</dict>
 	<dict>
 		<key>MajorTestName</key>
@@ -1081,7 +1081,7 @@
 		<integer>4</integer>
 		<key>ChainLength</key>
 		<integer>3</integer>
-		<key>EnableTestCerts</key>
+		<key>EnableTestCertificates</key>
 		<string>ApplePinningAllowTestCertsiPhoneProvisioningProfileSigning</string>
 	</dict>
 	<dict>
@@ -1262,7 +1262,7 @@
 			</dict>
 		</dict>
 		<key>Leaf</key>
-		<string>ids</string>
+		<string>ids_qa</string>
 		<key>Intermediates</key>
 		<string>AppleServerAuthentication</string>
 		<key>Anchors</key>
@@ -1280,7 +1280,7 @@
 		<key>MajorTestName</key>
 		<string>LegacyAPN</string>
 		<key>MinorTestName</key>
-		<string>PositiveTest</string>
+		<string>NegativeTest</string>
 		<key>Policies</key>
 		<dict>
 			<key>PolicyIdentifier</key>
@@ -1301,7 +1301,7 @@
 		<key>VerifyDate</key>
 		<date>2015-05-11T19:00:00Z</date>
 		<key>ExpectedResult</key>
-		<integer>4</integer>
+		<integer>5</integer>
 		<key>ChainLength</key>
 		<integer>3</integer>
 	</dict>
@@ -1701,27 +1701,6 @@
 		<key>MajorTestName</key>
 		<string>AppleIDAuthority</string>
 		<key>MinorTestName</key>
-		<string>PositiveTest</string>
-		<key>Policies</key>
-		<dict>
-			<key>PolicyIdentifier</key>
-			<string>1.2.840.113635.100.1.18</string>
-		</dict>
-		<key>Leaf</key>
-		<string>appleid_authority</string>
-		<key>Intermediates</key>
-		<string>AppleApplicationIntegrationCA</string>
-		<key>Anchors</key>
-		<string>AppleRootCA</string>
-		<key>VerifyDate</key>
-		<date>2011-09-01T19:00:00Z</date>
-		<key>ExpectedResult</key>
-		<integer>4</integer>
-	</dict>
-	<dict>
-		<key>MajorTestName</key>
-		<string>AppleIDAuthority</string>
-		<key>MinorTestName</key>
 		<string>NegativeTest</string>
 		<key>Policies</key>
 		<dict>
@@ -2015,6 +1994,867 @@
 		<integer>5</integer>
 		<key>VerifyDate</key>
 		<date>2016-03-01T20:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>EscrowProxyCompatibility</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.73</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p97-escrowproxy.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>escrowproxy</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>EscrowProxy</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.43</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p97-escrowproxy.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>escrowproxy</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>EscrowProxyCompatibility</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest-TrustedIntermediate</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.73</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p97-escrowproxy.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>escrowproxy</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<array>
+			<string>AppleISTCA2G1</string>
+			<string>GeoTrustGlobalCA</string>
+		</array>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>MMCSCompatibility</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.74</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p98-content.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>mmcs</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>MMCSCompatibility</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.45</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p98-content.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>mmcs</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>TLDWildcard</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest-CookieTLD</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>content.googleapis.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>googleapis</string>
+		<key>Intermediates</key>
+		<string>GoogleInternetAuthority</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-10-04T19:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>LASecureStaticIOAssets</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.75</string>
+		</dict>
+		<key>Leaf</key>
+		<string>LASecureIOStaticAssetSigning</string>
+		<key>Intermediates</key>
+		<string>AppleSystemIntegration2CA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>LASecureStaticIOAssets</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.75</string>
+		</dict>
+		<key>Leaf</key>
+		<string>LASecureIOStaticAssetSigningTest</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegration2CA</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<string>AllowAppleTestCertificatesSecureIOStaticAsset</string>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>FakeDOD</string>
+		<key>MinorTestName</key>
+		<string>PolicyMappings</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tlstest.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>FakeDODLeaf</string>
+		<key>Intermediates</key>
+		<array>
+			<string>FakeFederalBridgeCA</string>
+			<string>FakeDODInteroperability</string>
+			<string>FakeDODRootCA3</string>
+			<string>FakeDODIDSWCA37</string>
+		</array>
+		<key>Anchors</key>
+		<string>FakeFederalCommonPolicy</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-12-10T04:38:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>FakeDOD</string>
+		<key>MinorTestName</key>
+		<string>NoRequireExplicitPoliciesConstraint</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tlstest.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>FakeDODLeaf</string>
+		<key>Intermediates</key>
+		<array>
+			<string>FakeFederalBridgeCA</string>
+			<string>FakeDODInteroperability-noRequireExplicitPolicies</string>
+			<string>FakeDODRootCA3-noRequireExplicitPolicies</string>
+			<string>FakeDODIDSWCA37-noRequireExplicitPolicies</string>
+		</array>
+		<key>Anchors</key>
+		<string>FakeFederalCommonPolicy</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-12-10T04:38:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>FakeDOD</string>
+		<key>MinorTestName</key>
+		<string>ExtraPolicies</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tlstest.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>FakeDODLeaf</string>
+		<key>Intermediates</key>
+		<array>
+			<string>FakeFederalBridgeCA-extraPolicies</string>
+			<string>FakeDODInteroperability-extraPolicies</string>
+			<string>FakeDODRootCA3</string>
+			<string>FakeDODIDSWCA37</string>
+		</array>
+		<key>Anchors</key>
+		<string>FakeFederalCommonPolicy</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-12-10T04:38:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>DOD</string>
+		<key>MinorTestName</key>
+		<string>SHA2</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ECARootCA4</string>
+		<key>Intermediates</key>
+		<array>
+			<string>FederalBridgeCA2013</string>
+			<string>DODInteroperabilityRootCA2</string>
+		</array>
+		<key>Anchors</key>
+		<string>FederalCommonPolicyCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-12-10T04:38:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>DOD</string>
+		<key>MinorTestName</key>
+		<string>SHA1-SMIME</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.8</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>bailey@eclipse.ncsc.mil</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>smime_signing</string>
+		<key>Intermediates</key>
+		<array>
+			<string>SHA1FederalRootCA</string>
+			<string>DODInteroperabilityRootCA1</string>
+			<string>DODRootCA2</string>
+			<string>DODEMAILCA30</string>
+		</array>
+		<key>Anchors</key>
+		<string>FederalCommonPolicyCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2016-01-01T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Baseline</string>
+		<key>MinorTestName</key>
+		<string>IDS-Prod</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>openmarket.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_prod</string>
+		<key>Intermediates</key>
+		<string>AppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Baseline</string>
+		<key>MinorTestName</key>
+		<string>IDS-Symantec</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>openmarket.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Hostname</string>
+		<key>MinorTestName</key>
+		<string>IDS-PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>profile.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_prod</string>
+		<key>Intermediates</key>
+		<string>AppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Hostname</string>
+		<key>MinorTestName</key>
+		<string>IDS-NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>profile.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-PolicyName</string>
+		<key>MinorTestName</key>
+		<string>IDS-PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>openmarket.ess.apple.com</string>
+				<key>SecPolicyPolicyName</key>
+				<string>IDS</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_prod</string>
+		<key>Intermediates</key>
+		<string>AppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-PolicyName</string>
+		<key>MinorTestName</key>
+		<string>IDS-NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>openmarket.ess.apple.com</string>
+				<key>SecPolicyPolicyName</key>
+				<string>IDS</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Both</string>
+		<key>MinorTestName</key>
+		<string>IDS-PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>profile.ess.apple.com</string>
+				<key>SecPolicyPolicyName</key>
+				<string>IDS</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_prod</string>
+		<key>Intermediates</key>
+		<string>AppleServerAuthentication</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide-Both</string>
+		<key>MinorTestName</key>
+		<string>IDS-NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>profile.ess.apple.com</string>
+				<key>SecPolicyPolicyName</key>
+				<string>IDS</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide</string>
+		<key>MinorTestName</key>
+		<string>IDSBag-NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.67</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>profile.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide</string>
+		<key>MinorTestName</key>
+		<string>IDSBag-PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.67</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>init.ess.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>ids_symantec</string>
+		<key>Intermediates</key>
+		<string>SymantecClass3SSCAG4</string>
+		<key>Anchors</key>
+		<string>VeriSignClass3PublicPrimaryCertificationAuthorityG5</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-08T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>PPQSigning</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.35</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ppq_signing</string>
+		<key>Intermediates</key>
+		<string>AppleSystemIntegration2CA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2017-02-18T00:19:45Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>Systemwide</string>
+		<key>MinorTestName</key>
+		<string>ckdatabasews-PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.3</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>p62-ckdatabasews.icloud.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>wildcard_icloud</string>
+		<key>Intermediates</key>
+		<string>AppleISTCA2G1</string>
+		<key>Anchors</key>
+		<string>GeoTrustGlobalCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>VerifyDate</key>
+		<date>2017-02-20T21:00:00Z</date>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>PCSEscrowService</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.34</string>
+		</dict>
+		<key>Leaf</key>
+		<string>escrow_service_key_9B6EEF8D</string>
+		<key>Intermediates</key>
+		<string>EscrowServiceRootCA100</string>
+		<key>Anchors</key>
+		<string>EscrowServiceRootCA100</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>EscrowService</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest-v1</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.24</string>
+		</dict>
+		<key>Leaf</key>
+		<string>escrow_service_key_B157A8D4</string>
+		<key>Intermediates</key>
+		<string>EscrowServiceRootCA0</string>
+		<key>Anchors</key>
+		<string>EscrowServiceRootCA0</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>EscrowService</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest-v2</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.24</string>
+		</dict>
+		<key>Leaf</key>
+		<string>escrow_service_key_049F9D11</string>
+		<key>Intermediates</key>
+		<string>EscrowServiceRootCA101</string>
+		<key>Anchors</key>
+		<string>EscrowServiceRootCA101</string>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>PCSEscrowService</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.24</string>
+		</dict>
+		<key>Leaf</key>
+		<string>escrow_service_key_9B6EEF8D</string>
+		<key>Intermediates</key>
+		<string>EscrowServiceRootCA100</string>
+		<key>Anchors</key>
+		<string>EscrowServiceRootCA100</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>2</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>macOSProfileSigning</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.81</string>
+		</dict>
+		<key>Leaf</key>
+		<string>iphone_developer</string>
+		<key>Intermediates</key>
+		<string>AppleWWDR-expired</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2015-06-16T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>macOSProfileSigning</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.81</string>
+		</dict>
+		<key>Leaf</key>
+		<string>developer_id</string>
+		<key>Intermediates</key>
+		<string>DeveloperIDCA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>macOSProfileSigning</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.81</string>
+		</dict>
+		<key>Leaf</key>
+		<string>mac_developer</string>
+		<key>Intermediates</key>
+		<string>AppleWWDR-expired</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>iPhoneVPNApplicationSigning</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.86</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ios_vpn_app_signing</string>
+		<key>Intermediates</key>
+		<string>AppleiPhoneCA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2008-03-26T17:07:46Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>MajorTestName</key>
+		<string>iPhoneVPNApplicationSigning</string>
+		<key>MinorTestName</key>
+		<string>Negative</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.86</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ios_app_signing</string>
+		<key>Intermediates</key>
+		<string>AppleiPhoneCA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2008-03-26T17:07:46Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
 	</dict>
 </array>
 </plist>

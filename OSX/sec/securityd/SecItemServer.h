@@ -35,7 +35,7 @@
 #include <securityd/SecDbQuery.h>
 #include <utilities/SecDb.h>
 #include <TargetConditionals.h>
-#include "securityd_client.h"
+#include "sec/ipc/securityd_client.h"
 
 
 __BEGIN_DECLS
@@ -53,6 +53,9 @@ CFDataRef _SecServerKeychainCreateBackup(SecurityClient *client, CFDataRef keyba
 bool _SecServerKeychainRestore(CFDataRef backup, SecurityClient *client, CFDataRef keybag, CFDataRef passcode, CFErrorRef *error);
 CFStringRef _SecServerBackupCopyUUID(CFDataRef backup, CFErrorRef *error);
 
+bool _SecServerBackupKeybagAdd(SecurityClient *client, CFDataRef passcode, CFDataRef *identifier, CFDataRef *pathinfo, CFErrorRef *error);
+bool _SecServerBackupKeybagDelete(CFDictionaryRef attributes, bool deleteAll, CFErrorRef *error);
+
 bool _SecItemUpdateTokenItems(CFStringRef tokenID, CFArrayRef items, SecurityClient *client, CFErrorRef *error);
 
 CF_RETURNS_RETAINED CFArrayRef _SecServerKeychainSyncUpdateMessage(CFDictionaryRef updates, CFErrorRef *error);
@@ -69,16 +72,18 @@ bool _SecServerTransmogrifyToSyncBubble(CFArrayRef services, uid_t uid, Security
 bool _SecServerDeleteMUSERViews(SecurityClient *client, uid_t uid, CFErrorRef *error);
 #endif
 
+#if TARGET_OS_IOS && !TARGET_OS_BRIDGE
 bool _SecAddSharedWebCredential(CFDictionaryRef attributes, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error);
 bool _SecCopySharedWebCredential(CFDictionaryRef query, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error);
+#endif /* TARGET_OS_IOS */
 
 // Hack to log objects from inside SOS code
 void SecItemServerAppendItemDescription(CFMutableStringRef desc, CFDictionaryRef object);
 
-SecDbRef SecKeychainDbCreate(CFStringRef path);
+SecDbRef SecKeychainDbCreate(CFStringRef path, CFErrorRef* error);
+SecDbRef SecKeychainDbInitialize(SecDbRef db);
 
-void
-_SecServerDatabaseSetup(void);
+bool kc_with_dbt(bool writeAndRead, CFErrorRef *error, bool (^perform)(SecDbConnectionRef dbt));
 
 
 /* For whitebox testing only */
@@ -99,6 +104,15 @@ CFStringRef __SecKeychainCopyPath(void);
 bool _SecServerRollKeys(bool force, SecurityClient *client, CFErrorRef *error);
 bool _SecServerRollKeysGlue(bool force, CFErrorRef *error);
 
+
+/* initial sync */
+#define SecServerInitialSyncCredentialFlagTLK           1
+#define SecServerInitialSyncCredentialFlagPCS           2
+#define SecServerInitialSyncCredentialFlagPCSNonCurrent 4
+
+CFArrayRef _SecServerCopyInitialSyncCredentials(uint32_t flags, CFErrorRef *error);
+bool _SecServerImportInitialSyncCredentials(CFArrayRef array, CFErrorRef *error);
+
 struct _SecServerKeyStats {
     unsigned long items;
     CFIndex maxDataSize;
@@ -107,13 +121,15 @@ struct _SecServerKeyStats {
 
 bool _SecServerGetKeyStats(const SecDbClass *qclass, struct _SecServerKeyStats *stats);
 
-
+CF_RETURNS_RETAINED CFArrayRef _SecItemCopyParentCertificates(CFDataRef normalizedIssuer, CFArrayRef accessGroups, CFErrorRef *error);
+bool _SecItemCertificateExists(CFDataRef normalizedIssuer, CFDataRef serialNumber, CFArrayRef accessGroups, CFErrorRef *error);
 
 
 // Should all be blocks called from SecItemDb
 bool match_item(SecDbConnectionRef dbt, Query *q, CFArrayRef accessGroups, CFDictionaryRef item);
+bool accessGroupsAllows(CFArrayRef accessGroups, CFStringRef accessGroup, SecurityClient* client);
 bool itemInAccessGroup(CFDictionaryRef item, CFArrayRef accessGroups);
-void SecKeychainChanged(bool syncWithPeers);
+void SecKeychainChanged(void);
 
 extern void (*SecTaskDiagnoseEntitlements)(CFArrayRef accessGroups);
 

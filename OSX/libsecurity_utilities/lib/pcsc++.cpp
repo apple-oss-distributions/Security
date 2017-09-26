@@ -21,11 +21,13 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-
 //
 // pcsc++ - PCSC client interface layer in C++
 //
 #include "pcsc++.h"
+
+#if TARGET_OS_OSX
+
 #include <security_utilities/debugging.h>
 #include <PCSC/pcsclite.h>
 #include <PCSC/wintypes.h>
@@ -190,7 +192,7 @@ void Session::close()
 
 bool Session::check(long rc)
 {
-	switch (rc) {
+	switch ((unsigned long) rc) {
 	case SCARD_S_SUCCESS:
 		return true;	// got reader(s), call succeeded
 	case SCARD_E_READER_UNAVAILABLE:
@@ -214,7 +216,7 @@ void Session::listReaders(vector<string> &readers, const char *groups)
 				decode(readers, mReaderBuffer, size);
 				return;
 			}
-		case SCARD_E_INSUFFICIENT_BUFFER:
+		case (int32_t) SCARD_E_INSUFFICIENT_BUFFER:
 			mReaderBuffer.resize(size);
 			break;
 		default:
@@ -418,3 +420,5 @@ void Transaction::commitAction()
 
 }   // namespace PCSC
 }   // namespace Security
+
+#endif // TARGET_OS_OSX

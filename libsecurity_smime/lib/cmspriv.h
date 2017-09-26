@@ -133,9 +133,6 @@ SecCmsContentGetContentInfo(void *msg, SECOidTag type);
  @param encrypt_key_cb callback function for getting bulk key for encryptedData content.
  @param encrypt_key_cb_arg first argument passed to encrypt_key_cb when it is
  called.
- @param detached_digestalgs digest algorithms in detached_digests
- @param detached_digests digests from detached content (one for every element
-                                                        in detached_digestalgs).
  */
 extern void
 SecCmsMessageSetEncodingParams(SecCmsMessageRef cmsg,

@@ -28,7 +28,6 @@
 #include <securityd_client/ucsp.h>
 
 #include "server.h"
-#include "entropy.h"
 #include "session.h"
 #include "notifications.h"
 #include "pcscmonitor.h"
@@ -87,7 +86,7 @@ int main(int argc, char *argv[])
 	// program arguments (preset to defaults)
 	bool debugMode = false;
 	const char *bootstrapName = NULL;
-	const char* messagingName = SECURITY_MESSAGES_NAME;
+	const char* messagingName = SharedMemoryCommon::kDefaultSecurityMessagesName;
 	bool doFork = false;
 	bool reExecute = false;
 	int workerTimeout = 0;
@@ -95,7 +94,6 @@ int main(int argc, char *argv[])
 	bool waitForClients = true;
     bool mdsIsInstalled = false;
 	const char *tokenCacheDir = "/var/db/TokenCache";
-    const char *entropyFile = "/var/db/SystemEntropyCache";
 	const char *smartCardOptions = getenv("SMARTCARDS");
 	uint32_t keychainAclDefault = CSSM_ACL_KEYCHAIN_PROMPT_INVALID | CSSM_ACL_KEYCHAIN_PROMPT_UNSIGNED;
 	unsigned int verbose = 0;
@@ -119,7 +117,7 @@ int main(int argc, char *argv[])
 			debugMode = true;
 			break;
         case 'E':
-            entropyFile = optarg;
+            /* was entropyFile, kept to preserve ABI */
             break;
 		case 'i':
 			keychainAclDefault &= ~CSSM_ACL_KEYCHAIN_PROMPT_INVALID;
@@ -172,12 +170,16 @@ int main(int argc, char *argv[])
 		}
 		else
 		{
+#ifndef __clang_analyzer__
 			messagingName = bootstrapName;
+#endif
 		}
 	}
 	else
 	{
+#ifndef __clang_analyzer__
 		messagingName = bootstrapName;
+#endif
 	}
 	
 	// configure logging first
@@ -222,6 +224,9 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+// The clang static analyzer isn't a big fan of our "object creation hooks object into global pointer graph" model.
+// Tell it not to worry.
+#ifndef __clang_analyzer__
 	// introduce all supported ACL subject types
 	new AnyAclSubject::Maker();
 	new PasswordAclSubject::Maker();
@@ -235,9 +240,10 @@ int main(int argc, char *argv[])
 	new PartitionAclSubject::Maker();
 	new PreAuthorizationAcls::OriginMaker();
     new PreAuthorizationAcls::SourceMaker();
-
+#endif
     // establish the code equivalents database
     CodeSignatures codeSignatures;
+
 
     // create the main server object and register it
  	Server server(codeSignatures, bootstrapName);
@@ -254,13 +260,6 @@ int main(int argc, char *argv[])
 	server.waitForClients(waitForClients);
 	server.verbosity(verbose);
     
-	// add the RNG seed timer
-# if defined(NDEBUG)
-    EntropyManager entropy(server, entropyFile);
-# else
-    if (getuid() == 0) new EntropyManager(server, entropyFile);
-# endif
-
 	// create a smartcard monitor to manage external token devices
 	gPCSC = new PCSCMonitor(server, tokenCacheDir, scOptions(smartCardOptions));
     
@@ -273,10 +272,13 @@ int main(int argc, char *argv[])
     
     // install MDS (if needed) and initialize the local CSSM
     server.loadCssm(mdsIsInstalled);
-    
+
+#ifndef __clang_analyzer__
 	// create the shared memory notification hub
 	new SharedMemoryListener(messagingName, kSharedMemoryPoolSize);
+#endif
 	
+
 	// okay, we're ready to roll
     secnotice("SS", "Entering service as %s", (char*)bootstrapName);
 	Syslog::notice("Entering service");
@@ -337,7 +339,5 @@ static PCSCMonitor::ServiceLevel scOptions(const char *optionString)
 //
 static void handleSignals(int sig)
 {
-    secnotice("SS", "signal received: %d", sig);
-	if (kern_return_t rc = self_client_handleSignal(gMainServerPort, mach_task_self(), sig))
-		Syslog::error("self-send failed (mach error %d)", rc);
+	(void)self_client_handleSignal(gMainServerPort, mach_task_self(), sig);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2004,2006-2010,2013-2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2003-2004,2006-2010,2013-2017 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -125,18 +125,23 @@ typedef struct index_record index_record;
 
 struct _OpaqueSecOTAPKI
 {
-	CFRuntimeBase 		_base;
-	CFSetRef			_blackListSet;
-	CFSetRef			_grayListSet;
-    CFDictionaryRef     _allowList;
-    CFArrayRef          _trustedCTLogs;
-    CFDataRef           _CTWhiteListData;
-	CFArrayRef			_escrowCertificates;
-	CFArrayRef			_escrowPCSCertificates;
-	CFDictionaryRef		_evPolicyToAnchorMapping;
-	CFDictionaryRef		_anchorLookupTable;
-	const char*			_anchorTable;
-	int					_assetVersion;
+	CFRuntimeBase       _base;
+	CFSetRef            _blackListSet;
+	CFSetRef            _grayListSet;
+	CFDictionaryRef     _allowList;
+	CFArrayRef          _trustedCTLogs;
+	CFArrayRef          _pinningList;
+	CFArrayRef          _escrowCertificates;
+	CFArrayRef          _escrowPCSCertificates;
+	CFDictionaryRef     _evPolicyToAnchorMapping;
+	CFDictionaryRef     _anchorLookupTable;
+	const char*         _anchorTable;
+	const char*         _assetPath;
+	int                 _assetVersion;
+	const char*         _validUpdateSnapshot;
+	const char*         _validDatabaseSnapshot;
+	CFIndex             _validSnapshotVersion;
+	CFIndex             _validSnapshotFormat;
 };
 
 CFGiblisFor(SecOTAPKI)
@@ -159,10 +164,25 @@ static void SecOTAPKIDestroy(CFTypeRef cf)
     CFReleaseNull(otapkiref->_evPolicyToAnchorMapping);
     CFReleaseNull(otapkiref->_anchorLookupTable);
 
-	free((void *)otapkiref->_anchorTable);
-
     CFReleaseNull(otapkiref->_trustedCTLogs);
-    CFReleaseNull(otapkiref->_CTWhiteListData);
+    CFReleaseNull(otapkiref->_pinningList);
+
+    if (otapkiref->_anchorTable) {
+        free((void *)otapkiref->_anchorTable);
+        otapkiref->_anchorTable = NULL;
+    }
+    if (otapkiref->_assetPath) {
+        free((void *)otapkiref->_assetPath);
+        otapkiref->_assetPath = NULL;
+    }
+    if (otapkiref->_validUpdateSnapshot) {
+        free((void *)otapkiref->_validUpdateSnapshot);
+        otapkiref->_validUpdateSnapshot = NULL;
+    }
+    if (otapkiref->_validDatabaseSnapshot) {
+        free((void *)otapkiref->_validDatabaseSnapshot);
+        otapkiref->_validDatabaseSnapshot = NULL;
+    }
 }
 
 static CFDataRef SecOTACopyFileContents(const char *path)
@@ -171,13 +191,13 @@ static CFDataRef SecOTACopyFileContents(const char *path)
     int fd = open(path, O_RDONLY, 0666);
 
     if (fd == -1)
-	{
+    {
         goto badFile;
     }
 
     off_t fsize = lseek(fd, 0, SEEK_END);
     if (fsize == (off_t)-1)
-	{
+    {
         goto badFile;
     }
 
@@ -235,7 +255,8 @@ badFile:
 
 static Boolean PathExists(const char* path, size_t* pFileSize)
 {
-	TestOTALog("In PathExists: checking path %s\n", path);
+	const char *checked_path = (path) ? path : "";
+	TestOTALog("In PathExists: checking path \"%s\"\n", checked_path);
 	Boolean result = false;
 	struct stat         sb;
 
@@ -244,74 +265,75 @@ static Boolean PathExists(const char* path, size_t* pFileSize)
 		*pFileSize = 0;
 	}
 
-	int stat_result = stat(path, &sb);
+	int stat_result = stat(checked_path, &sb);
 	result = (stat_result == 0);
 
 
-    if (result)
-    {
-		TestOTALog("In PathExists: stat returned 0 for %s\n", path);
-        if (S_ISDIR(sb.st_mode))
-        {
-			TestOTALog("In PathExists: %s is a directory\n", path);
-            // It is a directory
-            ;
-        }
-        else
-        {
-			TestOTALog("In PathExists: %s is a file\n", path);
-            // It is a file
-            if (NULL != pFileSize)
-            {
-                *pFileSize = (size_t)sb.st_size;
-            }
-        }
-    }
+	if (result)
+	{
+		TestOTALog("In PathExists: stat returned 0 for \"%s\"\n", checked_path);
+		if (S_ISDIR(sb.st_mode))
+		{
+			TestOTALog("In PathExists: \"%s\" is a directory\n", checked_path);
+			// It is a directory
+			;
+		}
+		else
+		{
+			TestOTALog("In PathExists: \"%s\" is a file\n", checked_path);
+			// It is a file
+			if (NULL != pFileSize)
+			{
+				*pFileSize = (size_t)sb.st_size;
+			}
+		}
+	}
 #if VERBOSE_LOGGING
 	else
 	{
-		TestOTALog("In PathExists: stat returned %d for %s\n", stat_result, path);
+		const char *stat_prefix = "In PathExists: stat error";
+		TestOTALog("%s %d for \"%s\"\n", stat_prefix, stat_result, checked_path);
 		int local_errno = errno;
 		switch(local_errno)
 		{
 			case EACCES:
-				TestOTALog("In PathExists: stat failed because of EACCES\n");
+				TestOTALog("%s EACCES\n", stat_prefix);
 				break;
 
 			case EBADF:
-				TestOTALog("In PathExists: stat failed because of EBADF (Not likely)\n");
+				TestOTALog("%s EBADF\n", stat_prefix);
 				break;
 
 			case EFAULT:
-				TestOTALog("In PathExists: stat failed because of EFAULT (huh?)\n");
+				TestOTALog("%s EFAULT\n", stat_prefix);
 				break;
 
 			case ELOOP:
-				TestOTALog("In PathExists: stat failed because of ELOOP (huh?)\n");
+				TestOTALog("%s ELOOP\n", stat_prefix);
 				break;
 
 			case ENAMETOOLONG:
-				TestOTALog("In PathExists: stat failed because of ENAMETOOLONG (huh?)\n");
+				TestOTALog("%s ENAMETOOLONG\n", stat_prefix);
 				break;
 
 			case ENOENT:
-				TestOTALog("In PathExists: stat failed because of ENOENT (missing?)\n");
+				TestOTALog("%s ENOENT (missing?)\n", stat_prefix);
 				break;
 
 			case ENOMEM:
-				TestOTALog("In PathExists: stat failed because of ENOMEM (really?)\n");
+				TestOTALog("%s ENOMEM\n", stat_prefix);
 				break;
 
 			case ENOTDIR:
-				TestOTALog("In PathExists: stat failed because of ENOTDIR (really?)\n");
+				TestOTALog("%s ENOTDIR\n", stat_prefix);
 				break;
 
 			case EOVERFLOW:
-				TestOTALog("In PathExists: stat failed because of EOVERFLOW (really?)\n");
+				TestOTALog("%s EOVERFLOW\n", stat_prefix);
 				break;
 
 			default:
-				TestOTALog("In PathExists: unknown errno of %d\n", local_errno);
+				TestOTALog("%s %d\n", stat_prefix, local_errno);
 				break;
 		}
 	}
@@ -333,7 +355,7 @@ static int rmrf(char *path)
 	memset(path_buffer, 0, sizeof(path_buffer));
 
 	p1 = realpath(path, path_buffer);
-	if (!strncmp(path, p1, PATH_MAX))
+	if (p1 && !strncmp(path, p1, PATH_MAX))
 	{
 		return nftw(path, unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
 	}
@@ -497,21 +519,23 @@ static const char* InitOTADirectory(int* pAssetVersion)
 	bool assetDirectoryExists = PathExists(kBaseAssetDirectory, NULL);
     if (assetDirectoryExists)
     {
-		TestOTALog("InitOTADirectory: %s exists\n", kBaseAssetDirectory);
+		TestOTALog("InitOTADirectory: \"%s\" exists\n", kBaseAssetDirectory);
 		dp = opendir (kBaseAssetDirectory);
 		if (NULL != dp)
 		{
-			TestOTALog("InitOTADirectory: opendir sucessfully open %s\n", kBaseAssetDirectory);
+			TestOTALog("InitOTADirectory: opendir sucessfully open \"%s\"\n", kBaseAssetDirectory);
 			while ((ep = readdir(dp)))
 			{
-				TestOTALog("InitOTADirectory: processing name %s\n", ep->d_name);
+				TestOTALog("InitOTADirectory: processing name \"%s\"\n", ep->d_name);
 				if (strstr(ep->d_name, kVersionDirectoryNamePrefix))
 				{
-					TestOTALog("InitOTADirectory: %s matches\n", ep->d_name);
+					TestOTALog("InitOTADirectory: \"%s\" matches\n", ep->d_name);
 					memset(buffer, 0, sizeof(buffer));
 					snprintf(buffer,  sizeof(buffer), "%s%s", kVersionDirectoryNamePrefix, kNumberString);
-
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
 					sscanf(ep->d_name, buffer, &version);
+#pragma clang diagnostic pop
 
 					TestOTALog("InitOTADirectory: version = %d\n", version);
 
@@ -581,7 +605,7 @@ static const char* InitOTADirectory(int* pAssetVersion)
 	return result;
 }
 
-static CFSetRef InitializeBlackList(const char* path_ptr)
+static CF_RETURNS_RETAINED CFSetRef InitializeBlackList(const char* path_ptr)
 {
     CFPropertyListRef plist = CFPropertyListCopyFromAsset(path_ptr, CFSTR("Blocked"));
     CFSetRef result = CFSetCreateFromPropertyList(plist);
@@ -590,7 +614,7 @@ static CFSetRef InitializeBlackList(const char* path_ptr)
     return result;
 }
 
-static CFSetRef InitializeGrayList(const char* path_ptr)
+static CF_RETURNS_RETAINED CFSetRef InitializeGrayList(const char* path_ptr)
 {
     CFPropertyListRef plist = CFPropertyListCopyFromAsset(path_ptr, CFSTR("GrayListedKeys"));
     CFSetRef result = CFSetCreateFromPropertyList(plist);
@@ -599,19 +623,19 @@ static CFSetRef InitializeGrayList(const char* path_ptr)
     return result;
 }
 
-static CFDataRef InitializeCTWhiteListData(const char* path_ptr)
+static CF_RETURNS_RETAINED CFArrayRef InitializePinningList(const char* path_ptr)
 {
-    CFPropertyListRef data = CFPropertyListCopyFromAsset(path_ptr, CFSTR("CTWhiteListData"));
+    CFPropertyListRef list = CFPropertyListCopyFromAsset(path_ptr, CFSTR("CertificatePinning"));
 
-    if (data && (CFGetTypeID(data) == CFDataGetTypeID())) {
-        return data;
+    if (isArray(list)) {
+        return list;
     } else {
-        CFReleaseNull(data);
+        CFReleaseNull(list);
         return NULL;
     }
 }
 
-static CFDictionaryRef InitializeAllowList(const char* path_ptr)
+static CF_RETURNS_RETAINED CFDictionaryRef InitializeAllowList(const char* path_ptr)
 {
     CFPropertyListRef allowList = CFPropertyListCopyFromAsset(path_ptr, CFSTR("Allowed"));
 
@@ -623,7 +647,7 @@ static CFDictionaryRef InitializeAllowList(const char* path_ptr)
     }
 }
 
-static CFArrayRef InitializeTrustedCTLogs(const char* path_ptr)
+static CF_RETURNS_RETAINED CFArrayRef InitializeTrustedCTLogs(const char* path_ptr)
 {
     CFPropertyListRef trustedCTLogs = CFPropertyListCopyFromAsset(path_ptr, CFSTR("TrustedCTLogs"));
 
@@ -635,7 +659,7 @@ static CFArrayRef InitializeTrustedCTLogs(const char* path_ptr)
     }
 }
 
-static CFDictionaryRef InitializeEVPolicyToAnchorDigestsTable(const char* path_ptr)
+static CF_RETURNS_RETAINED CFDictionaryRef InitializeEVPolicyToAnchorDigestsTable(const char* path_ptr)
 {
     CFDictionaryRef result = NULL;
     CFPropertyListRef evroots = CFPropertyListCopyFromAsset(path_ptr, CFSTR("EVRoots"));
@@ -654,6 +678,84 @@ static CFDictionaryRef InitializeEVPolicyToAnchorDigestsTable(const char* path_p
     }
 
 	return result;
+}
+
+static CFIndex InitializeValidSnapshotVersion(CFIndex *outFormat)
+{
+    CFIndex validVersion = 0;
+    CFIndex validFormat = 0;
+    CFDataRef validVersionData = SecSystemTrustStoreCopyResourceContents(CFSTR("ValidUpdate"), CFSTR("plist"), NULL);
+    if (NULL != validVersionData)
+    {
+        CFPropertyListFormat propFormat;
+        CFDictionaryRef versionPlist =  CFPropertyListCreateWithData(kCFAllocatorDefault, validVersionData, 0, &propFormat, NULL);
+        if (NULL != versionPlist && CFDictionaryGetTypeID() == CFGetTypeID(versionPlist))
+        {
+            CFNumberRef versionNumber = (CFNumberRef)CFDictionaryGetValue(versionPlist, (const void *)CFSTR("Version"));
+            if (NULL != versionNumber)
+            {
+                CFNumberGetValue(versionNumber, kCFNumberCFIndexType, &validVersion);
+            }
+            CFNumberRef formatNumber = (CFNumberRef)CFDictionaryGetValue(versionPlist, (const void *)CFSTR("Format"));
+            if (NULL != formatNumber)
+            {
+                CFNumberGetValue(formatNumber, kCFNumberCFIndexType, &validFormat);
+            }
+        }
+        CFReleaseSafe(versionPlist);
+        CFReleaseSafe(validVersionData);
+    }
+    if (outFormat) {
+        *outFormat = validFormat;
+    }
+    return validVersion;
+}
+
+static const char* InitializeValidSnapshotData(CFStringRef filename_str)
+{
+    char *result = NULL;
+    const char *base_error_str = "could not get valid snapshot";
+
+    CFURLRef valid_url = SecSystemTrustStoreCopyResourceURL(filename_str, CFSTR("sqlite3"), NULL);
+    if (NULL == valid_url) {
+        secerror("%s", base_error_str);
+    } else {
+        CFStringRef valid_str = CFURLCopyFileSystemPath(valid_url, kCFURLPOSIXPathStyle);
+        char file_path_buffer[PATH_MAX];
+        memset(file_path_buffer, 0, PATH_MAX);
+        if (NULL == valid_str) {
+            secerror("%s path", base_error_str);
+        } else {
+            const char *valid_cstr = CFStringGetCStringPtr(valid_str, kCFStringEncodingUTF8);
+            if (NULL == valid_cstr) {
+                if (CFStringGetCString(valid_str, file_path_buffer, PATH_MAX, kCFStringEncodingUTF8)) {
+                    valid_cstr = file_path_buffer;
+                }
+            }
+            if (NULL == valid_cstr) {
+                secerror("%s path as UTF8 string", base_error_str);
+            } else {
+                asprintf(&result, "%s", valid_cstr);
+            }
+        }
+        CFReleaseSafe(valid_str);
+    }
+    CFReleaseSafe(valid_url);
+    if (result && !PathExists(result, NULL)) {
+        free(result);
+        result = NULL;
+    }
+    return (const char*)result;
+}
+
+static const char* InitializeValidUpdateSnapshot()
+{
+    return InitializeValidSnapshotData(CFSTR("update-full"));
+}
+
+static const char* InitializeValidDatabaseSnapshot()
+{
+    return InitializeValidSnapshotData(CFSTR("valid"));
 }
 
 static void* MapFile(const char* path, int* out_fd, size_t* out_file_size)
@@ -965,7 +1067,7 @@ static SecOTAPKIRef SecOTACreate()
 
 	SecOTAPKIRef otapkiref = NULL;
 
-    otapkiref = CFTypeAllocate(SecOTAPKI, struct _OpaqueSecOTAPKI , kCFAllocatorDefault);
+	otapkiref = CFTypeAllocate(SecOTAPKI, struct _OpaqueSecOTAPKI , kCFAllocatorDefault);
 
 	if (NULL == otapkiref)
 	{
@@ -976,31 +1078,34 @@ static SecOTAPKIRef SecOTACreate()
 	// will do the right thing
 	otapkiref->_blackListSet = NULL;
 	otapkiref->_grayListSet = NULL;
-    otapkiref->_allowList = NULL;
-    otapkiref->_trustedCTLogs = NULL;
-    otapkiref->_CTWhiteListData = NULL;
+	otapkiref->_allowList = NULL;
+	otapkiref->_trustedCTLogs = NULL;
+	otapkiref->_pinningList = NULL;
 	otapkiref->_escrowCertificates = NULL;
 	otapkiref->_escrowPCSCertificates = NULL;
 	otapkiref->_evPolicyToAnchorMapping = NULL;
 	otapkiref->_anchorLookupTable = NULL;
 	otapkiref->_anchorTable = NULL;
+	otapkiref->_assetPath = NULL;
 	otapkiref->_assetVersion = 0;
+	otapkiref->_validUpdateSnapshot = NULL;
+	otapkiref->_validDatabaseSnapshot = NULL;
+	otapkiref->_validSnapshotVersion = 0;
+	otapkiref->_validSnapshotFormat = 0;
 
 	// Start off by getting the correct asset directory info
 	int asset_version = 0;
 	const char* path_ptr = InitOTADirectory(&asset_version);
+	otapkiref->_assetPath = path_ptr;
 	otapkiref->_assetVersion = asset_version;
 
-	TestOTALog("SecOTACreate: asset_path = %s\n", path_ptr);
+	TestOTALog("SecOTACreate: asset_path = \"%s\"\n", (path_ptr) ? path_ptr : "");
 	TestOTALog("SecOTACreate: asset_version = %d\n", asset_version);
 
 	// Get the set of black listed keys
 	CFSetRef blackKeysSet = InitializeBlackList(path_ptr);
 	if (NULL == blackKeysSet)
 	{
-		if (path_ptr) {
-			free((void *)path_ptr);
-		}
 		CFReleaseNull(otapkiref);
 		return otapkiref;
 	}
@@ -1010,31 +1115,36 @@ static SecOTAPKIRef SecOTACreate()
 	CFSetRef grayKeysSet = InitializeGrayList(path_ptr);
 	if (NULL == grayKeysSet)
 	{
-		if (path_ptr) {
-			free((void *)path_ptr);
-		}
 		CFReleaseNull(otapkiref);
 		return otapkiref;
 	}
 	otapkiref->_grayListSet = grayKeysSet;
 
-    // Get the allow list dictionary
-    otapkiref->_allowList = InitializeAllowList(path_ptr);
+	// Get the allow list dictionary
+	// (now loaded lazily in SecOTAPKICopyAllowList)
 
-    // Get the trusted Certificate Transparency Logs
-    otapkiref->_trustedCTLogs = InitializeTrustedCTLogs(path_ptr);
+	// Get the trusted Certificate Transparency Logs
+	otapkiref->_trustedCTLogs = InitializeTrustedCTLogs(path_ptr);
 
-    // Get the EV whitelist
-    otapkiref->_CTWhiteListData = InitializeCTWhiteListData(path_ptr);
+	// Get the pinning list
+	otapkiref->_pinningList = InitializePinningList(path_ptr);
+
+	// Get the valid update snapshot version and format
+	CFIndex update_format = 0;
+	otapkiref->_validSnapshotVersion = InitializeValidSnapshotVersion(&update_format);
+	otapkiref->_validSnapshotFormat = update_format;
+
+	// Get the valid update snapshot path (if it exists, NULL otherwise)
+	otapkiref->_validUpdateSnapshot = InitializeValidUpdateSnapshot();
+
+	// Get the valid database snapshot path (if it exists, NULL otherwise)
+	otapkiref->_validDatabaseSnapshot = InitializeValidDatabaseSnapshot();
 
 	CFArrayRef escrowCerts = NULL;
 	CFArrayRef escrowPCSCerts = NULL;
 	InitializeEscrowCertificates(path_ptr, &escrowCerts, &escrowPCSCerts);
 	if (NULL == escrowCerts || NULL == escrowPCSCerts)
 	{
-		if (path_ptr) {
-			free((void *)path_ptr);
-		}
 		CFReleaseNull(escrowCerts);
 		CFReleaseNull(escrowPCSCerts);
 		CFReleaseNull(otapkiref);
@@ -1047,9 +1157,6 @@ static SecOTAPKIRef SecOTACreate()
 	CFDictionaryRef evOidToAnchorDigestMap = InitializeEVPolicyToAnchorDigestsTable(path_ptr);
 	if (NULL == evOidToAnchorDigestMap)
 	{
-		if (path_ptr) {
-			free((void *)path_ptr);
-		}
 		CFReleaseNull(otapkiref);
 		return otapkiref;
 	}
@@ -1063,9 +1170,6 @@ static SecOTAPKIRef SecOTACreate()
 		CFReleaseSafe(anchorLookupTable);
 		if (anchorTablePtr) {
 			free((void *)anchorTablePtr);
-		}
-		if (path_ptr) {
-			free((void *)path_ptr);
 		}
 		CFReleaseNull(otapkiref);
 		return otapkiref;
@@ -1127,15 +1231,54 @@ CFSetRef SecOTAPKICopyGrayList(SecOTAPKIRef otapkiRef)
 
 CFDictionaryRef SecOTAPKICopyAllowList(SecOTAPKIRef otapkiRef)
 {
-    CFDictionaryRef result = NULL;
-    if (NULL == otapkiRef)
-    {
-        return result;
-    }
+	CFDictionaryRef result = NULL;
+	if (NULL == otapkiRef)
+	{
+		return result;
+	}
 
-    result = otapkiRef->_allowList;
-    CFRetainSafe(result);
-    return result;
+	result = otapkiRef->_allowList;
+	if (!result) {
+		result = InitializeAllowList(otapkiRef->_assetPath);
+		otapkiRef->_allowList = result;
+	}
+
+	CFRetainSafe(result);
+	return result;
+}
+
+CFArrayRef SecOTAPKICopyAllowListForAuthKeyID(SecOTAPKIRef otapkiRef, CFStringRef authKeyID)
+{
+	// %%% temporary performance optimization:
+	// only load dictionary if we know an allow list exists for this key
+	const CFStringRef keyIDs[3] = {
+		CFSTR("7C724B39C7C0DB62A54F9BAA183492A2CA838259"),
+		CFSTR("65F231AD2AF7F7DD52960AC702C10EEFA6D53B11"),
+		CFSTR("D2A716207CAFD9959EEB430A19F2E0B9740EA8C7")
+	};
+	CFArrayRef result = NULL;
+	bool hasAllowList = false;
+	CFIndex count = (sizeof(keyIDs) / sizeof(keyIDs[0]));
+	for (CFIndex ix=0; ix<count && authKeyID; ix++) {
+		if (kCFCompareEqualTo == CFStringCompare(authKeyID, keyIDs[ix], 0)) {
+			hasAllowList = true;
+			break;
+		}
+	}
+	if (!hasAllowList || !otapkiRef) {
+		return result;
+	}
+
+	CFDictionaryRef allowListDict = SecOTAPKICopyAllowList(otapkiRef);
+	if (!allowListDict) {
+		return result;
+	}
+
+	// return a retained copy of the allow list array (or NULL)
+	result = CFDictionaryGetValue(allowListDict, authKeyID);
+	CFRetainSafe(result);
+	CFReleaseSafe(allowListDict);
+	return result;
 }
 
 CFArrayRef SecOTAPKICopyTrustedCTLogs(SecOTAPKIRef otapkiRef)
@@ -1151,15 +1294,14 @@ CFArrayRef SecOTAPKICopyTrustedCTLogs(SecOTAPKIRef otapkiRef)
     return result;
 }
 
-CFDataRef SecOTAPKICopyCTWhiteList(SecOTAPKIRef otapkiRef)
-{
-    CFDataRef result = NULL;
+CFArrayRef SecOTAPKICopyPinningList(SecOTAPKIRef otapkiRef) {
+    CFArrayRef result = NULL;
     if (NULL == otapkiRef)
     {
         return result;
     }
 
-    result = otapkiRef->_CTWhiteListData;
+    result = otapkiRef->_pinningList;
     CFRetainSafe(result);
     return result;
 }
@@ -1249,7 +1391,7 @@ CFDictionaryRef SecOTAPKICopyAnchorLookupTable(SecOTAPKIRef otapkiRef)
 	return result;
 }
 
-const char*	SecOTAPKIGetAnchorTable(SecOTAPKIRef otapkiRef)
+const char* SecOTAPKIGetAnchorTable(SecOTAPKIRef otapkiRef)
 {
 	const char* result = NULL;
 	if (NULL == otapkiRef)
@@ -1258,6 +1400,54 @@ const char*	SecOTAPKIGetAnchorTable(SecOTAPKIRef otapkiRef)
 	}
 
 	result = otapkiRef->_anchorTable;
+	return result;
+}
+
+const char* SecOTAPKIGetValidUpdateSnapshot(SecOTAPKIRef otapkiRef)
+{
+	const char* result = NULL;
+	if (NULL == otapkiRef)
+	{
+		return result;
+	}
+
+	result = otapkiRef->_validUpdateSnapshot;
+	return result;
+}
+
+const char* SecOTAPKIGetValidDatabaseSnapshot(SecOTAPKIRef otapkiRef)
+{
+	const char* result = NULL;
+	if (NULL == otapkiRef)
+	{
+		return result;
+	}
+
+	result = otapkiRef->_validDatabaseSnapshot;
+	return result;
+}
+
+CFIndex SecOTAPKIGetValidSnapshotVersion(SecOTAPKIRef otapkiRef)
+{
+	CFIndex result = 0;
+	if (NULL == otapkiRef)
+	{
+		return result;
+	}
+
+	result = otapkiRef->_validSnapshotVersion;
+	return result;
+}
+
+CFIndex SecOTAPKIGetValidSnapshotFormat(SecOTAPKIRef otapkiRef)
+{
+	CFIndex result = 0;
+	if (NULL == otapkiRef)
+	{
+		return result;
+	}
+
+	result = otapkiRef->_validSnapshotFormat;
 	return result;
 }
 

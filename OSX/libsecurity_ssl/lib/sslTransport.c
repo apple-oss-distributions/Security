@@ -60,6 +60,7 @@ extern int kSplitDefaultValue;
 
 static OSStatus SSLProcessProtocolMessage(SSLRecord *rec, SSLContext *ctx);
 static OSStatus SSLHandshakeProceed(SSLContext *ctx);
+static OSStatus SSLSendAlert(SSLContext *ctx, tls_alert_level_t level, tls_alert_t description);
 
 OSStatus 
 SSLWrite(
@@ -84,6 +85,7 @@ SSLWrite(
         	err = errSSLClosedGraceful;
 			goto abort;
         case SSL_HdskStateErrorClose:
+        case SSL_HdskStateOutOfBandError:
         	err = errSSLClosedAbort;
 			goto abort;
 	    case SSL_HdskStateReady:
@@ -172,6 +174,7 @@ readRetry:
 			err = errSSLClosedGraceful;
 			goto abort;
 		case SSL_HdskStateErrorClose:
+        case SSL_HdskStateOutOfBandError:
 			err = errSSLClosedAbort;
 			goto abort;
 		case SSL_HdskStateNoNotifyClose:
@@ -374,12 +377,17 @@ SSLReHandshake(SSLContext *ctx)
         return errSecParam;
     }
 
-    if (ctx->state == SSL_HdskStateGracefulClose)
-        return errSSLClosedGraceful;
-    if (ctx->state == SSL_HdskStateErrorClose)
-        return errSSLClosedAbort;
-    if (ctx->state == SSL_HdskStatePending)
-        return errSecBadReq;
+    switch (ctx->state) {
+        case SSL_HdskStateGracefulClose:
+            return errSSLClosedGraceful;
+        case SSL_HdskStateErrorClose:
+        case SSL_HdskStateOutOfBandError:
+            return errSSLClosedAbort;
+        case SSL_HdskStatePending:
+            return errSecBadReq;
+        default:
+            break;
+    }
 
     /* If we are the client, we start the negotiation */
     if(ctx->protocolSide == kSSLClientSide) {
@@ -397,10 +405,15 @@ SSLHandshake(SSLContext *ctx)
 	if(ctx == NULL) {
 		return errSecParam;
 	}
-    if (ctx->state == SSL_HdskStateGracefulClose)
-        return errSSLClosedGraceful;
-    if (ctx->state == SSL_HdskStateErrorClose)
-        return errSSLClosedAbort;
+
+    switch (ctx->state) {
+        case SSL_HdskStateGracefulClose:
+            return errSSLClosedGraceful;
+        case SSL_HdskStateErrorClose:
+            return errSSLClosedAbort;
+        default:
+            break;
+    }
 
     if(ctx->isDTLS && ctx->timeout_deadline) {
         CFAbsoluteTime current = CFAbsoluteTimeGetCurrent();
@@ -426,6 +439,27 @@ SSLHandshake(SSLContext *ctx)
         SSLChangeHdskState(ctx, SSL_HdskStatePending);
     }
 
+    /* If an out-of-band error occurred, handle it here and then terminate
+     the connection as needed. */
+    if (ctx->state == SSL_HdskStateOutOfBandError) {
+        bool shouldClose = true;
+        switch (ctx->outOfBandError) {
+            case errSecCertificateExpired:
+                SSLSendAlert(ctx, tls_handshake_alert_level_fatal, tls_handshake_alert_CertExpired);
+                break;
+            case errSecCertificateRevoked:
+                SSLSendAlert(ctx, tls_handshake_alert_level_fatal, tls_handshake_alert_CertRevoked);
+                break;
+            default:
+                shouldClose = false;
+                break;
+        }
+
+        if (shouldClose) {
+            return SSLClose(ctx);
+        }
+    }
+
     do {
         err = SSLHandshakeProceed(ctx);
         if((err != 0) && (err != errSSLUnexpectedRecord))
@@ -442,51 +476,15 @@ SSLHandshake(SSLContext *ctx)
 
 #if (TARGET_OS_IPHONE && !TARGET_IPHONE_SIMULATOR)
 
-#include <AggregateDictionary/ADClient.h>
-
-typedef void (*type_ADClientAddValueForScalarKey)(CFStringRef key, int64_t value);
-static type_ADClientAddValueForScalarKey gADClientAddValueForScalarKey = NULL;
-static dispatch_once_t gADFunctionPointersSet = 0;
-static CFBundleRef gAggdBundleRef = NULL;
-
-static bool InitializeADFunctionPointers()
-{
-    if (gADClientAddValueForScalarKey)
-    {
-        return true;
-    }
-
-    dispatch_once(&gADFunctionPointersSet,
-                  ^{
-                      CFStringRef path_to_aggd_framework = CFSTR("/System/Library/PrivateFrameworks/AggregateDictionary.framework");
-
-                      CFURLRef aggd_url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path_to_aggd_framework, kCFURLPOSIXPathStyle, true);
-
-                      if (NULL != aggd_url)
-                      {
-                          gAggdBundleRef = CFBundleCreate(kCFAllocatorDefault, aggd_url);
-                          if (NULL != gAggdBundleRef)
-                          {
-                              gADClientAddValueForScalarKey = (type_ADClientAddValueForScalarKey)
-                              CFBundleGetFunctionPointerForName(gAggdBundleRef, CFSTR("ADClientAddValueForScalarKey"));
-                          }
-                          CFRelease(aggd_url);
-                      }
-                  });
-    
-    return (gADClientAddValueForScalarKey!=NULL);
-}
+#include "SecADWrapper.h"
 
 static void ad_log_SecureTransport_early_fail(long signature)
 {
-    if (InitializeADFunctionPointers()) {
+    CFStringRef key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("com.apple.SecureTransport.early_fail.%ld"), signature);
 
-        CFStringRef key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("com.apple.SecureTransport.early_fail.%ld"), signature);
-
-        if(key) {
-            gADClientAddValueForScalarKey(key, 1);
-            CFRelease(key);
-        }
+    if (key) {
+        SecADAddValueForScalarKey(key, 1);
+        CFRelease(key);
     }
 }
 
@@ -581,9 +579,28 @@ SSLClose(SSLContext *ctx)
         err = SSLServiceWriteQueue(ctx);
 
     SSLChangeHdskState(ctx, SSL_HdskStateGracefulClose);
-    if (err == errSecIO)
+    if (err == errSecIO) 
         err = errSecSuccess;     /* Ignore errors related to closed streams */
     return err;
+}
+
+static OSStatus
+SSLSendAlert(SSLContext *ctx, tls_alert_level_t alertLevel, tls_alert_t alert)
+{
+    sslHdskStateDebug("SSLSendAlert");
+    if (ctx == NULL) {
+        return errSecParam;
+    }
+
+    return tls_handshake_send_alert(ctx->hdsk, alertLevel, alert);
+}
+
+OSStatus
+SSLSetError(SSLContext *ctx, OSStatus error)
+{
+    ctx->state = SSL_HdskStateOutOfBandError;
+    ctx->outOfBandError = error;
+    return errSecSuccess;
 }
 
 /*

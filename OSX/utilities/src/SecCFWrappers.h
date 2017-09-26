@@ -30,6 +30,9 @@
 
 #include <utilities/SecCFRelease.h>
 #include <utilities/debugging.h>
+#include <utilities/SecCFError.h>
+
+#include <IOKit/IOReturn.h>
 
 #include <assert.h>
 #include <dispatch/dispatch.h>
@@ -81,6 +84,7 @@ extern CFStringRef kSecDebugFormatOption;
 
 extern CFDictionaryRef SecGetDebugDescriptionFormatOptions(void);
 
+typedef void (^SecBoolCFErrorCallback) (bool, CFErrorRef);
 
 #define CFGiblisGetSingleton(returnType, giblisClassName, result, doThisOnce) \
 returnType giblisClassName(void); \
@@ -94,7 +98,7 @@ returnType giblisClassName(void) { \
 
 #define CFGiblisWithFunctions(gibliClassName, init_func, copy_func, finalize_func, equal_func, hash_func, copyFormattingDesc_func, copyDebugDesc_func, reclaim_func, refcount_func, run_once_block) \
 CFGiblisGetSingleton(CFTypeID, gibliClassName##GetTypeID, typeID, (^{ \
-    void(^_onceBlock)() = (run_once_block); \
+    void (^ const _onceBlock)(void) = (run_once_block); \
     static const CFRuntimeClass s##gibliClassName##Class = { \
         .version = (reclaim_func == NULL ? 0 : _kCFRuntimeResourcefulObject) \
                  | (refcount_func == NULL ? 0 : _kCFRuntimeCustomRefCount), \
@@ -247,19 +251,15 @@ static void fprint_string(FILE *file, CFStringRef string) {
     }
 }
 
+static inline void cffprint_v(FILE *file, CFStringRef fmt, va_list args) CF_FORMAT_FUNCTION(2, 0);
+static void cffprint(FILE *file, CFStringRef fmt, ...) CF_FORMAT_FUNCTION(2,0);
+
 static inline void cffprint_v(FILE *file, CFStringRef fmt, va_list args) {
     CFStringRef line = CFStringCreateWithFormatAndArguments(NULL, NULL, fmt, args);
     fprint_string(file, line);
     CFRelease(line);
 }
 
-static inline void cffprint_c_v(FILE *file, const char *fmt, va_list args) {
-    CFStringRef cffmt = CFStringCreateWithCString(kCFAllocatorDefault, fmt, kCFStringEncodingUTF8);
-    cffprint_v(file, cffmt, args);
-    CFRelease(cffmt);
-}
-
-static void cffprint(FILE *file, CFStringRef fmt, ...) CF_FORMAT_FUNCTION(2,0);
 static inline void cffprint(FILE *file, CFStringRef fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -284,6 +284,19 @@ bool CFErrorPropagate(CFErrorRef possibleError CF_CONSUMED, CFErrorRef *error) {
         return false;
     }
     return true;
+}
+
+static inline bool CFErrorIsMalfunctioningKeybagError(CFErrorRef error){
+    switch(CFErrorGetCode(error))
+    {
+        case(kIOReturnError):
+        case(kIOReturnBusy):
+        case(kIOReturnNotPermitted):
+            break;
+        default:
+            return false;
+    }
+    return CFEqualSafe(CFErrorGetDomain(error), kSecKernDomain);
 }
 
 //
@@ -638,6 +651,35 @@ static inline CFMutableArrayRef CFArrayCreateMutableForCFTypesWithCapacity(CFAll
     return CFArrayCreateMutable(allocator, capacity, &kCFTypeArrayCallBacks);
 }
 
+static inline CFMutableArrayRef SECWRAPPER_SENTINEL CFArrayCreateMutableForCFTypesWith(CFAllocatorRef allocator, ...)
+{
+
+    va_list args;
+    va_start(args, allocator);
+    CFIndex capacity = 0;
+    void* object = va_arg(args, void*);
+
+    while (object != NULL) {
+        object = va_arg(args, void*);
+        capacity++;
+    };
+    
+    va_end(args);
+    
+    CFMutableArrayRef result = CFArrayCreateMutableForCFTypesWithCapacity(allocator, capacity);
+
+    va_start(args, allocator);
+    object = va_arg(args, void*);
+
+    while (object != NULL) {
+        CFArrayAppendValue(result, object);
+        object = va_arg(args, void*);
+    };
+    
+    va_end(args);
+    return result;
+}
+
 
 static inline CFMutableArrayRef CFArrayCreateMutableForCFTypes(CFAllocatorRef allocator)
 {
@@ -648,8 +690,9 @@ static inline CFArrayRef SECWRAPPER_SENTINEL CFArrayCreateForCFTypes(CFAllocator
 {
     va_list args;
     va_start(args, allocator);
-    
-    return CFArrayCreateForVC(allocator, &kCFTypeArrayCallBacks, args);
+    CFArrayRef allocatedArray = CFArrayCreateForVC(allocator, &kCFTypeArrayCallBacks, args);
+    va_end(args);
+    return allocatedArray;
     
 }
 
@@ -657,8 +700,9 @@ static inline CFArrayRef CFArrayCreateCountedForCFTypes(CFAllocatorRef allocator
 {
     va_list args;
     va_start(args, entries);
-    
-    return CFArrayCreateCountedForVC(allocator, &kCFTypeArrayCallBacks, entries, args);
+    CFArrayRef allocatedArray = CFArrayCreateCountedForVC(allocator, &kCFTypeArrayCallBacks, entries, args);
+    va_end(args);
+    return allocatedArray;
 }
 
 static inline CFArrayRef CFArrayCreateCountedForCFTypesV(CFAllocatorRef allocator, CFIndex entries, va_list args)
@@ -669,6 +713,12 @@ static inline CFArrayRef CFArrayCreateCountedForCFTypesV(CFAllocatorRef allocato
 //
 // MARK: CFDictionary of CFTypes helpers
 //
+
+static void CFDictionarySetIfNonNull(CFMutableDictionaryRef dictionary, const void *key, const void *value) {
+    if (value) {
+        CFDictionarySetValue(dictionary, key, value);
+    }
+}
 
 static inline CFDictionaryRef CFDictionaryCreateCountedForCFTypesV(CFAllocatorRef allocator, CFIndex entries, va_list args)
 {
@@ -700,19 +750,21 @@ static inline CFDictionaryRef SECWRAPPER_SENTINEL CFDictionaryCreateForCFTypes(C
     }
 
     entries /= 2;
-
+    va_end(args);
     va_start(args, allocator);
-
-    return CFDictionaryCreateCountedForCFTypesV(allocator, entries, args);
-
+    CFDictionaryRef allocatedDictionary = CFDictionaryCreateCountedForCFTypesV(allocator, entries, args);
+    va_end(args);
+    return allocatedDictionary;
 }
 
 static inline CFDictionaryRef CFDictionaryCreateCountedForCFTypes(CFAllocatorRef allocator, CFIndex entries, ...)
 {
     va_list args;
     va_start(args, entries);
+    CFDictionaryRef allocatedDictionary = CFDictionaryCreateCountedForCFTypesV(allocator, entries, args);
+    va_end(args);
 
-    return CFDictionaryCreateCountedForCFTypesV(allocator, entries, args);
+    return allocatedDictionary;
 }
 
 static inline CFMutableDictionaryRef CFDictionaryCreateMutableForCFTypes(CFAllocatorRef allocator)
@@ -733,7 +785,24 @@ static inline CFMutableDictionaryRef SECWRAPPER_SENTINEL CFDictionaryCreateMutab
         CFDictionarySetValue(result, key, va_arg(args, void*));
         key = va_arg(args, void*);
     };
+    va_end(args);
+    return result;
+}
 
+static inline CFMutableDictionaryRef SECWRAPPER_SENTINEL CFDictionaryCreateMutableForCFTypesWithSafe(CFAllocatorRef allocator, ...)
+{
+    CFMutableDictionaryRef result = CFDictionaryCreateMutableForCFTypes(allocator);
+
+    va_list args;
+    va_start(args, allocator);
+
+    void* key = va_arg(args, void*);
+
+    while (key != NULL) {
+        CFDictionarySetIfNonNull(result, key, va_arg(args, void*));
+        key = va_arg(args, void*);
+    };
+    va_end(args);
     return result;
 }
 

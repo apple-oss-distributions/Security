@@ -13,6 +13,10 @@
 #define SERVICE_XPC_CONTEXT     "_context"
 #define SERVICE_XPC_LOCKED      "_locked"
 #define SERVICE_XPC_NO_PIN      "_no_pin"
+#define SERVICE_XPC_UID         "_uid"
+#define SERVICE_XPC_WRAPPED_KEY "_wrapped_key"
+#define SERVICE_XPC_KEYCLASS    "_keyclass"
+
 
 enum {
     SERVICE_STASH_SET_KEY = 1,
@@ -28,6 +32,9 @@ enum {
     SERVICE_KB_RESET,
     SERVICE_STASH_LOAD_KEY,
     SERVICE_KB_UNLOAD,
+    SERVICE_KB_LOAD_UID,
+    SERVICE_KB_WRAP_KEY,
+    SERVICE_KB_UNWRAP_KEY,
 };
 
 #endif

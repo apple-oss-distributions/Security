@@ -27,6 +27,7 @@
 #include "SSDLSession.h"
 #include <security_cdsa_utilities/KeySchema.h>
 #include <security_cdsa_plugin/cssmplugin.h>
+#include <security_utilities/threading.h>
 
 using namespace CssmClient;
 using namespace SecurityServer;
@@ -39,6 +40,7 @@ SSKey::SSKey(SSCSPSession &session, KeyHandle keyHandle, CssmKey &ioKey,
 mAllocator(session), mKeyHandle(keyHandle),
 mClientSession(session.clientSession())
 {
+    StLock<Mutex> _ (mMutex); // In the constructor??? Yes. Our handlers aren't thread safe in the slightest...
 	CssmKey::Header &header = ioKey.header();
 	if (inKeyAttr & CSSM_KEYATTR_PERMANENT)
 	{
@@ -140,6 +142,7 @@ mAllocator(session.allocator()), mKeyHandle(noKey), mUniqueId(uniqueId),
 mRecordType(recordType),
 mClientSession(session.clientSession())
 {
+    StLock<Mutex> _ (mMutex);
 	CssmKey::Header &header = ioKey.header();
 	memset(&header, 0, sizeof(header)); // Clear key header
 
@@ -233,15 +236,23 @@ mClientSession(session.clientSession())
 }
 
 SSKey::~SSKey()
-{
+try {
+    StLock<Mutex> _(mMutex); // In the destructor too??? Yes. See SSCSPSession.cpp:354 for an explanation of this code's policy on threads.
 	if (mKeyHandle != noKey)
 		clientSession().releaseKey(mKeyHandle);
+} catch (...) {
+    /*
+     * If the key handle have been invalidated, releaseKey will throw an exception
+     */
+    return;
 }
+
 
 void
 SSKey::free(const AccessCredentials *accessCred, CssmKey &ioKey,
 			CSSM_BOOL deleteKey)
 {
+    StLock<Mutex> _(mMutex);
 	freeReferenceKey(mAllocator, ioKey);
 	if (deleteKey)
 	{
@@ -264,17 +275,20 @@ SSKey::free(const AccessCredentials *accessCred, CssmKey &ioKey,
 SecurityServer::ClientSession &
 SSKey::clientSession()
 {
+    StLock<Mutex> _(mMutex);
 	return mClientSession;
 }
 
 KeyHandle SSKey::optionalKeyHandle() const
 {
+    StLock<Mutex> _(mMutex);
 	return mKeyHandle;
 }
 
 KeyHandle
 SSKey::keyHandle()
 {
+    StLock<Mutex> _(mMutex);
 	if (mKeyHandle == noKey)
 	{
 		// Deal with uninstantiated keys.
@@ -302,6 +316,7 @@ SSKey::keyHandle()
 void
 SSKey::getOwner(CSSM_ACL_OWNER_PROTOTYPE &owner, Allocator &allocator)
 {
+    StLock<Mutex> _ (mMutex);
 	clientSession().getKeyOwner(keyHandle(), AclOwnerPrototype::overlay(owner),
 								allocator);
 }
@@ -310,6 +325,7 @@ void
 SSKey::changeOwner(const AccessCredentials &accessCred,
 				   const AclOwnerPrototype &newOwner)
 {
+    StLock<Mutex> _ (mMutex);
 	clientSession().changeKeyOwner(keyHandle(), accessCred, newOwner);
 	didChangeAcl();
 }
@@ -318,6 +334,7 @@ void
 SSKey::getAcl(const char *selectionTag, uint32 &numberOfAclInfos,
 			  AclEntryInfo *&aclInfos, Allocator &allocator)
 {
+    StLock<Mutex> _ (mMutex);
 	clientSession().getKeyAcl(keyHandle(), selectionTag, numberOfAclInfos,
 							  aclInfos, allocator);
 }
@@ -325,6 +342,7 @@ SSKey::getAcl(const char *selectionTag, uint32 &numberOfAclInfos,
 void
 SSKey::changeAcl(const AccessCredentials &accessCred, const AclEdit &aclEdit)
 {
+    StLock<Mutex> _ (mMutex);
 	clientSession().changeKeyAcl(keyHandle(), accessCred, aclEdit);
 	didChangeAcl();
 }

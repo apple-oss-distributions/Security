@@ -86,22 +86,20 @@ void SOSEngineCircleChanged(SOSEngineRef engine, CFStringRef myPeerID, CFArrayRe
 // Iterate over all peers.
 void SOSEngineForEachPeer(SOSEngineRef engine, void (^with)(SOSPeerRef peer));
 
-// TODO: Move SOSTransportMessageIDSRef declarations somewhere we can get to them here.
-bool SOSEngineSyncWithPeers(SOSEngineRef engine, CFErrorRef *error);
+CF_RETURNS_RETAINED CFSetRef SOSEngineSyncWithBackupPeers(SOSEngineRef engine, CFSetRef /* CFStringRef */ peers, bool forceReset, CFErrorRef *error);
 
 // Don't call this unless you know what you are doing.  If you do then still don't call it.
 bool SOSEngineHandleMessage_locked(SOSEngineRef engine, CFStringRef peerID, SOSMessageRef message,
                                    SOSTransactionRef txn, bool *commit, bool *somethingChanged, CFErrorRef *error);
 
 CFDataRef SOSEngineCreateMessage_locked(SOSEngineRef engine, SOSTransactionRef txn, SOSPeerRef peer,
-                                        CFErrorRef *error, SOSEnginePeerMessageSentBlock *sent);
+                                        CFMutableArrayRef *attributeList, CFErrorRef *error, SOSEnginePeerMessageSentBlock *sent);
 
 // Return a SOSPeerRef for a given peer_id.
 SOSPeerRef SOSEngineCopyPeerWithID(SOSEngineRef engine, CFStringRef peer_id, CFErrorRef *error);
 
 // Operate on a peer with a given peer_id under the engine lock
-bool SOSEngineForPeerID(SOSEngineRef engine, CFStringRef peer_id, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer, SOSCoderRef coder));
-bool SOSEngineForPeerIDNoCoder(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer));
+bool SOSEngineForPeerID(SOSEngineRef engine, CFStringRef peer_id, CFErrorRef *error, void (^forPeer)(SOSTransactionRef txn, SOSPeerRef peer));
 
 // Modify a peer inside a transaction under then engine lock and optionally force an engine state save when done.
 bool SOSEngineWithPeerID(SOSEngineRef engine, CFStringRef peer_id, CFErrorRef *error, void (^with)(SOSPeerRef peer, SOSCoderRef coder, SOSDataSourceRef dataSource, SOSTransactionRef txn, bool *forceSaveState));
@@ -112,7 +110,7 @@ bool SOSEngineInitializePeerCoder(SOSEngineRef engine, SOSFullPeerInfoRef myPeer
 // return a zero length CFDataRef if there is nothing to send.
 // If *ProposedManifest is set the caller is responsible for updating their
 // proposed manifest upon successful transmission of the message.
-CFDataRef SOSEngineCreateMessageToSyncToPeer(SOSEngineRef engine, CFStringRef peerID, SOSEnginePeerMessageSentBlock *sentBlock, CFErrorRef *error);
+CFDataRef SOSEngineCreateMessageToSyncToPeer(SOSEngineRef engine, CFStringRef peerID, CFMutableArrayRef *attributeList, SOSEnginePeerMessageSentBlock *sentBlock, CFErrorRef *error);
 
 CFStringRef SOSEngineGetMyID(SOSEngineRef engine);
 bool SOSEnginePeerDidConnect(SOSEngineRef engine, CFStringRef peerID, CFErrorRef *error);
@@ -130,6 +128,14 @@ CFArrayRef SOSEngineCopyPeerConfirmedDigests(SOSEngineRef engine, CFErrorRef *er
 // Private do not use!
 SOSDataSourceRef SOSEngineGetDataSource(SOSEngineRef engine);
 bool SOSTestEngineSaveWithDER(SOSEngineRef engine, CFDataRef derState, CFErrorRef *error);
+bool SOSTestEngineSave(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error);
+bool SOSTestEngineLoad(SOSEngineRef engine, SOSTransactionRef txn, CFErrorRef *error);
+CFMutableDictionaryRef derStateToDictionaryCopy(CFDataRef state, CFErrorRef *error);
+bool SOSTestEngineSaveCoders(CFTypeRef engine, SOSTransactionRef txn, CFErrorRef *error);
+bool TestSOSEngineLoadCoders(CFTypeRef engine, SOSTransactionRef txn, CFErrorRef *error);
+void TestSOSEngineDoOnQueue(CFTypeRef engine, dispatch_block_t action);
+bool TestSOSEngineDoTxnOnQueue(CFTypeRef engine, CFErrorRef *error, void(^transaction)(SOSTransactionRef txn, bool *commit));
+CFMutableDictionaryRef TestSOSEngineGetCoders(CFTypeRef engine);
 
 // MARK: Sync completion notification registration
 
@@ -139,6 +145,21 @@ void SOSEngineSetSyncCompleteListenerQueue(SOSEngineRef engine, dispatch_queue_t
 
 // Engine State by Log
 void SOSEngineLogState(SOSEngineRef engine);
+
+// Keychain/datasource items
+// Used for the kSecAttrAccount when saving in the datasource with dsSetStateWithKey
+// Class D [kSecAttrAccessibleAlwaysPrivate/kSecAttrAccessibleAlwaysThisDeviceOnly]
+extern CFStringRef kSOSEngineStatev2;
+extern CFStringRef kSOSEnginePeerStates;
+extern CFStringRef kSOSEngineManifestCache;
+#define kSOSEngineProtectionDomainClassD kSecAttrAccessibleAlwaysPrivate
+// Class A [kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+extern CFStringRef kSOSEngineCoders;
+#define kSOSEngineProtectionDomainClassA kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+bool SOSEngineGetCodersNeedSaving(SOSEngineRef engine);
+void SOSEngineSetCodersNeedSaving(SOSEngineRef engine, bool saved);
+
+extern CFStringRef kSOSEngineStateVersionKey;
 
 __END_DECLS
 

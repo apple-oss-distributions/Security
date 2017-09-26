@@ -1,6 +1,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "SecureDownloadInternal.h"
+#include "SecCFRelease.h"
 
 //
 // SecureDownloadXML: SecureDownloadXML.c
@@ -104,7 +105,7 @@ static inline unsigned char decode64(unsigned char c)
 // Decodes base64 data into a binary CFData object
 // If first character on a line is not in the base64 alphabet, the line 
 // is ignored.
-static CFDataRef decodeBase64Data(const UInt8* ptr, size_t len) {
+static CF_RETURNS_RETAINED CFDataRef decodeBase64Data(const UInt8* ptr, size_t len) {
 	CFMutableDataRef result = CFDataCreateMutable(NULL, len); // data can't exceed len bytes
 	if (!result) return NULL;
 	
@@ -160,7 +161,7 @@ http://www.faqs.org/rfcs/rfc3548.html
 
 // Returns a CFString containing the base64 representation of the data.
 // boolean argument for whether to line wrap at 64 columns or not.
-static CFStringRef encodeBase64String(const UInt8* ptr, size_t len, int wrap) {
+static CF_RETURNS_RETAINED CFStringRef encodeBase64String(const UInt8* ptr, size_t len, int wrap) {
 	const char* alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		"abcdefghijklmnopqrstuvwxyz"
 		"0123456789+/=";
@@ -556,20 +557,20 @@ static void _parseXMLNode(const void *value, void *context) {
 					CFStringRef name = copyChildWithNameAsString(tree, namespaces, SD_XML_NAMESPACE, SD_XML_NAME);
 					if (name && state->plist) {
 						CFDictionarySetValue(state->plist, SD_XML_NAME, name);
-						CFRelease(name);
 					}
+                    CFReleaseNull(name);
 								
 					CFNumberRef size = copyChildWithNameAsInteger(tree, namespaces, SD_XML_NAMESPACE, SD_XML_SIZE);
 					if (size && state->plist) {
 						CFDictionarySetValue(state->plist, SD_XML_SIZE, size);
-						CFRelease(size);
 					}
+                    CFReleaseNull(size);
 
 					CFDateRef created = copyChildWithNameAsDate(tree, namespaces, SD_XML_NAMESPACE, SD_XML_CREATED);
 					if (created && state->plist) {
 						CFDictionarySetValue(state->plist, SD_XML_CREATED, created);
-						CFRelease(created);
 					}
+                    CFReleaseNull(created);
 					
 					descend = 1;
 
@@ -577,8 +578,8 @@ static void _parseXMLNode(const void *value, void *context) {
 					CFArrayRef urls = copyChildrenWithNameAsURLs(tree, namespaces, SD_XML_NAMESPACE, SD_XML_URL);
 					if (urls && state->plist) {
 						CFDictionarySetValue(state->plist, SD_XML_URL, urls);
-						CFRelease(urls);
 					}
+                    CFReleaseNull(urls);
 					
 				} else if (CFEqual(name, SD_XML_VERIFICATIONS)) {
 					CFMutableDictionaryRef dict = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -750,7 +751,7 @@ static void _appendCFDate(CFMutableDataRef data, CFDateRef date) {
 static CFArrayRef dictionaryGetSortedKeys(CFDictionaryRef dictionary) {
         CFIndex count = CFDictionaryGetCount(dictionary);
 
-        const void** keys = malloc(sizeof(CFStringRef) * count);
+        const void** keys = malloc(sizeof(CFTypeRef) * count);
         CFDictionaryGetKeysAndValues(dictionary, keys, NULL);
         CFArrayRef keysArray = CFArrayCreate(NULL, keys, count, &kCFTypeArrayCallBacks);
         CFMutableArrayRef sortedKeys = CFArrayCreateMutableCopy(NULL, count, keysArray);
