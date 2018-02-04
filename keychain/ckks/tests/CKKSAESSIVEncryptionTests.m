@@ -36,10 +36,10 @@
 #include <securityd/SecItemServer.h>
 #include <Security/SecItemPriv.h>
 
-@interface CloudKitKeychainEncryptionTests : CloudKitMockXCTest
+@interface CloudKitKeychainAESSIVEncryptionTests : CloudKitMockXCTest
 @end
 
-@implementation CloudKitKeychainEncryptionTests
+@implementation CloudKitKeychainAESSIVEncryptionTests
 
 + (void)setUp {
     // We don't really want to spin up the whole machinery for the encryption tests
@@ -76,7 +76,7 @@
     XCTAssertNil([[CKKSAESSIVKey alloc] initWithBase64: @"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA------AAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="], "Invalid base64 does not generate a key");
 }
 
-- (void)testBasicEncryption {
+- (void)testBasicAESSIVEncryption {
     NSString* plaintext = @"plaintext is plain";
     NSData* plaintextData = [plaintext dataUsingEncoding: NSUTF8StringEncoding];
 
@@ -321,6 +321,25 @@
     [self ensureKeychainSaveLoad: classC];
 }
 
+- (void)testCKKSKeyProtobuf {
+    NSError* error = nil;
+    CKKSKey* tlk =  [self fakeTLK:self.testZoneID];
+
+    NSData* tlkPersisted = [tlk serializeAsProtobuf:&error];
+    XCTAssertNil(error, "Shouldn't have been an error serializing to protobuf");
+    XCTAssertNotNil(tlkPersisted, "Should have gotten some protobuf data back");
+
+    CKKSKey* otherKey = [CKKSKey loadFromProtobuf:tlkPersisted error:&error];
+    XCTAssertNil(error, "Shouldn't have been an error serializing from protobuf");
+    XCTAssertNotNil(otherKey, "Should have gotten some protobuf data back");
+
+    XCTAssertEqualObjects(tlk.uuid, otherKey.uuid, "Should have gotten the same UUID");
+    XCTAssertEqualObjects(tlk.keyclass, otherKey.keyclass, "Should have gotten the same key class");
+    XCTAssertEqualObjects(tlk.zoneID, otherKey.zoneID, "Should have gotten the same zoneID");
+    XCTAssertEqualObjects(tlk.aessivkey, otherKey.aessivkey, "Should have gotten the same underlying key back");
+    XCTAssertEqualObjects(tlk, otherKey, "Should have gotten the same key");
+}
+
 - (BOOL)tryDecryptWithProperAuthData:(CKKSItem*)ciphertext plaintext:(NSDictionary<NSString*, NSData*>*)plaintext {
     NSDictionary<NSString*, NSData*>* roundtrip;
     NSError *error = nil;
@@ -519,6 +538,74 @@
     XCTAssertNotNil(error, "error exists when there's nothing in the keychain");
     XCTAssertNil(reloadedKey, "no key object when there's nothing in the keychain");
     error = nil;
+}
+
+- (void)testCKKSKeyTrialSelfWrapped {
+    NSError* error = nil;
+    CKKSKey* tlk =  [self fakeTLK:self.testZoneID];
+    XCTAssertTrue([tlk wrapsSelf], "TLKs should wrap themselves");
+
+    CKRecord* record = [tlk CKRecordWithZoneID:self.testZoneID];
+    XCTAssertNotNil(record, "TLKs should know how to turn themselves into CKRecords");
+    CKKSKey* receivedTLK = [[CKKSKey alloc] initWithCKRecord:record];
+    XCTAssertNotNil(receivedTLK, "Keys should know how to recover themselves from CKRecords");
+
+    XCTAssertTrue([receivedTLK wrapsSelf], "TLKs should wrap themselves, even when received from CloudKit");
+
+    XCTAssertFalse([receivedTLK ensureKeyLoaded:&error], "Received keys can't load themselves when there's no key data");
+    XCTAssertNotNil(error, "Error should exist when a key fails to load itself");
+    error = nil;
+
+    XCTAssertTrue([receivedTLK trySelfWrappedKeyCandidate:tlk.aessivkey error:&error], "Shouldn't be an error when we give a CKKSKey its key");
+    XCTAssertNil(error, "Shouldn't be an error giving a CKKSKey its key material");
+
+    XCTAssertTrue([receivedTLK ensureKeyLoaded:&error], "Once a CKKSKey has its key material, it doesn't need to load it again");
+    XCTAssertNil(error, "Shouldn't be an error loading a loaded CKKSKey");
+}
+
+- (void)testCKKSKeyTrialSelfWrappedFailure {
+    NSError* error = nil;
+    CKKSKey* tlk =  [self fakeTLK:self.testZoneID];
+    XCTAssertTrue([tlk wrapsSelf], "TLKs should wrap themselves");
+
+    CKRecord* record = [tlk CKRecordWithZoneID:self.testZoneID];
+    XCTAssertNotNil(record, "TLKs should know how to turn themselves into CKRecords");
+    CKKSKey* receivedTLK = [[CKKSKey alloc] initWithCKRecord:record];
+    XCTAssertNotNil(receivedTLK, "Keys should know how to recover themselves from CKRecords");
+
+    XCTAssertTrue([receivedTLK wrapsSelf], "TLKs should wrap themselves, even when received from CloudKit");
+
+    XCTAssertFalse([receivedTLK ensureKeyLoaded:&error], "Received keys can't load themselves when there's no key data");
+    XCTAssertNotNil(error, "Error should exist when a key fails to load itself");
+    error = nil;
+
+    XCTAssertFalse([receivedTLK trySelfWrappedKeyCandidate:[[CKKSAESSIVKey alloc] initWithBase64: @"aaaaaZ7Zg+6WJXScTnRBfNmoU1UiMkSYxWc+d1Vuq3IFn2RmTRkTdWTe3HmeWo1pAomqy+upK8KHg2PGiRGhqg=="] error:&error], "Should be an error when we give a CKKSKey the wrong key");
+    XCTAssertNotNil(error, "Should be an error giving a CKKSKey the wrong key material");
+
+    XCTAssertFalse([receivedTLK ensureKeyLoaded:&error], "Received keys can't load themselves when there's no key data");
+    XCTAssertNotNil(error, "Error should exist when a key fails to load itself");
+    error = nil;
+}
+
+- (void)testCKKSKeyTrialNotSelfWrappedFailure {
+    NSError* error = nil;
+    CKKSKey* tlk =  [self fakeTLK:self.testZoneID];
+    XCTAssertTrue([tlk wrapsSelf], "TLKs should wrap themselves");
+
+    CKKSKey* classC = [CKKSKey randomKeyWrappedByParent: tlk keyclass:SecCKKSKeyClassC error:&error];
+    XCTAssertFalse([classC wrapsSelf], "Wrapped keys should not wrap themselves");
+
+    XCTAssertTrue([classC ensureKeyLoaded:&error], "Once a CKKSKey has its key material, it doesn't need to load it again");
+    XCTAssertNil(error, "Shouldn't be an error loading a loaded CKKSKey");
+
+    XCTAssertFalse([classC trySelfWrappedKeyCandidate:classC.aessivkey error:&error], "Should be an error when we attempt to trial a key on a non-self-wrapped key");
+    XCTAssertNotNil(error, "Should be an error giving a CKKSKey the wrong key material");
+    XCTAssertEqual(error.code, CKKSKeyNotSelfWrapped, "Should have gotten CKKSKeyNotSelfWrapped as an error");
+    error = nil;
+
+    // But, since we didn't throw away its key, it's still loaded
+    XCTAssertTrue([classC ensureKeyLoaded:&error], "Once a CKKSKey has its key material, it doesn't need to load it again");
+    XCTAssertNil(error, "Shouldn't be an error loading a loaded CKKSKey");
 }
 
 - (BOOL)padAndUnpadDataWithLength:(NSUInteger)dataLength blockSize:(NSUInteger)blockSize extra:(BOOL)extra {
