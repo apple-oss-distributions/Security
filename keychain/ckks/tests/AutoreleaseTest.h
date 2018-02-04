@@ -21,23 +21,10 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#if OCTAGON
+#define TEST_API_AUTORELEASE_BEFORE(name) size_t _pending_before_##name = pending_autorelease_count()
 
-#import <Foundation/Foundation.h>
+#define TEST_API_AUTORELEASE_AFTER(name)                        \
+    size_t _pending_after_##name = pending_autorelease_count(); \
+    XCTAssertEqual(_pending_before_##name, _pending_after_##name, "pending autoreleases unchanged (%lu->%lu)", _pending_before_##name, _pending_after_##name)
 
-@interface CKKSLockStateTracker : NSObject
-@property NSOperation* unlockDependency;
-
-- (instancetype)init;
-
-// Force a recheck of the keybag lock state
-- (void)recheck;
-
-// Check if this error code is related to keybag is locked and we should retry later
-- (bool)isLockedError:(NSError*)error;
-
-// Ask AKS if the user's keybag is locked
-+ (bool)queryAKSLocked;
-@end
-
-#endif  // OCTAGON
+ssize_t pending_autorelease_count(void);

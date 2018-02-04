@@ -21,23 +21,27 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#import <Foundation/Foundation.h>
+#import "keychain/ckks/CKKSGroupOperation.h"
+
 #if OCTAGON
 
-#import <Foundation/Foundation.h>
+@class CKKSKeychainView;
 
-@interface CKKSLockStateTracker : NSObject
-@property NSOperation* unlockDependency;
+@interface CKKSLocalSynchronizeOperation : CKKSGroupOperation
+@property (weak) CKKSKeychainView* ckks;
 
-- (instancetype)init;
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithCKKSKeychainView:(CKKSKeychainView*)ckks;
+@end
 
-// Force a recheck of the keybag lock state
-- (void)recheck;
-
-// Check if this error code is related to keybag is locked and we should retry later
-- (bool)isLockedError:(NSError*)error;
-
-// Ask AKS if the user's keybag is locked
-+ (bool)queryAKSLocked;
+// Reload everything from the mirror table into the incoming queue
+// Does not process these items
+@interface CKKSReloadAllItemsOperation : CKKSResultOperation
+@property (weak) CKKSKeychainView* ckks;
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithCKKSKeychainView:(CKKSKeychainView*)ckks;
 @end
 
 #endif  // OCTAGON
+
