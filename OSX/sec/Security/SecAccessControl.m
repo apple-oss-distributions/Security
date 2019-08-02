@@ -22,7 +22,7 @@
  */
 
 /*
- * SecAccessControl.c - CoreFoundation based access control object
+ * SecAccessControl.m - CoreFoundation based access control object
  */
 
 #include <TargetConditionals.h>
@@ -48,9 +48,33 @@ struct __SecAccessControl {
 
 static SecAccessConstraintRef SecAccessConstraintCreateValueOfKofN(CFAllocatorRef allocator, size_t numRequired, CFArrayRef constraints, CFErrorRef *error);
 
+static void dumpValue(id value, NSMutableString *target, NSString *separator) {
+    if (value == nil) {
+        // Do nothing.
+    } else if (CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
+        [target appendString:[value boolValue] ? @"true" : @"false"];
+    } else if ([value isKindOfClass:NSNumber.class]) {
+        [target appendString:[value string]];
+    } else if ([value isKindOfClass:NSString.class]) {
+        [target appendString:value];
+    } else if ([value isKindOfClass:NSDictionary.class]) {
+        [value enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
+            [target appendString:separator];
+            dumpValue(key, target, @"");
+            [target appendString:@"("];
+            dumpValue(obj, target, @"");
+            [target appendString:@")"];
+        }];
+    }
+}
+
 static CFStringRef SecAccessControlCopyFormatDescription(CFTypeRef cf, CFDictionaryRef formatOptions) {
     SecAccessControlRef access_control = (SecAccessControlRef)cf;
-    return CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("<SecAccessControlRef: %p>"), access_control);
+    NSDictionary *contents = (__bridge NSDictionary *)access_control->dict;
+    NSMutableString *dump = [NSMutableString string];
+    dumpValue(contents[(__bridge id)kSecAccessControlKeyProtection], dump, @"");
+    dumpValue(contents[(__bridge id)kAKSKeyAcl], dump, @";");
+    return CFBridgingRetain([NSString stringWithFormat:@"<SecAccessControlRef: %@>", dump]);
 }
 
 static Boolean SecAccessControlCompare(CFTypeRef lhs, CFTypeRef rhs) {
@@ -338,10 +362,6 @@ errOut:
 }
 
 bool SecAccessControlAddConstraintForOperation(SecAccessControlRef access_control, CFTypeRef operation, CFTypeRef constraint, CFErrorRef *error) {
-    CheckItemInArray(operation, ItemArray(kAKSKeyOpEncrypt, kAKSKeyOpDecrypt,
-                                          kAKSKeyOpSign, kAKSKeyOpAttest, kAKSKeyOpComputeKey,
-                                          kAKSKeyOpSync, kAKSKeyOpDefaultAcl, kAKSKeyOpDelete),
-                     CFSTR("SecAccessControl: invalid operation"));
     if (!isDictionary(constraint) && !CFEqual(constraint, kCFBooleanTrue) && !CFEqual(constraint, kCFBooleanFalse) ) {
         return SecError(errSecParam, error, CFSTR("invalid constraint"));
     }
