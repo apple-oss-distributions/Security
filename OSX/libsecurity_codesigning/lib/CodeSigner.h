@@ -93,7 +93,14 @@ public:
     bool mWantTimeStamp;          // use a Timestamp server
     bool mNoTimeStampCerts;       // don't request certificates with timestamping request
 	LimitedAsync *mLimitedAsync;	// limited async workers for verification
+	uint32_t mRuntimeVersionOverride;	// runtime Version Override
+	bool mPreserveAFSC;             // preserve AFSC compression
+	bool mOmitAdhocFlag;			// don't add adhoc flag, even without signer identity
 
+	// Signature Editing
+	Architecture mEditArch;			// architecture to edit (defaults to all if empty)
+	CFRef<CFDataRef> mEditCMS;		// CMS to replace in the signature
+	
 };
 
 

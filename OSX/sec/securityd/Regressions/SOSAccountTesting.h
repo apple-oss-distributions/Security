@@ -26,15 +26,15 @@
 #define SEC_SOSAccountTesting_h
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <Security/SecureObjectSync/SOSAccountPriv.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSPeerInfoCollections.h>
+#include "keychain/SecureObjectSync/SOSAccountPriv.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSPeerInfoCollections.h"
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
-#include <Security/SecureObjectSync/SOSPeerInfoV2.h>
-#import "Security/SecureObjectSync/SOSAccountTrustClassic+Expansion.h"
-#import <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
-#import <Security/SecureObjectSync/SOSAccountTrustClassic+Identity.h>
-#import <Security/SecureObjectSync/SOSAccountTrustClassic.h>
+#include "keychain/SecureObjectSync/SOSPeerInfoV2.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Expansion.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Identity.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic.h"
 
 #include "SOSTestDataSource.h"
 #include "SOSRegressionUtilities.h"
@@ -116,15 +116,6 @@ static inline SOSViewResultCode SOSAccountUpdateView_wTxn(SOSAccount* acct, CFSt
     return result;
 }
 
-static inline bool SOSAccountSetMyDSID_wTxn(SOSAccount* acct, CFStringRef dsid, CFErrorRef* error)
-{
-    __block bool result = false;
-    [acct performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
-        result = SOSAccountSetMyDSID(txn, dsid, error);
-    }];
-    return result;
-}
-
 //
 // Account comparison
 //
@@ -137,12 +128,10 @@ static void SOSAccountResetToTest(SOSAccount* a, CFStringRef accountName) {
     SOSUnregisterTransportKeyParameter(a.key_transport);
     SOSUnregisterTransportCircle((SOSCircleStorageTransport*)a.circle_transport);
     SOSUnregisterTransportMessage((SOSMessage*)a.kvs_message_transport);
-    SOSUnregisterTransportMessage((SOSMessage*)a.ids_message_transport);
 
     if(key_transports)
         CFArrayRemoveAllValue(key_transports, (__bridge CFTypeRef)(a.key_transport));
     if(message_transports){
-        CFArrayRemoveAllValue(message_transports, (__bridge CFTypeRef)a.ids_message_transport);
         CFArrayRemoveAllValue(message_transports, (__bridge CFTypeRef)a.kvs_message_transport);
     }
     if(circle_transports)
@@ -150,7 +139,6 @@ static void SOSAccountResetToTest(SOSAccount* a, CFStringRef accountName) {
 
     a.circle_transport = nil;
     a.key_transport = nil;
-    a.ids_message_transport = nil;
     a.kvs_message_transport = nil;
 
     SOSAccountEnsureFactoryCirclesTest(a, accountName);
@@ -252,12 +240,13 @@ static void accounts_agree_internal(char *label, SOSAccount* left, SOSAccount* r
 
             if (leftFullPeer)
                 CFSetAddValue(allowed_identities, SOSFullPeerInfoGetPeerInfo(leftFullPeer));
+            CFReleaseNull(leftFullPeer);
 
-            
             SOSFullPeerInfoRef rightFullPeer = [right.trust CopyAccountIdentityPeerInfo];
             
             if (rightFullPeer)
                 CFSetAddValue(allowed_identities, SOSFullPeerInfoGetPeerInfo(rightFullPeer));
+            CFReleaseNull(rightFullPeer);
 
             unretired_peers_is_subset(label, leftPeers, allowed_identities);
 
@@ -439,15 +428,6 @@ static bool FillAllChanges(CFMutableDictionaryRef changes) {
             }
             SOSTransportMessageTestClearChanges(tpt);
         }
-        else if([(__bridge SOSMessage*)value SOSTransportMessageGetTransportType] == kIDSTest){
-            SOSMessageIDSTest* ids = (__bridge SOSMessageIDSTest*) value;
-            CFDictionaryRemoveValue(SOSTransportMessageIDSTestGetChanges(ids), kCFNull);
-            if (AddNewChanges(changes, SOSTransportMessageIDSTestGetChanges(ids), SOSTransportMessageIDSTestGetAccount(ids))) {
-                changed |= true;
-                CFSetAddValue(changedAccounts, (__bridge CFTypeRef)(SOSTransportMessageIDSTestGetAccount(ids)));
-            }
-            SOSTransportMessageIDSTestClearChanges(ids);
-        }
     });
     
     secnotice("process-changes", "Accounts with change (%@): %@", changed ? CFSTR("YES") : CFSTR("NO"), changedAccounts);
@@ -480,14 +460,6 @@ static void FillChanges(CFMutableDictionaryRef changes, SOSAccount* forAccount)
                 CFDictionaryRemoveValue(SOSTransportMessageKVSTestGetChanges(tpt), kCFNull);
                 AddNewChanges(changes, SOSTransportMessageKVSTestGetChanges(tpt), SOSTransportMessageKVSTestGetAccount(tpt));
                 SOSTransportMessageTestClearChanges(tpt);
-            }
-        }
-        else{
-            SOSMessageIDSTest* tpt = (__bridge SOSMessageIDSTest*) value;
-            if(CFEqualSafe((__bridge CFTypeRef)(forAccount), (__bridge CFTypeRef)(SOSTransportMessageIDSTestGetAccount(tpt)))){
-                CFDictionaryRemoveValue(SOSTransportMessageIDSTestGetChanges(tpt), kCFNull);
-                AddNewChanges(changes, SOSTransportMessageIDSTestGetChanges(tpt), SOSTransportMessageIDSTestGetAccount(tpt));
-                SOSTransportMessageIDSTestClearChanges(tpt);
             }
         }
     });
@@ -541,8 +513,10 @@ static inline void FeedChangesTo(CFMutableDictionaryRef changes, SOSAccount* acc
         secnotice("changes", "  %@", key);
     });
 
-    if(CFDictionaryGetCount(account_pending_messages) == 0)
+    if(CFDictionaryGetCount(account_pending_messages) == 0) {
+        CFReleaseNull(account_pending_messages);
         return;
+    }
     
     __block CFMutableArrayRef handled = NULL;
     [acct performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
@@ -671,11 +645,6 @@ static inline SOSAccount* CreateAccountForLocalChangesWithStartingAttributes(CFS
     
     CFMutableDictionaryRef testV2dict = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
     CFDictionaryAddValue(testV2dict, sSerialNumberKey, serial);
-    CFDictionaryAddValue(testV2dict, sPreferIDS, preferIDS);
-    CFDictionaryAddValue(testV2dict, sPreferIDSFragmentation, preferIDSFragmentation);
-    CFDictionaryAddValue(testV2dict, sPreferIDSACKModel, preferIDSACKModel);
-    CFDictionaryAddValue(testV2dict, sTransportType, transportType);
-    CFDictionaryAddValue(testV2dict, sDeviceID, deviceID);
     SOSAccount* result = SOSAccountCreateTest(kCFAllocatorDefault, name, gestalt, factory);
     [result.trust updateV2Dictionary:result v2:testV2dict];
 
@@ -719,7 +688,7 @@ static inline SOSAccount* CreateAccountForLocalChanges(CFStringRef name, CFStrin
     CFStringRef randomSerial = CFStringCreateRandomHexWithLength(8);
     CFStringRef randomDevID = CFStringCreateRandomHexWithLength(16);
     SOSAccount* retval = CreateAccountForLocalChangesWithStartingAttributes(name, data_source_name, SOSPeerInfo_iOS, randomSerial,
-                                                              kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, SOSTransportMessageTypeIDSV2, randomDevID);
+                                                              kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, SOSTransportMessageTypeKVS, randomDevID);
 
     CFReleaseNull(randomSerial);
     CFReleaseNull(randomDevID);
@@ -842,7 +811,7 @@ static inline bool testAccountPersistence(SOSAccount* account) {
     ok(CFEqualSafe((__bridge CFTypeRef)reinflatedAccount, (__bridge CFTypeRef)account), "Compares");
 
     // Repeat through SOSAccountCopyEncodedData() interface - this is the normally called combined interface
-    accountDER = [reinflatedAccount encodedData:&error];
+    accountDER = [account encodedData:&error];
     error = nil;
     reinflatedAccount = [SOSAccount accountFromData:accountDER factory:test_factory error:&error];
     ok(reinflatedAccount, "inflated2: %@", error);
@@ -908,9 +877,9 @@ static inline bool SOSTestJoinWithApproval(CFDataRef cfpassword, CFStringRef cfa
     // retval will return op failures, not count failures - we'll still report those from in here.
     bool retval = false;
     
-    ok(retval = SOSTestJoinWith(cfpassword, cfaccount, changes, joiner), "Applyication Made");
+    ok(retval = SOSTestJoinWith(cfpassword, cfaccount, changes, joiner), "Application Made");
     
-    is(ProcessChangesUntilNoChange(changes, approver, joiner, NULL), 2, "updates");
+    ProcessChangesUntilNoChange(changes, approver, joiner, NULL);
     
     int nrounds = 2;
     if(dropUserKey) SOSAccountPurgePrivateCredential(joiner);  // lose the userKey so we don't "fix" the ghost problem yet.
@@ -919,7 +888,67 @@ static inline bool SOSTestJoinWithApproval(CFDataRef cfpassword, CFStringRef cfa
     if(expectCleanup) nrounds++;
     
     ok(retval &= SOSTestApproveRequest(approver, 1), "Accepting Request to Join");
-    is(ProcessChangesUntilNoChange(changes, approver, joiner, NULL), nrounds, "updates");
+    ProcessChangesUntilNoChange(changes, approver, joiner, NULL);
+    
+    accounts_agree_internal("Successful join shows same circle view", joiner, approver, false);
+    is(countPeers(joiner), expectedCount, "There should be %d valid peers", expectedCount);
+    return retval;
+}
+
+
+static inline bool SOSTestChangeAccountDeviceName(SOSAccount* account, CFStringRef name) {
+    bool retval = false;
+    CFMutableDictionaryRef mygestalt = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, SOSPeerGetGestalt(account.peerInfo));
+    require_quiet(mygestalt, retOut);
+    CFDictionarySetValue(mygestalt, kPIUserDefinedDeviceNameKey, name);
+    retval = [account.trust updateGestalt:account newGestalt:mygestalt];
+retOut:
+    CFReleaseNull(mygestalt);
+    return retval;
+}
+
+/*
+ * this simulates a piggy-back join at the account level
+ */
+
+static inline bool SOSTestJoinThroughPiggyBack(CFDataRef cfpassword, CFStringRef cfaccount, CFMutableDictionaryRef changes, SOSAccount* approver, SOSAccount* joiner, bool dropUserKey, int expectedCount, bool expectCleanup) {
+    // retval will return op failures, not count failures - we'll still report those from in here.
+    bool retval = false;
+    CFErrorRef error = NULL;
+
+    ok(SOSAccountAssertUserCredentialsAndUpdate(approver, cfaccount, cfpassword, &error), "Credential setting (%@)", error);
+    CFReleaseNull(error);
+    // This makes sure the joiner sees the current key parameters
+    ProcessChangesUntilNoChange(changes, approver, joiner, NULL);
+    
+    SecKeyRef privKey = SOSAccountGetPrivateCredential(approver, &error);
+    ok(privKey, "got privkey from approver (%@)", error);
+    CFReleaseNull(error);
+
+    ok(SOSAccountTryUserPrivateKey(joiner, privKey, &error), "assert same credentials on joiner (%@)", error);
+    CFReleaseNull(error);
+    // This gives the joiner a chance to see the current circle - this is the account-level equivalent of the Flush added to stashAccountCredential
+    ProcessChangesUntilNoChange(changes, approver, joiner, NULL);
+
+    SOSPeerInfoRef joinerPI = SOSAccountCopyApplication(joiner, &error);
+    ok(joinerPI, "Joiner peerinfo available as application %@", error);
+    CFReleaseNull(error);
+
+    CFDataRef theBlob = SOSAccountCopyCircleJoiningBlob(approver, joinerPI, &error);
+    ok(theBlob, "Made a joining blob (%@)", error);
+    CFReleaseNull(error);
+    
+
+    bool joined = SOSAccountJoinWithCircleJoiningBlob(joiner, theBlob, kPiggyV1, &error);
+    ok(joined, "Joiner posted circle with itself in it (%@)", error);
+    CFReleaseNull(error);
+
+    CFReleaseNull(joinerPI);
+    CFReleaseNull(theBlob);
+
+    is(ProcessChangesUntilNoChange(changes, approver, joiner, NULL), 2, "updates");
+    
+    ok((retval = [joiner isInCircle:NULL]), "Joiner is in");
     
     accounts_agree_internal("Successful join shows same circle view", joiner, approver, false);
     is(countPeers(joiner), expectedCount, "There should be %d valid peers", expectedCount);
@@ -928,7 +957,7 @@ static inline bool SOSTestJoinWithApproval(CFDataRef cfpassword, CFStringRef cfa
 
 
 static inline SOSAccount* SOSTestCreateAccountAsSerialClone(CFStringRef name, SOSPeerInfoDeviceClass devClass, CFStringRef serial, CFStringRef idsID) {
-    return CreateAccountForLocalChangesWithStartingAttributes(name, CFSTR("TestSource"), devClass, serial, kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, SOSTransportMessageTypeIDSV2, idsID);
+    return CreateAccountForLocalChangesWithStartingAttributes(name, CFSTR("TestSource"), devClass, serial, kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, SOSTransportMessageTypeKVS, idsID);
 }
 
 static inline bool SOSTestMakeGhostInCircle(CFStringRef name, SOSPeerInfoDeviceClass devClass, CFStringRef serial, CFStringRef idsID,
@@ -941,17 +970,6 @@ static inline bool SOSTestMakeGhostInCircle(CFStringRef name, SOSPeerInfoDeviceC
     if(!ghostAccount) return false;
     ok(retval = SOSTestJoinWithApproval(cfpassword, cfaccount, changes, approver, ghostAccount, DROP_USERKEY, expectedCount, true), "Ghost Joined Circle with expected result");
 retOut:
-    return retval;
-}
-
-static inline bool SOSTestChangeAccountDeviceName(SOSAccount* account, CFStringRef name) {
-    bool retval = false;
-    CFMutableDictionaryRef mygestalt = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, SOSPeerGetGestalt(account.peerInfo));
-    require_quiet(mygestalt, retOut);
-    CFDictionarySetValue(mygestalt, kPIUserDefinedDeviceNameKey, name);
-    retval = [account.trust updateGestalt:account newGestalt:mygestalt];
-retOut:
-    CFReleaseNull(mygestalt);
     return retval;
 }
 

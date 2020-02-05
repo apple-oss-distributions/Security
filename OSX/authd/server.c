@@ -14,6 +14,7 @@
 #include "debugging.h"
 #include "engine.h"
 #include "connection.h"
+#include "AuthorizationTags.h"
 
 #include <bsm/libbsm.h>
 #include <Security/Authorization.h>
@@ -37,9 +38,6 @@ static CFMutableDictionaryRef gSessionMap = NULL;
 static CFMutableDictionaryRef gAuthTokenMap = NULL;
 static authdb_t gDatabase = NULL;
 
-static dispatch_queue_t power_queue;
-static bool gInDarkWake = false;
-static IOPMConnection gIOPMconn = NULL;
 static bool gXPCTransaction = false;
 
 static dispatch_queue_t
@@ -112,71 +110,15 @@ void server_cleanup()
     CFRelease(gSessionMap);
     CFRelease(gAuthTokenMap);
     
-    IOPMConnectionSetDispatchQueue(gIOPMconn, NULL);
-    IOPMConnectionRelease(gIOPMconn);
-    
     dispatch_queue_t queue = get_server_dispatch_queue();
     if (queue) {
         dispatch_release(queue);
     }
-    dispatch_release(power_queue);
-}
-
-static void _IOMPCallBack(void * param AUTH_UNUSED, IOPMConnection connection, IOPMConnectionMessageToken token, IOPMSystemPowerStateCapabilities capabilities)
-{
-    os_log_debug(AUTHD_LOG, "server: IOMP powerstates %i", capabilities);
-    if (capabilities & kIOPMSystemPowerStateCapabilityDisk)
-        os_log_debug(AUTHD_LOG, "server: disk");
-    if (capabilities & kIOPMSystemPowerStateCapabilityNetwork)
-        os_log_debug(AUTHD_LOG, "server: net");
-    if (capabilities & kIOPMSystemPowerStateCapabilityAudio)
-        os_log_debug(AUTHD_LOG, "server: audio");
-    if (capabilities & kIOPMSystemPowerStateCapabilityVideo)
-        os_log_debug(AUTHD_LOG, "server: video");
-    
-    /* if cpu and no display -> in DarkWake */
-    os_log_debug(AUTHD_LOG, "server: DarkWake check current=%i==%i", (capabilities & (kIOPMSystemPowerStateCapabilityCPU|kIOPMSystemPowerStateCapabilityVideo)), kIOPMSystemPowerStateCapabilityCPU);
-    if ((capabilities & (kIOPMSystemPowerStateCapabilityCPU|kIOPMSystemPowerStateCapabilityVideo)) == kIOPMSystemPowerStateCapabilityCPU) {
-        os_log_debug(AUTHD_LOG, "server: enter DW");
-        gInDarkWake = true;
-    } else if (gInDarkWake) {
-        os_log_debug(AUTHD_LOG, "server: exit DW");
-        gInDarkWake = false;
-    }
-    
-    (void)IOPMConnectionAcknowledgeEvent(connection, token);
-    
-    return;
-}
-
-static void
-_setupDarkWake(void *__unused ctx)
-{
-    IOReturn ret;
-    
-    IOPMConnectionCreate(CFSTR("IOPowerWatcher"),
-                         kIOPMSystemPowerStateCapabilityDisk
-                         | kIOPMSystemPowerStateCapabilityNetwork
-                         | kIOPMSystemPowerStateCapabilityAudio
-                         | kIOPMSystemPowerStateCapabilityVideo,
-                         &gIOPMconn);
-
-    ret = IOPMConnectionSetNotification(gIOPMconn, NULL, _IOMPCallBack);
-    if (ret != kIOReturnSuccess)
-        return;
-    
-    IOPMConnectionSetDispatchQueue(gIOPMconn, power_queue);
-
-    IOPMScheduleUserActiveChangedNotification(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(bool active) {
-        if (active) {
-            gInDarkWake = false;
-        }
-    });
 }
 
 bool server_in_dark_wake()
 {
-    return gInDarkWake;
+    return IOPMIsADarkWake(IOPMConnectionGetSystemCapabilities());
 }
 
 authdb_t server_get_database()
@@ -256,10 +198,6 @@ OSStatus server_init(void)
     authdb_maintenance(dbconn);
     authdb_connection_release(&dbconn);
     
-    power_queue = dispatch_queue_create("com.apple.security.auth.power", DISPATCH_QUEUE_SERIAL);
-    require_action(power_queue != NULL, done, status = errAuthorizationInternal);
-    dispatch_async_f(power_queue, NULL, _setupDarkWake);
-
     _setupAuditSessionMonitor();
     _setupSignalHandlers();
     
@@ -711,6 +649,18 @@ authorization_copy_info(connection_t conn, xpc_object_t message, xpc_object_t re
     os_log_debug(AUTHD_LOG, "server: Dumping requested AuthRef items: %{public}@", items);
 #endif
 
+    if (auth_items_exist(local_items, kAuthorizationEnvironmentPassword)) {
+        // check if caller is entitled to get the password
+        CFTypeRef extract_password_entitlement = process_copy_entitlement_value(proc, "com.apple.authorization.extract-password");
+        if (extract_password_entitlement && (CFGetTypeID(extract_password_entitlement) == CFBooleanGetTypeID()) && extract_password_entitlement == kCFBooleanTrue) {
+            os_log_debug(AUTHD_LOG, "server: caller allowed to extract password");
+        } else {
+            os_log_error(AUTHD_LOG, "server: caller NOT allowed to extract password");
+            auth_items_remove(local_items, kAuthorizationEnvironmentPassword);
+        }
+        CFReleaseSafe(extract_password_entitlement);
+    }
+
     //reply
     xpc_object_t outItems = auth_items_export_xpc(local_items);
     xpc_dictionary_set_value(reply, AUTH_XPC_OUT_ITEMS, outItems);
@@ -1148,7 +1098,7 @@ authorization_right_remove(connection_t conn, xpc_object_t message, xpc_object_t
     }
     
     if (rule_get_id(rule) != 0) {
-        rule_sql_remove(rule, dbconn);
+        rule_sql_remove(rule, dbconn, proc);
     }
     
 done:

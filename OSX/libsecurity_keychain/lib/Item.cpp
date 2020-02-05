@@ -46,9 +46,7 @@
 #include <utilities/der_plist.h>
 
 #include <security_utilities/CSPDLTransaction.h>
-#include <SecBasePriv.h>
-
-#define SENDACCESSNOTIFICATIONS 1
+#include <Security/SecBasePriv.h>
 
 //%%% schema indexes should be defined in Schema.h
 #define _kSecAppleSharePasswordItemClass		'ashp'
@@ -196,11 +194,19 @@ ItemImpl::ItemImpl(ItemImpl &item) :
 }
 
 ItemImpl::~ItemImpl()
-{
+try {
 	if (secd_PersistentRef) {
 		CFRelease(secd_PersistentRef);
 	}
+} catch (...) {
+#ifndef NDEBUG
+    /* if we get an exception in destructor, presumably the mutex, lets throw if we
+     * are in a debug build (ie reach end of block) */
+#else
+    return;
+#endif
 }
+
 
 
 
@@ -632,7 +638,7 @@ bool ItemImpl::checkIntegrityFromDictionary(AclBearer& aclBearer, DbAttributes* 
             return false; // No MAC, no integrity.
         }
 
-        throw cssme;
+        throw;
     }
 
     secnotice("integrity", "***** INVALID ITEM");
@@ -1407,23 +1413,12 @@ ItemImpl::getContent(SecItemClass *itemClass, SecKeychainAttributeList *attrList
     {
 		getLocalContent(attrList, length, outData);
 	}
-
-	// Inform anyone interested that we are doing this
-#if SENDACCESSNOTIFICATIONS
-    if (outData)
-    {
-		secinfo("kcnotify", "ItemImpl::getContent(%p, %p, %p, %p) retrieved content",
-			itemClass, attrList, length, outData);
-
-        KCEventNotifier::PostKeychainEvent(kSecDataAccessEvent, mKeychain, this);
-    }
-#endif
 }
 
 void
 ItemImpl::freeContent(SecKeychainAttributeList *attrList, void *data)
 {
-    Allocator &allocator = Allocator::standard(); // @@@ This might not match the one used originally
+    Allocator &allocator = Allocator::standard(Allocator::sensitive); // @@@ This might not match the one used originally
     if (data)
 		allocator.free(data);
 
@@ -1565,13 +1560,6 @@ ItemImpl::getAttributesAndData(SecKeychainAttributeInfo *info, SecItemClass *ite
 
 		if (length) *length=(UInt32)itemData.length();
 		itemData.Length=0;
-
-#if SENDACCESSNOTIFICATIONS
-		secinfo("kcnotify", "ItemImpl::getAttributesAndData(%p, %p, %p, %p, %p) retrieved data",
-			info, itemClass, attrList, length, outData);
-
-		KCEventNotifier::PostKeychainEvent(kSecDataAccessEvent, mKeychain, this);
-#endif
 	}
 
 }
@@ -1579,7 +1567,7 @@ ItemImpl::getAttributesAndData(SecKeychainAttributeInfo *info, SecItemClass *ite
 void
 ItemImpl::freeAttributesAndData(SecKeychainAttributeList *attrList, void *data)
 {
-	Allocator &allocator = Allocator::standard(); // @@@ This might not match the one used originally
+	Allocator &allocator = Allocator::standard(Allocator::sensitive); // @@@ This might not match the one used originally
 
 	if (data)
 		allocator.free(data);
@@ -1732,13 +1720,6 @@ ItemImpl::getData(CssmDataContainer& outData)
 	}
 
     getContent(NULL, &outData);
-
-#if SENDACCESSNOTIFICATIONS
-    secinfo("kcnotify", "ItemImpl::getData retrieved data");
-
-	//%%%<might> be done elsewhere, but here is good for now
-	KCEventNotifier::PostKeychainEvent(kSecDataAccessEvent, mKeychain, this);
-#endif
 }
 
 SSGroup
@@ -1825,7 +1806,7 @@ ItemImpl::getContent(DbAttributes *dbAttributes, CssmDataContainer *itemData)
                 }
             } catch(CssmError cssme) {
                 secnotice("integrity", "error while checking integrity, denying access: %s", cssme.what());
-                throw cssme;
+                throw;
             }
 
 			SSDbUniqueRecordImpl* impl = dynamic_cast<SSDbUniqueRecordImpl *>(&(*dbUniqueRecord()));

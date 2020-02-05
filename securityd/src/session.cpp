@@ -75,7 +75,7 @@ Session::Session(const AuditInfo &audit, Server &server)
 	mSessions[audit.sessionId()] = this;
 	
 	// log it
-    secnotice("SS", "%p Session %d created, uid:%d sessionId:%d", this, this->sessionId(), mAudit.uid(), mAudit.sessionId());
+    secnotice("SecServer", "%p Session %d created, uid:%d sessionId:%d", this, this->sessionId(), mAudit.uid(), mAudit.sessionId());
 	Syslog::notice("Session %d created", this->sessionId());
 }
 
@@ -85,7 +85,7 @@ Session::Session(const AuditInfo &audit, Server &server)
 //
 Session::~Session()
 {
-    secnotice("SS", "%p Session %d destroyed", this, this->sessionId());
+    secnotice("SecServer", "%p Session %d destroyed", this, this->sessionId());
 	Syslog::notice("Session %d destroyed", this->sessionId());
 }
 
@@ -94,7 +94,6 @@ Server &Session::server() const
 {
 	return parent<Server>();
 }
-
 
 //
 // Locate a session object by session identifier
@@ -150,7 +149,7 @@ void Session::destroy(SessionId id)
 void Session::kill()
 {
     StLock<Mutex> _(*this);     // do we need to take this so early?
-    secnotice("SS", "%p killing session %d", this, this->sessionId());
+    secnotice("SecServer", "%p killing session %d", this, this->sessionId());
     invalidateSessionAuthHosts();
 	
 	// base kill processing
@@ -177,10 +176,18 @@ void Session::updateAudit() const
     mAudit = info;
 }
 
-void Session::verifyKeyStorePassphrase(int32_t retries)
+// Second and third arguments defaults to false
+void Session::verifyKeyStorePassphrase(int32_t retries, bool useForACLFallback, const char *itemname)
 {
     QueryKeybagPassphrase keybagQuery(*this, retries);
     keybagQuery.inferHints(Server::process());
+    
+    // Parasitic takeover to enable user confirmation when ACL validation ends up without a database
+    if (useForACLFallback) {
+        keybagQuery.addHint("acl-fallback", &useForACLFallback, sizeof(useForACLFallback));
+        keybagQuery.addHint("keychain-item-name", itemname, itemname ? (uint32_t)strlen(itemname) : 0, 0);
+    }
+    
     if (keybagQuery.query() != SecurityAgent::noReason) {
         CssmError::throwMe(CSSM_ERRCODE_OPERATION_AUTH_DENIED);
     }
@@ -209,7 +216,7 @@ void Session::resetKeyStorePassphrase(const CssmData &passphrase)
 
 service_context_t Session::get_current_service_context()
 {
-    service_context_t context = { sessionId(), originatorUid(), *Server::connection().auditToken() };
+    service_context_t context = { sessionId(), originatorUid(), *Server::connection().auditToken(), 0 };
     return context;
 }
 
@@ -237,16 +244,22 @@ void Session::invalidateSessionAuthHosts()
     StLock<Mutex> _(mAuthHostLock);
     
     // if you got here, we don't care about pending operations: the auth hosts die
-    Syslog::warning("Killing auth hosts");
-    if (mSecurityAgent) mSecurityAgent->UnixPlusPlus::Child::kill(SIGTERM);
+    Syslog::warning("Killing auth hosts for session %d", this->sessionId());
+    if (mSecurityAgent) {
+        secnotice("shutdown", "SIGTERMing child in state %d, pid %d", mSecurityAgent->UnixPlusPlus::Child::state(), mSecurityAgent->UnixPlusPlus::Child::pid());
+        mSecurityAgent->UnixPlusPlus::Child::kill(SIGTERM);
+    } else {
+        secnotice("shutdown", "No securityagent for session %d", this->sessionId());
+    }
     mSecurityAgent = NULL;
 }
 
 void Session::invalidateAuthHosts()
 {
 	StLock<Mutex> _(mSessionLock);
-	for (SessionMap::const_iterator it = mSessions.begin(); it != mSessions.end(); it++)
+    for (SessionMap::const_iterator it = mSessions.begin(); it != mSessions.end(); it++) {
         it->second->invalidateSessionAuthHosts();
+    }
 }
 
 //

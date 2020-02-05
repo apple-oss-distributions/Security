@@ -56,7 +56,7 @@ Connection::Connection(Process &proc, Port rPort)
 	// bump the send-rights count on the reply port so we keep the right after replying
 	mClientPort.modRefs(MACH_PORT_RIGHT_SEND, +1);
 	
-    secinfo("SS", "New client connection %p: %d %d", this, rPort.port(), proc.uid());
+    secinfo("SecServer", "New client connection %p: %d %d", this, rPort.port(), proc.uid());
 }
 
 
@@ -64,61 +64,24 @@ Connection::Connection(Process &proc, Port rPort)
 // When a Connection's destructor executes, the connection must already have been
 // terminated. All we have to do here is clean up a bit.
 //
-Connection::~Connection()
+Connection::~Connection() try
 {
-    secinfo("SS", "releasing client connection %p", this);
+    mClientPort.deallocate();
+    secinfo("SecServer", "releasing client connection %p", this);
 	assert(!agentWait);
+} catch (...) {
+    secerror("SecServer: Error deallocating connection port");
+    return;
 }
-
 
 //
 // Set the (last known) guest handle for this connection.
 //
 void Connection::guestRef(SecGuestRef newGuest, SecCSFlags flags)
 {
-	secinfo("SS", "Connection %p switches to guest 0x%x", this, newGuest);
+	secinfo("SecServer", "Connection %p switches to guest 0x%x", this, newGuest);
 	mGuestRef = newGuest;
 }
-
-
-//
-// Terminate a Connection normally.
-// This is assumed to be properly sequenced, so no thread races are possible.
-//
-void Connection::terminate()
-{
-	// cleanly discard port rights
-	assert(state == idle);
-	mClientPort.modRefs(MACH_PORT_RIGHT_SEND, -1);	// discard surplus send right
-	assert(mClientPort.getRefs(MACH_PORT_RIGHT_SEND) == 1);	// one left for final reply
-	secinfo("SS", "Connection %p terminated", this);
-}
-
-
-//
-// Abort a Connection.
-// This may be called from thread A while thread B is working a request for the Connection,
-// so we must be careful.
-//
-void Connection::abort(bool keepReplyPort)
-{
-	StLock<Mutex> _(*this);
-    if (!keepReplyPort)
-        mClientPort.destroy();		// dead as a doornail already
-	switch (state) {
-	case idle:
-		secinfo("SS", "Connection %p aborted", this);
-		break;
-	case busy:
-		state = dying;				// shoot me soon, please
-		secinfo("SS", "Connection %p abort deferred (busy)", this);
-		break;
-	default:
-		assert(false);				// impossible (we hope)
-		break;
-	}
-}
-
 
 //
 // Service request framing.
@@ -137,7 +100,7 @@ void Connection::beginWork(audit_token_t &auditToken)
 		mOverrideReturn = CSSM_OK;	// clear override
 		break;
 	case busy:
-		secinfo("SS", "Attempt to re-enter connection %p(port %d)", this, mClientPort.port());
+		secinfo("SecServer", "Attempt to re-enter connection %p(port %d)", this, mClientPort.port());
 		CssmError::throwMe(CSSM_ERRCODE_INTERNAL_ERROR);	//@@@ some state-error code instead?
 	default:
 		assert(false);
@@ -169,7 +132,7 @@ void Connection::endWork(CSSM_RETURN &rcode)
 		state = idle;
 		return;
 	case dying:
-		secinfo("SS", "Connection %p abort resuming", this);
+		secinfo("SecServer", "Connection %p abort resuming", this);
 		return;
 	default:
 		assert(false);

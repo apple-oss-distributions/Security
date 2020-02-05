@@ -110,38 +110,31 @@ void MachORep::prepareForSigning(SigningContext &context)
 {
 	if (context.digestAlgorithms().empty()) {
         auto_ptr<MachO> macho(mainExecutableImage()->architecture());
-
-		if (const version_min_command *version = macho->findMinVersion()) {
-			uint32_t limit = 0;
-			switch (macho->flip(version->cmd)) {
-			case LC_VERSION_MIN_MACOSX:
+		
+		uint32_t limit = 0;
+		switch (macho->platform()) {
+			case 0:
+				// If we don't know the platform, we stay agile.
+				return;
+			case PLATFORM_MACOS:
+				// 10.11.4 had first proper sha256 support.
 				limit = (10 << 16 | 11 << 8 | 4 << 0);
 				break;
-#if 0 /* need updated libMIS before we can do this switch */
-			case LC_VERSION_MIN_IPHONEOS:
-				limit = (9 << 16 | 3 << 8);
+			case PLATFORM_TVOS:
+			case PLATFORM_IOS:
+				// iOS 11 and tvOS 11 had first proper sha256 support.
+				limit = (11 << 16 | 0 << 8 | 0 << 0);
 				break;
-			case LC_VERSION_MIN_WATCHOS:
-				limit = (2 << 16 | 2 << 8);
-				break;
-			case LC_VERSION_MIN_TVOS:
-				limit = (9 << 16 | 2 << 8);
-				break;
+			case PLATFORM_WATCHOS:
+				// We stay agile on the watch right now.
+				return;
 			default:
+				// All other platforms are assumed to be new and support SHA256.
 				break;
-#else
-            case LC_VERSION_MIN_IPHONEOS:
-            case LC_VERSION_MIN_WATCHOS:
-            case LC_VERSION_MIN_TVOS:
-                return;
-            default:
-                break;
-#endif
-			}
-			if (macho->flip(version->version) >= limit) {
-				// young enough not to need SHA-1 legacy support
-				context.setDigestAlgorithm(kSecCodeSignatureHashSHA256);
-			}
+		}
+		if (macho->minVersion() >= limit) {
+			// young enough not to need SHA-1 legacy support
+			context.setDigestAlgorithm(kSecCodeSignatureHashSHA256);
 		}
 	}
 }
@@ -162,29 +155,9 @@ size_t MachORep::signingLimit()
 }
 
 bool MachORep::needsExecSeg(const MachO& macho) {
-	if (const version_min_command *version = macho.findMinVersion()) {
-		uint32_t min = UINT32_MAX;
-
-		switch (macho.flip(version->cmd)) {
-			case LC_VERSION_MIN_IPHONEOS:
-			case LC_VERSION_MIN_TVOS:
-				min = (11 << 16 | 0 << 8);
-				break;
-			case LC_VERSION_MIN_WATCHOS:
-				min = (4 << 16 | 0 << 8);
-				break;
-
-			default:
-				/* macOS currently does not get this. */
-				return false;
-		}
-
-		if (macho.flip(version->version) >= min) {
-			return true;
-		}
-	}
-
-	return false;
+	uint32_t platform = macho.platform();
+	// Everything embedded gets an exec segment.
+	return platform != 0 && platform != PLATFORM_MACOS;
 }
 
 size_t MachORep::execSegBase(const Architecture *arch)
@@ -292,6 +265,21 @@ CFDataRef MachORep::component(CodeDirectory::SpecialSlot slot)
 	}
 }
 
+//
+// Retrieve all components, used for signature editing.
+//
+EditableDiskRep::RawComponentMap MachORep::createRawComponents()
+{
+	EditableDiskRep::RawComponentMap  blobMap;
+	const EmbeddedSignatureBlob &blobs = *signingData();
+	
+	for (unsigned int i = 0; i < blobs.count(); ++i) {
+		CodeDirectory::Slot slot = blobs.type(i);
+		const BlobCore *blob = blobs.blob(i);
+		blobMap[slot] = blobs.blobData(slot, blob);
+	}
+	return blobMap;
+}
 
 // Retrieve a component from the embedded signature SuperBlob (if present).
 // This reads the entire signing SuperBlob when first called for an executable,
@@ -303,6 +291,18 @@ CFDataRef MachORep::component(CodeDirectory::SpecialSlot slot)
 //
 CFDataRef MachORep::embeddedComponent(CodeDirectory::SpecialSlot slot)
 {
+	if (signingData()) {
+		return signingData()->component(slot);
+	}
+	
+	// not found
+	return NULL;
+}
+	
+	
+
+EmbeddedSignatureBlob *MachORep::signingData()
+{
 	if (!mSigningData) {		// fetch and cache
 		auto_ptr<MachO> macho(mainExecutableImage()->architecture());
 		if (macho.get())
@@ -311,20 +311,16 @@ CFDataRef MachORep::embeddedComponent(CodeDirectory::SpecialSlot slot)
 				size_t length = macho->flip(cs->datasize);
 				if ((mSigningData = EmbeddedSignatureBlob::readBlob(macho->fd(), macho->offset() + offset, length))) {
 					secinfo("machorep", "%zd signing bytes in %d blob(s) from %s(%s)",
-						mSigningData->length(), mSigningData->count(),
-						mainExecutablePath().c_str(), macho->architecture().name());
+							mSigningData->length(), mSigningData->count(),
+							mainExecutablePath().c_str(), macho->architecture().name());
 				} else {
 					secinfo("machorep", "failed to read signing bytes from %s(%s)",
-						mainExecutablePath().c_str(), macho->architecture().name());
+							mainExecutablePath().c_str(), macho->architecture().name());
 					MacOSError::throwMe(errSecCSSignatureInvalid);
 				}
 			}
 	}
-	if (mSigningData)
-		return mSigningData->component(slot);
-	
-	// not found
-	return NULL;
+	return mSigningData;
 }
 
 
@@ -398,15 +394,28 @@ CFDictionaryRef MachORep::diskRepInformation()
     auto_ptr<MachO> macho (mainExecutableImage()->architecture());
     CFRef<CFDictionaryRef> info;
 
-    if (const version_min_command *version = macho->findMinVersion()) {
+	uint32_t platform = 0;
+	uint32_t minVersion = 0;
+	uint32_t sdkVersion = 0;
+	
+    if (macho->version(&platform, &minVersion, &sdkVersion)) {
 
+		/* These keys replace the old kSecCodeInfoDiskRepOSPlatform, kSecCodeInfoDiskRepOSVersionMin
+		 * and kSecCodeInfoDiskRepOSSDKVersion. The keys were renamed because we changed what value
+		 * "platform" represents: For the old key, the actual load command (e.g. LC_VERSION_MIN_MACOSX)
+		 * was returned; for the new key, we return one of the PLATFORM_* values used by LC_BUILD_VERSION.
+		 *
+		 * The keys are private and undocumented, and maintaining a translation table between the old and
+		 * new domain would provide little value at high cost, but we do remove the old keys to make
+		 * the change obvious.
+		 */
+		
         info.take(cfmake<CFMutableDictionaryRef>("{%O = %d,%O = %d,%O = %d}",
-                                              kSecCodeInfoDiskRepOSPlatform, macho->flip(version->cmd),
-                                              kSecCodeInfoDiskRepOSVersionMin, macho->flip(version->version),
-                                              kSecCodeInfoDiskRepOSSDKVersion, macho->flip(version->sdk)));
+                                              kSecCodeInfoDiskRepVersionPlatform, platform,
+                                              kSecCodeInfoDiskRepVersionMin, minVersion,
+                                              kSecCodeInfoDiskRepVersionSDK, sdkVersion));
 
-        if (macho->flip(version->cmd) == LC_VERSION_MIN_MACOSX &&
-            macho->flip(version->sdk) < (10 << 16 | 9 << 8))
+        if (platform == PLATFORM_MACOS && sdkVersion < (10 << 16 | 9 << 8))
         {
             info.take(cfmake<CFMutableDictionaryRef>("{+%O, %O = 'OS X SDK version before 10.9 does not support Library Validation'}",
                                                   info.get(),

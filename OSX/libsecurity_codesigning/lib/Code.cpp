@@ -26,10 +26,10 @@
 //
 #include "Code.h"
 #include "StaticCode.h"
-#include <Security/SecCodeHost.h>
 #include "cskernel.h"
 #include <security_utilities/cfmunge.h>
 #include <security_utilities/debugging.h>
+#include "SecInternalReleasePriv.h"
 
 namespace Security {
 namespace CodeSigning {
@@ -206,13 +206,27 @@ void SecCode::checkValidity(SecCSFlags flags)
 
 	// check my static state
 	myDisk->validateNonResourceComponents();	// also validates the CodeDirectory
-	if (flags & kSecCSStrictValidate)
+	if (flags & kSecCSStrictValidate) {
 		myDisk->diskRep()->strictValidate(myDisk->codeDirectory(), DiskRep::ToleratedErrors(), flags);
+	} else if (flags & kSecCSStrictValidateStructure) {
+		myDisk->diskRep()->strictValidateStructure(myDisk->codeDirectory(), DiskRep::ToleratedErrors(), flags);
+	}
 
 	// check my own dynamic state
-	if (!(this->host()->getGuestStatus(this) & kSecCodeStatusValid))
-		MacOSError::throwMe(errSecCSGuestInvalid);
-	
+	SecCodeStatus dynamic_status = this->host()->getGuestStatus(this);
+	bool isValid = (dynamic_status & kSecCodeStatusValid) != 0;
+	if (!isValid) {
+		bool isDebugged = (dynamic_status & kSecCodeStatusDebugged) != 0;
+		bool isPlatform = (dynamic_status & kSecCodeStatusPlatform) != 0;
+		bool isInternal = SecIsInternalRelease();
+
+		if (!isDebugged || (isPlatform && !isInternal)) {
+			// fatal if the code is invalid and not being debugged, but
+			// never let platform code be debugged except on internal systems.
+			MacOSError::throwMe(errSecCSGuestInvalid);
+		}
+	}
+
 	// check that static and dynamic views are consistent
 	if (this->cdHash() && !CFEqual(this->cdHash(), myDisk->cdHash()))
 		MacOSError::throwMe(errSecCSStaticCodeChanged);
@@ -255,6 +269,7 @@ void SecCode::changeGuestStatus(SecCode *guest, SecCodeStatusOperation operation
 //
 SecCode *SecCode::autoLocateGuest(CFDictionaryRef attributes, SecCSFlags flags)
 {
+#if TARGET_OS_OSX
 	// special case: with no attributes at all, return the root of trust
 	if (CFDictionaryGetCount(attributes) == 0)
 		return KernelCode::active()->retain();
@@ -280,6 +295,7 @@ SecCode *SecCode::autoLocateGuest(CFDictionaryRef attributes, SecCSFlags flags)
 			return code.yield();
 		}
 	}
+#endif // TARGET_OS_OSX
 	MacOSError::throwMe(errSecCSNoSuchCode);
 }
 

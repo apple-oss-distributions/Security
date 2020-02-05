@@ -37,7 +37,8 @@
 #import "CKDSecuritydAccount.h"
 #import "NSURL+SOSPlistStore.h"
 
-#include <Security/SecureObjectSync/SOSARCDefines.h>
+#include "keychain/SecureObjectSync/SOSARCDefines.h"
+#include "keychain/SecureObjectSync/SOSKVSKeys.h"
 #include <utilities/SecCFWrappers.h>
 #include <utilities/SecPLWrappers.h>
 
@@ -48,9 +49,6 @@
 #include <utilities/SecNSAdditions.h>
 #import "XPCNotificationDispatcher.h"
 
-
-CFStringRef const CKDAggdIncreaseThrottlingKey = CFSTR("com.apple.cloudkeychainproxy.backoff.increase");
-CFStringRef const CKDAggdDecreaseThrottlingKey = CFSTR("com.apple.cloudkeychainproxy.backoff.decrease");
 
 @interface NSSet (CKDLogging)
 - (NSString*) logKeys;
@@ -94,16 +92,13 @@ static NSString *kKeyPendingSyncBackupPeerIDs = @"SyncBackupPeerIDs";
 
 static NSString *kKeyEnsurePeerRegistration = @"EnsurePeerRegistration";
 static NSString *kKeyDSID = @"DSID";
-static NSString *kMonitorState = @"MonitorState";
-static NSString *kKeyAccountUUID = @"MonitorState";
+static NSString *kKeyAccountUUID = @"KeyAccountUUID";
 
 static NSString *kMonitorPenaltyBoxKey = @"Penalty";
 static NSString *kMonitorMessageKey = @"Message";
 static NSString *kMonitorConsecutiveWrites = @"ConsecutiveWrites";
 static NSString *kMonitorLastWriteTimestamp = @"LastWriteTimestamp";
 static NSString *kMonitorMessageQueue = @"MessageQueue";
-static NSString *kMonitorPenaltyTimer = @"PenaltyTimer";
-static NSString *kMonitorDidWriteDuringPenalty = @"DidWriteDuringPenalty";
 
 static NSString *kMonitorTimeTable = @"TimeTable";
 static NSString *kMonitorFirstMinute = @"AFirstMinute";
@@ -112,11 +107,6 @@ static NSString *kMonitorThirdMinute = @"CThirdMinute";
 static NSString *kMonitorFourthMinute = @"DFourthMinute";
 static NSString *kMonitorFifthMinute = @"EFifthMinute";
 static NSString *kMonitorWroteInTimeSlice = @"TimeSlice";
-const CFStringRef kSOSKVSKeyParametersKey = CFSTR(">KeyParameters");
-const CFStringRef kSOSKVSInitialSyncKey = CFSTR("^InitialSync");
-const CFStringRef kSOSKVSAccountChangedKey = CFSTR("^AccountChanged");
-const CFStringRef kSOSKVSRequiredKey = CFSTR("^Required");
-const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
 
 #define kSecServerKeychainChangedNotification "com.apple.security.keychainchanged"
 
@@ -148,7 +138,7 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
     {
         secnotice("event", "%@ start", self);
 
-#if !(TARGET_OS_EMBEDDED)
+#if !TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
         // rdar://problem/26247270
         if (geteuid() == 0) {
             secerror("Cannot run CloudKeychainProxy as root");
@@ -174,17 +164,7 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
 
         _freshnessCompletions = [NSMutableArray<FreshnessResponseBlock> array];
 
-        _monitor = [NSMutableDictionary dictionary];
-
         [[XPCNotificationDispatcher dispatcher] addListener: self];
-
-        int notificationToken;
-        notify_register_dispatch(kSecServerKeychainChangedNotification, &notificationToken, _ckdkvsproxy_queue,
-                                 ^ (int token __unused)
-                                 {
-                                     secinfo("backoff", "keychain changed, wiping backoff monitor state");
-                                     self->_monitor = [NSMutableDictionary dictionary];
-                                 });
 
         [self setPersistentData: [self.persistenceURL readPlist]];
 
@@ -268,7 +248,6 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
               kKeyPendingKeys:[_pendingKeys allObjects],
               kKeyPendingSyncPeerIDs:[_pendingSyncPeerIDs allObjects],
               kKeyPendingSyncBackupPeerIDs:[_pendingSyncBackupPeerIDs allObjects],
-              kMonitorState:_monitor,
               kKeyEnsurePeerRegistration:[NSNumber numberWithBool:_ensurePeerRegistration],
               kKeyDSID:_dsid,
               kKeyAccountUUID:_accountUUID
@@ -278,6 +257,7 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
 - (void) setPersistentData: (NSDictionary*) interests
 {
     _alwaysKeys = [NSMutableSet setWithArray: interests[kKeyAlwaysKeys]];
+    [_alwaysKeys addObject:(__bridge NSString*) kSOSKVSKeyParametersKey];  // Make sure KeyParms are always of interest
     _firstUnlockKeys = [NSMutableSet setWithArray: interests[kKeyFirstUnlockKeys]];
     _unlockedKeys = [NSMutableSet setWithArray: interests[kKeyUnlockedKeys]];
 
@@ -286,20 +266,11 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
     _pendingSyncPeerIDs = [NSMutableSet setWithArray: interests[kKeyPendingSyncPeerIDs]];
     _pendingSyncBackupPeerIDs = [NSMutableSet setWithArray: interests[kKeyPendingSyncBackupPeerIDs]];
 
-    _monitor = interests[kMonitorState];
-    if(_monitor == nil)
-        _monitor = [NSMutableDictionary dictionary];
-
     _ensurePeerRegistration = [interests[kKeyEnsurePeerRegistration] boolValue];
 
     _dsid = interests[kKeyDSID];
     _accountUUID = interests[kKeyAccountUUID];
-
-    // If we had a sync pending, we kick it off and migrate to sync with these peers
-    if ([interests[kKeySyncWithPeersPending] boolValue]) {
-        [self doSyncWithAllPeers];
     }
-}
 
 - (void)persistState
 {
@@ -617,9 +588,8 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
             self->_ensurePeerRegistration = ((self->_ensurePeerRegistration && !handledEnsurePeerRegistration) || self->_shadowEnsurePeerRegistration);
             
             self->_shadowEnsurePeerRegistration = NO;
-            
-            if(self->_ensurePeerRegistration && ![self.lockMonitor locked])
-                [self doEnsurePeerRegistration];
+
+            [self handlePendingEnsurePeerRegistrationRequests:true];
 
             bool hadShadowPeerIDs = ![self->_shadowPendingSyncPeerIDs isEmpty] || ![self->_shadowPendingSyncBackupPeerIDs isEmpty];
 
@@ -666,8 +636,12 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
             // Handle shadow pended stuff
 
             // We only kick off another sync if we got new stuff during handling
-            if (hadShadowPeerIDs && ![self.lockMonitor locked])
-                [self newPeersToSyncWith];
+            if (hadShadowPeerIDs && ![self.lockMonitor locked]) {
+                secnotice("event", "%@ syncWithPeersPending: %d inCallout: %d isLocked: %d", self, [self hasPendingSyncIDs], self->_inCallout, [self.lockMonitor locked]);
+                if ([self hasPendingSyncIDs] && !self->_inCallout && ![self.lockMonitor locked]){
+                    [self doSyncWithPendingPeers];
+                }
+            }
 
             /* We don't want to call processKeyChangedEvent if we failed to
              handle pending keys and the device didn't unlock nor receive
@@ -713,11 +687,28 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
     }];
 }
 
+- (void)handlePendingEnsurePeerRegistrationRequests:(bool)onlyIfUnlocked
+{
+    // doEnsurePeerRegistration's callback will be run on _calloutQueue, so we should check the 'are we running yet' flags on that queue
+    dispatch_async(_calloutQueue, ^{
+        if(self.ensurePeerRegistration && (!onlyIfUnlocked || ![self.lockMonitor locked])) {
+            if(self.ensurePeerRegistrationEnqueuedButNotStarted) {
+                secnotice("EnsurePeerRegistration", "%@ ensurePeerRegistration block already enqueued, not starting a new one", self);
+                return;
+            }
+
+            [self doEnsurePeerRegistration];
+        }
+    });
+}
+
 - (void) doEnsurePeerRegistration
 {
     NSObject<CKDAccount>* accountDelegate = [self account];
+    self.ensurePeerRegistrationEnqueuedButNotStarted = true;
     [self calloutWith:^(NSSet *pending, NSSet* pendingSyncIDs, NSSet* pendingBackupSyncIDs, bool ensurePeerRegistration, dispatch_queue_t queue, void(^done)(NSSet *handledKeys, NSSet *handledSyncs, bool handledEnsurePeerRegistration, NSError* error)) {
         NSError* error = nil;
+        self.ensurePeerRegistrationEnqueuedButNotStarted = false;
         bool handledEnsurePeerRegistration = [accountDelegate ensurePeerRegistration:&error];
         secnotice("EnsurePeerRegistration", "%@ ensurePeerRegistration called, %@ (%@)", self, handledEnsurePeerRegistration ? @"success" : @"failure", error);
         if (!handledEnsurePeerRegistration) {
@@ -766,17 +757,6 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
     }];
 }
 
-- (void)newPeersToSyncWith
-{
-    secnotice("event", "%@ syncWithPeersPending: %d inCallout: %d isLocked: %d", self, [self hasPendingSyncIDs], _inCallout, [self.lockMonitor locked]);
-    if(_ensurePeerRegistration){
-        [self doEnsurePeerRegistration];
-    }
-    if ([self hasPendingSyncIDs] && !_inCallout && ![self.lockMonitor locked]){
-        [self doSyncWithPendingPeers];
-    }
-}
-
 - (bool)hasPendingNonShadowSyncIDs {
     return ![_pendingSyncPeerIDs isEmpty] || ![_pendingSyncBackupPeerIDs isEmpty];
 }
@@ -815,9 +795,8 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
 
     [self persistState];
 
-    if(_ensurePeerRegistration){
-        [self doEnsurePeerRegistration];
-    }
+    [self handlePendingEnsurePeerRegistrationRequests:true];
+
     if ([self hasPendingSyncIDs] && !_inCallout && ![self.lockMonitor locked]){
         [self doSyncWithPendingPeers];
     }
@@ -843,9 +822,7 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
         _shadowEnsurePeerRegistration = YES;
     } else {
         _ensurePeerRegistration = YES;
-        if (![self.lockMonitor locked]){
-            [self doEnsurePeerRegistration];
-        }
+        [self handlePendingEnsurePeerRegistrationRequests:true];
         [self persistState];
     }
     
@@ -864,9 +841,7 @@ const CFStringRef kSOSKVSOfficialDSIDKey = CFSTR("^OfficialDSID");
     dispatch_assert_queue(_ckdkvsproxy_queue);
 
     secnotice("event", "%@ Unlocked", self);
-    if (_ensurePeerRegistration) {
-        [self doEnsurePeerRegistration];
-    }
+    [self handlePendingEnsurePeerRegistrationRequests:false];
     
     // First send changed keys to securityd so it can proccess updates
     [self processPendingKeysForCurrentLockState];

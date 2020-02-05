@@ -21,6 +21,8 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #include <AssertMacros.h>
 
 #import <Foundation/Foundation.h>
@@ -30,8 +32,6 @@
 #include <utilities/SecDb.h>
 #include <securityd/SecDbItem.h>
 #include <securityd/SecItemSchema.h>
-
-#if OCTAGON
 
 #import <CloudKit/CloudKit.h>
 #import <CloudKit/CloudKit_Private.h>
@@ -188,22 +188,7 @@ plaintextPCSServiceIdentifier: (NSNumber*) pcsServiceIdentifier
 }
 
 + (void)setOSVersionInRecord: (CKRecord*) record {
-#ifdef PLATFORM
-    // Use complicated macro magic to get the string value passed in as preprocessor define PLATFORM.
-#define PLATFORM_VALUE(f) #f
-#define PLATFORM_OBJCSTR(f) @PLATFORM_VALUE(f)
-    NSString* platform = (PLATFORM_OBJCSTR(PLATFORM));
-#undef PLATFORM_OBJCSTR
-#undef PLATFORM_VALUE
-#else
-    NSString* platform = "unknown";
-#warning No PLATFORM defined; why?
-#endif
-    NSString* osversion = [[NSProcessInfo processInfo]operatingSystemVersionString];
-
-    // subtly improve osversion (but it's okay if that does nothing)
-    NSString* finalversion = [platform stringByAppendingString: [osversion stringByReplacingOccurrencesOfString:@"Version" withString:@""]];
-    record[SecCKRecordVersionKey] = finalversion;
+     record[SecCKRecordHostOSVersionKey] = SecCKKSHostOSVersion();
 }
 
 - (CKRecord*) updateCKRecord: (CKRecord*) record zoneID: (CKRecordZoneID*) zoneID {
@@ -351,7 +336,7 @@ plaintextPCSServiceIdentifier: (NSNumber*) pcsServiceIdentifier
         if(record) {
             for(NSString* key in record.allKeys) {
                 if([key isEqualToString:@"UUID"] ||
-                   [key isEqualToString:SecCKRecordVersionKey] ||
+                   [key isEqualToString:SecCKRecordHostOSVersionKey] ||
                    [key isEqualToString:SecCKRecordDataKey] ||
                    [key isEqualToString:SecCKRecordWrappedKeyKey] ||
                    [key isEqualToString:SecCKRecordGenerationCountKey] ||
@@ -449,26 +434,26 @@ plaintextPCSServiceIdentifier: (NSNumber*) pcsServiceIdentifier
              @"ckzone":  CKKSNilToNSNull(self.zoneID.zoneName),
              @"encitem": self.base64encitem,
              @"wrappedkey": [self.wrappedkey base64WrappedKey],
-             @"gencount": [NSNumber numberWithInteger:self.generationCount],
-             @"encver": [NSNumber numberWithInteger:self.encver],
+             @"gencount": [[NSNumber numberWithInteger:self.generationCount] stringValue],
+             @"encver": [[NSNumber numberWithInteger:self.encver] stringValue],
              @"ckrecord": CKKSNilToNSNull([self.encodedCKRecord base64EncodedStringWithOptions:0]),
              @"pcss": CKKSNilToNSNull(self.plaintextPCSServiceIdentifier),
              @"pcsk": CKKSNilToNSNull([self.plaintextPCSPublicKey base64EncodedStringWithOptions:0]),
              @"pcsi": CKKSNilToNSNull([self.plaintextPCSPublicIdentity base64EncodedStringWithOptions:0])};
 }
 
-+ (instancetype)fromDatabaseRow: (NSDictionary*) row {
-    return [[CKKSItem alloc] initWithUUID:row[@"UUID"]
-                            parentKeyUUID:row[@"parentKeyUUID"]
-                                   zoneID:[[CKRecordZoneID alloc] initWithZoneName: row[@"ckzone"] ownerName:CKCurrentUserDefaultName]
-                          encodedCKRecord:CKKSUnbase64NullableString(row[@"ckrecord"])
-                                  encItem:CKKSUnbase64NullableString(row[@"encitem"])
-                               wrappedkey:CKKSIsNull(row[@"wrappedkey"]) ? nil : [[CKKSWrappedAESSIVKey alloc] initWithBase64: row[@"wrappedkey"]]
-                          generationCount:[row[@"gencount"] integerValue]
-                                   encver:[row[@"encver"] integerValue]
-            plaintextPCSServiceIdentifier:CKKSIsNull(row[@"pcss"]) ? nil : [NSNumber numberWithInteger: [row[@"pcss"] integerValue]]
-                    plaintextPCSPublicKey:CKKSUnbase64NullableString(row[@"pcsk"])
-               plaintextPCSPublicIdentity:CKKSUnbase64NullableString(row[@"pcsi"])
++ (instancetype)fromDatabaseRow:(NSDictionary<NSString*, CKKSSQLResult*>*)row {
+    return [[CKKSItem alloc] initWithUUID:row[@"UUID"].asString
+                            parentKeyUUID:row[@"parentKeyUUID"].asString
+                                   zoneID:[[CKRecordZoneID alloc] initWithZoneName: row[@"ckzone"].asString ownerName:CKCurrentUserDefaultName]
+                          encodedCKRecord:row[@"ckrecord"].asBase64DecodedData
+                                  encItem:row[@"encitem"].asBase64DecodedData
+                               wrappedkey:row[@"wrappedkey"].asString == nil ? nil : [[CKKSWrappedAESSIVKey alloc] initWithBase64:row[@"wrappedkey"].asString]
+                          generationCount:row[@"gencount"].asNSInteger
+                                   encver:row[@"encver"].asNSInteger
+            plaintextPCSServiceIdentifier:row[@"pcss"].asNSNumberInteger
+                    plaintextPCSPublicKey:row[@"pcsk"].asBase64DecodedData
+               plaintextPCSPublicIdentity:row[@"pcsi"].asBase64DecodedData
             ];
 }
 
@@ -478,17 +463,17 @@ plaintextPCSServiceIdentifier: (NSNumber*) pcsServiceIdentifier
 
 @implementation CKKSSQLDatabaseObject (CKKSZoneExtras)
 
-+ (NSArray<NSString*>*) allUUIDs:  (NSError * __autoreleasing *) error {
-    __block NSMutableArray* uuids = [[NSMutableArray alloc] init];
++ (NSArray<NSString*>*)allUUIDs:(CKRecordZoneID*)zoneID error:(NSError * __autoreleasing *)error {
+    __block NSMutableArray<NSString*>* uuids = [[NSMutableArray alloc] init];
 
     [CKKSSQLDatabaseObject queryDatabaseTable: [self sqlTable]
-                                        where: nil
+                                        where:@{@"ckzone": CKKSNilToNSNull(zoneID.zoneName)}
                                       columns: @[@"UUID"]
                                       groupBy: nil
                                       orderBy:nil
                                         limit: -1
-                                   processRow: ^(NSDictionary* row) {
-                                       [uuids addObject: row[@"UUID"]];
+                                   processRow:^(NSDictionary<NSString*, CKKSSQLResult*>* row) {
+                                       [uuids addObject: row[@"UUID"].asString];
                                    }
                                         error: error];
     return uuids;

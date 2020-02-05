@@ -35,6 +35,8 @@
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecKeyPriv.h>
 #include <Security/SecInternal.h>
+#include <Security/SecIdentity.h>
+#include <Security/SecPolicy.h>
 #include <libDER/DER_Encode.h>
 #include <uuid/uuid.h>
 #include <utilities/array_size.h>
@@ -257,6 +259,8 @@ SecSCEPGenerateCertificateRequest(CFArrayRef subject, CFDictionaryRef parameters
     SecCertificateRef recipient = NULL;
     CFDataRef msgtype_value_data = NULL;
     CFDataRef msgtype_oid_data = NULL;
+    SecKeyRef realPublicKey = NULL;
+    SecKeyRef recipientKey = NULL;
 
     if (CFGetTypeID(recipients) == SecCertificateGetTypeID()) {
         recipient = (SecCertificateRef)recipients;
@@ -272,7 +276,18 @@ SecSCEPGenerateCertificateRequest(CFArrayRef subject, CFDictionaryRef parameters
     }
     require(recipient, out);
 
-    require(csr = SecGenerateCertificateRequest(subject, parameters, publicKey, privateKey), out);
+    /* We don't support EC recipients for SCEP yet. */
+    recipientKey = SecCertificateCopyKey(recipient);
+    require(SecKeyGetAlgorithmId(recipientKey) == kSecRSAAlgorithmID, out);
+
+    realPublicKey = SecKeyCopyPublicKey(privateKey);
+    if (!realPublicKey) {
+        /* If we can't get the public key from the private key,
+         * fall back to the public key provided by the caller. */
+        realPublicKey = CFRetainSafe(publicKey);
+    }
+    require(realPublicKey, out);
+    require(csr = SecGenerateCertificateRequest(subject, parameters, realPublicKey, privateKey), out);
     require(enveloped_data = CFDataCreateMutable(kCFAllocatorDefault, 0), out);
     require_noerr(SecCMSCreateEnvelopedData(recipient, parameters, csr, enveloped_data), out);
     CFReleaseNull(csr);
@@ -281,7 +296,7 @@ SecSCEPGenerateCertificateRequest(CFArrayRef subject, CFDictionaryRef parameters
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
     /* generate a transaction id: hex encoded pubkey hash */
-    CFDataRef public_key_hash = pubkeyhash(publicKey);
+    CFDataRef public_key_hash = pubkeyhash(realPublicKey);
     CFDataRef public_key_hash_hex = hexencode(public_key_hash);
     CFReleaseSafe(public_key_hash);
     CFDataRef transid_oid_data = scep_oid(transId);
@@ -311,7 +326,7 @@ SecSCEPGenerateCertificateRequest(CFArrayRef subject, CFDictionaryRef parameters
         self_signed_identity = signer;
         CFRetain(self_signed_identity);
     } else {
-		self_signed_identity = SecSCEPCreateTemporaryIdentity(publicKey, privateKey);
+		self_signed_identity = SecSCEPCreateTemporaryIdentity(realPublicKey, privateKey);
 
         /* Add our temporary cert to the keychain for CMS decryption of
            the reply.  If we happened to have picked an existing UUID
@@ -331,19 +346,26 @@ SecSCEPGenerateCertificateRequest(CFArrayRef subject, CFDictionaryRef parameters
 
 
 out:
-
     CFReleaseSafe(simple_attr);
     CFReleaseSafe(msgtype_oid_data);
     CFReleaseSafe(msgtype_value_data);
     CFReleaseSafe(self_signed_identity);
     CFReleaseSafe(enveloped_data);
     CFReleaseSafe(csr);
+    CFReleaseNull(realPublicKey);
+    CFReleaseSafe(recipientKey);
     return signed_request;
+}
+
+CFDataRef
+SecSCEPCertifyRequest(CFDataRef request, SecIdentityRef ca_identity, CFDataRef serialno, bool pend_request) {
+    return SecSCEPCertifyRequestWithAlgorithms(request, ca_identity, serialno, pend_request, NULL, NULL);
 }
 
 
 CFDataRef
-SecSCEPCertifyRequest(CFDataRef request, SecIdentityRef ca_identity, CFDataRef serialno, bool pend_request)
+SecSCEPCertifyRequestWithAlgorithms(CFDataRef request, SecIdentityRef ca_identity, CFDataRef serialno, bool pend_request,
+                                    CFStringRef hashingAlgorithm, CFStringRef encryptionAlgorithm)
 {
     CFDictionaryRef simple_attr = NULL;
     SecCertificateRef ca_certificate = NULL;
@@ -363,14 +385,10 @@ SecSCEPCertifyRequest(CFDataRef request, SecIdentityRef ca_identity, CFDataRef s
     SecKeyRef tbsPublicKey = NULL;
     CFMutableDataRef encrypted_content = NULL;
     SecCertificateRef recipient = NULL;
-    CFDictionaryRef parameters = NULL;
+    CFMutableDictionaryRef parameters = NULL;
     
     require_noerr(SecIdentityCopyCertificate(ca_identity, &ca_certificate), out);
-#if TARGET_OS_IPHONE
-    ca_public_key = SecCertificateCopyPublicKey(ca_certificate); /*@@@*/
-#else
-    ca_public_key = SecCertificateCopyPublicKey_ios(ca_certificate);
-#endif
+    ca_public_key = SecCertificateCopyKey(ca_certificate);
 
     /* unwrap outer layer: */
     policy = SecPolicyCreateBasicX509();
@@ -420,17 +438,28 @@ SecSCEPCertifyRequest(CFDataRef request, SecIdentityRef ca_identity, CFDataRef s
 	require(cert_msg = CFDataCreateMutable(kCFAllocatorDefault, 0), out);
 
 	if (!pend_request) {
+        /* We can't yet support EC recipients for SCEP, so reject now. */
+        require (SecKeyGetAlgorithmId(tbsPublicKey) == kSecRSAAlgorithmID, out);
+
 		/* sign cert */
-		cert = SecIdentitySignCertificate(ca_identity, serialno,
-			tbsPublicKey, subject, extensions);
+		cert = SecIdentitySignCertificateWithAlgorithm(ca_identity, serialno,
+			tbsPublicKey, subject, extensions, hashingAlgorithm);
 
 		/* degenerate cms with cert */
 		require (cert_pkcs7 = SecCMSCreateCertificatesOnlyMessage(cert), out);
 		CFReleaseNull(cert);
 
 		/* envelope for client */
-		require_noerr(SecCMSCreateEnvelopedData(signer_cert, NULL, cert_pkcs7, cert_msg), out);
+        CFDictionaryRef encryption_params = NULL;
+        if (encryptionAlgorithm) {
+            encryption_params = CFDictionaryCreate(NULL, (const void **)&kSecCMSBulkEncryptionAlgorithm,
+                                                   (const void **)&encryptionAlgorithm, 1,
+                                                   &kCFTypeDictionaryKeyCallBacks,
+                                                   &kCFTypeDictionaryValueCallBacks);
+        }
+		require_noerr(SecCMSCreateEnvelopedData(signer_cert, encryption_params, cert_pkcs7, cert_msg), out);
 		CFReleaseNull(cert_pkcs7);
+        CFReleaseNull(encryption_params);
 	}
 
 	CFDataRef pki_status_oid = scep_oid(pkiStatus);
@@ -445,9 +474,12 @@ SecSCEPCertifyRequest(CFDataRef request, SecIdentityRef ca_identity, CFDataRef s
 
 	/* sign with ra/ca cert and add attributes */
 	signed_reply = CFDataCreateMutable(kCFAllocatorDefault, 0);
-    const void *signing_params[] = { kSecCMSCertChainMode };
-    const void *signing_params_vals[] = { kSecCMSCertChainModeNone };
-    parameters = CFDictionaryCreate(kCFAllocatorDefault, signing_params, signing_params_vals, array_size(signing_params), &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+    parameters = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionaryAddValue(parameters, kSecCMSCertChainMode, kSecCMSCertChainModeNone);
+    if (hashingAlgorithm) {
+        CFDictionaryAddValue(parameters, kSecCMSSignHashAlgorithm, hashingAlgorithm);
+    }
     require_noerr_action(SecCMSCreateSignedData(ca_identity, cert_msg, parameters, simple_attr, signed_reply), out, CFReleaseNull(signed_reply));
 
 out:

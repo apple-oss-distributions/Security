@@ -30,7 +30,7 @@
 #include <mach/kern_return.h>
 #include <mach/message.h>
 #include <mach/mig_errors.h>
-#include "mach_notify.h"
+#include "mach_notifyServer.h"
 #include <security_utilities/debugging.h>
 #include <malloc/malloc.h>
 
@@ -39,6 +39,8 @@
 #else
 # include <sys/time.h>
 #endif
+
+#define SEC_MACH_AUDIT_TOKEN_PID (5)
 
 namespace Security {
 namespace MachPlusPlus {
@@ -237,11 +239,19 @@ void MachServer::runServerThread(bool doTimeout)
 				continue;
 			}
 			
+			// reset the buffer each time, handlers don't consistently set out params
+			bufReply.clearBuffer();
+
 			// process received message
 			if (bufRequest.msgId() >= MACH_NOTIFY_FIRST &&
 				bufRequest.msgId() <= MACH_NOTIFY_LAST) {
 				// mach kernel notification message
 				// we assume this is quick, so no thread arbitration here
+				mach_msg_audit_trailer_t *tlr = bufRequest.auditTrailer();
+				if (tlr == NULL || tlr->msgh_audit.val[SEC_MACH_AUDIT_TOKEN_PID] != 0) {
+					secnotice("machserver", "ignoring invalid notify message");
+					continue;
+				}
 				cdsa_notify_server(bufRequest, bufReply);
 			} else {
 				// normal request message
@@ -290,21 +300,25 @@ void MachServer::runServerThread(bool doTimeout)
              *  To avoid falling off the kernel's fast RPC path unnecessarily,
              *  we only supply MACH_SEND_TIMEOUT when absolutely necessary.
              */
-			mr = mach_msg_overwrite(bufReply,
+            mr = mach_msg_overwrite(bufReply,
                           (MACH_MSGH_BITS_REMOTE(bufReply.bits()) ==
                                                 MACH_MSG_TYPE_MOVE_SEND_ONCE) ?
                           MACH_SEND_MSG | mMsgOptions :
                           MACH_SEND_MSG | MACH_SEND_TIMEOUT | mMsgOptions,
                           bufReply.length(), 0, MACH_PORT_NULL,
                           0, MACH_PORT_NULL, NULL, 0);
-			switch (mr) {
-			case MACH_MSG_SUCCESS:
-				break;
-			default:
+            switch (mr) {
+            case MACH_MSG_SUCCESS:
+                break;
+            case MACH_SEND_INVALID_DEST:
+            case MACH_SEND_TIMED_OUT:
                 secinfo("machserver", "send error: %d %d", mr, bufReply.remotePort().port());
-				bufReply.destroy();
-				break;
-			}
+                bufReply.destroy();
+                break;
+            default:
+                secinfo("machserver", "send error: %d %d", mr, bufReply.remotePort().port());
+                break;
+            }
 
             
             // clean up after the transaction
@@ -546,52 +560,60 @@ void MachServer::clearTimer(Timer *timer)
 //
 // Notification hooks and shims. Defaults do nothing.
 //
-void cdsa_mach_notify_dead_name(mach_port_t, mach_port_name_t port)
+kern_return_t cdsa_mach_notify_dead_name(mach_port_t, mach_port_name_t port)
 {
 	try {
 		MachServer::active().notifyDeadName(port);
 	} catch (...) {
 	}
+    // the act of receiving a dead name notification allocates a dead-name
+    // right that must be deallocated
+    mach_port_deallocate(mach_task_self(), port);
+	return KERN_SUCCESS;
 }
 
 void MachServer::notifyDeadName(Port) { }
 
-void cdsa_mach_notify_port_deleted(mach_port_t, mach_port_name_t port)
+kern_return_t cdsa_mach_notify_port_deleted(mach_port_t, mach_port_name_t port)
 {
 	try {
 		MachServer::active().notifyPortDeleted(port);
 	} catch (...) {
 	}
+	return KERN_SUCCESS;
 }
 
 void MachServer::notifyPortDeleted(Port) { }
 
-void cdsa_mach_notify_port_destroyed(mach_port_t, mach_port_name_t port)
+kern_return_t cdsa_mach_notify_port_destroyed(mach_port_t, mach_port_name_t port)
 {
 	try {
 		MachServer::active().notifyPortDestroyed(port);
 	} catch (...) {
 	}
+	return KERN_SUCCESS;
 }
 
 void MachServer::notifyPortDestroyed(Port) { }
 
-void cdsa_mach_notify_send_once(mach_port_t port)
+kern_return_t cdsa_mach_notify_send_once(mach_port_t port)
 {
 	try {
 		MachServer::active().notifySendOnce(port);
 	} catch (...) {
 	}
+	return KERN_SUCCESS;
 }
 
 void MachServer::notifySendOnce(Port) { }
 
-void cdsa_mach_notify_no_senders(mach_port_t port, mach_port_mscount_t count)
+kern_return_t cdsa_mach_notify_no_senders(mach_port_t port, mach_port_mscount_t count)
 {
 	try {
 		MachServer::active().notifyNoSenders(port, count);
 	} catch (...) {
 	}
+	return KERN_SUCCESS;
 }
 
 void MachServer::notifyNoSenders(Port, mach_port_mscount_t) { }

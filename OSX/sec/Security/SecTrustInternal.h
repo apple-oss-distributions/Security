@@ -53,10 +53,14 @@ __BEGIN_DECLS
 
 extern const CFStringRef kSecCertificateDetailSHA1Digest;
 
-#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+#if TARGET_OS_OSX
 SecKeyRef SecTrustCopyPublicKey_ios(SecTrustRef trust);
 CFArrayRef SecTrustCopyProperties_ios(SecTrustRef trust);
 #endif
+
+#define kSecTrustEventNameKey "eventName"
+#define kSecTrustEventAttributesKey "eventAttributes"
+#define kSecTrustEventApplicationID "appID"
 
 __END_DECLS
 

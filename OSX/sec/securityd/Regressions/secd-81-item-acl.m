@@ -29,9 +29,8 @@
 #include <ACMLib.h>
 #include <coreauthd_spi.h>
 #include "SecdTestKeychainUtilities.h"
-#if TARGET_OS_IPHONE
-#include <MobileKeyBag/MobileKeyBag.h>
-#endif
+
+#include "OSX/utilities/SecAKSWrappers.h"
 
 #if LA_CONTEXT_IMPLEMENTED
 static keybag_handle_t test_keybag;
@@ -192,6 +191,8 @@ static void fillItem(CFMutableDictionaryRef item, uint32_t num)
             CFDictionarySetValue(item, attr, value);
         CFReleaseSafe(value);
     });
+
+    CFDictionarySetValue(item, kSecValueData, (__bridge CFDataRef)[NSData dataWithBytes:"some data" length:9]);
 }
 
 #if LA_CONTEXT_IMPLEMENTED
@@ -266,7 +267,9 @@ static void item_with_application_password(uint32_t *item_num)
     CFDictionarySetValue(item, kSecUseCredentialReference, credRefData);
     ok_status(SecItemAdd(item, NULL), "add local - acl with application password and user present");
     LASetErrorCodeBlock(authFailedBlock);
+    CFDictionarySetValue(item, kSecReturnData, kCFBooleanTrue);
     is_status(SecItemCopyMatching(item, NULL), errSecAuthFailed, "find local - acl with application password and user present");
+    CFDictionaryRemoveValue(item, kSecReturnData);
     LASetErrorCodeBlock(okBlock);
     set_app_password(acmContext);
     ok_status(SecItemDelete(item), "delete local - acl with application password and user present");
@@ -470,8 +473,8 @@ int secd_81_item_acl(int argc, char *const *argv)
         keybag_state_t state;
         int passcode_len=(int)strlen(passcode1);
 
-        ok(kIOReturnSuccess==aks_create_bag(passcode1, passcode_len, kAppleKeyStoreDeviceBag, &test_keybag), "create keybag");
-        ok(kIOReturnSuccess==aks_get_lock_state(test_keybag, &state), "get keybag state");
+        ok(kAKSReturnSuccess==aks_create_bag(passcode1, passcode_len, kAppleKeyStoreDeviceBag, &test_keybag), "create keybag");
+        ok(kAKSReturnSuccess==aks_get_lock_state(test_keybag, &state), "get keybag state");
         ok(!(state&keybag_state_locked), "keybag unlocked");
         SecItemServerSetKeychainKeybag(test_keybag);
     });

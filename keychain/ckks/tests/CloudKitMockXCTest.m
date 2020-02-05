@@ -32,7 +32,7 @@
 #import <CloudKit/CKContainer_Private.h>
 #import <OCMock/OCMock.h>
 
-#include "OSX/sec/securityd/Regressions/SecdTestKeychainUtilities.h"
+#include "securityd/Regressions/SecdTestKeychainUtilities.h"
 #include <utilities/SecFileLocations.h>
 #include <securityd/SecItemServer.h>
 
@@ -52,6 +52,10 @@
 #include <keychain/ckks/CKKSKey.h>
 #include "keychain/ckks/CKKSGroupOperation.h"
 #include "keychain/ckks/CKKSLockStateTracker.h"
+#include "keychain/ckks/CKKSReachabilityTracker.h"
+
+#import "tests/secdmockaks/mockaks.h"
+#import "utilities/SecTapToRadar.h"
 
 #import "MockCloudKit.h"
 
@@ -69,10 +73,13 @@
 
 
 @implementation CloudKitMockXCTest
+@synthesize aksLockState = _aksLockState;
 
 + (void)setUp {
     // Turn on testing
+    SecCKKSEnable();
     SecCKKSTestsEnable();
+    SecCKKSSetReduceRateLimiting(true);
     [super setUp];
 
 #if NO_SERVER
@@ -80,14 +87,34 @@
 #endif
 }
 
+- (BOOL)isRateLimited:(SecTapToRadar *)ttrRequest
+{
+    return self.isTTRRatelimited;
+}
+
+- (BOOL)askUserIfTTR:(SecTapToRadar *)ttrRequest
+{
+    return YES;
+}
+
+- (void)triggerTapToRadar:(SecTapToRadar *)ttrRequest
+{
+    [self.ttrExpectation fulfill];
+}
+
 - (void)setUp {
     [super setUp];
+
+    NSString* testName = [self.name componentsSeparatedByString:@" "][1];
+    testName = [testName stringByReplacingOccurrencesOfString:@"]" withString:@""];
+    secnotice("ckkstest", "Beginning test %@", testName);
 
     // All tests start with the same flag set.
     SecCKKSTestResetFlags();
     SecCKKSTestSetDisableSOS(true);
 
     self.silentFetchesAllowed = true;
+    self.silentZoneDeletesAllowed = false; // Set to true if you want to do any deletes
 
     __weak __typeof(self) weakSelf = self;
     self.operationQueue = [[NSOperationQueue alloc] init];
@@ -95,25 +122,35 @@
 
     self.zones = [[NSMutableDictionary alloc] init];
 
+    self.apsEnvironment = @"fake APS push string";
+
+    self.mockDatabaseExceptionCatcher = OCMStrictClassMock([CKDatabase class]);
     self.mockDatabase = OCMStrictClassMock([CKDatabase class]);
+    self.mockContainerExpectations = OCMStrictClassMock([CKContainer class]);
     self.mockContainer = OCMClassMock([CKContainer class]);
     OCMStub([self.mockContainer containerWithIdentifier:[OCMArg isKindOfClass:[NSString class]]]).andReturn(self.mockContainer);
     OCMStub([self.mockContainer defaultContainer]).andReturn(self.mockContainer);
     OCMStub([self.mockContainer alloc]).andReturn(self.mockContainer);
     OCMStub([self.mockContainer containerIdentifier]).andReturn(SecCKKSContainerName);
     OCMStub([self.mockContainer initWithContainerID: [OCMArg any] options: [OCMArg any]]).andReturn(self.mockContainer);
-    OCMStub([self.mockContainer privateCloudDatabase]).andReturn(self.mockDatabase);
-    OCMStub([self.mockContainer serverPreferredPushEnvironmentWithCompletionHandler: ([OCMArg invokeBlockWithArgs:@"fake APS push string", [NSNull null], nil])]);
+    OCMStub([self.mockContainer privateCloudDatabase]).andReturn(self.mockDatabaseExceptionCatcher);
+    OCMStub([self.mockContainer serverPreferredPushEnvironmentWithCompletionHandler: ([OCMArg invokeBlockWithArgs:self.apsEnvironment, [NSNull null], nil])]);
+    OCMStub([self.mockContainer submitEventMetric:[OCMArg any]]).andCall(self, @selector(ckcontainerSubmitEventMetric:));
+
+    // Use two layers of mockDatabase here, so we can both add Expectations and catch the exception (instead of crash) when one fails.
+    OCMStub([self.mockDatabaseExceptionCatcher addOperation:[OCMArg any]]).andCall(self, @selector(ckdatabaseAddOperation:));
 
     // If you want to change this, you'll need to update the mock
-    _ckDeviceID = @"fake-cloudkit-device-id";
+    _ckDeviceID = [NSString stringWithFormat:@"fake-cloudkit-device-id-%@", testName];
     OCMStub([self.mockContainer fetchCurrentDeviceIDWithCompletionHandler: ([OCMArg invokeBlockWithArgs:self.ckDeviceID, [NSNull null], nil])]);
 
     self.accountStatus = CKAccountStatusAvailable;
-    self.supportsDeviceToDeviceEncryption = YES;
+    self.iCloudHasValidCredentials = YES;
 
-    // Inject a fake operation dependency into the manager object, so that the tests can perform setup and mock expectations before zone setup begins
-    // Also blocks all CK account state retrieval operations (but not circle status ones)
+    self.fakeHSA2AccountStatus = CKKSAccountStatusAvailable;
+
+    // Inject a fake operation dependency so we won't respond with the CloudKit account status immediately
+    // The CKKSAccountStateTracker won't send any login/logout calls without that information, so this blocks all CKKS setup
     self.ckaccountHoldOperation = [NSBlockOperation named:@"ckaccount-hold" withBlock:^{
         secnotice("ckks", "CKKS CK account status test hold released");
     }];
@@ -144,7 +181,7 @@
                 __strong __typeof(self) blockStrongSelf = weakSelf;
                 CKAccountInfo* account = [[CKAccountInfo alloc] init];
                 account.accountStatus = blockStrongSelf.accountStatus;
-                account.supportsDeviceToDeviceEncryption = blockStrongSelf.supportsDeviceToDeviceEncryption;
+                account.hasValidCredentials = blockStrongSelf.iCloudHasValidCredentials;
                 account.accountPartition = CKAccountPartitionTypeProduction;
                 passedBlock((CKAccountInfo*)account, nil);
             }];
@@ -156,19 +193,29 @@
         return NO;
     }]]);
 
-    self.circleStatus = kSOSCCInCircle;
-    self.mockAccountStateTracker = OCMClassMock([CKKSCKAccountStateTracker class]);
+    self.mockAccountStateTracker = OCMClassMock([CKKSAccountStateTracker class]);
     OCMStub([self.mockAccountStateTracker getCircleStatus]).andCall(self, @selector(circleStatus));
 
+    // Fake out SOS peers
+    // One trusted non-self peer, but it doesn't have any Octagon keys. Your test can change this if it wants.
+    // However, note that [self putFakeDeviceStatusInCloudKit:] will likely not do what you want after you change this
+    CKKSSOSSelfPeer* currentSelfPeer = [[CKKSSOSSelfPeer alloc] initWithSOSPeerID:@"local-peer"
+                                                                    encryptionKey:[[SFECKeyPair alloc] initRandomKeyPairWithSpecifier:[[SFECKeySpecifier alloc] initWithCurve:SFEllipticCurveNistp384]]
+                                                                       signingKey:[[SFECKeyPair alloc] initRandomKeyPairWithSpecifier:[[SFECKeySpecifier alloc] initWithCurve:SFEllipticCurveNistp384]]
+                                                                         viewList:self.managedViewList];
+
+    self.mockSOSAdapter = [[CKKSMockSOSPresentAdapter alloc] initWithSelfPeer:currentSelfPeer
+                                                                 trustedPeers:[NSSet set]
+                                                                    essential:YES];
+
     // If we're in circle, come up with a fake circle id. Otherwise, return an error.
-    self.circlePeerID = @"fake-circle-id";
     OCMStub([self.mockAccountStateTracker fetchCirclePeerID:
              [OCMArg checkWithBlock:^BOOL(void (^passedBlock) (NSString* peerID,
                                                                NSError * error)) {
         __strong __typeof(self) strongSelf = weakSelf;
         if(passedBlock && strongSelf) {
-            if(strongSelf.circleStatus == kSOSCCInCircle) {
-                passedBlock(strongSelf.circlePeerID, nil);
+            if(strongSelf.mockSOSAdapter.circleStatus == kSOSCCInCircle) {
+                passedBlock(strongSelf.mockSOSAdapter.selfPeer.peerID, nil);
             } else {
                 passedBlock(nil, [NSError errorWithDomain:@"securityd" code:errSecInternalError userInfo:@{NSLocalizedDescriptionKey:@"no account, no circle id"}]);
             }
@@ -182,14 +229,31 @@
     self.mockLockStateTracker = OCMClassMock([CKKSLockStateTracker class]);
     OCMStub([self.mockLockStateTracker queryAKSLocked]).andCall(self, @selector(aksLockState));
 
+    self.mockTTR = OCMClassMock([SecTapToRadar class]);
+    OCMStub([self.mockTTR isRateLimited:[OCMArg any]]).andCall(self, @selector(isRateLimited:));
+    OCMStub([self.mockTTR askUserIfTTR:[OCMArg any]]).andCall(self, @selector(askUserIfTTR:));
+    OCMStub([self.mockTTR triggerTapToRadar:[OCMArg any]]).andCall(self, @selector(triggerTapToRadar:));
+    self.isTTRRatelimited = true;
+
     self.mockFakeCKModifyRecordZonesOperation = OCMClassMock([FakeCKModifyRecordZonesOperation class]);
     OCMStub([self.mockFakeCKModifyRecordZonesOperation ckdb]).andReturn(self.zones);
+    OCMStub([self.mockFakeCKModifyRecordZonesOperation shouldFailModifyRecordZonesOperation]).andCall(self, @selector(shouldFailModifyRecordZonesOperation));
+
+    OCMStub([self.mockFakeCKModifyRecordZonesOperation ensureZoneDeletionAllowed:[OCMArg any]]).andCall(self, @selector(ensureZoneDeletionAllowed:));
 
     self.mockFakeCKModifySubscriptionsOperation = OCMClassMock([FakeCKModifySubscriptionsOperation class]);
     OCMStub([self.mockFakeCKModifySubscriptionsOperation ckdb]).andReturn(self.zones);
 
     self.mockFakeCKFetchRecordZoneChangesOperation = OCMClassMock([FakeCKFetchRecordZoneChangesOperation class]);
     OCMStub([self.mockFakeCKFetchRecordZoneChangesOperation ckdb]).andReturn(self.zones);
+    OCMStub([self.mockFakeCKFetchRecordZoneChangesOperation isNetworkReachable]).andCall(self, @selector(isNetworkReachable));
+
+    self.mockFakeCKFetchRecordsOperation = OCMClassMock([FakeCKFetchRecordsOperation class]);
+    OCMStub([self.mockFakeCKFetchRecordsOperation ckdb]).andReturn(self.zones);
+
+    self.mockFakeCKQueryOperation = OCMClassMock([FakeCKQueryOperation class]);
+    OCMStub([self.mockFakeCKQueryOperation ckdb]).andReturn(self.zones);
+
 
     OCMStub([self.mockDatabase addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
         __strong __typeof(self) strongSelf = weakSelf;
@@ -199,44 +263,74 @@
                 matches = YES;
 
                 FakeCKFetchRecordZoneChangesOperation *frzco = (FakeCKFetchRecordZoneChangesOperation *)obj;
+                [frzco addNullableDependency:strongSelf.ckFetchHoldOperation];
                 [strongSelf.operationQueue addOperation: frzco];
             }
         }
         return matches;
     }]]);
 
+    OCMStub([self.mockDatabase addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKFetchRecordsOperation class]]) {
+            if(strongSelf.silentFetchesAllowed) {
+                matches = YES;
+
+                FakeCKFetchRecordsOperation *ffro = (FakeCKFetchRecordsOperation *)obj;
+                [ffro addNullableDependency:strongSelf.ckFetchHoldOperation];
+                [strongSelf.operationQueue addOperation: ffro];
+            }
+        }
+        return matches;
+    }]]);
+
+    OCMStub([self.mockDatabase addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKQueryOperation class]]) {
+            if(strongSelf.silentFetchesAllowed) {
+                matches = YES;
+
+                FakeCKQueryOperation *fqo = (FakeCKQueryOperation *)obj;
+                [fqo addNullableDependency:strongSelf.ckFetchHoldOperation];
+                [strongSelf.operationQueue addOperation: fqo];
+            }
+        }
+        return matches;
+    }]]);
 
     self.testZoneID = [[CKRecordZoneID alloc] initWithZoneName:@"testzone" ownerName:CKCurrentUserDefaultName];
 
-    // Inject a fake operation dependency into the manager object, so that the tests can perform setup and mock expectations before zone setup begins
-    // Also blocks all CK account state retrieval operations (but not circle status ones)
-    self.ckksHoldOperation = [[NSBlockOperation alloc] init];
-    [self.ckksHoldOperation addExecutionBlock:^{
-        secnotice("ckks", "CKKS testing hold released");
-    }];
-    self.ckksHoldOperation.name = @"ckks-hold";
+    // We don't want to use class mocks here, because they don't play well with partial mocks
+    CKKSCloudKitClassDependencies* cloudKitClassDependencies = [[CKKSCloudKitClassDependencies alloc] initWithFetchRecordZoneChangesOperationClass:[FakeCKFetchRecordZoneChangesOperation class]
+                                                                                                                        fetchRecordsOperationClass:[FakeCKFetchRecordsOperation class]
+                                                                                                                               queryOperationClass:[FakeCKQueryOperation class]
+                                                                                                                 modifySubscriptionsOperationClass:[FakeCKModifySubscriptionsOperation class]
+                                                                                                                   modifyRecordZonesOperationClass:[FakeCKModifyRecordZonesOperation class]
+                                                                                                                                apsConnectionClass:[FakeAPSConnection class]
+                                                                                                                         nsnotificationCenterClass:[FakeNSNotificationCenter class]
+                                                                nsdistributednotificationCenterClass:[FakeNSDistributedNotificationCenter class]
+                                                                                                                                     notifierClass:[FakeCKKSNotifier class]];
 
-    self.mockCKKSViewManager = OCMClassMock([CKKSViewManager class]);
-    OCMStub([self.mockCKKSViewManager viewList]).andCall(self, @selector(managedViewList));
+    self.mockCKKSViewManager = OCMPartialMock(
+        [[CKKSViewManager alloc] initWithContainerName:SecCKKSContainerName
+                                                usePCS:SecCKKSContainerUsePCS
+                                            sosAdapter:self.mockSOSAdapter
+                             cloudKitClassDependencies:cloudKitClassDependencies]);
+
+    OCMStub([self.mockCKKSViewManager defaultViewList]).andCall(self, @selector(managedViewList));
     OCMStub([self.mockCKKSViewManager syncBackupAndNotifyAboutSync]);
 
-    self.injectedManager = [[CKKSViewManager alloc] initWithContainerName:SecCKKSContainerName
-                                                                   usePCS:SecCKKSContainerUsePCS
-                                     fetchRecordZoneChangesOperationClass:[FakeCKFetchRecordZoneChangesOperation class]
-                                        modifySubscriptionsOperationClass:[FakeCKModifySubscriptionsOperation class]
-                                          modifyRecordZonesOperationClass:[FakeCKModifyRecordZonesOperation class]
-                                                       apsConnectionClass:[FakeAPSConnection class]
-                                                nsnotificationCenterClass:[FakeNSNotificationCenter class]
-                                                            notifierClass:[FakeCKKSNotifier class]
-                                                                setupHold:self.ckksHoldOperation];
+    self.injectedManager = self.mockCKKSViewManager;
 
     [CKKSViewManager resetManager:false setTo:self.injectedManager];
 
-    // Make a new fake keychain
-    NSString* smallName = [self.name componentsSeparatedByString:@" "][1];
-    smallName = [smallName stringByReplacingOccurrencesOfString:@"]" withString:@""];
+    // Lie and say network is available
+    [self.reachabilityTracker setNetworkReachability:true];
 
-    NSString* tmp_dir = [NSString stringWithFormat: @"/tmp/%@.%X", smallName, arc4random()];
+    // Make a new fake keychain
+    NSString* tmp_dir = [NSString stringWithFormat: @"/tmp/%@.%X", testName, arc4random()];
     [[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithFormat: @"%@/Library/Keychains", tmp_dir] withIntermediateDirectories:YES attributes:nil error:NULL];
 
     SetCustomHomeURLString((__bridge CFStringRef) tmp_dir);
@@ -246,7 +340,62 @@
     kc_with_dbt(true, NULL, ^bool (SecDbConnectionRef dbt) { return false; });
 }
 
--(CKKSCKAccountStateTracker*)accountStateTracker {
+- (SOSAccountStatus*)circleStatus {
+    NSError* error = nil;
+    SOSCCStatus status = [self.mockSOSAdapter circleStatus:&error];
+    return [[SOSAccountStatus alloc] init:status error:error];
+}
+
+- (bool)aksLockState
+{
+    return _aksLockState;
+}
+
+- (void)setAksLockState:(bool)aksLockState
+{
+
+    if(aksLockState) {
+        [SecMockAKS lockClassA];
+    } else {
+        [SecMockAKS unlockAllClasses];
+    }
+    _aksLockState = aksLockState;
+}
+
+- (bool)isNetworkReachable {
+    return self.reachabilityTracker.currentReachability;
+}
+
+- (void)ckcontainerSubmitEventMetric:(CKEventMetric*)metric {
+    @try {
+        [self.mockContainerExpectations submitEventMetric:metric];
+    } @catch (NSException *exception) {
+        XCTFail("Received an container exception when trying to add a metric: %@", exception);
+    }
+}
+
+- (void)ckdatabaseAddOperation:(NSOperation*)op {
+    @try {
+        [self.mockDatabase addOperation:op];
+    } @catch (NSException *exception) {
+        XCTFail("Received an database exception: %@", exception);
+    }
+}
+
+- (NSError* _Nullable)shouldFailModifyRecordZonesOperation {
+    NSError* error = self.nextModifyRecordZonesError;
+    if(error) {
+        self.nextModifyRecordZonesError = nil;
+        return error;
+    }
+    return nil;
+}
+
+- (void)ensureZoneDeletionAllowed:(FakeCKZone*)zone {
+    XCTAssertTrue(self.silentZoneDeletesAllowed, "Should be allowing zone deletes");
+}
+
+-(CKKSAccountStateTracker*)accountStateTracker {
     return self.injectedManager.accountTracker;
 }
 
@@ -254,11 +403,55 @@
     return self.injectedManager.lockStateTracker;
 }
 
+-(CKKSReachabilityTracker*)reachabilityTracker {
+    return self.injectedManager.reachabilityTracker;
+}
+
 -(NSSet*)managedViewList {
     return (NSSet*) CFBridgingRelease(SOSViewCopyViewSet(kViewSetCKKS));
 }
 
 -(void)expectCKFetch {
+    [self expectCKFetchAndRunBeforeFinished: nil];
+}
+
+-(void)expectCKFetchAndRunBeforeFinished: (void (^)(void))blockAfterFetch {
+    [self expectCKFetchWithFilter:^BOOL(FakeCKFetchRecordZoneChangesOperation * op) {
+        return YES;
+    }
+                runBeforeFinished:blockAfterFetch];
+}
+
+- (void)expectCKFetchWithFilter:(BOOL (^)(FakeCKFetchRecordZoneChangesOperation*))operationMatch
+              runBeforeFinished:(void (^)(void))blockAfterFetch
+{
+    // Create an object for the block to retain and modify
+    BoolHolder* runAlready = [[BoolHolder alloc] init];
+
+    __weak __typeof(self) weakSelf = self;
+    [[self.mockDatabase expect] addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        if(runAlready.state) {
+            return NO;
+        }
+
+        secnotice("fakecloudkit", "Received an operation (%@), checking if it's a fetch changes", obj);
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKFetchRecordZoneChangesOperation class]]) {
+            FakeCKFetchRecordZoneChangesOperation *frzco = (FakeCKFetchRecordZoneChangesOperation *)obj;
+            matches = operationMatch(frzco);
+            runAlready.state = true;
+
+            secnotice("fakecloudkit", "Running fetch changes: %@", obj);
+            frzco.blockAfterFetch = blockAfterFetch;
+            [frzco addNullableDependency: strongSelf.ckFetchHoldOperation];
+            [strongSelf.operationQueue addOperation: frzco];
+        }
+        return matches;
+    }]];
+}
+
+-(void)expectCKFetchByRecordID {
     // Create an object for the block to retain and modify
     BoolHolder* runAlready = [[BoolHolder alloc] init];
 
@@ -269,29 +462,47 @@
             return NO;
         }
         BOOL matches = NO;
-        if ([obj isKindOfClass: [FakeCKFetchRecordZoneChangesOperation class]]) {
+        if ([obj isKindOfClass: [FakeCKFetchRecordsOperation class]]) {
             matches = YES;
             runAlready.state = true;
 
-            FakeCKFetchRecordZoneChangesOperation *frzco = (FakeCKFetchRecordZoneChangesOperation *)obj;
-            [strongSelf.operationQueue addOperation: frzco];
+            FakeCKFetchRecordsOperation *ffro = (FakeCKFetchRecordsOperation *)obj;
+            [ffro addNullableDependency: strongSelf.ckFetchHoldOperation];
+            [strongSelf.operationQueue addOperation: ffro];
+        }
+        return matches;
+    }]];
+}
+
+
+-(void)expectCKFetchByQuery {
+    // Create an object for the block to retain and modify
+    BoolHolder* runAlready = [[BoolHolder alloc] init];
+
+    __weak __typeof(self) weakSelf = self;
+    [[self.mockDatabase expect] addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        if(runAlready.state) {
+            return NO;
+        }
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKQueryOperation class]]) {
+            matches = YES;
+            runAlready.state = true;
+
+            FakeCKQueryOperation *fqo = (FakeCKQueryOperation *)obj;
+            [fqo addNullableDependency: strongSelf.ckFetchHoldOperation];
+            [strongSelf.operationQueue addOperation: fqo];
         }
         return matches;
     }]];
 }
 
 - (void)startCKKSSubsystem {
-    [self startCKAccountStatusMock];
-    [self startCKKSSubsystemOnly];
-}
-
-- (void)startCKKSSubsystemOnly {
-    // Note: currently, based on how we're mocking up the zone creation and zone subscription operation,
-    // they will 'fire' before this method is called. It's harmless, since the mocks immediately succeed
-    // and return; it's just a tad confusing.
-    if([self.ckksHoldOperation isPending]) {
-        [self.operationQueue addOperation: self.ckksHoldOperation];
+    if(self.fakeHSA2AccountStatus != CKKSAccountStatusUnknown) {
+        [self.accountStateTracker setHSA2iCloudAccountStatus:self.fakeHSA2AccountStatus];
     }
+    [self startCKAccountStatusMock];
 }
 
 - (void)startCKAccountStatusMock {
@@ -301,9 +512,12 @@
     if([self.ckaccountHoldOperation isPending]) {
         [self.operationQueue addOperation: self.ckaccountHoldOperation];
     }
+
+    [self.accountStateTracker performInitialDispatches];
 }
 
 -(void)holdCloudKitModifications {
+    XCTAssertFalse([self.ckModifyHoldOperation isPending], "Shouldn't already be a pending cloudkit modify hold operation");
     self.ckModifyHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
         secnotice("ckks", "Released CloudKit modification hold.");
     }];
@@ -311,6 +525,18 @@
 -(void)releaseCloudKitModificationHold {
     if([self.ckModifyHoldOperation isPending]) {
         [self.operationQueue addOperation: self.ckModifyHoldOperation];
+    }
+}
+
+-(void)holdCloudKitFetches {
+    XCTAssertFalse([self.ckFetchHoldOperation isPending], "Shouldn't already be a pending cloudkit fetch hold operation");
+    self.ckFetchHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
+        secnotice("ckks", "Released CloudKit fetch hold.");
+    }];
+}
+-(void)releaseCloudKitFetchHold {
+    if([self.ckFetchHoldOperation isPending]) {
+        [self.operationQueue addOperation: self.ckFetchHoldOperation];
     }
 }
 
@@ -365,14 +591,35 @@
 
 
 
-- (void)expectCKModifyKeyRecords: (NSUInteger) expectedNumberOfRecords currentKeyPointerRecords: (NSUInteger) expectedCurrentKeyRecords zoneID: (CKRecordZoneID*) zoneID {
+- (void)expectCKModifyKeyRecords:(NSUInteger)expectedNumberOfRecords
+        currentKeyPointerRecords:(NSUInteger)expectedCurrentKeyRecords
+                 tlkShareRecords:(NSUInteger)expectedTLKShareRecords
+                          zoneID:(CKRecordZoneID*)zoneID
+{
+    return [self expectCKModifyKeyRecords:expectedNumberOfRecords
+                 currentKeyPointerRecords:expectedCurrentKeyRecords
+                          tlkShareRecords:expectedTLKShareRecords
+                                   zoneID:zoneID
+                      checkModifiedRecord:nil];
+}
+
+- (void)expectCKModifyKeyRecords:(NSUInteger)expectedNumberOfRecords
+        currentKeyPointerRecords:(NSUInteger)expectedCurrentKeyRecords
+                 tlkShareRecords:(NSUInteger)expectedTLKShareRecords
+                          zoneID:(CKRecordZoneID*)zoneID
+             checkModifiedRecord:(BOOL (^_Nullable)(CKRecord*))checkModifiedRecord
+{
     NSNumber* nkeys = [NSNumber numberWithUnsignedInteger: expectedNumberOfRecords];
     NSNumber* ncurrentkeys = [NSNumber numberWithUnsignedInteger: expectedCurrentKeyRecords];
+    NSNumber* ntlkshares = [NSNumber numberWithUnsignedInteger: expectedTLKShareRecords];
 
-    [self expectCKModifyRecords:@{SecCKRecordIntermediateKeyType: nkeys, SecCKRecordCurrentKeyType: ncurrentkeys}
+    [self expectCKModifyRecords:@{SecCKRecordIntermediateKeyType: nkeys,
+                                  SecCKRecordCurrentKeyType: ncurrentkeys,
+                                  SecCKRecordTLKShareType: ntlkshares,
+                                  }
         deletedRecordTypeCounts:nil
                          zoneID:zoneID
-            checkModifiedRecord:nil
+            checkModifiedRecord:checkModifiedRecord
            runAfterModification:nil];
 }
 
@@ -380,7 +627,7 @@
       deletedRecordTypeCounts:(NSDictionary<NSString*, NSNumber*>*) expectedDeletedRecordTypeCounts
                        zoneID:(CKRecordZoneID*) zoneID
           checkModifiedRecord:(BOOL (^)(CKRecord*)) checkModifiedRecord
-         runAfterModification:(void (^) ())afterModification
+         runAfterModification:(void (^) (void))afterModification
 {
     __weak __typeof(self) weakSelf = self;
 
@@ -391,7 +638,7 @@
               expectedRecordTypeCounts, expectedDeletedRecordTypeCounts);
 
     [[self.mockDatabase expect] addOperation:[OCMArg checkWithBlock:^BOOL(id obj) {
-        secnotice("fakecloudkit", "Received an operation, checking");
+        secnotice("fakecloudkit", "Received an operation (%@), checking if it's a modification", obj);
         __block bool matches = false;
         if(runAlready.state) {
             secnotice("fakecloudkit", "Run already, skipping");
@@ -420,117 +667,132 @@
             FakeCKZone* zone = strongSelf.zones[zoneID];
             XCTAssertNotNil(zone, "Have a zone for these records");
 
-            for(CKRecord* record in op.recordsToSave) {
-                if(![record.recordID.zoneID isEqual: zoneID]) {
-                    secnotice("fakecloudkit", "Modified record zone ID mismatch: %@ %@", zoneID, record.recordID.zoneID);
-                    return NO;
-                }
+            __block BOOL result = YES;
+            dispatch_sync(zone.queue, ^{
 
-                if([zone errorFromSavingRecord: record]) {
-                    secnotice("fakecloudkit", "Record zone rejected record write: %@", record);
-                    return NO;
-                }
-
-                NSNumber* currentCountNumber = modifiedRecordTypeCounts[record.recordType];
-                NSUInteger currentCount = currentCountNumber ? [currentCountNumber unsignedIntegerValue] : 0;
-                modifiedRecordTypeCounts[record.recordType] = [NSNumber numberWithUnsignedInteger: currentCount + 1];
-            }
-
-            for(CKRecordID* recordID in op.recordIDsToDelete) {
-                if(![recordID.zoneID isEqual: zoneID]) {
-                    matches = false;
-                    secnotice("fakecloudkit", "Deleted record zone ID mismatch: %@ %@", zoneID, recordID.zoneID);
-                }
-
-                // Find the object in CloudKit, and record its type
-                CKRecord* record = strongSelf.zones[zoneID].currentDatabase[recordID];
-                if(record) {
-                    NSNumber* currentCountNumber = deletedRecordTypeCounts[record.recordType];
-                    NSUInteger currentCount = currentCountNumber ? [currentCountNumber unsignedIntegerValue] : 0;
-                    deletedRecordTypeCounts[record.recordType] = [NSNumber numberWithUnsignedInteger: currentCount + 1];
-                }
-            }
-
-            NSMutableDictionary* filteredExpectedRecordTypeCounts = [expectedRecordTypeCounts mutableCopy];
-            for(NSString* key in filteredExpectedRecordTypeCounts.allKeys) {
-                if([filteredExpectedRecordTypeCounts[key] isEqual: [NSNumber numberWithInt:0]]) {
-                    filteredExpectedRecordTypeCounts[key] = nil;
-                }
-            }
-            filteredExpectedRecordTypeCounts[SecCKRecordManifestType] = modifiedRecordTypeCounts[SecCKRecordManifestType];
-            filteredExpectedRecordTypeCounts[SecCKRecordManifestLeafType] = modifiedRecordTypeCounts[SecCKRecordManifestLeafType];
-
-            // Inspect that we have exactly the same records as we expect
-            if(expectedRecordTypeCounts) {
-                matches &= !![modifiedRecordTypeCounts isEqual: filteredExpectedRecordTypeCounts];
-                if(!matches) {
-                    secnotice("fakecloudkit", "Record number mismatch: %@ %@", modifiedRecordTypeCounts, filteredExpectedRecordTypeCounts);
-                    return NO;
-                }
-            } else {
-                matches &= op.recordsToSave.count == 0u;
-                if(!matches) {
-                    secnotice("fakecloudkit", "Record number mismatch: %@ 0", modifiedRecordTypeCounts);
-                    return NO;
-                }
-            }
-            if(expectedDeletedRecordTypeCounts) {
-                matches &= !![deletedRecordTypeCounts  isEqual: expectedDeletedRecordTypeCounts];
-                if(!matches) {
-                    secnotice("fakecloudkit", "Deleted record number mismatch: %@ %@", deletedRecordTypeCounts, expectedDeletedRecordTypeCounts);
-                    return NO;
-                }
-            } else {
-                matches &= op.recordIDsToDelete.count == 0u;
-                if(!matches) {
-                    secnotice("fakecloudkit", "Deleted record number mismatch: %@ 0", deletedRecordTypeCounts);
-                    return NO;
-                }
-            }
-
-            // We have the right number of things, and their etags match. Ensure that they have the right etags
-            if(matches && checkModifiedRecord) {
-                // Clearly we have the right number of things. Call checkRecord on them...
                 for(CKRecord* record in op.recordsToSave) {
-                    matches &= !!(checkModifiedRecord(record));
-                    if(!matches) {
-                        secnotice("fakecloudkit", "Check record reports NO: %@ 0", record);
-                        return NO;
+                    if(![record.recordID.zoneID isEqual: zoneID]) {
+                        secnotice("fakecloudkit", "Modified record zone ID mismatch: %@ %@", zoneID, record.recordID.zoneID);
+                        result = NO;
+                        return;
+                    }
+
+                    NSError* recordError = [zone errorFromSavingRecord: record];
+                    if(recordError) {
+                        secnotice("fakecloudkit", "Record zone rejected record write: %@ %@", recordError, record);
+                        XCTFail(@"Record zone rejected record write: %@ %@", recordError, record);
+                        result = NO;
+                        return;
+                    }
+
+                    NSNumber* currentCountNumber = modifiedRecordTypeCounts[record.recordType];
+                    NSUInteger currentCount = currentCountNumber ? [currentCountNumber unsignedIntegerValue] : 0;
+                    modifiedRecordTypeCounts[record.recordType] = [NSNumber numberWithUnsignedInteger: currentCount + 1];
+                }
+
+                for(CKRecordID* recordID in op.recordIDsToDelete) {
+                    if(![recordID.zoneID isEqual: zoneID]) {
+                        matches = false;
+                        secnotice("fakecloudkit", "Deleted record zone ID mismatch: %@ %@", zoneID, recordID.zoneID);
+                    }
+
+                    // Find the object in CloudKit, and record its type
+                    CKRecord* record = strongSelf.zones[zoneID].currentDatabase[recordID];
+                    if(record) {
+                        NSNumber* currentCountNumber = deletedRecordTypeCounts[record.recordType];
+                        NSUInteger currentCount = currentCountNumber ? [currentCountNumber unsignedIntegerValue] : 0;
+                        deletedRecordTypeCounts[record.recordType] = [NSNumber numberWithUnsignedInteger: currentCount + 1];
                     }
                 }
-            }
 
-            if(matches) {
-                // Emulate cloudkit and schedule the operation for execution. Be sure to wait for this operation
-                // if you'd like to read the data from this write.
-                NSBlockOperation* ckop = [NSBlockOperation named:@"cloudkit-write" withBlock: ^{
-                    @synchronized(zone.currentDatabase) {
-                        NSMutableArray* savedRecords = [[NSMutableArray alloc] init];
-                        for(CKRecord* record in op.recordsToSave) {
-                            CKRecord* reflectedRecord = [record copy];
-                            reflectedRecord.modificationDate = [NSDate date];
-
-                            [zone addToZone: reflectedRecord];
-
-                            [savedRecords addObject:reflectedRecord];
-                            op.perRecordCompletionBlock(reflectedRecord, nil);
-                        }
-                        for(CKRecordID* recordID in op.recordIDsToDelete) {
-                            // I don't believe CloudKit fails an operation if you delete a record that's not there, so:
-                            [zone deleteCKRecordIDFromZone: recordID];
-                        }
-
-                        op.modifyRecordsCompletionBlock(savedRecords, op.recordIDsToDelete, nil);
-
-                        if(afterModification) {
-                            afterModification();
-                        }
-
-                        op.isFinished = YES;
+                NSMutableDictionary* filteredExpectedRecordTypeCounts = [expectedRecordTypeCounts mutableCopy];
+                for(NSString* key in filteredExpectedRecordTypeCounts.allKeys) {
+                    if([filteredExpectedRecordTypeCounts[key] isEqual: [NSNumber numberWithInt:0]]) {
+                        filteredExpectedRecordTypeCounts[key] = nil;
                     }
-                }];
-                [ckop addNullableDependency:strongSelf.ckModifyHoldOperation];
-                [strongSelf.operationQueue addOperation: ckop];
+                }
+                filteredExpectedRecordTypeCounts[SecCKRecordManifestType] = modifiedRecordTypeCounts[SecCKRecordManifestType];
+                filteredExpectedRecordTypeCounts[SecCKRecordManifestLeafType] = modifiedRecordTypeCounts[SecCKRecordManifestLeafType];
+
+                // Inspect that we have exactly the same records as we expect
+                if(expectedRecordTypeCounts) {
+                    matches &= !![modifiedRecordTypeCounts isEqual: filteredExpectedRecordTypeCounts];
+                    if(!matches) {
+                        secnotice("fakecloudkit", "Record number mismatch: %@ %@", modifiedRecordTypeCounts, filteredExpectedRecordTypeCounts);
+                        result = NO;
+                        return;
+                    }
+                } else {
+                    matches &= op.recordsToSave.count == 0u;
+                    if(!matches) {
+                        secnotice("fakecloudkit", "Record number mismatch: %@ 0", modifiedRecordTypeCounts);
+                        result = NO;
+                        return;
+                    }
+                }
+                if(expectedDeletedRecordTypeCounts) {
+                    matches &= !![deletedRecordTypeCounts  isEqual: expectedDeletedRecordTypeCounts];
+                    if(!matches) {
+                        secnotice("fakecloudkit", "Deleted record number mismatch: %@ %@", deletedRecordTypeCounts, expectedDeletedRecordTypeCounts);
+                        result = NO;
+                        return;
+                    }
+                } else {
+                    matches &= op.recordIDsToDelete.count == 0u;
+                    if(!matches) {
+                        secnotice("fakecloudkit", "Deleted record number mismatch: %@ 0", deletedRecordTypeCounts);
+                        result = NO;
+                        return;
+                    }
+                }
+
+                // We have the right number of things, and their etags match. Ensure that they have the right etags
+                if(matches && checkModifiedRecord) {
+                    // Clearly we have the right number of things. Call checkRecord on them...
+                    for(CKRecord* record in op.recordsToSave) {
+                        matches &= !!(checkModifiedRecord(record));
+                        if(!matches) {
+                            secnotice("fakecloudkit", "Check record reports NO: %@ 0", record);
+                            result = NO;
+                            return;
+                        }
+                    }
+                }
+
+                if(matches) {
+                    // Emulate cloudkit and schedule the operation for execution. Be sure to wait for this operation
+                    // if you'd like to read the data from this write.
+                    NSBlockOperation* ckop = [NSBlockOperation named:@"cloudkit-write" withBlock: ^{
+                        @synchronized(zone.currentDatabase) {
+                            NSMutableArray* savedRecords = [[NSMutableArray alloc] init];
+                            for(CKRecord* record in op.recordsToSave) {
+                                CKRecord* reflectedRecord = [record copy];
+                                reflectedRecord.modificationDate = [NSDate date];
+
+                                [zone addToZone: reflectedRecord];
+
+                                [savedRecords addObject:reflectedRecord];
+                                op.perRecordCompletionBlock(reflectedRecord, nil);
+                            }
+                            for(CKRecordID* recordID in op.recordIDsToDelete) {
+                                // I don't believe CloudKit fails an operation if you delete a record that's not there, so:
+                                [zone deleteCKRecordIDFromZone: recordID];
+                            }
+
+                            if(afterModification) {
+                                afterModification();
+                            }
+
+                            op.modifyRecordsCompletionBlock(savedRecords, op.recordIDsToDelete, nil);
+                            op.isFinished = YES;
+                        }
+                    }];
+                    [ckop addNullableDependency:strongSelf.ckModifyHoldOperation];
+                    [strongSelf.operationQueue addOperation: ckop];
+                }
+            });
+            if(result != YES) {
+                return result;
             }
         }
         if(matches) {
@@ -543,7 +805,11 @@
 - (void)failNextZoneCreation:(CKRecordZoneID*)zoneID {
     XCTAssertNil(self.zones[zoneID], "Zone does not exist yet");
     self.zones[zoneID] = [[FakeCKZone alloc] initZone: zoneID];
-    self.zones[zoneID].creationError = [[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkUnavailable userInfo:@{}];
+    self.zones[zoneID].creationError = [[CKPrettyError alloc] initWithDomain:CKErrorDomain
+                                                                        code:CKErrorNetworkUnavailable
+                                                                    userInfo:@{
+                                                                               CKErrorRetryAfterKey: @(0.5),
+                                                                               }];
 }
 
 // Report success, but don't actually create the zone.
@@ -568,11 +834,11 @@
     [self failNextCKAtomicModifyItemRecordsUpdateFailure:zoneID blockAfterReject:nil];
 }
 
-- (void)failNextCKAtomicModifyItemRecordsUpdateFailure:(CKRecordZoneID*)zoneID blockAfterReject: (void (^)())blockAfterReject {
+- (void)failNextCKAtomicModifyItemRecordsUpdateFailure:(CKRecordZoneID*)zoneID blockAfterReject: (void (^)(void))blockAfterReject {
     [self failNextCKAtomicModifyItemRecordsUpdateFailure:zoneID blockAfterReject:blockAfterReject withError:nil];
 }
 
-- (void)failNextCKAtomicModifyItemRecordsUpdateFailure:(CKRecordZoneID*)zoneID blockAfterReject: (void (^)())blockAfterReject withError:(NSError*)error {
+- (void)failNextCKAtomicModifyItemRecordsUpdateFailure:(CKRecordZoneID*)zoneID blockAfterReject: (void (^)(void))blockAfterReject withError:(NSError*)error {
     __weak __typeof(self) weakSelf = self;
 
     [[self.mockDatabase expect] addOperation:[OCMArg checkWithBlock:^BOOL(id obj) {
@@ -626,14 +892,18 @@
         if ([obj isKindOfClass:[CKModifyRecordsOperation class]]) {
             CKModifyRecordsOperation *op = (CKModifyRecordsOperation *)obj;
 
+            secnotice("fakecloudkit", "checking for expectCKAtomicModifyItemRecordsUpdateFailure");
+
             if(!op.atomic) {
                 // We only care about atomic operations
+                secnotice("fakecloudkit", "expectCKAtomicModifyItemRecordsUpdateFailure: update not atomic");
                 return NO;
             }
 
             // We want to only match zone updates pertaining to this zone
             for(CKRecord* record in op.recordsToSave) {
                 if(![record.recordID.zoneID isEqual: zoneID]) {
+                    secnotice("fakecloudkit", "expectCKAtomicModifyItemRecordsUpdateFailure: %@ is not %@", record.recordID.zoneID, zoneID);
                     return NO;
                 }
             }
@@ -656,6 +926,8 @@
 
             if(rejected) {
                 [strongSelf rejectWrite: op failedRecords:failedRecords];
+            } else {
+                secnotice("fakecloudkit", "expectCKAtomicModifyItemRecordsUpdateFailure: doesn't seem like an error to us");
             }
         }
         return rejected ? YES : NO;
@@ -700,7 +972,7 @@
 
     // We're updating the device state type on every update, so add it in here
     NSMutableDictionary* expectedRecords = [@{
-                                              SecCKRecordDeviceStateType: [NSNumber numberWithUnsignedInt: 1],
+                                              SecCKRecordDeviceStateType: [NSNumber numberWithUnsignedInteger:expectedNumberOfRecords],
                                               } mutableCopy];
     if(SecCKKSSyncManifests()) {
         // TODO: this really shouldn't be 2.
@@ -722,19 +994,40 @@
 }
 
 - (void)tearDown {
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
+    NSString* testName = [self.name componentsSeparatedByString:@" "][1];
+    testName = [testName stringByReplacingOccurrencesOfString:@"]" withString:@""];
+    secnotice("ckkstest", "Ending test %@", testName);
 
     if(SecCKKSIsEnabled()) {
-        // Ensure we don't have any blocking operations
-        [self startCKKSSubsystem];
+        self.accountStatus = CKAccountStatusCouldNotDetermine;
 
+        // If the test never initialized the account state, don't call status later
+        bool callStatus = [self.ckaccountHoldOperation isFinished];
+        [self.ckaccountHoldOperation cancel];
+        self.ckaccountHoldOperation = nil;
+
+        // Ensure we don't have any blocking operations left
+        [self.operationQueue cancelAllOperations];
         [self waitForCKModifications];
 
-        XCTAssertEqual(0, [self.injectedManager.completedSecCKKSInitialize wait:2*NSEC_PER_SEC],
+        XCTAssertEqual(0, [self.injectedManager.completedSecCKKSInitialize wait:20*NSEC_PER_SEC],
             "Timeout did not occur waiting for SecCKKSInitialize");
 
-        // Make sure this happens before teardown.
-        XCTAssertEqual(0, [self.accountStateTracker.finishedInitialCalls wait:1*NSEC_PER_SEC], "Account state tracker initialized itself");
+        // Ensure that we can fetch zone status for all zones
+        if(callStatus) {
+            XCTestExpectation *statusReturned = [self expectationWithDescription:@"status returned"];
+            [self.injectedManager rpcStatus:nil reply:^(NSArray<NSDictionary *> *result, NSError *error) {
+                XCTAssertNil(error, "Should be no error fetching status");
+                [statusReturned fulfill];
+            }];
+            [self waitForExpectations: @[statusReturned] timeout:20];
+
+            // Make sure this happens before teardown.
+            XCTAssertEqual(0, [self.accountStateTracker.finishedInitialDispatches wait:20*NSEC_PER_SEC], "Account state tracker initialized itself");
+
+            dispatch_group_t accountChangesDelivered = [self.accountStateTracker checkForAllDeliveries];
+            XCTAssertEqual(0, dispatch_group_wait(accountChangesDelivered, dispatch_time(DISPATCH_TIME_NOW, 10*NSEC_PER_SEC)), "Account state tracker finished delivering everything");
+        }
     }
 
     [super tearDown];
@@ -742,15 +1035,14 @@
     [self.injectedManager cancelPendingOperations];
     [CKKSViewManager resetManager:true setTo:nil];
     self.injectedManager = nil;
+    [self.mockCKKSViewManager stopMocking];
+    self.mockCKKSViewManager = nil;
 
     [self.mockAccountStateTracker stopMocking];
     self.mockAccountStateTracker = nil;
 
     [self.mockLockStateTracker stopMocking];
     self.mockLockStateTracker = nil;
-
-    [self.mockCKKSViewManager stopMocking];
-    self.mockCKKSViewManager = nil;
 
     [self.mockFakeCKModifyRecordZonesOperation stopMocking];
     self.mockFakeCKModifyRecordZonesOperation = nil;
@@ -761,16 +1053,30 @@
     [self.mockFakeCKFetchRecordZoneChangesOperation stopMocking];
     self.mockFakeCKFetchRecordZoneChangesOperation = nil;
 
+    [self.mockFakeCKFetchRecordsOperation stopMocking];
+    self.mockFakeCKFetchRecordsOperation = nil;
+
+    [self.mockFakeCKQueryOperation stopMocking];
+    self.mockFakeCKQueryOperation = nil;
+
     [self.mockDatabase stopMocking];
     self.mockDatabase = nil;
+
+    [self.mockDatabaseExceptionCatcher stopMocking];
+    self.mockDatabaseExceptionCatcher = nil;
 
     [self.mockContainer stopMocking];
     self.mockContainer = nil;
 
+    [self.mockTTR stopMocking];
+    self.mockTTR = nil;
+    self.ttrExpectation = nil;
+    self.isTTRRatelimited = true;
+
     self.zones = nil;
-    self.operationQueue = nil;
-    self.ckksHoldOperation = nil;
-    self.ckaccountHoldOperation = nil;
+
+    _mockSOSAdapter = nil;
+    _mockOctagonAdapter = nil;
 
     SecCKKSTestResetFlags();
 }
@@ -787,6 +1093,28 @@
     return key;
 }
 
+- (NSError*)ckInternalServerExtensionError:(NSInteger)code description:(NSString*)desc {
+    NSError* extensionError = [[CKPrettyError alloc] initWithDomain:@"CloudkitKeychainService"
+                                                               code:code
+                                                           userInfo:@{
+                                                                      CKErrorServerDescriptionKey: desc,
+                                                                      NSLocalizedDescriptionKey: desc,
+                                                                      }];
+    NSError* internalError = [[CKPrettyError alloc] initWithDomain:CKInternalErrorDomain
+                                                              code:CKErrorInternalPluginError
+                                                          userInfo:@{CKErrorServerDescriptionKey: desc,
+                                                                     NSLocalizedDescriptionKey: desc,
+                                                                     NSUnderlyingErrorKey: extensionError,
+                                                                     }];
+    NSError* error = [[CKPrettyError alloc] initWithDomain:CKErrorDomain
+                                                      code:CKErrorServerRejectedRequest
+                                                  userInfo:@{NSUnderlyingErrorKey: internalError,
+                                                             CKErrorServerDescriptionKey: desc,
+                                                             NSLocalizedDescriptionKey: desc,
+                                                             CKContainerIDKey: SecCKKSContainerName,
+                                                             }];
+    return error;
+}
 
 @end
 

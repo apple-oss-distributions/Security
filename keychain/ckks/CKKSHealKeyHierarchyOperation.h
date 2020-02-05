@@ -26,6 +26,8 @@
 
 #if OCTAGON
 
+NS_ASSUME_NONNULL_BEGIN
+
 @class CKKSKeychainView;
 
 @interface CKKSHealKeyHierarchyOperation : CKKSGroupOperation
@@ -36,5 +38,6 @@
 
 @end
 
-#endif // OCTAGON
+NS_ASSUME_NONNULL_END
 
+#endif  // OCTAGON

@@ -1,26 +1,20 @@
 #include <TargetConditionals.h>
 
+#if __OBJC2__
+#define SEC_EXP_CLASS(_name) _OBJC_CLASS_$_##_name
+#else
+#define SEC_EXP_CLASS(_name) .objc_class_name_##_name
+#endif
+
+_kSecFrameworkBundleID
+
 #include "Security/SecExports.exp-in"
 #include "Security/SecAccessControlExports.exp-in"
-#include "Security/SecureObjectSync/SOSExports.exp-in"
+#include "keychain/SecureObjectSync/SOSExports.exp-in"
 
-#if TARGET_OS_OSX
 #include "CSSMOID.exp-in"
-#endif
-#if TARGET_OS_IPHONE
-_CSSMOID_MD5WithRSA
-_CSSMOID_SHA1
-_CSSMOID_SHA1WithRSA
-_CSSMOID_SHA256WithRSA
-_CSSMOID_SHA384WithRSA
-_CSSMOID_ECDSA_WithSHA1
-_CSSMOID_ECDSA_WithSHA256
-_CSSMOID_ECDSA_WithSHA384
-_CSSMOID_PKCS5_HMAC_SHA1
-#endif
 
 #if TARGET_OS_IPHONE
-_DEROidCompare
 _NtlmCreateClientRequest
 _NtlmCreateClientResponse
 __NtlmCreateClientResponse
@@ -29,8 +23,23 @@ _NtlmGeneratorCreate
 _NtlmGeneratorRelease
 _NtlmGetNegotiatedVersion
 _OID_PKIX_OCSP_BASIC
+_OID_PKIX_OCSP
+_OID_PKIX_OCSP_ARCHIVE_CUTOFF
+_OID_PKIX_OCSP_CRL
+_OID_PKIX_OCSP_NOCHECK
+_OID_PKIX_OCSP_NONCE
+_OID_PKIX_OCSP_RESPONSE
+_OID_PKIX_OCSP_SERVICE_LOCATOR
 _OID_GOOGLE_OCSP_SCT
 #endif
+
+_SSLSetALPNProtocols
+_SSLCopyALPNProtocols
+__SSLProtocolVersionToWireFormatValue
+_SSLSetECDSACurves
+_SSLCiphersuiteGetName
+_SSLProtocolGetVersionCodepoint
+_SSLProtocolFromVersionCodepoint
 
 #if TARGET_OS_IPHONE
 _SSLAddDistinguishedName
@@ -40,6 +49,10 @@ _SSLCopyDistinguishedNames
 _SSLCopyPeerTrust
 _SSLCreateContext
 _SSLCreateContextWithRecordFuncs
+_SSLCiphersuiteGroupToCiphersuiteList
+_SSLCiphersuiteGroupContainsCiphersuite
+_SSLCiphersuiteMaximumTLSVersion
+_SSLCiphersuiteMinimumTLSVersion
 _SSLGetAllowAnonymousCiphers
 _SSLGetBufferedReadSize
 _SSLGetCertificate
@@ -49,6 +62,9 @@ _SSLGetClientSideAuthenticate
 _SSLGetConnection
 _SSLGetDatagramWriteSize
 _SSLGetEnabledCiphers
+_SSLSetError
+_SSLSetOCSPResponse
+_SSLSetSessionTicketsEnabled
 _SSLGetEncryptionCertificate
 _SSLGetMaxDatagramRecordSize
 _SSLGetMinimumDHGroupSize
@@ -84,8 +100,6 @@ _SSLGetNPNData
 _SSLSetALPNData
 _SSLSetALPNFunc
 _SSLGetALPNData
-_SSLSetALPNProtocols
-_SSLCopyALPNProtocols
 _SSLCopyRequestedPeerName
 _SSLCopyRequestedPeerNameLength
 _SSLSetAllowAnonymousCiphers
@@ -93,7 +107,6 @@ _SSLSetCertificate
 _SSLSetClientSideAuthenticate
 _SSLSetConnection
 _SSLSetDatagramHelloCookie
-_SSLSetECDSACurves
 _SSLSetEnabledCiphers
 _SSLSetEncryptionCertificate
 _SSLSetIOFuncs
@@ -154,15 +167,32 @@ __SSLSetRsaBlinding
 __SSLSetTrustedRoots
 #endif // TARGET_OS_IPHONE
 
-#if TARGET_OS_OSX
 //
 // libsecurity_ssl
 //
+
+_SSLGetNumberOfECDSACurves
+_SSLGetECDSACurves
+_SSLGetNumberOfClientAuthTypes
+_SSLGetNegotiatedClientAuthType
+_SSLGetClientAuthTypes
+
+#if TARGET_OS_IPHONE
+__SSLCopyCertificateAuthorities
+__SSLCopyTrustedRoots
+__SSLSetCertificateAuthorities
+#endif
+
+#if TARGET_OS_OSX
 _SSLAddDistinguishedName
 _SSLClose
 _SSLContextGetTypeID
 _SSLCreateContext
 _SSLCreateContextWithRecordFuncs
+_SSLCiphersuiteGroupToCiphersuiteList
+_SSLCiphersuiteGroupContainsCiphersuite
+_SSLCiphersuiteMaximumTLSVersion
+_SSLCiphersuiteMinimumTLSVersion
 _SSLDisposeContext
 _SSLGetAllowsAnyRoot
 _SSLGetAllowsExpiredCerts
@@ -174,6 +204,9 @@ _SSLGetConnection
 _SSLGetDiffieHellmanParams
 _SSLGetEnableCertVerify
 _SSLGetEnabledCiphers
+_SSLSetError
+_SSLSetOCSPResponse
+_SSLSetSessionTicketsEnabled
 _SSLGetNegotiatedCipher
 _SSLGetNegotiatedProtocolVersion
 _SSLGetNumberEnabledCiphers
@@ -185,6 +218,7 @@ _SSLGetPeerDomainName
 _SSLGetPeerDomainNameLength
 _SSLGetPeerID
 _SSLGetPeerSecTrust
+_SSLGetPSKIdentity
 _SSLGetProtocolVersion
 _SSLGetProtocolVersionEnabled
 _SSLGetProtocolVersionMax
@@ -250,12 +284,6 @@ _SSLCopyDistinguishedNames
 _SSLSetCertificateAuthorities
 _SSLCopyCertificateAuthorities
 _SSLGetNegotiatedCurve
-_SSLGetNumberOfECDSACurves
-_SSLGetECDSACurves
-_SSLSetECDSACurves
-_SSLGetNumberOfClientAuthTypes
-_SSLGetClientAuthTypes
-_SSLGetNegotiatedClientAuthType
 _SSLGetNumberOfSignatureAlgorithms
 _SSLGetSignatureAlgorithms
 _SSLNewDatagramContext
@@ -297,8 +325,72 @@ _kSSLSessionConfig_anonymous
 
 _SecAbsoluteTimeFromDateContent
 
-/* Internal securityd RPC stuff for tests */
-_OBJC_CLASS_$_SecuritydXPCClient
+/* Internal securityd RPC stuff */
+_CKKSSetupControlProtocol
+SEC_EXP_CLASS(CKKSControl)
+SEC_EXP_CLASS(SecuritydXPCClient)
+
+#if __OBJC2__
+SEC_EXP_CLASS(SFSignInAnalytics)
+SEC_EXP_CLASS(SecXPCHelper)
+SEC_EXP_CLASS(OTClique)
+SEC_EXP_CLASS(OTConfigurationContext)
+SEC_EXP_CLASS(OTBottleIDs)
+SEC_EXP_CLASS(OTOperationConfiguration)
+_kSecEntitlementPrivateOctagonEscrow
+#endif
+
+_OTCliqueStatusToString
+_OTCliqueStatusFromString
+
+_OTCliqueCFTypeRepair
+_OTCliqueCFTypePasscode
+_OTCliqueCFTypeUpgrade
+_OTCliqueCDPContextTypeNone
+_OTCliqueCDPContextTypeSignIn
+_OTCliqueCDPContextTypeRepair
+_OTCliqueCDPContextTypeFinishPasscodeChange
+_OTCliqueCDPContextTypeRecoveryKeyGenerate
+_OTCliqueCDPContextTypeRecoveryKeyNew
+_OTCliqueCDPContextTypeUpdatePasscode
+
+_OTSetupControlProtocol
+_OTDefaultContext
+_OctagonErrorDomain
+_OTProtocolPairing
+_OTProtocolPiggybacking
+_OTDefaultsDomain
+_OTDefaultsOctagonEnable
+_OTTrustStatusChangeNotification
+
+_OctagonEventAttributeZoneName
+_OctagonEventAttributeFailureReason
+_OctagonEventAttributeTimeSinceLastPostedFollowUp
+
+_SecEscrowRequestHavePrecord
+_SecEscrowRequestPendingPasscode
+_SecEscrowRequestPendingCertificate
+
+_OTCKContainerName
+_CuttlefishTrustZone
+_CuttlefishErrorDomain
+_TrustedPeersHelperErrorDomain
+
+_OctagonPlatformSupportsSOS
+_OctagonSetPlatformSupportsSOS
+_OctagonPerformSOSUpgrade
+_OctagonSetSOSUpgrade
+_OctagonIsEnabled
+_OctagonSetIsEnabled
+_OctagonRecoveryKeyIsEnabled
+_OctagonRecoveryKeySetIsEnabled
+_OctagonAuthoritativeTrustIsEnabled
+_OctagonAuthoritativeTrustSetIsEnabled
+
+SEC_EXP_CLASS(OTJoiningConfiguration)
+SEC_EXP_CLASS(OTControl)
+SEC_EXP_CLASS(SecuritydXPCClient)
+
 _SecAccessGroupsGetCurrent
 _SecAccessGroupsSetCurrent
 _SecSecurityClientGet
@@ -306,33 +398,40 @@ _securityd_create_message
 _securityd_message_with_reply_sync
 _securityd_message_no_error
 _securityd_send_sync_and_do
+_securityd_send_async_and_do
 #if TARGET_OS_IOS
 _SecSecuritySetMusrMode
+_SecSecuritySetPersonaMusr
+#endif
+#if TARGET_OS_OSX
+__SecSetSecuritydTargetUID
 #endif
 
 _SecDERItemCopyOIDDecimalRepresentation
 _SecDigestCreate
-#if TARGET_OS_IPHONE
-_SecFrameworkCopyResourceContents
 _SecFrameworkCopyResourceURL
-#endif
+_SecCopyErrorMessageString
+
+_SecFrameworkCopyIPAddressData
+_SecFrameworkIsDNSName
+_SecFrameworkIsIPAddress
 
 _SecPKCS12Import
-_SecRandomCopyBytes
-#if TARGET_OS_IPHONE
-_SecSHA1DigestCreate
-_SecSHA256DigestCreateFromData
+#if TARGET_OS_OSX
+_SecPKCS12Import_ios
 #endif
+_SecRandomCopyBytes
+_SecSHA1DigestCreate
 _SecTaskCopySigningIdentifier
+_SecTaskCopyTeamIdentifier
 _SecTaskCopyValueForEntitlement
 _SecTaskCopyValuesForEntitlements
 _SecTaskCreateFromSelf
 _SecTaskCreateWithAuditToken
+_SecTaskCreateWithXPCMessage
 _SecTaskGetCodeSignStatus
 _SecTaskGetTypeID
-#if TARGET_OS_OSX
 _SecTaskEntitlementsValidated
-#endif
 
 _kSecRandomDefault
 
@@ -347,12 +446,6 @@ _SecSMIMEFindBulkAlgForRecipients
 
 //Localization
 _SecFrameworkCopyLocalizedString
-
-//
-// utilities
-//
-_readFileSizet
-_writeFileSizet
 
 #if TARGET_OS_OSX
 //
@@ -383,6 +476,8 @@ _CMSEncoderSetEncoder
 _CMSEncoderAddSignedAttributes
 _CMSEncoderSetSigningTime
 _CMSEncoderSetAppleCodesigningHashAgility
+_CMSEncoderSetAppleCodesigningHashAgilityV2
+_CMSEncoderSetAppleExpirationTime
 _CMSEncoderSetCertificateChainMode
 _CMSEncoderGetCertificateChainMode
 _CMSEncoderUpdateContent
@@ -412,6 +507,8 @@ _CMSDecoderCopySignerTimestampCertificates
 _CMSEncoderCopySignerTimestamp
 _CMSEncoderCopySignerTimestampWithPolicy
 _CMSDecoderCopySignerAppleCodesigningHashAgility
+_CMSDecoderCopySignerAppleCodesigningHashAgilityV2
+_CMSDecoderCopySignerAppleExpirationTime
 #endif // TARGET_OS_OSX
 
 #if TARGET_OS_OSX
@@ -428,6 +525,8 @@ _AuthorizationCreateWithAuditToken
 _AuthorizationCreateFromExternalForm
 _AuthorizationExecuteWithPrivileges
 _AuthorizationExecuteWithPrivilegesExternalForm
+_AuthorizationExecuteWithPrivilegesInternal
+_AuthorizationExecuteWithPrivilegesExternalFormInternal
 _AuthorizationFree
 _AuthorizationFreeItemSet
 _AuthorizationMakeExternalForm
@@ -657,6 +756,7 @@ _SecTransformExecute
 _SecTransformExecuteAsync
 _SecNullTransformCreate
 _SecDigestTransformCreate
+_SecDigestTransformGetTypeID
 _SecCreateMaskGenerationFunctionTransform
 _SecTransformCreate
 _SecTransformRegister
@@ -673,12 +773,14 @@ _kSecDigestHMACSHA2
 _SecExternalSourceTransformCreate
 _SecExternalSourceSetValue
 _kSecDecodeTypeAttribute
-_CreateSecTransformErrorRef
 _kSecTransformAbortOriginatorKey
 _SecGroupTransformHasMember
 _kSecDigestTypeAttribute
 _kSecDigestLengthAttribute
 _kSecOAEPEncodingParametersAttributeName
+_kSecOAEPMessageLengthAttributeName
+_kSecOAEPMGF1DigestAlgorithmAttributeName
+_kSecNullTransformName
 _kSecTransformInputAttributeName
 _kSecTransformDebugAttributeName
 _kSecTransformOutputAttributeName
@@ -699,7 +801,9 @@ _kSecPaddingKey
 _kSecIVKey
 _kSecEncryptionMode
 _SecEncryptTransformCreate
+_SecEncryptTransformGetTypeID
 _SecDecryptTransformCreate
+_SecDecryptTransformGetTypeID
 _SecDecodeTransformCreate
 _SecEncodeTransformCreate
 _SecSignTransformCreate
@@ -722,6 +826,7 @@ _kSecTransformActionProcessData
 _SecTransformSetAttributeAction
 _SecGroupTransformFindLastTransform
 _SecGroupTransformFindMonitor
+_SecTransformConnectTransformsInternal
 _SecTransformDisconnectTransforms
 _SecTransformDotForDebugging
 _SecCreateCollectTransform
@@ -769,10 +874,12 @@ _MDS_InstallFile
 _MDS_RemoveSubservice
 #endif // TARGET_OS_OSX
 
-#if TARGET_OS_OSX
 //
 // libsecurity_keychain
 //
+
+#if TARGET_OS_OSX
+_ConvertArrayToKeyUsage
 _SecACLCopyAuthorizations
 _SecACLCopyContents
 _SecACLCopySimpleContents
@@ -795,7 +902,6 @@ _SecAccessCreateWithOwnerAndACL
 _SecAccessCreateWithTrustedApplications
 _SecAccessGetOwnerAndACL
 _SecAccessGetTypeID
-_SecCopyErrorMessageString
 _SecCreateRecoveryPassword
 _SecDigestGetData
 _SecFDERecoveryUnwrapCRSKWithPrivKey
@@ -821,11 +927,16 @@ _SecIdentityUpdatePreferenceItem
 _SecInferLabelFromX509Name
 _SecItemAdd_ios
 _SecItemCopyMatching_ios
+_SecItemUpdateTokenItems_ios
+
+_SecKeyGeneratePair_ios
+
 _SecItemCopyParentCertificates_osx
+_SecItemParentCachePurge
+
 _SecItemCopyStoredCertificate
-#if TARGET_OS_OSX
 _SecItemCreateFromAttributeDictionary_osx
-#endif
+_SecItemDeleteAll
 _SecItemDelete_ios
 _SecItemExport
 _SecItemImport
@@ -839,6 +950,7 @@ _SecKeychainAttemptMigrationWithMasterKey
 _SecKeychainAttributeInfoForItemID
 _SecKeychainChangeKeyStorePassphrase
 _SecKeychainChangePassword
+_SecKeychainCleanupHandles
 _SecKeychainCopyAccess
 _SecKeychainCopyBlob
 _SecKeychainCopyDefault
@@ -949,13 +1061,14 @@ _SecKeychainVerifyKeyStorePassphrase
 _SecPasswordAction
 _SecPasswordSetInitialAccess
 _SecRandomCopyData
-_SecSHA256DigestCreateFromData
 _SecUnwrapRecoveryPasswordWithAnswers
 _SecWrapRecoveryPasswordWithAnswers
 __SecItemGetPersistentReference
 _cssmErrorString
 _cssmPerror
 _kSecACLAuthorizationAny
+_kSecACLAuthorizationChangeACL
+_kSecACLAuthorizationChangeOwner
 _kSecACLAuthorizationDecrypt
 _kSecACLAuthorizationDelete
 _kSecACLAuthorizationDerive
@@ -1004,6 +1117,11 @@ _kSecOIDAPPLE_EXTENSION_ADC_APPLE_SIGNING
 _kSecOIDAPPLE_EXTENSION_ADC_DEV_SIGNING
 _kSecOIDAPPLE_EXTENSION_APPLE_SIGNING
 _kSecOIDAPPLE_EXTENSION_CODE_SIGNING
+_kSecOIDAPPLE_EXTENSION_AAI_INTERMEDIATE
+_kSecOIDAPPLE_EXTENSION_APPLEID_INTERMEDIATE
+_kSecOIDAPPLE_EXTENSION_INTERMEDIATE_MARKER
+_kSecOIDAPPLE_EXTENSION_WWDR_INTERMEDIATE
+_kSecOIDAPPLE_EXTENSION_ITMS_INTERMEDIATE
 _kSecOIDAuthorityInfoAccess
 _kSecOIDAuthorityKeyIdentifier
 _kSecOIDBasicConstraints
@@ -1125,6 +1243,9 @@ _kSecUseKeychain
 // libsecurity_asn1
 //
 _SecAsn1OidCompare
+
+_SecASN1PrintableString
+_SecASN1UTF8String
 #if TARGET_OS_IPHONE
 _SecAsn1CoderCreate
 _SecAsn1CoderRelease
@@ -1139,6 +1260,140 @@ _kSecAsn1OCSPResponseDataTemplate
 _kSecAsn1OCSPResponseTemplate
 _kSecAsn1OCSPSignedRequestTemplate
 _kSecAsn1OctetStringTemplate
+
+_kSecAsn1AnyTemplate
+_kSecAsn1BMPStringTemplate
+_kSecAsn1BitStringTemplate
+_kSecAsn1BooleanTemplate
+_kSecAsn1EnumeratedTemplate
+_kSecAsn1GeneralizedTimeTemplate
+_kSecAsn1IA5StringTemplate
+_kSecAsn1IntegerTemplate
+_kSecAsn1NullTemplate
+_kSecAsn1ObjectIDTemplate
+_kSecAsn1PointerToAnyTemplate
+_kSecAsn1PointerToBMPStringTemplate
+_kSecAsn1PointerToBitStringTemplate
+_kSecAsn1PointerToBooleanTemplate
+_kSecAsn1PointerToEnumeratedTemplate
+_kSecAsn1PointerToGeneralizedTimeTemplate
+_kSecAsn1PointerToIA5StringTemplate
+_kSecAsn1PointerToIntegerTemplate
+_kSecAsn1PointerToNullTemplate
+_kSecAsn1PointerToObjectIDTemplate
+_kSecAsn1PointerToOctetStringTemplate
+_kSecAsn1PointerToPrintableStringTemplate
+_kSecAsn1PointerToT61StringTemplate
+_kSecAsn1PointerToTeletexStringTemplate
+_kSecAsn1PointerToUTCTimeTemplate
+_kSecAsn1PointerToUTF8StringTemplate
+_kSecAsn1PointerToUniversalStringTemplate
+_kSecAsn1PointerToVisibleStringTemplate
+_kSecAsn1PrintableStringTemplate
+_kSecAsn1SequenceOfAnyTemplate
+_kSecAsn1SequenceOfBMPStringTemplate
+_kSecAsn1SequenceOfBitStringTemplate
+_kSecAsn1SequenceOfBooleanTemplate
+_kSecAsn1SequenceOfEnumeratedTemplate
+_kSecAsn1SequenceOfGeneralizedTimeTemplate
+_kSecAsn1SequenceOfIA5StringTemplate
+_kSecAsn1SequenceOfIntegerTemplate
+_kSecAsn1SequenceOfNullTemplate
+_kSecAsn1SequenceOfObjectIDTemplate
+_kSecAsn1SequenceOfOctetStringTemplate
+_kSecAsn1SequenceOfPrintableStringTemplate
+_kSecAsn1SequenceOfT61StringTemplate
+_kSecAsn1SequenceOfTeletexStringTemplate
+_kSecAsn1SequenceOfUTCTimeTemplate
+_kSecAsn1SequenceOfUTF8StringTemplate
+_kSecAsn1SequenceOfUniversalStringTemplate
+_kSecAsn1SequenceOfVisibleStringTemplate
+_kSecAsn1SetOfAnyTemplate
+_kSecAsn1SetOfBMPStringTemplate
+_kSecAsn1SetOfBitStringTemplate
+_kSecAsn1SetOfBooleanTemplate
+_kSecAsn1SetOfEnumeratedTemplate
+_kSecAsn1SetOfGeneralizedTimeTemplate
+_kSecAsn1SetOfIA5StringTemplate
+_kSecAsn1SetOfIntegerTemplate
+_kSecAsn1SetOfNullTemplate
+_kSecAsn1SetOfObjectIDTemplate
+_kSecAsn1SetOfOctetStringTemplate
+_kSecAsn1SetOfPrintableStringTemplate
+_kSecAsn1SetOfT61StringTemplate
+_kSecAsn1SetOfTeletexStringTemplate
+_kSecAsn1SetOfUTCTimeTemplate
+_kSecAsn1SetOfUTF8StringTemplate
+_kSecAsn1SetOfUniversalStringTemplate
+_kSecAsn1SetOfVisibleStringTemplate
+_kSecAsn1SkipTemplate
+_kSecAsn1T61StringTemplate
+_kSecAsn1TeletexStringTemplate
+_kSecAsn1UTCTimeTemplate
+_kSecAsn1UTF8StringTemplate
+_kSecAsn1UniversalStringTemplate
+_kSecAsn1UnsignedIntegerTemplate
+_kSecAsn1VisibleStringTemplate
+
+_SecAsn1AllocCopy
+_SecAsn1AllocCopyItem
+_SecAsn1AllocItem
+_SecAsn1Decode
+_SecAsn1Malloc
+
+_kSecAsn1OCSPCertIDTemplate
+_kSecAsn1OCSPCertStatusGoodTemplate
+_kSecAsn1OCSPCertStatusUnknownTemplate
+_kSecAsn1OCSPDRepliesTemplate
+_kSecAsn1OCSPDReplyTemplate
+_kSecAsn1OCSPDRequestTemplate
+_kSecAsn1OCSPDRequestsTemplate
+_kSecAsn1OCSPRequestTemplate
+_kSecAsn1OCSPResponseBytesTemplate
+_kSecAsn1OCSPRevokedInfoTemplate
+_kSecAsn1OCSPSignatureTemplate
+_kSecAsn1OCSPSingleResponseTemplate
+_kSecAsn1OCSPTbsRequestTemplate
+
+_SecAsn1TaggedTemplateChooser
+
+_kSecAsn1ATVTemplate
+_kSecAsn1GeneralNameTemplate
+_kSecAsn1GenNameOtherNameTemplate
+_kSecAsn1NameTemplate
+_kSecAsn1OtherNameTemplate
+_kSecAsn1RDNTemplate
+
+_kSecAsn1CertExtensionTemplate
+_kSecAsn1RevokedCertTemplate
+_kSecAsn1SequenceOfCertExtensionTemplate
+_kSecAsn1SequenceOfRevokedCertTemplate
+_kSecAsn1SignedCertOrCRLTemplate
+_kSecAsn1SignedCertTemplate
+_kSecAsn1SignedCrlTemplate
+_kSecAsn1TBSCertificateTemplate
+_kSecAsn1TBSCrlTemplate
+_kSecAsn1ValidityTemplate
+
+_kSecAsn1AccessDescriptionTemplate
+_kSecAsn1AuthorityInfoAccessTemplate
+_kSecAsn1AuthorityKeyIdTemplate
+_kSecAsn1BasicConstraintsTemplate
+_kSecAsn1CRLDistributionPointsTemplate
+_kSecAsn1CertPoliciesTemplate
+_kSecAsn1DistPointFullNameTemplate
+_kSecAsn1DistPointRDNTemplate
+_kSecAsn1DistributionPointTemplate
+_kSecAsn1IssuingDistributionPointTemplate
+_kSecAsn1NameConstraintsTemplate
+_kSecAsn1PolicyConstraintsTemplate
+_kSecAsn1PolicyInformationTemplate
+_kSecAsn1PolicyMappingsTemplate
+_kSecAsn1PolicyQualifierTemplate
+_kSecAsn1QC_StatementTemplate
+_kSecAsn1QC_StatementsTemplate
+_kSecAsn1SemanticsInformationTemplate
+
 #elif TARGET_OS_OSX
 _PORT_FreeArena
 _PORT_NewArena
@@ -1192,6 +1447,7 @@ _kSecAsn1DistPointFullNameTemplate
 _kSecAsn1DistPointRDNTemplate
 _kSecAsn1DistributionPointTemplate
 _kSecAsn1EncryptedPrivateKeyInfoTemplate
+_kSecAsn1ECDSAPrivateKeyInfoTemplate
 _kSecAsn1EnumeratedTemplate
 _kSecAsn1GenNameOtherNameTemplate
 _kSecAsn1GeneralNameTemplate
@@ -1200,6 +1456,7 @@ _kSecAsn1IA5StringTemplate
 _kSecAsn1IntegerTemplate
 _kSecAsn1IssuingDistributionPointTemplate
 _kSecAsn1NameTemplate
+_kSecAsn1NameConstraintsTemplate
 _kSecAsn1NullTemplate
 _kSecAsn1OCSPBasicResponseTemplate
 _kSecAsn1OCSPCertIDTemplate
@@ -1242,8 +1499,10 @@ _kSecAsn1PointerToUTCTimeTemplate
 _kSecAsn1PointerToUTF8StringTemplate
 _kSecAsn1PointerToUniversalStringTemplate
 _kSecAsn1PointerToVisibleStringTemplate
+_kSecAsn1PolicyConstraintsTemplate
 _kSecAsn1PolicyInformationTemplate
 _kSecAsn1PolicyQualifierTemplate
+_kSecAsn1PolicyMappingsTemplate
 _kSecAsn1PrintableStringTemplate
 _kSecAsn1PrivateKeyInfoTemplate
 _kSecAsn1QC_StatementTemplate
@@ -1322,6 +1581,7 @@ _SecCodeSetStatus
 _SecCodeCopyStaticCode
 _SecCodeCopyHost
 _SecCodeCopyGuestWithAttributes
+_SecCodeCreateWithAuditToken
 _SecCodeCreateWithPID
 _SecCodeCheckValidity
 _SecCodeCheckValidityWithErrors
@@ -1372,6 +1632,9 @@ _kSecCodeSignerApplicationData
 _kSecCodeSignerDetached
 _kSecCodeSignerDigestAlgorithm
 _kSecCodeSignerDryRun
+_kSecCodeSignerEditCMS
+_kSecCodeSignerEditCpuSubtype
+_kSecCodeSignerEditCpuType
 _kSecCodeSignerEntitlements
 _kSecCodeSignerFlags
 _kSecCodeSignerIdentifier
@@ -1386,12 +1649,19 @@ _kSecCodeSignerSigningTime
 _kSecCodeSignerRequireTimestamp
 _kSecCodeSignerTeamIdentifier
 _kSecCodeSignerPlatformIdentifier
+_kSecCodeSignerRuntimeVersion
+_kSecCodeSignerPreserveAFSC
+_kSecCodeSignerOmitAdhocFlag
 _kSecCodeSignerTimestampServer
 _kSecCodeSignerTimestampAuthentication
 _kSecCodeSignerTimestampOmitCertificates
+_kSecCodeInfoCdHashes
+_kSecCodeInfoCdHashesFull
 _kSecCodeInfoCertificates
 _kSecCodeInfoChangedFiles
 _kSecCodeInfoCMS
+_kSecCodeInfoCMSDigest
+_kSecCodeInfoCMSDigestHashType
 _kSecCodeInfoTime
 _kSecCodeInfoTimestamp
 _kSecCodeInfoDesignatedRequirement
@@ -1401,6 +1671,7 @@ _kSecCodeInfoFlags
 _kSecCodeInfoFormat
 _kSecCodeInfoDigestAlgorithm
 _kSecCodeInfoDigestAlgorithms
+_kSecCodeInfoPlatformIdentifier
 _kSecCodeInfoIdentifier
 _kSecCodeInfoImplicitDesignatedRequirement
 _kSecCodeInfoMainExecutable
@@ -1412,18 +1683,21 @@ _kSecCodeInfoStatus
 _kSecCodeInfoTeamIdentifier
 _kSecCodeInfoTrust
 _kSecCodeInfoUnique
-_kSecCodeInfoCdHashes
+_kSecCodeInfoRuntimeVersion
 _kSecCodeInfoCodeDirectory
 _kSecCodeInfoCodeOffset
 _kSecCodeInfoDiskRepInfo
-_kSecCodeInfoDiskRepOSPlatform
-_kSecCodeInfoDiskRepOSVersionMin
-_kSecCodeInfoDiskRepOSSDKVersion
 _kSecCodeInfoDiskRepNoLibraryValidation
+_kSecCodeInfoDiskRepVersionPlatform
+_kSecCodeInfoDiskRepVersionMin
+_kSecCodeInfoDiskRepVersionSDK
 _kSecCodeInfoResourceDirectory
+_kSecCodeInfoNotarizationDate
 _kSecGuestAttributeCanonical
 _kSecGuestAttributeDynamicCode
 _kSecGuestAttributeDynamicCodeInfoPlist
+_kSecGuestAttributeArchitecture
+_kSecGuestAttributeSubarchitecture
 _kSecGuestAttributeHash
 _kSecGuestAttributeMachPort
 _kSecGuestAttributePid
@@ -1431,6 +1705,10 @@ _kSecGuestAttributeAudit
 _kSecRequirementKeyInfoPlist
 _kSecRequirementKeyEntitlements
 _kSecRequirementKeyIdentifier
+_kSecRequirementKeyPackageChecksum
+_kSecRequirementKeyChecksumAlgorithm
+_kSecRequirementKeySecureTimestamp
+_kSecRequirementKeyTeamIdentifier
 _kSecCFErrorArchitecture
 _kSecCFErrorPath
 _kSecCFErrorPattern
@@ -1450,6 +1728,11 @@ _SecAssessmentCopyResult
 _SecAssessmentUpdate
 _SecAssessmentCopyUpdate
 _SecAssessmentControl
+_SecAssessmentGetTypeID
+_SecAssessmentLegacyCheck
+_SecAssessmentRegisterPackageTicket
+_SecAssessmentTicketLookup
+_SecAssessmentTicketRegister
 _kSecAssessmentContextKeyOperation
 _kSecAssessmentOperationTypeExecute
 _kSecAssessmentOperationTypeInstall
@@ -1475,7 +1758,9 @@ _kSecAssessmentUpdateKeyRow
 _kSecAssessmentUpdateKeyCount
 _kSecAssessmentUpdateKeyFound
 _kSecAssessmentAssessmentAuthority
+_kSecAssessmentAssessmentAuthorityFlags
 _kSecAssessmentAssessmentAuthorityOverride
+_kSecAssessmentAssessmentAuthorityOriginalVerdict
 _kSecAssessmentAssessmentAuthorityRow
 _kSecAssessmentAssessmentFromCache
 _kSecAssessmentAssessmentOriginator
@@ -1483,6 +1768,7 @@ _kSecAssessmentAssessmentSource
 _kSecAssessmentAssessmentVerdict
 _kSecAssessmentAssessmentWeakSignature
 _kSecAssessmentAssessmentCodeSigningError
+_kSecAssessmentAssessmentNotarizationDate
 _kSecAssessmentRuleKeyID
 _kSecAssessmentRuleKeyPriority
 _kSecAssessmentRuleKeyAllow
@@ -1494,7 +1780,91 @@ _kSecAssessmentRuleKeyExpires
 _kSecAssessmentRuleKeyDisabled
 _kSecAssessmentRuleKeyBookmark
 _kSecAssessmentContextKeyPrimarySignature
+_kDisabledOverride
 #endif // TARGET_OS_OSX
+
+#if TARGET_OS_IPHONE
+_SecCodeCheckValidity
+_SecCodeCheckValidityWithErrors
+_SecCodeCopyComponent
+_SecCodeCopyDesignatedRequirement
+_SecCodeCopyHost
+_SecCodeCopyInternalRequirement
+_SecCodeCopyPath
+_SecCodeCopySelf
+_SecCodeCopyStaticCode
+//_SecCodeCreateWithPID
+_SecCodeGetStatus
+_SecCodeGetTypeID
+_SecCodeMapMemory
+_SecCodeSetStatus
+_SecCodeValidateFileResource
+#endif // TARGET_OS_IPHONE
+
+_SecCopyLastError
+
+#if TARGET_OS_IPHONE
+_SecRequirementCopyData
+_SecRequirementCopyString
+_SecRequirementCreateWithData
+_SecRequirementCreateWithString
+_SecRequirementCreateWithStringAndErrors
+_SecRequirementGetTypeID
+_SecStaticCodeCheckValidity
+_SecStaticCodeCreateWithPath
+_SecStaticCodeGetTypeID
+_kSecCFErrorArchitecture
+_kSecCFErrorGuestAttributes
+_kSecCFErrorInfoPlist
+_kSecCFErrorPath
+_kSecCFErrorPattern
+_kSecCFErrorRequirementSyntax
+_kSecCFErrorResourceSeal
+_kSecCFErrorResourceSideband
+_kSecCodeAttributeArchitecture
+_kSecCodeAttributeBundleVersion
+_kSecCodeAttributeSubarchitecture
+_kSecCodeInfoCMS
+_kSecCodeInfoCMSDigest
+_kSecCodeInfoCMSDigestHashType
+_kSecCodeInfoCdHashes
+_kSecCodeInfoCdHashesFull
+_kSecCodeInfoChangedFiles
+_kSecCodeInfoCodeDirectory
+_kSecCodeInfoCodeOffset
+_kSecCodeInfoDesignatedRequirement
+_kSecCodeInfoDigestAlgorithm
+_kSecCodeInfoDigestAlgorithms
+_kSecCodeInfoDiskRepInfo
+_kSecCodeInfoDiskRepNoLibraryValidation
+_kSecCodeInfoDiskRepVersionPlatform
+_kSecCodeInfoDiskRepVersionMin
+_kSecCodeInfoDiskRepVersionSDK
+_kSecCodeInfoFlags
+_kSecCodeInfoFormat
+_kSecCodeInfoImplicitDesignatedRequirement
+_kSecCodeInfoMainExecutable
+_kSecCodeInfoNotarizationDate
+_kSecCodeInfoPList
+_kSecCodeInfoPlatformIdentifier
+_kSecCodeInfoRequirementData
+_kSecCodeInfoRequirements
+_kSecCodeInfoResourceDirectory
+_kSecCodeInfoSource
+_kSecCodeInfoStatus
+_kSecCodeInfoTimestamp
+_kSecCodeInfoTrust
+_kSecGuestAttributeArchitecture
+_kSecGuestAttributeAudit
+_kSecGuestAttributeCanonical
+_kSecGuestAttributeDynamicCode
+_kSecGuestAttributeDynamicCodeInfoPlist
+_kSecGuestAttributeHash
+_kSecGuestAttributeMachPort
+_kSecGuestAttributePid
+_kSecGuestAttributeSubarchitecture
+
+#endif // TARGET_OS_IPHONE
 
 #if TARGET_OS_OSX
 //breadcrumb
@@ -1503,10 +1873,6 @@ _SecBreadcrumbCopyPassword
 _SecBreadcrumbCreateNewEncryptedKey
 #endif // TARGET_OS_OSX
 
-#if TARGET_OS_IPHONE
-_oidAnyExtendedKeyUsage
-_oidAnyPolicy
-#elif TARGET_OS_OSX
 //
 // libDER OIDs
 //
@@ -1540,12 +1906,17 @@ _oidSha224
 _oidFee
 _oidMd5Fee
 _oidSha1Fee
+_oidEcPrime192v1
+_oidEcPrime256v1
+_oidAnsip384r1
+_oidAnsip521r1
 _oidSubjectKeyIdentifier
 _oidKeyUsage
 _oidPrivateKeyUsagePeriod
 _oidSubjectAltName
 _oidIssuerAltName
 _oidBasicConstraints
+_oidNameConstraints
 _oidCrlDistributionPoints
 _oidCertificatePolicies
 _oidAnyPolicy
@@ -1578,13 +1949,13 @@ _oidExtendedKeyUsageServerAuth
 _oidExtendedKeyUsageClientAuth
 _oidExtendedKeyUsageCodeSigning
 _oidExtendedKeyUsageEmailProtection
+_oidExtendedKeyUsageTimeStamping
 _oidExtendedKeyUsageOCSPSigning
 _oidExtendedKeyUsageIPSec
 _oidExtendedKeyUsageMicrosoftSGC
 _oidExtendedKeyUsageNetscapeSGC
 _oidGoogleEmbeddedSignedCertificateTimestamp
 _oidGoogleOCSPSignedCertificateTimestamp
-#endif // TARGET_OS_OSX
 
 #if TARGET_OS_OSX
 //
@@ -1608,6 +1979,7 @@ _SecureDownloadCopyURLs
 _SecureDownloadCopyCreationDate
 _SecureDownloadGetDownloadSize
 __SecureDownloadCreateTicketXML
+__SecureDownloadParseTicketXML
 _SecureDownloadCopyTicketLocation
 #endif // TARGET_OS_OSX
 
@@ -1652,12 +2024,25 @@ _checkpw_internal
 //
 _secdebug_internal
 _secdebugfunc_internal
-_weak_os_log_impl
-_weak_os_log_create
-_weak_os_log_type_enabled
 _secLogEnable
 _secLogDisable
+
+_ApplyScopeDictionaryForID
+_ApplyScopeListForID
+_SecLogAPICreate
+___security_simulatecrash
+___security_simulatecrash_enable
+___security_stackshotreport
+_api_trace
+_secLogEnabled
+_CopyCurrentScopePlist
+
 #endif
+
+// SecFramework.h
+_SecOSStatusWith
+_SecSHA256DigestCreate
+_SecSHA256DigestCreateFromData
 
 _secLogObjForScope
 _secLogObjForCFScope
@@ -1685,8 +2070,92 @@ _SecRKCreateRecoveryKeyString
 // Analytics
 //
 
-.objc_class_name_SFSQLite
-.objc_class_name_SFAnalyticsLogger
+#if __OBJC2__
 
+_OBJC_CLASS_$_SFSQLite
+_OBJC_METACLASS_$_SFAnalytics
+_OBJC_CLASS_$_SFAnalytics
+_OBJC_CLASS_$_SFAnalyticsActivityTracker
+_OBJC_CLASS_$_SFAnalyticsMultiSampler
+_OBJC_CLASS_$_SFAnalyticsSampler
+_OBJC_CLASS_$_SFAnalyticsSQLiteStore
+_OBJC_CLASS_$_SecCoreAnalytics
+_OBJC_METACLASS_$_SFSignInAnalytics
+_SFAnalyticsMaxEventsToReport
+_SFSQLiteJournalSuffixes
+_SFAnalyticsSamplerIntervalOncePerReport
+_SFAnalyticsTableSuccessCount
+_SFAnalyticsTableHardFailures
+_SFAnalyticsTableSoftFailures
+_SFAnalyticsTableSamples
+_SFAnalyticsTableNotes
+_SFAnalyticsColumnSuccessCount
+_SFAnalyticsColumnHardFailureCount
+_SFAnalyticsColumnSoftFailureCount
+_SFAnalyticsColumnSampleValue
+_SFAnalyticsColumnSampleName
+_SFAnalyticsEventTime
+_SFAnalyticsEventType
+_SFAnalyticsEventTypeErrorEvent
+_SFAnalyticsEventErrorDestription
+_SFAnalyticsEventClassKey
+_SFAnalyticsUserDefaultsSuite
+_SFAnalyticsFireSamplersNotification
+_SFAnalyticsTableSchema
+_SFAnalyticsAttributeErrorCode
+_SFAnalyticsAttributeErrorDomain
+_SFAnalyticsAttributeErrorUnderlyingChain
+_SFAnalyticsAttributeLastUploadTime
+_SFAnalyticsTopicCloudServices
+_SFAnalyticsTopicKeySync
+_SFAnalyticsTopicTransparency
+_SFAnalyticsTopicTrust
+_SFAnalyticsErrorDomain
+
+_OBJC_CLASS_$_SOSAnalytics
+_CKDKVSPerformanceCountersSampler
+_CKDKVSPerfCounterSynchronize
+_CKDKVSPerfCounterSynchronizeWithCompletionHandler
+_CKDKVSPerfCounterIncomingMessages
+_CKDKVSPerfCounterOutgoingMessages
+_CKDKVSPerfCounterTotalWaitTimeSynchronize
+_CKDKVSPerfCounterLongestWaitTimeSynchronize
+_CKDKVSPerfCounterSynchronizeFailures
+
+_OBJC_CLASS_$_LocalKeychainAnalytics
+_LKAEventUpgrade
+#endif // __OBJC2__
+
+_LKAReportKeychainUpgradeOutcome
+_LKAReportKeychainUpgradeOutcomeWithError
+_LKABackupReportStart
+_LKABackupReportEnd
+
+//
 // Padding
+//
 _SecPaddingCompute
+
+//
+// Escrow Request Support
+//
+#if __OBJC2__
+
+_OBJC_CLASS_$_SecEscrowRequest
+
+#endif // __OBJC2__
+
+_SecEscrowRequestSetupControlProtocol
+
+//
+// Code coverage support
+//
+
+_VPMergeHook*
+___llvm_profile_*
+_lprofCurFilename*
+
+_SecCreateCFErrorWithXPCObject
+_SecCreateXPCObjectWithCFError
+
+_SecItemVerifyBackupIntegrity

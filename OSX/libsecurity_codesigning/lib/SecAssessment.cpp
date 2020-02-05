@@ -26,23 +26,15 @@
 #include "policyengine.h"
 #include "xpcengine.h"
 #include "csutilities.h"
+#include "xar++.h"
 #include <CoreFoundation/CFRuntime.h>
 #include <CoreFoundation/CFBundlePriv.h>
 #include <security_utilities/globalizer.h>
 #include <security_utilities/unix++.h>
 #include <security_utilities/cfmunge.h>
 #include <notify.h>
-#include <esp.h>
 
 using namespace CodeSigning;
-
-
-static void esp_do_check(const char *op, CFDictionaryRef dict)
-{
-	OSStatus result = __esp_check_ns(op, (void *)(CFDictionaryRef)dict);
-	if (result != noErr)
-		MacOSError::throwMe(result);
-}
 
 //
 // CF Objects
@@ -147,6 +139,7 @@ CFStringRef kSecAssessmentAssessmentAuthorityFlags = CFSTR("assessment:authority
 CFStringRef kSecAssessmentAssessmentFromCache = CFSTR("assessment:authority:cached");
 CFStringRef kSecAssessmentAssessmentWeakSignature = CFSTR("assessment:authority:weak");
 CFStringRef kSecAssessmentAssessmentCodeSigningError = CFSTR("assessment:cserror");
+CFStringRef kSecAssessmentAssessmentNotarizationDate = CFSTR("assessment:notarization-date");
 
 CFStringRef kDisabledOverride = CFSTR("security disabled");
 
@@ -166,11 +159,6 @@ SecAssessmentRef SecAssessmentCreate(CFURLRef path,
 	SYSPOLICY_ASSESS_API(cfString(path).c_str(), int(type), flags);
 
 	try {
-		if (__esp_enabled() && (flags & kSecAssessmentFlagDirect)) {
-			CFTemp<CFDictionaryRef> dict("{path=%O, flags=%d, context=%O, override=%d}", path, flags, context, overrideAssessment());
-			esp_do_check("cs-assessment-evaluate", dict);
-		}
-
 		if (flags & kSecAssessmentFlagDirect) {
 			// ask the engine right here to do its thing
 			SYSPOLICY_ASSESS_LOCAL();
@@ -196,11 +184,6 @@ SecAssessmentRef SecAssessmentCreate(CFURLRef path,
 		if (!overrideAssessment(flags))
 			throw;		// let it go as an error
 		cfadd(result, "{%O=#F}", kSecAssessmentAssessmentVerdict);
-	}
-
-	if (__esp_enabled() && (flags & kSecAssessmentFlagDirect)) {
-		CFTemp<CFDictionaryRef> dict("{path=%O, flags=%d, context=%O, override=%d, result=%O}", path, flags, context, overrideAssessment(), (CFDictionaryRef)result);
-		__esp_notify_ns("cs-assessment-evaluate", (void *)(CFDictionaryRef)dict);
 	}
 
 	return new SecAssessment(path, type, result.yield());
@@ -441,13 +424,6 @@ CFDictionaryRef SecAssessmentCopyUpdate(CFTypeRef target,
 	}
 
 	if (flags & kSecAssessmentFlagDirect) {
-		if (__esp_enabled()) {
-			CFTemp<CFDictionaryRef> dict("{target=%O, flags=%d, context=%O}", target, flags, context);
-			OSStatus esp_result = __esp_check_ns("cs-assessment-update", (void *)(CFDictionaryRef)dict);
-			if (esp_result != noErr)
-				return NULL;
-		}
-
 		// ask the engine right here to do its thing
 		result = gEngine().update(target, flags, ctx);
 	} else {
@@ -455,15 +431,18 @@ CFDictionaryRef SecAssessmentCopyUpdate(CFTypeRef target,
 		result = xpcEngineUpdate(target, flags, ctx);
 	}
 
-	if (__esp_enabled() && (flags & kSecAssessmentFlagDirect)) {
-		CFTemp<CFDictionaryRef> dict("{target=%O, flags=%d, context=%O, outcome=%O}", target, flags, context, (CFDictionaryRef)result);
-		__esp_notify_ns("cs-assessment-update", (void *)(CFDictionaryRef)dict);
-	}
-
 	traceUpdate(target, context, result);
 	return result.yield();
 
 	END_CSAPI_ERRORS1(NULL)
+}
+
+static Boolean
+updateAuthority(const char *authority, bool enable, CFErrorRef *errors)
+{
+	CFStringRef updateValue = enable ? kSecAssessmentUpdateOperationEnable : kSecAssessmentUpdateOperationDisable;
+	CFTemp<CFDictionaryRef> ctx("{%O=%s, %O=%O}", kSecAssessmentUpdateKeyLabel, authority, kSecAssessmentContextKeyUpdate, updateValue);
+	return SecAssessmentUpdate(NULL, kSecCSDefaultFlags, ctx, errors);
 }
 
 
@@ -475,9 +454,6 @@ Boolean SecAssessmentControl(CFStringRef control, void *arguments, CFErrorRef *e
 {
 	BEGIN_CSAPI
 	
-	CFTemp<CFDictionaryRef> dict("{control=%O}", control);
-	esp_do_check("cs-assessment-control", dict);
-
 	if (CFEqual(control, CFSTR("ui-enable"))) {
 		setAssessment(true);
 		MessageTrace trace("com.apple.security.assessment.state", "enable");
@@ -496,14 +472,13 @@ Boolean SecAssessmentControl(CFStringRef control, void *arguments, CFErrorRef *e
 			result = kCFBooleanTrue;
 		return true;
 	} else if (CFEqual(control, CFSTR("ui-enable-devid"))) {
-		CFTemp<CFDictionaryRef> ctx("{%O=%s, %O=%O}", kSecAssessmentUpdateKeyLabel, "Developer ID", kSecAssessmentContextKeyUpdate, kSecAssessmentUpdateOperationEnable);
-        SecAssessmentUpdate(NULL, kSecCSDefaultFlags, ctx, errors);
+		updateAuthority("Developer ID", true, errors);
+		updateAuthority("Notarized Developer ID", true, errors);
 		MessageTrace trace("com.apple.security.assessment.state", "enable-devid");
 		trace.send("enable Developer ID approval");
 		return true;
 	} else if (CFEqual(control, CFSTR("ui-disable-devid"))) {
-        CFTemp<CFDictionaryRef> ctx("{%O=%s, %O=%O}", kSecAssessmentUpdateKeyLabel, "Developer ID", kSecAssessmentContextKeyUpdate, kSecAssessmentUpdateOperationDisable);
-        SecAssessmentUpdate(NULL, kSecCSDefaultFlags, ctx, errors);
+		updateAuthority("Developer ID", false, errors);
 		MessageTrace trace("com.apple.security.assessment.state", "disable-devid");
 		trace.send("disable Developer ID approval");
 		return true;
@@ -513,6 +488,28 @@ Boolean SecAssessmentControl(CFStringRef control, void *arguments, CFErrorRef *e
     } else if (CFEqual(control, CFSTR("ui-get-devid-local"))) {
 		CFBooleanRef &result = *(CFBooleanRef*)(arguments);
 		if (gEngine().value<int>("SELECT disabled FROM authority WHERE label = 'Developer ID';", true))
+			result = kCFBooleanFalse;
+		else
+			result = kCFBooleanTrue;
+		return true;
+	} else if (CFEqual(control, CFSTR("ui-enable-notarized"))) {
+		updateAuthority("Notarized Developer ID", true, errors);
+		updateAuthority("Unnotarized Developer ID", true, errors);
+		MessageTrace trace("com.apple.security.assessment.state", "enable-notarized");
+		trace.send("enable Notarized Developer ID approval");
+		return true;
+	} else if (CFEqual(control, CFSTR("ui-disable-notarized"))) {
+		updateAuthority("Notarized Developer ID", false, errors);
+		updateAuthority("Unnotarized Developer ID", false, errors);
+		MessageTrace trace("com.apple.security.assessment.state", "disable-notarized");
+		trace.send("disable Notarized Developer ID approval");
+		return true;
+	} else if (CFEqual(control, CFSTR("ui-get-notarized"))) {
+		xpcEngineCheckNotarized((CFBooleanRef*)(arguments));
+		return true;
+	} else if (CFEqual(control, CFSTR("ui-get-notarized-local"))) {
+		CFBooleanRef &result = *(CFBooleanRef*)(arguments);
+		if (gEngine().value<int>("SELECT disabled FROM authority WHERE label = 'Notarized Developer ID';", true))
 			result = kCFBooleanFalse;
 		else
 			result = kCFBooleanTrue;
@@ -544,3 +541,51 @@ Boolean SecAssessmentControl(CFStringRef control, void *arguments, CFErrorRef *e
 
 	END_CSAPI_ERRORS1(false)
 }
+
+Boolean SecAssessmentTicketRegister(CFDataRef ticketData, CFErrorRef *errors)
+{
+	BEGIN_CSAPI
+
+	xpcEngineTicketRegister(ticketData);
+	return true;
+
+	END_CSAPI_ERRORS1(false)
+}
+
+Boolean SecAssessmentRegisterPackageTicket(CFURLRef packageURL, CFErrorRef* errors)
+{
+	BEGIN_CSAPI
+	
+	string path = cfString(packageURL);
+	Xar xar(path.c_str());
+	
+	if (!xar) {
+		MacOSError::throwMe(errSecParam);
+	}
+	
+	xar.registerStapledNotarization();
+	return true;
+	
+	END_CSAPI_ERRORS1(false)
+}
+
+Boolean SecAssessmentTicketLookup(CFDataRef hash, SecCSDigestAlgorithm hashType, SecAssessmentTicketFlags flags, double *date, CFErrorRef *errors)
+{
+	BEGIN_CSAPI
+
+	xpcEngineTicketLookup(hash, hashType, flags, date);
+	return true;
+
+	END_CSAPI_ERRORS1(false)
+}
+
+Boolean SecAssessmentLegacyCheck(CFDataRef hash, SecCSDigestAlgorithm hashType, CFStringRef teamID, CFErrorRef *errors)
+{
+	BEGIN_CSAPI
+
+	xpcEngineLegacyCheck(hash, hashType, teamID);
+	return true;
+
+	END_CSAPI_ERRORS1(false)
+}
+

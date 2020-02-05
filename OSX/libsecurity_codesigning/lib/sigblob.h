@@ -43,6 +43,7 @@ namespace CodeSigning {
 class EmbeddedSignatureBlob : public SuperBlobCore<EmbeddedSignatureBlob, 0xfade0cc0, uint32_t> {
 	typedef SuperBlobCore<EmbeddedSignatureBlob, 0xfade0cc0, uint32_t> _Core;
 public:
+	static CFDataRef blobData(CodeDirectory::SpecialSlot slot, BlobCore const *blob);
 	CFDataRef component(CodeDirectory::SpecialSlot slot) const;
 	
 	class Maker : public _Core::Maker {
@@ -72,6 +73,21 @@ typedef SuperBlob<0xfade0c05> LibraryDependencyBlob; // indexed sequentially fro
 class EntitlementBlob : public Blob<EntitlementBlob, 0xfade7171> {
 public:
 	CFDictionaryRef entitlements() const;
+};
+
+//
+// Similar, but in DER representation.
+//
+class EntitlementDERBlob : public Blob<EntitlementDERBlob, kSecCodeMagicEntitlementDER> {
+public:
+	static EntitlementDERBlob *alloc(size_t length);
+
+	uint8_t *der() { return data; }
+	const uint8_t *der() const { return data; }
+	size_t derLength() const { return BlobCore::length() - sizeof(BlobCore); }
+
+private:
+	uint8_t data[0];
 };
 
 

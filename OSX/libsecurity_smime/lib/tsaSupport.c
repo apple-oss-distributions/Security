@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2012-2016 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -41,19 +41,20 @@
 #include "tsaTemplates.h"
 #include <Security/SecAsn1Coder.h>
 #include <AssertMacros.h>
+#include <Security/SecBasePriv.h>
 #include <Security/SecPolicy.h>
 #include <Security/SecTrustPriv.h>
 #include <Security/SecImportExport.h>
 #include <Security/SecCertificatePriv.h>
-#include <security_keychain/SecCertificateP.h>
-#include <security_keychain/SecCertificatePrivP.h>
 #include <utilities/SecCFRelease.h>
 #include <utilities/SecDispatchRelease.h>
+#include <utilities/debugging.h>
 
 #include "tsaSupport.h"
 #include "tsaSupportPriv.h"
 #include "tsaTemplates.h"
 #include "cmslocal.h"
+#include "cert.h"
 
 #include "secoid.h"
 #include "secitem.h"
@@ -166,8 +167,7 @@ static void printDataAsHex(const char *title, const CSSM_DATA *d, unsigned maxTo
     int offset, sz = 0;
     const int wrapwid = 24;     // large enough so SHA-1 hashes fit on one line...
 
-    if ((maxToPrint != 0) && (len > maxToPrint))
-    {
+    if ((maxToPrint != 0) && (len > maxToPrint)) {
         len = maxToPrint;
         more = true;
     }
@@ -179,22 +179,19 @@ static void printDataAsHex(const char *title, const CSSM_DATA *d, unsigned maxTo
     dtprintf("%s", buffer);
     offset = 0;
 
-    for (i=0; (i < len) && (offset+3 < bufferSize); i++, offset += sz)
-    {
+    for (i=0; (i < len) && (offset+3 < bufferSize); i++, offset += sz) {
         sz = sprintf(buffer + offset, " %02x", (unsigned int)cp[i] & 0xff);
-        if ((i % wrapwid) == (wrapwid-1))
-        {
-            dtprintf("%s", buffer);
+        if ((i % wrapwid) == (wrapwid-1)) {
+            dtprintf("%s\n", buffer);
             offset = 0;
             sz = 0;
         }
     }
 
     sz=sprintf(buffer + offset, more?" ...\n":"\n");
-        offset += sz;
+    offset += sz;
     buffer[offset+1]=0;
 
-//    fprintf(stderr, "%s", buffer);
     dtprintf("%s", buffer);
 
     free(buffer);
@@ -485,8 +482,12 @@ static OSStatus checkForNonDERResponse(const unsigned char *resp, size_t respLen
     strlcpy(respStr, (const char *)resp, respLen);
 
     for (ix = 0; ix < badResponseCount; ++ix)
-        if (strcmp(respStr, badResponses[ix])==0)
+        if (strcmp(respStr, badResponses[ix])==0) {
+            if(respStr) {
+                free(respStr);
+            }
             return errSecTimestampServiceNotAvailable;
+        }
 
 xit:
     if (respStr)
@@ -752,7 +753,7 @@ OSStatus SecCmsTSADefaultCallback(CFTypeRef context, void *messageImprintV, uint
         return paramErr;
 
     CFBooleanRef cfnocerts = (CFBooleanRef)CFDictionaryGetValue((CFDictionaryRef)context, kTSAContextKeyNoCerts);
-    if (cfnocerts)
+    if (cfnocerts != NULL)
     {
         tsaDebug("[TSA] Request noCerts\n");
         noCerts = CFBooleanGetValue(cfnocerts);
@@ -879,42 +880,38 @@ xit:
     return result;
 }
 
-static OSStatus SecTSAValidateTimestamp(const SecAsn1TSATSTInfo *tstInfo, CSSM_DATA **signingCerts, CFAbsoluteTime *timestampTime)
+static OSStatus SecTSAValidateTimestamp(const SecAsn1TSATSTInfo *tstInfo, SecCertificateRef signerCert, CFAbsoluteTime *timestampTime)
 {
     // See <rdar://problem/11077708> Properly handle revocation information of timestamping certificate
     OSStatus result = paramErr;
     CFAbsoluteTime genTime = 0;
     char timeStr[32] = {0,};
-    SecCertificateRef signingCertificate = NULL;
 
-    require(tstInfo && signingCerts && (tstInfo->genTime.Length < 16), xit);
-
-    // Find the leaf signingCert
-    require_noerr(result = SecCertificateCreateFromData(*signingCerts,
-        CSSM_CERT_X_509v3, CSSM_CERT_ENCODING_DER, &signingCertificate), xit);
+    require(tstInfo && signerCert && (tstInfo->genTime.Length < 16), xit);;
 
     memcpy(timeStr, tstInfo->genTime.Data, tstInfo->genTime.Length);
     timeStr[tstInfo->genTime.Length] = 0;
     require_noerr(convertGeneralizedTimeToCFAbsoluteTime(timeStr, &genTime), xit);
-    if (SecCertificateIsValidX(signingCertificate, genTime)) // iOS?
+    if (SecCertificateIsValidX(signerCert, genTime)) // iOS?
         result = noErr;
     else
         result = errSecTimestampInvalid;
     if (timestampTime)
         *timestampTime = genTime;
 xit:
-    if (signingCertificate)
-        CFReleaseNull(signingCertificate);
     return result;
 }
 
-static OSStatus verifyTSTInfo(const CSSM_DATA_PTR content, CSSM_DATA **signingCerts, SecAsn1TSATSTInfo *tstInfo, CFAbsoluteTime *timestampTime, uint64_t expectedNonce)
+static OSStatus verifyTSTInfo(const CSSM_DATA_PTR content, SecCmsSignerInfoRef signerinfo, SecAsn1TSATSTInfo *tstInfo, CFAbsoluteTime *timestampTime, uint64_t expectedNonce, CSSM_DATA_PTR encDigest)
 {
     OSStatus status = paramErr;
     SecAsn1CoderRef coder = NULL;
 
     if (!tstInfo)
         return SECFailure;
+
+    SecCertificateRef signerCert = SecCmsSignerInfoGetTimestampSigningCert(signerinfo);
+    SecAsn1TSAMessageImprint expectedMessageImprint;
 
     require_noerr(SecAsn1CoderCreate(&coder), xit);
     require_noerr(SecAsn1Decode(coder, content->Data, content->Length,
@@ -930,8 +927,17 @@ static OSStatus verifyTSTInfo(const CSSM_DATA_PTR content, CSSM_DATA **signingCe
         require_action(expectedNonce==nonce, xit, status = errSecTimestampRejection);
     }
 
-    status = SecTSAValidateTimestamp(tstInfo, signingCerts, timestampTime);
+    // Check the times in the timestamp
+    require_noerr(status = SecTSAValidateTimestamp(tstInfo, signerCert, timestampTime), xit);
     dtprintf("SecTSAValidateTimestamp result: %ld\n", (long)status);
+
+    // Check the message imprint against the encDigest from the signerInfo containing this timestamp
+    SECOidTag hashAlg = SECOID_GetAlgorithmTag(&tstInfo->messageImprint.hashAlgorithm);
+    require_action(hashAlg == SEC_OID_SHA256 || hashAlg == SEC_OID_SHA1, xit, status = errSecInvalidDigestAlgorithm);
+    require_noerr(status = createTSAMessageImprint(signerinfo, &tstInfo->messageImprint.hashAlgorithm,
+                                                   encDigest, &expectedMessageImprint), xit);
+    require_action(CERT_CompareCssmData(&expectedMessageImprint.hashedMessage, &tstInfo->messageImprint.hashedMessage), xit,
+                   status = errSecTimestampInvalid; secerror("Timestamp MessageImprint did not match the signature's hash"));
 
 xit:
     if (coder)
@@ -1190,13 +1196,10 @@ static const char *cfabsoluteTimeToString(CFAbsoluteTime abstime)
 
 static OSStatus setTSALeafValidityDates(SecCmsSignerInfoRef signerinfo)
 {
-    OSStatus status = noErr;
+    SecCertificateRef tsaLeaf = SecCmsSignerInfoGetSigningCertificate(signerinfo, NULL);
 
-    if (!signerinfo->timestampCertList || (CFArrayGetCount(signerinfo->timestampCertList) == 0))
+    if (!tsaLeaf)
         return SecCmsVSSigningCertNotFound;
-
-    SecCertificateRef tsaLeaf = (SecCertificateRef)CFArrayGetValueAtIndex(signerinfo->timestampCertList, 0);
-    require_action(tsaLeaf, xit, status = errSecCertificateCannotOperate);
 
     signerinfo->tsaLeafNotBefore = SecCertificateNotValidBefore(tsaLeaf); /* Start date for Timestamp Authority leaf */
     signerinfo->tsaLeafNotAfter = SecCertificateNotValidAfter(tsaLeaf);   /* Expiration date for Timestamp Authority leaf */
@@ -1209,15 +1212,7 @@ static OSStatus setTSALeafValidityDates(SecCmsSignerInfoRef signerinfo)
         free((void *)nbefore);free((void *)nafter);
     }
 
-/*
-		if(at < nb)
-			status = errSecCertificateNotValidYet;
-		else if (at > na)
-			status = errSecCertificateExpired;
-*/
-
-xit:
-    return status;
+    return errSecSuccess;
 }
 
 /*
@@ -1258,14 +1253,15 @@ OSStatus decodeTimeStampToken(SecCmsSignerInfoRef signerinfo, CSSM_DATA_PTR inDa
 OSStatus decodeTimeStampTokenWithPolicy(SecCmsSignerInfoRef signerinfo, CFTypeRef timeStampPolicy, CSSM_DATA_PTR inData, CSSM_DATA_PTR encDigest, uint64_t expectedNonce)
 {
     /*
-        We update signerinfo with timestamp and tsa certificate chain.
-        encDigest is the original signed blob, which we must hash and compare.
-        inData comes from the unAuthAttr section of the CMS message
+     We update signerinfo with timestamp and tsa certificate chain.
+     encDigest is the original signed blob, which we must hash and compare.
+     inData comes from the unAuthAttr section of the CMS message
 
-        These are set in signerinfo as side effects:
-            timestampTime -
-            timestampCertList
-    */
+     These are set in signerinfo as side effects:
+        timestampTime
+        timestampCertList
+        timestampCert
+     */
 
     SecCmsDecoderRef        decoderContext = NULL;
     SecCmsMessageRef        cmsMessage = NULL;
@@ -1283,23 +1279,22 @@ OSStatus decodeTimeStampTokenWithPolicy(SecCmsSignerInfoRef signerinfo, CFTypeRe
     /* decode the message */
     require_noerr(result = SecCmsDecoderCreate (NULL, NULL, NULL, NULL, NULL, NULL, NULL, &decoderContext), xit);
     result = SecCmsDecoderUpdate(decoderContext, inData->Data, inData->Length);
-	if (result)
-    {
+    if (result) {
         result = errSecTimestampInvalid;
         SecCmsDecoderDestroy(decoderContext);
         goto xit;
-	}
+    }
 
     require_noerr(result = SecCmsDecoderFinish(decoderContext, &cmsMessage), xit);
 
     // process the results
     contentLevelCount = SecCmsMessageContentLevelCount(cmsMessage);
 
-    if (encDigest)
+    if (encDigest) {
         printDataAsHex("encDigest",encDigest, 0);
+    }
 
-    for (ix = 0; ix < contentLevelCount; ++ix)
-    {
+    for (ix = 0; ix < contentLevelCount; ++ix) {
         dtprintf("\n----- Content Level %d -----\n", ix);
         // get content information
         contentInfo = SecCmsMessageContentLevel (cmsMessage, ix);
@@ -1309,109 +1304,102 @@ OSStatus decodeTimeStampTokenWithPolicy(SecCmsSignerInfoRef signerinfo, CFTypeRe
 
         debugShowContentTypeOID(contentInfo);
 
-        switch (contentTypeTag)
-        {
-        case SEC_OID_PKCS7_SIGNED_DATA:
-        {
-            require((signedData = (SecCmsSignedDataRef)SecCmsContentInfoGetContent(contentInfo)) != NULL, xit);
+        switch (contentTypeTag) {
+            case SEC_OID_PKCS7_SIGNED_DATA: {
+                require((signedData = (SecCmsSignedDataRef)SecCmsContentInfoGetContent(contentInfo)) != NULL, xit);
 
-            debugShowSignerInfo(signedData);
+                debugShowSignerInfo(signedData);
 
-            SECAlgorithmID **digestAlgorithms = SecCmsSignedDataGetDigestAlgs(signedData);
-            unsigned digestAlgCount = SecCmsArrayCount((void **)digestAlgorithms);
-            dtprintf("digestAlgCount: %d\n", digestAlgCount);
-            if (signedData->digests)
-            {
-                int jx;
-                char buffer[128];
-                for (jx=0;jx < digestAlgCount;jx++)
-                {
-                    sprintf(buffer, " digest[%u]", jx);
-                    printDataAsHex(buffer,signedData->digests[jx], 0);
+                SECAlgorithmID **digestAlgorithms = SecCmsSignedDataGetDigestAlgs(signedData);
+                unsigned digestAlgCount = SecCmsArrayCount((void **)digestAlgorithms);
+                dtprintf("digestAlgCount: %d\n", digestAlgCount);
+                if (signedData->digests) {
+                    int jx;
+                    char buffer[128];
+                    for (jx=0;jx < digestAlgCount;jx++) {
+                        sprintf(buffer, " digest[%u]", jx);
+                        printDataAsHex(buffer,signedData->digests[jx], 0);
+                    }
+                } else {
+                    dtprintf("digests not yet computed\n");
+                    CSSM_DATA_PTR innerContent = SecCmsContentInfoGetInnerContent(contentInfo);
+                    if (innerContent)
+                    {
+                        dtprintf("inner content length: %ld\n", innerContent->Length);
+                        SecAsn1TSAMessageImprint fakeMessageImprint = {{{0}},};
+                        SecCmsSignerInfoRef tsaSigner = SecCmsSignedDataGetSignerInfo(signedData, 0);
+                        OSStatus status = createTSAMessageImprint(tsaSigner, &tsaSigner->digestAlg, innerContent, &fakeMessageImprint);
+                        require_noerr_action(status, xit, dtprintf("createTSAMessageImprint status: %d\n", (int)status); result = status);
+                        printDataAsHex("inner content hash",&fakeMessageImprint.hashedMessage, 0);
+                        CSSM_DATA_PTR digestdata = &fakeMessageImprint.hashedMessage;
+                        CSSM_DATA_PTR digests[2] = {digestdata, NULL};
+                        status = SecCmsSignedDataSetDigests(signedData, digestAlgorithms, (CSSM_DATA_PTR *)&digests);
+                        require_noerr_action(status, xit, dtprintf("createTSAMessageImprint status: %d\n", (int)status); result = status);
+                    } else {
+                        dtprintf("no inner content\n");
+                    }
                 }
-            }
-            else
-            {
-                dtprintf("No digests\n");
-                CSSM_DATA_PTR innerContent = SecCmsContentInfoGetInnerContent(contentInfo);
-                if (innerContent)
-                {
-                    dtprintf("inner content length: %ld\n", innerContent->Length);
-                    SecAsn1TSAMessageImprint fakeMessageImprint = {{{0}},};
-                    OSStatus status = createTSAMessageImprint(signedData, innerContent, &fakeMessageImprint);
-                    require_noerr_action(status, xit, dtprintf("createTSAMessageImprint status: %d\n", (int)status); result = status);
-                    printDataAsHex("inner content hash",&fakeMessageImprint.hashedMessage, 0);
-                    CSSM_DATA_PTR digestdata = &fakeMessageImprint.hashedMessage;
-                    CSSM_DATA_PTR digests[2] = {digestdata, NULL};
-                    status = SecCmsSignedDataSetDigests(signedData, digestAlgorithms, (CSSM_DATA_PTR *)&digests);
-                    require_noerr_action(status, xit, dtprintf("createTSAMessageImprint status: %d\n", (int)status); result = status);
+
+                /*
+                 Import the certificates. We leave this as a warning, since
+                 there are configurations where the certificates are not returned.
+                 */
+                signingCerts = SecCmsSignedDataGetCertificateList(signedData);
+                if (signingCerts == NULL) {
+                    dtprintf("SecCmsSignedDataGetCertificateList returned NULL\n");
+                } else {
+                    if (!signerinfo->timestampCertList) {
+                        signerinfo->timestampCertList = CFArrayCreateMutable(kCFAllocatorDefault, 10, &kCFTypeArrayCallBacks);
+                    }
+                    saveTSACertificates(signingCerts, signerinfo->timestampCertList);
+                    require_noerr(result = setTSALeafValidityDates(signerinfo), xit);
+                    debugSaveCertificates(signingCerts);
                 }
-                else
-                    dtprintf("no inner content\n");
-            }
 
-            /*
-                Import the certificates. We leave this as a warning, since
-                there are configurations where the certificates are not returned.
-            */
-            signingCerts = SecCmsSignedDataGetCertificateList(signedData);
-            if (signingCerts == NULL)
-            {    dtprintf("SecCmsSignedDataGetCertificateList returned NULL\n"); }
-            else
-            {
-                if (!signerinfo->timestampCertList)
-                    signerinfo->timestampCertList = CFArrayCreateMutable(kCFAllocatorDefault, 10, &kCFTypeArrayCallBacks);
-                saveTSACertificates(signingCerts, signerinfo->timestampCertList);
-                require_noerr(result = setTSALeafValidityDates(signerinfo), xit);
-                debugSaveCertificates(signingCerts);
-            }
+                int numberOfSigners = SecCmsSignedDataSignerInfoCount (signedData);
 
-            int numberOfSigners = SecCmsSignedDataSignerInfoCount (signedData);
-
-            result = verifySigners(signedData, numberOfSigners, timeStampPolicy);
-            if (result)
-                dtprintf("verifySigners failed: %ld\n", (long)result);   // warning
-
-
-            if (result)     // remap to SecCmsVSTimestampNotTrusted ?
-                goto xit;
-
-            break;
-        }
-        case SEC_OID_PKCS9_SIGNING_CERTIFICATE:
-        {
-            dtprintf("SEC_OID_PKCS9_SIGNING_CERTIFICATE seen\n");
-            break;
-        }
-
-        case SEC_OID_PKCS9_ID_CT_TSTInfo:
-        {
-            SecAsn1TSATSTInfo tstInfo = {{0},};
-            result = verifyTSTInfo(contentInfo->rawContent, signingCerts, &tstInfo, &signerinfo->timestampTime, expectedNonce);
-            if (signerinfo->timestampTime)
-            {
-                const char *tstamp = cfabsoluteTimeToString(signerinfo->timestampTime);
-                if (tstamp)
-                {
-                    dtprintf("Timestamp Authority timestamp: %s\n", tstamp);
-                    free((void *)tstamp);
+                if (numberOfSigners > 0) {
+                    /* @@@ assume there's only one signer since SecCms can't handle multiple signers anyway */
+                    signerinfo->timestampCert = CFRetainSafe(SecCmsSignerInfoGetSigningCertificate(signedData->signerInfos[0], NULL));
                 }
+
+                result = verifySigners(signedData, numberOfSigners, timeStampPolicy);
+                if (result) {
+                    dtprintf("verifySigners failed: %ld\n", (long)result);   // warning
+                    goto xit; // remap to SecCmsVSTimestampNotTrusted ?
+                }
+
+                break;
             }
-            break;
-        }
-        case SEC_OID_OTHER:
-        {
-            dtprintf("otherContent : %p\n", (char *)SecCmsContentInfoGetContent (contentInfo));
-            break;
-        }
-        default:
-            dtprintf("ContentTypeTag : %x\n", contentTypeTag);
-            break;
+            case SEC_OID_PKCS9_SIGNING_CERTIFICATE: {
+                dtprintf("SEC_OID_PKCS9_SIGNING_CERTIFICATE seen\n");
+                break;
+            }
+            case SEC_OID_PKCS9_ID_CT_TSTInfo: {
+                SecAsn1TSATSTInfo tstInfo = {{0},};
+                result = verifyTSTInfo(contentInfo->rawContent, signerinfo, &tstInfo, &signerinfo->timestampTime, expectedNonce, encDigest);
+                if (signerinfo->timestampTime) {
+                    const char *tstamp = cfabsoluteTimeToString(signerinfo->timestampTime);
+                    if (tstamp) {
+                        dtprintf("Timestamp Authority timestamp: %s\n", tstamp);
+                        free((void *)tstamp);
+                    }
+                }
+                break;
+            }
+            case SEC_OID_OTHER: {
+                dtprintf("otherContent : %p\n", (char *)SecCmsContentInfoGetContent (contentInfo));
+                break;
+            }
+            default:
+                dtprintf("ContentTypeTag : %x\n", contentTypeTag);
+                break;
         }
     }
 xit:
-	if (cmsMessage)
-		SecCmsMessageDestroy(cmsMessage);
+    if (cmsMessage) {
+        SecCmsMessageDestroy(cmsMessage);
+    }
 
     return result;
 }

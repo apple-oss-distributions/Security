@@ -35,11 +35,11 @@
 
 #include <CoreFoundation/CFDictionary.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -58,9 +58,6 @@
 #include "SecdTestKeychainUtilities.h"
 
 #define HOW_MANY_MINIONS 4
-
-static int kTestTestCount = ((HOW_MANY_MINIONS+1)*20);
-
 
 static bool SOSArrayForEachAccount(CFArrayRef accounts, bool (^operation)(SOSAccount* account)) {
     __block bool retval = true;
@@ -146,6 +143,34 @@ static bool AssertAllCredentialsAndUpdate(CFMutableDictionaryRef changes, SOSAcc
     return retval;
 }
 
+static void timeval_delta(struct timeval *delta, struct timeval *start, struct timeval *end) {
+    if(end->tv_usec >= start->tv_usec) {
+        delta->tv_usec = end->tv_usec - start->tv_usec;
+    } else {
+        end->tv_sec--;
+        end->tv_usec += 1000000;
+        delta->tv_usec = end->tv_usec - start->tv_usec;
+    }
+    delta->tv_sec = end->tv_sec - start->tv_sec;
+}
+
+static void reportTime(int peers, void(^action)(void)) {
+    struct rusage start_rusage;
+    struct rusage end_rusage;
+    struct timeval delta_utime;
+    struct timeval delta_stime;
+
+    getrusage(RUSAGE_SELF, &start_rusage);
+    action();
+    getrusage(RUSAGE_SELF, &end_rusage);
+    timeval_delta(&delta_utime, &start_rusage.ru_utime,  &end_rusage.ru_utime);
+    timeval_delta(&delta_stime, &start_rusage.ru_stime, &end_rusage.ru_stime);
+
+    diag("AccountLogState for %d peers: %ld.%06d user  %ld.%06d system", peers,
+         delta_utime.tv_sec, delta_utime.tv_usec,
+         delta_stime.tv_sec, delta_stime.tv_usec);
+}
+
 static void tests(void)
 {
     NSError* ns_error = nil;
@@ -162,14 +187,18 @@ static void tests(void)
     CFReleaseNull(cfpassword);
 
     secLogEnable();
-    SOSAccountLogState(master_account);
+    reportTime(1, ^{
+        SOSAccountLogState(master_account);
+    });
     secLogDisable();
 
     ok(MakeTheBigCircle(changes, master_account, minion_accounts, &error), "Get Everyone into the circle %@", error);
     
     diag("WHAT?");
     secLogEnable();
-    SOSAccountLogState(master_account);
+    reportTime(HOW_MANY_MINIONS+1, ^{
+        SOSAccountLogState(master_account);
+    });
     SOSAccountLogViewState(master_account);
     secLogDisable();
     
@@ -197,7 +226,7 @@ static void tests(void)
 
 int secd_200_logstate(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(((HOW_MANY_MINIONS+1)*10 + 1));
     
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     

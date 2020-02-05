@@ -138,10 +138,15 @@ static bool findStringEndingNoCase(const char *path, const char * end)
 void ResourceBuilder::scan(Scanner next)
 {
 	bool first = true;
-    
+
 	while (FTSENT *ent = fts_read(mFTS)) {
 		static const char ds_store[] = ".DS_Store";
-		const char *relpath = ent->fts_path + mRoot.size() + 1;	// skip prefix + "/"
+		const char *relpath = ent->fts_path + mRoot.size(); // skip prefix
+
+		if (strlen(relpath) > 0) {
+			relpath += 1;	// skip "/"
+		}
+
 		std::string rp;
 		if (mRelBase != mRoot) {
 			assert(mRelBase == mRoot + "/Contents");
@@ -183,7 +188,7 @@ void ResourceBuilder::scan(Scanner next)
 			secinfo("rdirenum", "entering %s", ent->fts_path);
 			GKBIS_Num_dirs++;
 
-			if (!first) {	// skip root directory (relpath invalid)
+			if (!first) {	// skip root directory
 				if (Rule *rule = findRule(relpath)) {
 					if (rule->flags & nested) {
 						if (strchr(ent->fts_name, '.')) {	// nested, has extension -> treat as nested bundle
@@ -286,9 +291,10 @@ CFDataRef ResourceBuilder::hashFile(const char *path, CodeDirectory::HashAlgorit
 	fd.fcntl(F_NOCACHE, true);		// turn off page caching (one-pass)
 	RefPointer<DynamicHash> hasher(CodeDirectory::hashFor(type));
 	hashFileData(fd, hasher.get());
-	Hashing::Byte digest[hasher->digestLength()];
-	hasher->finish(digest);
-	return CFDataCreate(NULL, digest, sizeof(digest));
+	vector<Hashing::Byte> digest_vector(hasher->digestLength());
+	hasher->finish(digest_vector.data());
+	return CFDataCreate(NULL, digest_vector.data(),
+						digest_vector.size() * sizeof(Hashing::Byte));
 }
 
 
@@ -306,9 +312,9 @@ CFMutableDictionaryRef ResourceBuilder::hashFile(const char *path, CodeDirectory
 	CFMutableDictionaryRef resultRef = result;
 	CodeDirectory::multipleHashFileData(fd, 0, types, ^(CodeDirectory::HashAlgorithm type, Security::DynamicHash *hasher) {
 		size_t length = hasher->digestLength();
-		Hashing::Byte digest[length];
-		hasher->finish(digest);
-		CFDictionaryAddValue(resultRef, CFTempString(hashName(type)), CFTempData(digest, length));
+		vector<Hashing::Byte> digest_vector(length);
+		hasher->finish(digest_vector.data());
+		CFDictionaryAddValue(resultRef, CFTempString(hashName(type)), CFTempData(digest_vector.data(), length));
 	});
 	return result.yield();
 }

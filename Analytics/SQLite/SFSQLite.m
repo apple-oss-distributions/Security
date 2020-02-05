@@ -21,30 +21,26 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if __OBJC2__
+
 #import "SFSQLite.h"
 #import "SFSQLiteStatement.h"
 #include <sqlite3.h>
 #include <CommonCrypto/CommonDigest.h>
-
+#import "utilities/debugging.h"
+#include <os/transaction_private.h>
 
 #define kSFSQLiteBusyTimeout       (5*60*1000)
 
-// Vaccuum our databases approximately once a week
-#define kCKSQLVacuumInterval       ((60*60*24)*7)
-#define kSFSQLiteLastVacuumKey     @"LastVacuum"
-
 #define kSFSQLiteSchemaVersionKey  @"SchemaVersion"
 #define kSFSQLiteCreatedDateKey    @"Created"
+#define kSFSQLiteAutoVacuumFull    1
 
 static NSString *const kSFSQLiteCreatePropertiesTableSQL =
     @"create table if not exists Properties (\n"
     @"    key    text primary key,\n"
     @"    value  text\n"
     @");\n";
-
-@interface SFSQLiteError : NSObject
-+ (void)raise:(NSString *)reason code:(int)code extended:(int)extended;
-@end
 
 
 NSArray *SFSQLiteJournalSuffixes() {
@@ -68,6 +64,7 @@ NSArray *SFSQLiteJournalSuffixes() {
 @property (nonatomic, assign)            BOOL                    corrupt;
 @property (nonatomic, readonly, strong)  NSMutableDictionary    *statementsBySQL;
 @property (nonatomic, strong)            NSDateFormatter        *dateFormatter;
+@property (nonatomic, strong)            NSDateFormatter        *oldDateFormatter;
 
 @end
 
@@ -224,20 +221,28 @@ allDone:
 @synthesize userVersion = _userVersion;
 @synthesize synchronousMode = _synchronousMode;
 @synthesize hasMigrated = _hasMigrated;
-@synthesize shouldVacuum = _shouldVacuum;
 @synthesize traced = _traced;
 @synthesize db = _db;
 @synthesize openCount = _openCount;
 @synthesize corrupt = _corrupt;
 @synthesize statementsBySQL = _statementsBySQL;
 @synthesize dateFormatter = _dateFormatter;
+@synthesize oldDateFormatter = _oldDateFormatter;
 #if DEBUG
 @synthesize unitTestOverrides = _unitTestOverrides;
 #endif
 
 - (instancetype)initWithPath:(NSString *)path schema:(NSString *)schema {
+    if (![path length]) {
+        seccritical("Cannot init db with empty path");
+        return nil;
+    }
+    if (![schema length]) {
+        seccritical("Cannot init db without schema");
+        return nil;
+    }
+
     if ((self = [super init])) {
-        NSAssert([path length], @"Can't init a database with a zero-length path");
         _path = path;
         _schema = schema;
         _schemaVersion = [self _createSchemaHash];
@@ -245,7 +250,6 @@ allDone:
         _objectClassPrefix = @"CK";
         _synchronousMode = SFSQLiteSynchronousModeNormal;
         _hasMigrated = NO;
-        _shouldVacuum = YES;
     }
     return self;
 }
@@ -289,18 +293,25 @@ allDone:
     return _db != NULL;
 }
 
-- (void)_periodicVacuum {
-    // "When the auto-vacuum mode is 1 or "full", the freelist pages are moved to the end of the database file and the database file is truncated to remove the freelist pages at every transaction commit.
-    // Note, however, that auto-vacuum only truncates the freelist pages from the file. Auto-vacuum does not defragment the database nor repack individual database pages the way that the VACUUM command does.
-    // In fact, because it moves pages around within the file, auto-vacuum can actually make fragmentation worse."
-    // https://sqlite.org/pragma.html#pragma_auto_vacuum
-    NSDate *lastVacuumDate = [NSDate dateWithTimeIntervalSinceReferenceDate:[[self propertyForKey:kSFSQLiteLastVacuumKey] floatValue]];
-    if ([lastVacuumDate timeIntervalSinceNow] < -(kCKSQLVacuumInterval)) {
-        [self executeSQL:@"VACUUM"];
-
-        NSString *vacuumDateString = [NSString stringWithFormat:@"%f", [[NSDate date] timeIntervalSinceReferenceDate]];
-        [self setProperty:vacuumDateString forKey:kSFSQLiteLastVacuumKey];
-    }
+/*
+ Best-effort attempts to set/correct filesystem permissions.
+ May fail when we don't own DB which means we must wait for them to update permissions,
+ or file does not exist yet which is okay because db will exist and the aux files inherit permissions
+*/
+- (void)attemptProperDatabasePermissions
+{
+#if TARGET_OS_IPHONE
+    NSFileManager* fm = [NSFileManager defaultManager];
+    [fm setAttributes:@{NSFilePosixPermissions : [NSNumber numberWithShort:0666]}
+         ofItemAtPath:_path
+                error:nil];
+    [fm setAttributes:@{NSFilePosixPermissions : [NSNumber numberWithShort:0666]}
+         ofItemAtPath:[NSString stringWithFormat:@"%@-wal",_path]
+                error:nil];
+    [fm setAttributes:@{NSFilePosixPermissions : [NSNumber numberWithShort:0666]}
+         ofItemAtPath:[NSString stringWithFormat:@"%@-shm",_path]
+                error:nil];
+#endif
 }
 
 - (BOOL)openWithError:(NSError **)error {
@@ -329,9 +340,13 @@ allDone:
 #endif
     int rc = sqlite3_open_v2([arcSafePath fileSystemRepresentation], &_db, flags, NULL);
     if (rc != SQLITE_OK) {
-        localError = [NSError errorWithDomain:NSCocoaErrorDomain code:0 userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Error opening db at %@, rc=%d(0x%x)", _path, rc, rc]}];
+        localError = [NSError errorWithDomain:NSCocoaErrorDomain code:rc userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Error opening db at %@, rc=%d(0x%x)", _path, rc, rc]}];
         goto done;
     }
+    
+    // Filesystem foo for multiple daemons from different users
+    [self attemptProperDatabasePermissions];
+
     sqlite3_extended_result_codes(_db, 1);
     rc = sqlite3_busy_timeout(_db, kSFSQLiteBusyTimeout);
     if (rc != SQLITE_OK) {
@@ -339,9 +354,18 @@ allDone:
     }
     
     // You don't argue with the Ben: rdar://12685305
-    [self executeSQL:@"pragma journal_mode = WAL"];
-    [self executeSQL:@"pragma synchronous = %@", [self _synchronousModeString]];
-    [self executeSQL:@"pragma auto_vacuum = FULL"];
+    if (![self executeSQL:@"pragma journal_mode = WAL"]) {
+        goto done;
+    }
+    if (![self executeSQL:@"pragma synchronous = %@", [self _synchronousModeString]]) {
+        goto done;
+    }
+    if ([self autoVacuumSetting] != kSFSQLiteAutoVacuumFull) {
+        /* After changing the auto_vacuum setting the DB must be vacuumed */
+        if (![self executeSQL:@"pragma auto_vacuum = FULL"] || ![self executeSQL:@"VACUUM"]) {
+            goto done;
+        }
+    }
     
     // rdar://problem/32168789
     // [self executeSQL:@"pragma foreign_keys = 1"];
@@ -397,8 +421,6 @@ allDone:
     }
 #endif
     
-    if (self.shouldVacuum) [self _periodicVacuum];
-
     if (create || _hasMigrated) {
         [self setProperty:self.schemaVersion forKey:kSFSQLiteSchemaVersionKey];
         if (self.userVersion) {
@@ -410,7 +432,15 @@ allDone:
     success = YES;
     
 done:
+    if (!success) {
+        sqlite3_close_v2(_db);
+        _db = nil;
+    }
+    
     if (!success && error) {
+        if (!localError) {
+            localError = [NSError errorWithDomain:NSCocoaErrorDomain code:0 userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Error opening db at %@", _path]}];
+        }
         *error = localError;
     }
     return success;
@@ -418,8 +448,9 @@ done:
 
 - (void)open {
     NSError *error;
-    if (![self openWithError:&error]) {
-        [self raise:@"Error opening db at %@: %@", self.path, error];
+    if (![self openWithError:&error] && !(error && error.code == SQLITE_AUTH)) {
+        secerror("sfsqlite: Error opening db at %@: %@", self.path, error);
+        return;
     }
 }
 
@@ -432,7 +463,8 @@ done:
             [self removeAllStatements];
             
             if (sqlite3_close(_db)) {
-                [self raise:@"Error closing database"];
+                secerror("sfsqlite: Error closing database");
+                return;
             }
             _db = NULL;
         }
@@ -468,44 +500,10 @@ done:
     [self executeSQL:@"vacuum"];
 }
 
-- (void)raise:(NSString *)format, ... {
-    va_list args;
-    va_start(args, format);
-    
-    NSString *reason = [[NSString alloc] initWithFormat:format arguments:args];
-    
-    int code = 0;
-    int extendedCode = 0;
-    if (_db) {
-        code = sqlite3_errcode(_db) & 0xFF;
-        extendedCode = sqlite3_extended_errcode(_db);
-        const char *errmsg = sqlite3_errmsg(_db);
-
-        NSDictionary *dbAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:self.path error:NULL];
-        NSDictionary *fsAttrs = [[NSFileManager defaultManager] attributesOfFileSystemForPath:self.path error:NULL];
-        reason = [reason stringByAppendingFormat:@" - errcode:%04x, msg:\"%s\", size: %@, path:%@, fs:%@/%@", extendedCode, errmsg, dbAttrs[NSFileSize], _path, fsAttrs[NSFileSystemFreeSize], fsAttrs[NSFileSystemSize]];
-
-        if (!_corrupt && (code == SQLITE_CORRUPT || code == SQLITE_NOTADB)) {
-            _corrupt = YES;
-            
-            @try {
-                [self close];
-            } @catch (NSException *x) {
-                NSLog(@"Warn: Error closing corrupt db: %@", x);
-            }
-            
-            [self remove];
-        }
-    }
-    
-    va_end(args);
-    
-    [SFSQLiteError raise:reason code:code extended:extendedCode];
-}
-
 - (SFSQLiteRowID)lastInsertRowID {
     if (!_db) {
-        [self raise:@"Database is closed"];
+        secerror("sfsqlite: Database is closed");
+        return -1;
     }
     
     return sqlite3_last_insert_rowid(_db);
@@ -514,33 +512,42 @@ done:
 - (int)changes
 {
     if (!_db) {
-        [self raise:@"Database is closed"];
+        secerror("sfsqlite: Database is closed");
+        return -1;
     }
     
     return sqlite3_changes(_db);
 }
 
-- (void)executeSQL:(NSString *)format, ... {
+- (BOOL)executeSQL:(NSString *)format, ... {
     va_list args;
     va_start(args, format);
-    [self executeSQL:format arguments:args];
+    BOOL result = [self executeSQL:format arguments:args];
     va_end(args);
+    return result;
 }
 
-- (void)executeSQL:(NSString *)format arguments:(va_list)args {
+- (BOOL)executeSQL:(NSString *)format arguments:(va_list)args {
     NS_VALID_UNTIL_END_OF_SCOPE NSString *SQL = [[NSString alloc] initWithFormat:format arguments:args];
     if (!_db) {
-        [self raise:@"Database is closed"];
+        secerror("sfsqlite: Database is closed");
+        return NO;
     }
     int execRet = sqlite3_exec(_db, [SQL UTF8String], NULL, NULL, NULL);
     if (execRet != SQLITE_OK) {
-        [self raise:@"Error executing SQL: \"%@\" (%d)", SQL, execRet];
+        if (execRet != SQLITE_AUTH && execRet != SQLITE_READONLY) {
+            secerror("sfsqlite: Error executing SQL: \"%@\" (%d)", SQL, execRet);
+        }
+        return NO;
     }
+
+    return YES;
 }
 
 - (SFSQLiteStatement *)statementForSQL:(NSString *)SQL {
     if (!_db) {
-        [self raise:@"Database is closed"];
+        secerror("sfsqlite: Database is closed");
+        return nil;
     }
     
     SFSQLiteStatement *statement = _statementsBySQL[SQL];
@@ -550,7 +557,8 @@ done:
         sqlite3_stmt *handle = NULL;
         NS_VALID_UNTIL_END_OF_SCOPE NSString *arcSafeSQL = SQL;
         if (sqlite3_prepare_v2(_db, [arcSafeSQL UTF8String], -1, &handle, NULL)) {
-            [self raise:@"Error preparing statement: %@", SQL];
+            secerror("Error preparing statement: %@", SQL);
+            return nil;
         }
         
         statement = [[SFSQLiteStatement alloc] initWithSQLite:self SQL:SQL handle:handle];
@@ -585,7 +593,10 @@ done:
 }
 
 - (NSString *)propertyForKey:(NSString *)key {
-    NSAssert(key, @"Null key");
+    if (![key length]) {
+        secerror("SFSQLite: attempt to retrieve property without a key");
+        return nil;
+    }
     
     NSString *value = nil;
     
@@ -600,7 +611,10 @@ done:
 }
 
 - (void)setProperty:(NSString *)value forKey:(NSString *)key {
-    NSAssert(key, @"Null key");
+    if (![key length]) {
+        secerror("SFSQLite: attempt to set property without a key");
+        return;
+    }
     
     if (value) {
         SFSQLiteStatement *statement = [self statementForSQL:@"insert or replace into Properties (key, value) values (?,?)"];
@@ -616,16 +630,29 @@ done:
 - (NSDateFormatter *)dateFormatter {
     if (!_dateFormatter) {
         NSDateFormatter* dateFormatter = [NSDateFormatter new];
-        dateFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+        dateFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSZZZZ";
         _dateFormatter = dateFormatter;
     }
     return _dateFormatter;
 }
 
+- (NSDateFormatter *)oldDateFormatter {
+    if (!_oldDateFormatter) {
+        NSDateFormatter* dateFormatter = [NSDateFormatter new];
+        dateFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+        _oldDateFormatter = dateFormatter;
+    }
+    return _oldDateFormatter;
+}
+
 - (NSDate *)datePropertyForKey:(NSString *)key {
     NSString *dateStr = [self propertyForKey:key];
     if (dateStr.length) {
-        return [self.dateFormatter dateFromString:dateStr];
+        NSDate  *date = [self.dateFormatter dateFromString:dateStr];
+        if (date == NULL) {
+            date = [self.oldDateFormatter dateFromString:dateStr];
+        }
+        return date;
     }
     return nil;
 }
@@ -639,7 +666,9 @@ done:
 }
 
 - (void)removePropertyForKey:(NSString *)key {
-    NSAssert(key, @"Null key");
+    if (![key length]) {
+        return;
+    }
     
     SFSQLiteStatement *statement = [self statementForSQL:@"delete from Properties where key = ?"];
     [statement bindText:key atIndex:0];
@@ -698,7 +727,7 @@ done:
             NSString *orderByString = [orderBy componentsJoinedByString:@", "];
             [SQL appendFormat:@" order by %@", orderByString];
         }
-        if (limit) {
+        if (limit != nil) {
             [SQL appendFormat:@" limit %ld", (long)limit.integerValue];
         }
 
@@ -735,7 +764,7 @@ done:
             NSString *orderByString = [orderBy componentsJoinedByString:@", "];
             [SQL appendFormat:@" order by %@", orderByString];
         }
-        if (limit) {
+        if (limit != nil) {
             [SQL appendFormat:@" limit %ld", (long)limit.integerValue];
         }
         
@@ -767,7 +796,7 @@ done:
     if (whereSQL.length) {
         [SQL appendFormat:@" where %@", whereSQL];
     }
-    if (limit) {
+    if (limit != nil) {
         [SQL appendFormat:@" limit %ld", (long)limit.integerValue];
     }
 
@@ -784,16 +813,18 @@ done:
 }
 
 - (void)update:(NSString *)tableName set:(NSString *)setSQL where:(NSString *)whereSQL bindings:(NSArray *)whereBindings limit:(NSNumber *)limit {
+    if (![setSQL length]) {
+        return;
+    }
+
     NSMutableString *SQL = [[NSMutableString alloc] init];
     [SQL appendFormat:@"update %@", tableName];
-    
-    NSAssert(setSQL.length > 0, @"null set expression");
 
     [SQL appendFormat:@" set %@", setSQL];
     if (whereSQL.length) {
         [SQL appendFormat:@" where %@", whereSQL];
     }
-    if (limit) {
+    if (limit != nil) {
         [SQL appendFormat:@" limit %ld", (long)limit.integerValue];
     }
 
@@ -880,7 +911,8 @@ done:
 - (NSString *)_tableNameForClass:(Class)objectClass {
     NSString *className = [objectClass SFSQLiteClassName];
     if (![className hasPrefix:_objectClassPrefix]) {
-        [NSException raise:NSInvalidArgumentException format:@"Object class \"%@\" does not have prefix \"%@\"", className, _objectClassPrefix];
+        secerror("sfsqlite: %@", [NSString stringWithFormat:@"Object class \"%@\" does not have prefix \"%@\"", className, _objectClassPrefix]);
+        return nil;
     }
     return [className substringFromIndex:_objectClassPrefix.length];
 }
@@ -896,172 +928,17 @@ done:
     return userVersion;
 }
 
-@end
-
-
-#define SFSQLiteErrorRaiseMethod(SQLiteError) + (void)SQLiteError:(NSString *)reason { [NSException raise:NSGenericException format:@"%@", reason]; }
-#define SFSQLiteErrorCase(SQLiteError) case SQLITE_ ## SQLiteError: [self SQLiteError:reason]; break
-
-@implementation SFSQLiteError
-
-// SQLite error codes
-SFSQLiteErrorRaiseMethod(ERROR)
-SFSQLiteErrorRaiseMethod(INTERNAL)
-SFSQLiteErrorRaiseMethod(PERM)
-SFSQLiteErrorRaiseMethod(ABORT)
-SFSQLiteErrorRaiseMethod(BUSY)
-SFSQLiteErrorRaiseMethod(LOCKED)
-SFSQLiteErrorRaiseMethod(NOMEM)
-SFSQLiteErrorRaiseMethod(READONLY)
-SFSQLiteErrorRaiseMethod(INTERRUPT)
-SFSQLiteErrorRaiseMethod(IOERR)
-SFSQLiteErrorRaiseMethod(CORRUPT)
-SFSQLiteErrorRaiseMethod(NOTFOUND)
-SFSQLiteErrorRaiseMethod(FULL)
-SFSQLiteErrorRaiseMethod(CANTOPEN)
-SFSQLiteErrorRaiseMethod(PROTOCOL)
-SFSQLiteErrorRaiseMethod(SCHEMA)
-SFSQLiteErrorRaiseMethod(TOOBIG)
-SFSQLiteErrorRaiseMethod(CONSTRAINT)
-SFSQLiteErrorRaiseMethod(MISMATCH)
-SFSQLiteErrorRaiseMethod(MISUSE)
-SFSQLiteErrorRaiseMethod(RANGE)
-SFSQLiteErrorRaiseMethod(NOTADB)
-
-// SQLite extended error codes
-SFSQLiteErrorRaiseMethod(IOERR_READ)
-SFSQLiteErrorRaiseMethod(IOERR_SHORT_READ)
-SFSQLiteErrorRaiseMethod(IOERR_WRITE)
-SFSQLiteErrorRaiseMethod(IOERR_FSYNC)
-SFSQLiteErrorRaiseMethod(IOERR_DIR_FSYNC)
-SFSQLiteErrorRaiseMethod(IOERR_TRUNCATE)
-SFSQLiteErrorRaiseMethod(IOERR_FSTAT)
-SFSQLiteErrorRaiseMethod(IOERR_UNLOCK)
-SFSQLiteErrorRaiseMethod(IOERR_RDLOCK)
-SFSQLiteErrorRaiseMethod(IOERR_DELETE)
-SFSQLiteErrorRaiseMethod(IOERR_BLOCKED)
-SFSQLiteErrorRaiseMethod(IOERR_NOMEM)
-SFSQLiteErrorRaiseMethod(IOERR_ACCESS)
-SFSQLiteErrorRaiseMethod(IOERR_CHECKRESERVEDLOCK)
-SFSQLiteErrorRaiseMethod(IOERR_LOCK)
-SFSQLiteErrorRaiseMethod(IOERR_CLOSE)
-SFSQLiteErrorRaiseMethod(IOERR_DIR_CLOSE)
-SFSQLiteErrorRaiseMethod(IOERR_SHMOPEN)
-SFSQLiteErrorRaiseMethod(IOERR_SHMSIZE)
-SFSQLiteErrorRaiseMethod(IOERR_SHMLOCK)
-SFSQLiteErrorRaiseMethod(IOERR_SHMMAP)
-SFSQLiteErrorRaiseMethod(IOERR_SEEK)
-SFSQLiteErrorRaiseMethod(IOERR_DELETE_NOENT)
-SFSQLiteErrorRaiseMethod(IOERR_MMAP)
-SFSQLiteErrorRaiseMethod(IOERR_GETTEMPPATH)
-SFSQLiteErrorRaiseMethod(IOERR_CONVPATH)
-SFSQLiteErrorRaiseMethod(LOCKED_SHAREDCACHE)
-SFSQLiteErrorRaiseMethod(BUSY_RECOVERY)
-SFSQLiteErrorRaiseMethod(BUSY_SNAPSHOT)
-SFSQLiteErrorRaiseMethod(CANTOPEN_NOTEMPDIR)
-SFSQLiteErrorRaiseMethod(CANTOPEN_ISDIR)
-SFSQLiteErrorRaiseMethod(CANTOPEN_FULLPATH)
-SFSQLiteErrorRaiseMethod(CANTOPEN_CONVPATH)
-SFSQLiteErrorRaiseMethod(CORRUPT_VTAB)
-SFSQLiteErrorRaiseMethod(READONLY_RECOVERY)
-SFSQLiteErrorRaiseMethod(READONLY_CANTLOCK)
-SFSQLiteErrorRaiseMethod(READONLY_ROLLBACK)
-SFSQLiteErrorRaiseMethod(READONLY_DBMOVED)
-SFSQLiteErrorRaiseMethod(ABORT_ROLLBACK)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_CHECK)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_COMMITHOOK)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_FOREIGNKEY)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_FUNCTION)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_NOTNULL)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_PRIMARYKEY)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_TRIGGER)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_UNIQUE)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_VTAB)
-SFSQLiteErrorRaiseMethod(CONSTRAINT_ROWID)
-SFSQLiteErrorRaiseMethod(NOTICE_RECOVER_WAL)
-SFSQLiteErrorRaiseMethod(NOTICE_RECOVER_ROLLBACK)
-
-+ (void)raise:(NSString *)reason code:(int)code extended:(int)extended {
-    switch(extended) {
-            SFSQLiteErrorCase(IOERR_READ);
-            SFSQLiteErrorCase(IOERR_SHORT_READ);
-            SFSQLiteErrorCase(IOERR_WRITE);
-            SFSQLiteErrorCase(IOERR_FSYNC);
-            SFSQLiteErrorCase(IOERR_DIR_FSYNC);
-            SFSQLiteErrorCase(IOERR_TRUNCATE);
-            SFSQLiteErrorCase(IOERR_FSTAT);
-            SFSQLiteErrorCase(IOERR_UNLOCK);
-            SFSQLiteErrorCase(IOERR_RDLOCK);
-            SFSQLiteErrorCase(IOERR_DELETE);
-            SFSQLiteErrorCase(IOERR_BLOCKED);
-            SFSQLiteErrorCase(IOERR_NOMEM);
-            SFSQLiteErrorCase(IOERR_ACCESS);
-            SFSQLiteErrorCase(IOERR_CHECKRESERVEDLOCK);
-            SFSQLiteErrorCase(IOERR_LOCK);
-            SFSQLiteErrorCase(IOERR_CLOSE);
-            SFSQLiteErrorCase(IOERR_DIR_CLOSE);
-            SFSQLiteErrorCase(IOERR_SHMOPEN);
-            SFSQLiteErrorCase(IOERR_SHMSIZE);
-            SFSQLiteErrorCase(IOERR_SHMLOCK);
-            SFSQLiteErrorCase(IOERR_SHMMAP);
-            SFSQLiteErrorCase(IOERR_SEEK);
-            SFSQLiteErrorCase(IOERR_DELETE_NOENT);
-            SFSQLiteErrorCase(IOERR_MMAP);
-            SFSQLiteErrorCase(IOERR_GETTEMPPATH);
-            SFSQLiteErrorCase(IOERR_CONVPATH);
-            SFSQLiteErrorCase(LOCKED_SHAREDCACHE);
-            SFSQLiteErrorCase(BUSY_RECOVERY);
-            SFSQLiteErrorCase(BUSY_SNAPSHOT);
-            SFSQLiteErrorCase(CANTOPEN_NOTEMPDIR);
-            SFSQLiteErrorCase(CANTOPEN_ISDIR);
-            SFSQLiteErrorCase(CANTOPEN_FULLPATH);
-            SFSQLiteErrorCase(CANTOPEN_CONVPATH);
-            SFSQLiteErrorCase(CORRUPT_VTAB);
-            SFSQLiteErrorCase(READONLY_RECOVERY);
-            SFSQLiteErrorCase(READONLY_CANTLOCK);
-            SFSQLiteErrorCase(READONLY_ROLLBACK);
-            SFSQLiteErrorCase(READONLY_DBMOVED);
-            SFSQLiteErrorCase(ABORT_ROLLBACK);
-            SFSQLiteErrorCase(CONSTRAINT_CHECK);
-            SFSQLiteErrorCase(CONSTRAINT_COMMITHOOK);
-            SFSQLiteErrorCase(CONSTRAINT_FOREIGNKEY);
-            SFSQLiteErrorCase(CONSTRAINT_FUNCTION);
-            SFSQLiteErrorCase(CONSTRAINT_NOTNULL);
-            SFSQLiteErrorCase(CONSTRAINT_PRIMARYKEY);
-            SFSQLiteErrorCase(CONSTRAINT_TRIGGER);
-            SFSQLiteErrorCase(CONSTRAINT_UNIQUE);
-            SFSQLiteErrorCase(CONSTRAINT_VTAB);
-            SFSQLiteErrorCase(CONSTRAINT_ROWID);
-            SFSQLiteErrorCase(NOTICE_RECOVER_WAL);
-            SFSQLiteErrorCase(NOTICE_RECOVER_ROLLBACK);
-        default: break;
+- (SInt32)autoVacuumSetting {
+    SInt32 vacuumMode = 0;
+    SFSQLiteStatement *statement = [self statementForSQL:@"pragma auto_vacuum"];
+    while ([statement step]) {
+        vacuumMode = [statement intAtIndex:0];
     }
-    switch(code) {
-            SFSQLiteErrorCase(ERROR);
-            SFSQLiteErrorCase(INTERNAL);
-            SFSQLiteErrorCase(PERM);
-            SFSQLiteErrorCase(ABORT);
-            SFSQLiteErrorCase(BUSY);
-            SFSQLiteErrorCase(LOCKED);
-            SFSQLiteErrorCase(NOMEM);
-            SFSQLiteErrorCase(READONLY);
-            SFSQLiteErrorCase(INTERRUPT);
-            SFSQLiteErrorCase(IOERR);
-            SFSQLiteErrorCase(CORRUPT);
-            SFSQLiteErrorCase(NOTFOUND);
-            SFSQLiteErrorCase(FULL);
-            SFSQLiteErrorCase(CANTOPEN);
-            SFSQLiteErrorCase(PROTOCOL);
-            SFSQLiteErrorCase(SCHEMA);
-            SFSQLiteErrorCase(TOOBIG);
-            SFSQLiteErrorCase(CONSTRAINT);
-            SFSQLiteErrorCase(MISMATCH);
-            SFSQLiteErrorCase(MISUSE);
-            SFSQLiteErrorCase(RANGE);
-            SFSQLiteErrorCase(NOTADB);
-        default: break;
-    }
-    [NSException raise:NSGenericException format:@"%@", reason];
+    [statement reset];
+
+    return vacuumMode;
 }
 
 @end
+
+#endif

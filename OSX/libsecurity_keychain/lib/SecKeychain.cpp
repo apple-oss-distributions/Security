@@ -273,10 +273,12 @@ OSStatus SecKeychainResetLogin(UInt32 passwordLength, const void* password, Bool
             endpwent();
         }
         if ( userName.length() == 0 )	// did we ultimately get one?
+        {
             MacOSError::throwMe(errAuthorizationInternal);
+        }
 
         SecurityServer::ClientSession().resetKeyStorePassphrase(password ? CssmData(const_cast<void *>(password), passwordLength) : CssmData());
-
+        secwarning("SecKeychainResetLogin: reset AKS passphrase");
 		if (password)
 		{
 			// Clear the plist and move aside (rename) the existing login.keychain
@@ -295,10 +297,12 @@ OSStatus SecKeychainResetLogin(UInt32 passwordLength, const void* password, Bool
 			// (implicitly calls resetKeychain, login, and defaultKeychain)
 			globals().storageManager.makeLoginAuthUI(NULL, true);
 		}
+        secwarning("SecKeychainResetLogin: reset osx keychain");
 
 		// Post a "list changed" event after a reset, so apps can refresh their list.
 		// Make sure we are not holding mLock when we post this event.
 		KCEventNotifier::PostKeychainEvent(kSecKeychainListChangedEvent);
+
 
 	END_SECAPI
 }
@@ -886,8 +890,8 @@ SecKeychainGetDLDBHandle(SecKeychainRef keychainRef, CSSM_DL_DB_HANDLE *dldbHand
     END_SECAPI
 }
 
-static ModuleNexus<Mutex> gSecReturnedKeyCSPsMutex;
-static std::set<CssmClient::CSP> gSecReturnedKeychainCSPs;
+static ModuleNexus<Mutex> gSecReturnedKeychainCSPsMutex;
+static ModuleNexus<std::set<CssmClient::CSP>> gSecReturnedKeychainCSPs;
 
 OSStatus
 SecKeychainGetCSPHandle(SecKeychainRef keychainRef, CSSM_CSP_HANDLE *cspHandle)
@@ -902,8 +906,8 @@ SecKeychainGetCSPHandle(SecKeychainRef keychainRef, CSSM_CSP_HANDLE *cspHandle)
     // Keep a global pointer to it to force the CSP to stay live forever.
     CssmClient::CSP returnedKeychainCSP = keychain->csp();
     {
-        StLock<Mutex> _(gSecReturnedKeyCSPsMutex());
-        gSecReturnedKeychainCSPs.insert(returnedKeychainCSP);
+        StLock<Mutex> _(gSecReturnedKeychainCSPsMutex());
+        gSecReturnedKeychainCSPs().insert(returnedKeychainCSP);
     }
 	*cspHandle = returnedKeychainCSP->handle();
 
@@ -1591,7 +1595,6 @@ OSStatus SecKeychainStoreUnlockKeyWithPubKeyHash(CFDataRef pubKeyHash, CFStringR
 
 		AuthorizationItem myItems = {"com.apple.ctk.pair", 0, NULL, 0};
 		AuthorizationRights myRights = {1, &myItems};
-		AuthorizationRights *authorizedRights = NULL;
 
 		char pathName[PATH_MAX];
 		UInt32 pathLength = PATH_MAX;
@@ -1611,16 +1614,20 @@ OSStatus SecKeychainStoreUnlockKeyWithPubKeyHash(CFDataRef pubKeyHash, CFStringR
 
 		AuthorizationEnvironment environment  = {3, envItems};
 		AuthorizationFlags flags = kAuthorizationFlagDefaults | kAuthorizationFlagInteractionAllowed | kAuthorizationFlagExtendRights;
-		result = AuthorizationCopyRights(authorizationRef, &myRights, &environment, flags, &authorizedRights);
-		if (authorizedRights)
-			AuthorizationFreeItemSet(authorizedRights);
+		result = AuthorizationCopyRights(authorizationRef, &myRights, &environment, flags, NULL);
+        secnotice("SecKeychain", "Authorization result: %d", (int)result);
 
 		if (result == errAuthorizationSuccess) {
 			AuthorizationItemSet *items;
 			result = AuthorizationCopyInfo(authorizationRef, kAuthorizationEnvironmentPassword, &items);
+            secnotice("SecKeychain", "Items copy result: %d", (int)result);
 			if (result == errAuthorizationSuccess) {
+                secnotice("SecKeychain", "Items count: %d", items->count);
 				if (items->count > 0) {
 					pwd = CFStringCreateWithCString(kCFAllocatorDefault, (const char *)items->items[0].value, kCFStringEncodingUTF8);
+                    if (pwd) {
+                        secnotice("SecKeychain", "Got kcpass");
+                    }
 				}
 				AuthorizationFreeItemSet(items);
 			}

@@ -10,9 +10,13 @@
 	<true/>
 	<key>com.apple.keystore.access-keychain-keys</key>
 	<true/>
+	<key>com.apple.keystore.sik.access</key>
+	<true/>
 	<key>com.apple.keystore.lockassertion</key>
 	<true/>
 	<key>com.apple.keystore.device</key>
+	<true/>
+	<key>com.apple.private.applecredentialmanager.allow</key>
 	<true/>
 	<key>restore-keychain</key>
 	<true/>
@@ -28,6 +32,8 @@
 	<string>com.apple.security.regressions</string>
 	<key>com.apple.private.uninstall.deletion</key>
 	<true/>
+	<key>com.apple.private.security.delete.all</key>
+	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>com.apple.security.regressions</string>
@@ -38,15 +44,9 @@
 		<string>123456.test.group2</string>
 		<string>com.apple.bluetooth</string>
 	</array>
-	<key>com.apple.private.ubiquity-kvstore-access</key>
+	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>com.apple.securityd</string>
-	</array>
-	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
-	<string>com.apple.security.cloudkeychainproxy3</string>
-	<key>com.apple.developer.shared-web-credentials</key>
-	<array>
-		<string>localhost</string>
+		<string>webcredentials:localhost</string>
 	</array>
 </dict>
 </plist>

@@ -31,13 +31,15 @@
 #define _SECURITY_SECPOLICYSERVER_H_
 
 #include <Security/SecTrust.h>
-#include <Security/SecPolicyInternal.h>
+#include "Security/SecPolicyInternal.h"
 #include <Security/SecTrustSettings.h>
 
-#include <securityd/SecTrustServer.h>
-#include <securityd/SecCertificateServer.h>
+#include "securityd/SecTrustServer.h"
+#include "securityd/SecCertificateServer.h"
 
 __BEGIN_DECLS
+
+#define kSecPolicySHA256Size 32
 
 void SecPVCInit(SecPVCRef pvc, SecPathBuilderRef builder, CFArrayRef policies);
 void SecPVCDelete(SecPVCRef pvc);
@@ -71,15 +73,17 @@ bool SecPVCParentCertificateChecks(SecPVCRef pvc, CFIndex ix);
    SecPathBuilderStep() should be called. */
 void SecPVCPathChecks(SecPVCRef pvc);
 
-/* Check whether revocation was required for any cert but revocation
- * check failed. */
-void SecPVCPathCheckRevocationRequired(SecPVCRef pvc);
+/* Check whether revocation responses were received for certificates
+ * in the path in pvc. If a valid response was not obtained for a
+ * certificate, this sets the appropriate error result if revocation
+ * was required, and/or definitive revocation info is present. */
+void SecPVCPathCheckRevocationResponsesReceived(SecPVCRef pvc);
 
 typedef void (*SecPolicyCheckFunction)(SecPVCRef pv, CFStringRef key);
 
 /*
-    Used by SecTrust to verify if a particular certificate chain matches
-	this policy.  Returns true if the policy accepts the certificate chain.
+ * Used by SecTrust to verify if a particular certificate chain matches
+ * this policy.  Returns true if the policy accepts the certificate chain.
 */
 bool SecPolicyValidate(SecPolicyRef policy, SecPVCRef pvc, CFStringRef key);
 
@@ -87,7 +91,7 @@ void SecPolicyServerInitialize(void);
 
 bool SecPolicyIsEVPolicy(const DERItem *policyOID);
 
-SecTrustSettingsResult SecPVCGetTrustSettingsResult(SecPVCRef pvc, SecCertificateRef certificate, CFArrayRef constraints);
+bool SecPVCIsAnchorPerConstraints(SecPVCRef pvc, SecCertificateSourceRef source, SecCertificateRef certificate);
 
 __END_DECLS
 

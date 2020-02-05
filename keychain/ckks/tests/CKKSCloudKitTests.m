@@ -39,12 +39,12 @@
 #import "keychain/ckks/CKKSMirrorEntry.h"
 #import "keychain/ckks/CKKSItemEncrypter.h"
 #import "keychain/ckks/CloudKitCategories.h"
+#import "keychain/categories/NSError+UsefulConstructors.h"
 #import "keychain/ckks/tests/MockCloudKit.h"
 
 @interface CKKSCloudKitTests : XCTestCase
 
 @property NSOperationQueue *operationQueue;
-@property NSBlockOperation *ckksHoldOperation;
 @property CKContainer *container;
 @property CKDatabase *database;
 @property CKKSKeychainView *kcv;
@@ -66,6 +66,7 @@
 + (void)setUp {
     SecCKKSResetSyncing();
     SecCKKSTestsEnable();
+    SecCKKSSetReduceRateLimiting(true);
     [super setUp];
 
 #if NO_SERVER
@@ -83,20 +84,21 @@
     SecCKKSTestSetDisableSOS(true);
 
     self.operationQueue = [NSOperationQueue new];
-    self.ckksHoldOperation = [NSBlockOperation new];
-    [self.ckksHoldOperation addExecutionBlock:^{
-        secnotice("ckks", "CKKS testing hold released");
-    }];
+
+    CKKSCloudKitClassDependencies* cloudKitClassDependencies = [[CKKSCloudKitClassDependencies alloc] initWithFetchRecordZoneChangesOperationClass:[CKFetchRecordZoneChangesOperation class]
+                                                                                                                        fetchRecordsOperationClass:[CKFetchRecordsOperation class]
+                                                                                                                               queryOperationClass:[CKQueryOperation class]
+                                                                                                                 modifySubscriptionsOperationClass:[CKModifySubscriptionsOperation class]
+                                                                                                                   modifyRecordZonesOperationClass:[CKModifyRecordZonesOperation class]
+                                                                                                                                apsConnectionClass:[APSConnection class]
+                                                                                                                         nsnotificationCenterClass:[NSNotificationCenter class]
+                                                                                                              nsdistributednotificationCenterClass:[NSDistributedNotificationCenter class]
+                                                                                                                                     notifierClass:[FakeCKKSNotifier class]];
 
     CKKSViewManager* manager = [[CKKSViewManager alloc] initWithContainerName:containerName
                                                                        usePCS:SecCKKSContainerUsePCS
-                                         fetchRecordZoneChangesOperationClass:[CKFetchRecordZoneChangesOperation class]
-                                            modifySubscriptionsOperationClass:[CKModifySubscriptionsOperation class]
-                                              modifyRecordZonesOperationClass:[CKModifyRecordZonesOperation class]
-                                                           apsConnectionClass:[APSConnection class]
-                                                    nsnotificationCenterClass:[NSNotificationCenter class]
-                                                                notifierClass:[FakeCKKSNotifier class]
-                                                                    setupHold:self.ckksHoldOperation];
+                                                                   sosAdapter:nil
+                                                    cloudKitClassDependencies:cloudKitClassDependencies];
     [CKKSViewManager resetManager:false setTo:manager];
 
     // Make a new fake keychain
@@ -114,7 +116,6 @@
     self.zoneName = @"keychain";
     self.zoneID = [[CKRecordZoneID alloc] initWithZoneName:self.zoneName ownerName:CKCurrentUserDefaultName];
     self.kcv = [[CKKSViewManager manager] findOrCreateView:@"keychain"];
-    [self.kcv.zoneSetupOperation addDependency: self.ckksHoldOperation];
 }
 
 - (void)tearDown {
@@ -151,10 +152,7 @@
 }
 
 - (void)startCKKSSubsystem {
-    if(self.ckksHoldOperation) {
-        [self.operationQueue addOperation: self.ckksHoldOperation];
-        self.ckksHoldOperation = nil;
-    }
+    // TODO: we removed this mechanism, but haven't tested to see if these tests still succeed
 }
 
 - (NSMutableDictionary *)fetchLocalItems {
@@ -184,11 +182,13 @@
 }
 
 - (NSMutableDictionary *)fetchRemoteItems {
-    CKFetchRecordZoneChangesOptions *options = [CKFetchRecordZoneChangesOptions new];
+    CKFetchRecordZoneChangesConfiguration *options = [CKFetchRecordZoneChangesConfiguration new];
     options.previousServerChangeToken = nil;
 
-    CKFetchRecordZoneChangesOperation *op = [[CKFetchRecordZoneChangesOperation alloc] initWithRecordZoneIDs:@[self.zoneID] optionsByRecordZoneID:@{self.zoneID : options}];
-    op.qualityOfService = NSQualityOfServiceUserInitiated;
+    CKFetchRecordZoneChangesOperation *op = [[CKFetchRecordZoneChangesOperation alloc] initWithRecordZoneIDs:@[self.zoneID] configurationsByRecordZoneID:@{self.zoneID : options}];
+    op.configuration.automaticallyRetryNetworkFailures = NO;
+    op.configuration.discretionaryNetworkBehavior = CKOperationDiscretionaryNetworkBehaviorNonDiscretionary;
+    op.configuration.isCloudKitSupportOperation = YES;
     op.configuration.container = self.container;
 
     __block NSMutableDictionary *data = [NSMutableDictionary new];
@@ -222,8 +222,8 @@
     dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
     
     // These are new, fresh zones for each test. There should not be old keys yet.
-    if (synckeys != 3) {XCTFail(@"Unexpected number of synckeys: %lu", synckeys);}
-    if (currkeys != 3) {XCTFail(@"Unexpected number of current keys: %lu", currkeys);}
+    if (synckeys != 3) {XCTFail(@"Unexpected number of synckeys: %lu", (unsigned long)synckeys);}
+    if (currkeys != 3) {XCTFail(@"Unexpected number of current keys: %lu", (unsigned long)currkeys);}
 
     self.remoteItems = data;
     return data;
@@ -280,7 +280,9 @@
 
 - (BOOL)uploadRecords:(NSArray<CKRecord*>*)records {
     CKModifyRecordsOperation *op = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:records recordIDsToDelete:nil];
-    op.qualityOfService = NSQualityOfServiceUserInitiated;
+    op.configuration.automaticallyRetryNetworkFailures = NO;
+    op.configuration.discretionaryNetworkBehavior = CKOperationDiscretionaryNetworkBehaviorNonDiscretionary;
+    op.configuration.isCloudKitSupportOperation = YES;
     op.configuration.container = self.container;
     
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);

@@ -21,11 +21,16 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #import "CKKSTests.h"
-#import "keychain/ckks/CKKSAnalyticsLogger.h"
+#import "keychain/ckks/CKKSAnalytics.h"
 #import <Security/SFSQLite.h>
 #import <Foundation/Foundation.h>
+#import <CloudKit/CloudKit.h>
+#import <CloudKit/CloudKit_Private.h>
 #import <XCTest/XCTest.h>
+#import <OCMock/OCMock.h>
 
 static NSString* tablePath = nil;
 
@@ -59,7 +64,9 @@ static NSString* tablePath = nil;
 {
     NSString* schema = @"CREATE table test (test_column INTEGER);";
     SFSQLite* sqlTable = [[SFSQLite alloc] initWithPath:tablePath schema:schema];
-    XCTAssertTrue([sqlTable openWithError:nil]);
+    NSError* error = nil;
+    XCTAssertTrue([sqlTable openWithError:&error], @"failed to open sql database");
+    XCTAssertNil(error, "encountered error opening database: %@", error);
     XCTAssertTrue([[NSFileManager defaultManager] fileExistsAtPath:tablePath]);
     [sqlTable close];
 }
@@ -68,7 +75,9 @@ static NSString* tablePath = nil;
 {
     NSString* schema = @"CREATE table test (test_column INTEGER);";
     SFSQLite* sqlTable = [[SFSQLite alloc] initWithPath:tablePath schema:schema];
-    XCTAssertTrue([sqlTable openWithError:nil]);
+    NSError* error = nil;
+    XCTAssertTrue([sqlTable openWithError:&error], @"failed to open sql database");
+    XCTAssertNil(error, "encountered error opening database: %@", error);
 
     [sqlTable insertOrReplaceInto:@"test" values:@{@"test_column" : @(1)}];
     [sqlTable insertOrReplaceInto:@"test" values:@{@"test_column" : @(2)}];
@@ -82,66 +91,99 @@ static NSString* tablePath = nil;
     XCTAssertTrue([[sqlTable selectAllFrom:@"test" where:nil bindings:nil] count] == 0);
 }
 
-@end
-
-@interface CKKSAnalyticsLoggerTests : CloudKitKeychainSyncingTestsBase
-@end
-
-@implementation CKKSAnalyticsLoggerTests
-
-- (void)testLoggingJSONGenerated
+- (void)testDontCrashWhenThereAreNoWritePermissions
 {
-    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
-
-    // We expect a single record to be uploaded.
-    [self expectCKModifyItemRecords: 1 currentKeyPointerRecords: 1 zoneID:self.keychainZoneID];
-
-    [self startCKKSSubsystem];
-
-    [self addGenericPassword: @"data" account: @"account-delete-me"];
-
-    OCMVerifyAllWithDelay(self.mockDatabase, 8);
+    NSString* schema = @"CREATE table test (test_column INTEGER);";
+    SFSQLite* sqlTable = [[SFSQLite alloc] initWithPath:tablePath schema:schema];
 
     NSError* error = nil;
-    NSData* json = [[CKKSAnalyticsLogger logger] getLoggingJSONWithError:&error];
-    XCTAssertNotNil(json, @"failed to generate logging json");
-    XCTAssertNil(error, @"encourntered error getting logging json: %@", error);
+    XCTAssertNoThrow([sqlTable openWithError:&error], @"opening database threw an exception");
+    XCTAssertNil(error, "encountered error opening database: %@", error);
+    XCTAssertNoThrow([sqlTable close], @"closing database threw an exception");
 
-    NSDictionary* dictionary = [NSJSONSerialization JSONObjectWithData:json options:0 error:&error];
-    XCTAssertNotNil(dictionary, @"failed to generate dictionary from json data");
-    XCTAssertNil(error, @"encountered error deserializing json: %@", error);
-    XCTAssertTrue([dictionary isKindOfClass:[NSDictionary class]], @"did not get the class we expected from json deserialization");
+    NSDictionary* originalAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:tablePath error:&error];
+    XCTAssertNil(error, @"encountered error getting database file attributes: %@", error);
+
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @(400), NSFileImmutable : @(YES)} ofItemAtPath:tablePath error:&error];
+    XCTAssertNil(error, @"encountered error setting database file attributes: %@", error);
+    XCTAssertNoThrow([sqlTable openWithError:&error]);
+    XCTAssertNil(error, @"encounterd error when opening file without permissions: %@", error);
+
+    XCTAssertFalse([sqlTable executeSQL:@"insert or replace into test (test_column) VALUES (1)"],
+                   @"writing to read-only database succeeded");
+
+    [[NSFileManager defaultManager] setAttributes:originalAttributes ofItemAtPath:tablePath error:&error];
+    XCTAssertNil(error, @"encountered error setting database file attributes back to original attributes: %@", error);
 }
 
-- (void)testSplunkDefaultTopicNameExists
+- (void)testDontCrashFromInternalErrors
 {
-    CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
-    dispatch_sync(logger.splunkLoggingQueue, ^{
-        XCTAssertNotNil(logger.splunkTopicName);
-    });
+    NSString* schema = @"CREATE table test (test_column INTEGER);";
+    SFSQLite* sqlTable = [[SFSQLite alloc] initWithPath:tablePath schema:schema];
+
+    NSError* error = nil;
+    XCTAssertTrue([sqlTable openWithError:&error], @"failed to open database");
+    XCTAssertNil(error, "encountered error opening database: %@", error);
+
+    // delete the table to create havoc
+    XCTAssertTrue([sqlTable executeSQL:@"drop table test;"], @"deleting test table should have worked");
+
+    XCTAssertNoThrow([sqlTable insertOrReplaceInto:@"test" values:@{@"test_column" : @(1)}], @"inserting into deleted table threw an exception");
 }
 
-- (void)testSplunkDefaultBagURLExists
+@end
+
+@interface CKKSAnalyticsTests : CloudKitKeychainSyncingTestsBase
+@property id mockCKKSAnalytics;
+@end
+
+@implementation CKKSAnalyticsTests
+
+- (void)setUp
 {
-    CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
-    dispatch_sync(logger.splunkLoggingQueue, ^{
-        XCTAssertNotNil(logger.splunkBagURL);
-    });
+    self.mockCKKSAnalytics = OCMClassMock([CKKSAnalytics class]);
+    OCMStub([self.mockCKKSAnalytics databasePath]).andCall(self, @selector(databasePath));
+    [super setUp];
 }
 
-// <rdar://problem/32983193> test_KeychainCKKS | CKKSTests failed: "Failed subtests: -[CloudKitKeychainSyncingTests testSplunkUploadURLExists]" [j71ap][CoreOSTigris15Z240][bats-e-27-204-1]
-#if 0
-- (void)testSplunkUploadURLExists
+- (void)tearDown
 {
-    CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
-    dispatch_sync(logger.splunkLoggingQueue, ^{
-        logger.ignoreServerDisablingMessages = YES;
-        XCTAssertNotNil(logger.splunkUploadURL);
-    });
+    [self.mockCKKSAnalytics stopMocking];
+    self.mockCKKSAnalytics = nil;
+    [super tearDown];
 }
-#endif
 
-- (void)testLastSuccessfulSyncDate
+- (NSString*)databasePath
+{
+    return [NSTemporaryDirectory() stringByAppendingPathComponent:@"test_ckks_analytics_v2.db"];
+}
+
+static void _XCTAssertTimeDiffWithInterval(CKKSAnalyticsTests* self, const char* filename, int line, NSDate* a, NSDate* b, int delta, NSString * _Nullable format, ...) NS_FORMAT_FUNCTION(7,8);
+
+/*
+ * Check if [a,b] are within expected time difference.
+ * The actual acceptable range is (-1.0, d.0] -- to deal with rounding errors when stored in SQLite.
+ */
+
+#define XCTAssertTimeDiffWithInterval(a, b, delta, ...)          \
+  _XCTAssertTimeDiffWithInterval(self, __FILE__, __LINE__, a, b, delta, @"" __VA_ARGS__)
+
+static void _XCTAssertTimeDiffWithInterval(CKKSAnalyticsTests* self, const char* filename, int line, NSDate* a, NSDate* b, int delta, NSString * _Nullable format, ...) {
+    NSTimeInterval interval = [b timeIntervalSinceDate:a];
+    if (interval <= -1.0 || interval > delta) {
+        NSString *comparison = [[NSString alloc] initWithFormat:@"time diff not expected (a=%@(%f), b=%@(%f), delta = %f) -- valid range (-1.0, %d.0]: ", a, [a timeIntervalSince1970], b, [b timeIntervalSince1970], interval, delta];
+        NSString *arg = [[NSString alloc] init];
+        if (format) {
+            va_list args;
+            va_start(args, format);
+            va_end(args);
+            arg = [[NSString alloc] initWithFormat: format arguments: args];
+        }
+        [self recordFailureWithDescription: [comparison stringByAppendingString: arg] inFile: [NSString stringWithUTF8String: filename] atLine: line expected: YES];
+    }
+}
+
+- (void)testLastSuccessfulXDate
 {
     [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
     [self startCKKSSubsystem];
@@ -152,45 +194,50 @@ static NSString* tablePath = nil;
     [self.keychainView notifyZoneChange:nil];
     
     [[[self.keychainView waitForFetchAndIncomingQueueProcessing] completionHandlerDidRunCondition] wait:4 * NSEC_PER_SEC];
-    
-    NSDate* syncDate = [[CKKSAnalyticsLogger logger] dateOfLastSuccessForEvent:CKKSEventProcessIncomingQueueClassC inView:self.keychainView];
-    XCTAssertNotNil(syncDate, "Failed to get a last successful sync date");
-    NSDate* nowDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    NSTimeInterval timeIntervalSinceSyncDate = [nowDate timeIntervalSinceDate:syncDate];
-    XCTAssertTrue(timeIntervalSinceSyncDate >= 0.0 && timeIntervalSinceSyncDate <= 15.0, "Last sync date does not look like a reasonable one");
-}
 
-- (void)testExtraValuesToUploadToServer
-{
-    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
-    [self startCKKSSubsystem];
-    CKRecord* ckr = [self createFakeRecord: self.keychainZoneID recordName:@"7B598D31-F9C5-481E-98AC-5A507ACB2D85"];
-    [self.keychainZone addToZone: ckr];
+    NSDate* nowDate = [NSDate date];
 
-    // Trigger a notification (with hilariously fake data)
-    [self.keychainView notifyZoneChange:nil];
+    /*
+     * Check last sync date for class A
+     */
+    NSDate* syncADate = [[CKKSAnalytics logger] dateOfLastSuccessForEvent:CKKSEventProcessIncomingQueueClassA inView:self.keychainView];
+    XCTAssertNotNil(syncADate, "Failed to get a last successful A sync date");
+    XCTAssertTimeDiffWithInterval(syncADate, nowDate, 15, "Last sync A date should be recent");
 
-    [[[self.keychainView waitForFetchAndIncomingQueueProcessing] completionHandlerDidRunCondition] wait:4 * NSEC_PER_SEC];
+    /*
+     * Check last sync date for class C
+     */
+    NSDate *syncCDate = [[CKKSAnalytics logger] dateOfLastSuccessForEvent:CKKSEventProcessIncomingQueueClassC inView:self.keychainView];
+    XCTAssertNotNil(syncCDate, "Failed to get a last successful C sync date");
+    XCTAssertTimeDiffWithInterval(syncCDate, nowDate, 15, "Last sync C date should be recent");
 
-    NSDictionary* extraValues = [[CKKSAnalyticsLogger logger] extraValuesToUploadToServer];
-    XCTAssertTrue([extraValues[@"keychain-TLKs"] boolValue]);
-    XCTAssertTrue([extraValues[@"keychain-inSyncA"] boolValue]);
-    XCTAssertTrue([extraValues[@"keychain-inSyncC"] boolValue]);
-    XCTAssertTrue([extraValues[@"keychain-IQNOE"] boolValue]);
-    XCTAssertTrue([extraValues[@"keychain-OQNOE"] boolValue]);
-    XCTAssertTrue([extraValues[@"keychain-inSync"] boolValue]);
-}
+    /*
+     * Check last unlock date
+     */
+    NSDate* unlockDate = [[CKKSAnalytics logger] datePropertyForKey:CKKSAnalyticsLastUnlock];
+    XCTAssertNotNil(unlockDate, "Failed to get a last unlock date");
+    XCTAssertTimeDiffWithInterval(unlockDate, nowDate, 15, "Last unlock date should be recent");
 
-- (void)testNilEventDoesNotCrashTheSystem
-{
-    CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
-    [logger logSuccessForEventNamed:nil];
+    sleep(2); // wait to be a different second (+/- 1s)
 
-    NSData* json = nil;
-    NSError* error = nil;
-    XCTAssertNoThrow(json = [logger getLoggingJSONWithError:&error]);
-    XCTAssertNotNil(json, @"Failed to get JSON after logging nil event");
-    XCTAssertNil(error, @"Got error when grabbing JSON after logging nil event: %@", error);
+    self.aksLockState = true;
+    [self.lockStateTracker recheck];
+
+    NSDate* newUnlockDate = [[CKKSAnalytics logger] datePropertyForKey:CKKSAnalyticsLastUnlock];
+    XCTAssertNotNil(newUnlockDate, "Failed to get a last unlock date");
+
+    XCTAssertTimeDiffWithInterval(newUnlockDate, unlockDate, 1, "unlock dates not the same (within one second)");
+
+    sleep(1); // wait to be a differnt second
+
+    self.aksLockState = false;
+    [self.lockStateTracker recheck];
+
+    sleep(1); // wait for the completion block to have time to fire
+
+    newUnlockDate = [[CKKSAnalytics logger] datePropertyForKey:CKKSAnalyticsLastUnlock];
+    XCTAssertNotNil(newUnlockDate, "Failed to get a last unlock date");
+    XCTAssertNotEqualObjects(newUnlockDate, unlockDate, "unlock date the same");
 }
 
 - (void)testRaceToCreateLoggers
@@ -198,7 +245,7 @@ static NSString* tablePath = nil;
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     for (NSInteger i = 0; i < 5; i++) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
+            CKKSAnalytics* logger = [CKKSAnalytics logger];
             [logger logSuccessForEvent:(CKKSAnalyticsFailableEvent*)@"test_event" inView:self.keychainView];
             dispatch_semaphore_signal(semaphore);
         });
@@ -209,22 +256,76 @@ static NSString* tablePath = nil;
     }
 }
 
-- (void)testSysdiagnoseDump
+- (void)testUnderlayingError
 {
-    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
-    [self startCKKSSubsystem];
-    CKRecord* ckr = [self createFakeRecord: self.keychainZoneID recordName:@"7B598D31-F9C5-481E-98AC-5A507ACB2D85"];
-    [self.keychainZone addToZone: ckr];
+    NSDictionary *errorString = nil;
+    NSError *error = nil;
 
-    // Trigger a notification (with hilariously fake data)
-    [self.keychainView notifyZoneChange:nil];
+    error = [NSError errorWithDomain:CKErrorDomain code:CKErrorPartialFailure userInfo:@{
+        CKPartialErrorsByItemIDKey : @{
+                @"recordid" : [NSError errorWithDomain:CKErrorDomain code:1 userInfo:nil],
+        }
+    }];
 
-    [self.keychainView waitForFetchAndIncomingQueueProcessing];
+    errorString = [[CKKSAnalytics logger] errorChain:error depth:0];
 
-    NSError* error = nil;
-    NSString* sysdiagnose = [[CKKSAnalyticsLogger logger] getSysdiagnoseDumpWithError:&error];
-    XCTAssertNil(error, @"encountered an error grabbing CKKS analytics sysdiagnose: %@", error);
-    XCTAssertTrue(sysdiagnose.length > 0, @"failed to get a sysdiagnose from CKKS analytics");
+    XCTAssertEqualObjects(errorString[@"domain"], CKErrorDomain, "error domain");
+    XCTAssertEqual([errorString[@"code"] intValue], CKErrorPartialFailure, "error code");
+
+    XCTAssertEqualObjects(errorString[@"oneCloudKitPartialFailure"][@"domain"], CKErrorDomain, "error domain");
+    XCTAssertEqual([errorString[@"oneCloudKitPartialFailure"][@"code"] intValue], 1, "error code");
+
+    /* interal partial error leaks out of CK */
+
+    error = [NSError errorWithDomain:CKErrorDomain code:CKErrorPartialFailure userInfo:@{
+        CKPartialErrorsByItemIDKey : @{
+                @"recordid1" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid2" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid3" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid4" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid5" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid6" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid7" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid8" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid9" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid0" : [NSError errorWithDomain:CKErrorDomain code:1 userInfo:nil],
+                @"recordid10" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid12" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid13" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid14" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid15" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid16" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid17" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid18" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+                @"recordid19" : [NSError errorWithDomain:CKErrorDomain code:CKErrorBatchRequestFailed userInfo:nil],
+        }
+    }];
+
+    errorString = [[CKKSAnalytics logger] errorChain:error depth:0];
+
+    XCTAssertEqualObjects(errorString[@"domain"], CKErrorDomain, "error domain");
+    XCTAssertEqual([errorString[@"code"] intValue], CKErrorPartialFailure, "error code");
+
+    XCTAssertEqualObjects(errorString[@"oneCloudKitPartialFailure"][@"domain"], CKErrorDomain, "error domain");
+    XCTAssertEqualObjects(errorString[@"oneCloudKitPartialFailure"][@"code"], @1, "error code");
+
+
+
+
+    error = [NSError errorWithDomain:@"domain" code:1 userInfo:@{
+        NSUnderlyingErrorKey : [NSError errorWithDomain:CKErrorDomain code:1 userInfo:nil],
+    }];
+
+    errorString = [[CKKSAnalytics logger] errorChain:error depth:0];
+
+    XCTAssertEqualObjects(errorString[@"domain"], @"domain", "error domain");
+    XCTAssertEqual([errorString[@"code"] intValue], 1, "error code");
+
+    XCTAssertEqualObjects(errorString[@"child"][@"domain"], CKErrorDomain, "error domain");
+    XCTAssertEqual([errorString[@"child"][@"code"] intValue], 1, "error code");
 }
 
+
 @end
+
+#endif

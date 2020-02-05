@@ -43,7 +43,7 @@ typedef struct cssm_kr_name {
     char *Name; /* name string */
 } CSSM_KR_NAME DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_kr_profile {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_kr_profile {
     CSSM_KR_NAME UserName; /* name of the user */
     CSSM_CERTGROUP_PTR UserCertificate; /* public key certificate of the user */
     CSSM_CERTGROUP_PTR KRSCertChain; /* cert chain for the KRSP coordinator */
@@ -58,7 +58,7 @@ typedef struct cssm_kr_profile {
     CSSM_DATA_PTR KRSPExtensions; /* reserved for extensions specific to KRSPs */
 } CSSM_KR_PROFILE DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_KR_PROFILE_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_kr_wrappedproductinfo {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_kr_wrappedproductinfo {
     CSSM_VERSION StandardVersion;
     CSSM_STRING StandardDescription;
     CSSM_VERSION ProductVersion;
@@ -67,11 +67,11 @@ typedef struct cssm_kr_wrappedproductinfo {
     uint32 ProductFlags;
 } CSSM_KR_WRAPPEDPRODUCT_INFO DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_KR_WRAPPEDPRODUCT_INFO_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_krsubservice {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_krsubservice {
     uint32 SubServiceId;
     char *Description; /* Description of this sub service */
     CSSM_KR_WRAPPEDPRODUCT_INFO WrappedProduct;
-} CSSM_KRSUBSERVICE, *CSSM_KRSUBSERVICE_PTR;
+} CSSM_KRSUBSERVICE DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_KRSUBSERVICE_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 typedef uint32 CSSM_KR_POLICY_TYPE;
 #define CSSM_KR_INDIV_POLICY			(0x00000001)
@@ -89,7 +89,7 @@ typedef uint32 CSSM_KR_POLICY_FLAGS;
 #define CSSM_KR_OPTIMIZE				(0x00000010)
 #define CSSM_KR_DROP_WORKFACTOR			(0x00000020)
 
-typedef struct cssm_kr_policy_list_item {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_kr_policy_list_item {
     struct kr_policy_list_item *next;
     CSSM_ALGORITHMS AlgorithmId;
     CSSM_ENCRYPT_MODE Mode;
@@ -100,144 +100,12 @@ typedef struct cssm_kr_policy_list_item {
     CSSM_CONTEXT_TYPE AlgClass;
 } CSSM_KR_POLICY_LIST_ITEM DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_KR_POLICY_LIST_ITEM_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_kr_policy_info {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_kr_policy_info {
     CSSM_BOOL krbNotAllowed;
     uint32 numberOfEntries;
     CSSM_KR_POLICY_LIST_ITEM *policyEntry;
 } CSSM_KR_POLICY_INFO DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_KR_POLICY_INFO_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-
-/* Key Recovery Module Mangement Operations */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_SetEnterpriseRecoveryPolicy (const CSSM_DATA *RecoveryPolicyFileName,
-                                     const CSSM_ACCESS_CREDENTIALS *OldPassPhrase,
-                                     const CSSM_ACCESS_CREDENTIALS *NewPassPhrase)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-
-/* Key Recovery Context Operations */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_CreateRecoveryRegistrationContext (CSSM_KRSP_HANDLE KRSPHandle,
-                                           CSSM_CC_HANDLE *NewContext)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_CreateRecoveryEnablementContext (CSSM_KRSP_HANDLE KRSPHandle,
-                                         const CSSM_KR_PROFILE *LocalProfile,
-                                         const CSSM_KR_PROFILE *RemoteProfile,
-                                         CSSM_CC_HANDLE *NewContext)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_CreateRecoveryRequestContext (CSSM_KRSP_HANDLE KRSPHandle,
-                                      const CSSM_KR_PROFILE *LocalProfile,
-                                      CSSM_CC_HANDLE *NewContext)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_GetPolicyInfo (CSSM_CC_HANDLE CCHandle,
-                       CSSM_KR_POLICY_FLAGS *EncryptionProhibited,
-                       uint32 *WorkFactor)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-
-/* Key Recovery Registration Operations */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_RegistrationRequest (CSSM_CC_HANDLE RecoveryRegistrationContext,
-                             const CSSM_DATA *KRInData,
-                             const CSSM_ACCESS_CREDENTIALS *AccessCredentials,
-                             CSSM_KR_POLICY_FLAGS KRFlags,
-                             sint32 *EstimatedTime,
-                             CSSM_HANDLE_PTR ReferenceHandle)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_RegistrationRetrieve (CSSM_KRSP_HANDLE KRSPHandle,
-                              CSSM_HANDLE ReferenceHandle,
-                              const CSSM_ACCESS_CREDENTIALS *AccessCredentials,
-                              sint32 *EstimatedTime,
-                              CSSM_KR_PROFILE_PTR KRProfile)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-
-/* Key Recovery Enablement Operations */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_GenerateRecoveryFields (CSSM_CC_HANDLE KeyRecoveryContext,
-                                CSSM_CC_HANDLE CCHandle,
-                                const CSSM_DATA *KRSPOptions,
-                                CSSM_KR_POLICY_FLAGS KRFlags,
-                                CSSM_DATA_PTR KRFields,
-                                CSSM_CC_HANDLE *NewCCHandle)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_ProcessRecoveryFields (CSSM_CC_HANDLE KeyRecoveryContext,
-                               CSSM_CC_HANDLE CryptoContext,
-                               const CSSM_DATA *KRSPOptions,
-                               CSSM_KR_POLICY_FLAGS KRFlags,
-                               const CSSM_DATA *KRFields,
-                               CSSM_CC_HANDLE *NewCryptoContext)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-
-/* Key Recovery Request Operations */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_RecoveryRequest (CSSM_CC_HANDLE RecoveryRequestContext,
-                         const CSSM_DATA *KRInData,
-                         const CSSM_ACCESS_CREDENTIALS *AccessCredentials,
-                         sint32 *EstimatedTime,
-                         CSSM_HANDLE_PTR ReferenceHandle)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_RecoveryRetrieve (CSSM_KRSP_HANDLE KRSPHandle,
-                          CSSM_HANDLE ReferenceHandle,
-                          const CSSM_ACCESS_CREDENTIALS *AccessCredentials,
-                          sint32 *EstimatedTime,
-                          CSSM_HANDLE_PTR CacheHandle,
-                          uint32 *NumberOfRecoveredKeys)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_GetRecoveredObject (CSSM_KRSP_HANDLE KRSPHandle,
-                            CSSM_HANDLE CacheHandle,
-                            uint32 IndexInResults,
-                            CSSM_CSP_HANDLE CSPHandle,
-                            const CSSM_RESOURCE_CONTROL_CONTEXT *CredAndAclEntry,
-                            uint32 Flags,
-                            CSSM_KEY_PTR RecoveredKey,
-                            CSSM_DATA_PTR OtherInfo)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_RecoveryRequestAbort (CSSM_KRSP_HANDLE KRSPHandle,
-                              CSSM_HANDLE CacheHandle)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_QueryPolicyInfo (CSSM_KRSP_HANDLE KRSPHandle,
-                         CSSM_ALGORITHMS AlgorithmID,
-                         CSSM_ENCRYPT_MODE Mode,
-                         CSSM_CONTEXT_TYPE Class,
-                         CSSM_KR_POLICY_INFO_PTR *PolicyInfoData)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-
-/* Extensibility Functions */
-
-CSSM_RETURN CSSMAPI
-CSSM_KR_PassThrough (CSSM_KRSP_HANDLE KRSPHandle,
-                     CSSM_CC_HANDLE KeyRecoveryContext,
-                     CSSM_CC_HANDLE CryptoContext,
-                     uint32 PassThroughId,
-                     const void *InputParams,
-                     void **OutputParams)
-		DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 #pragma clang diagnostic pop
 

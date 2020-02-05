@@ -29,12 +29,12 @@
 
 #include <CoreFoundation/CFDictionary.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -53,10 +53,8 @@
 #include "SecdTestKeychainUtilities.h"
 
 
-static int kTestTestCount = 43;
-
 typedef void (^stir_block)(int expected_iterations);
-typedef int (^execute_block)();
+typedef int (^execute_block)(void);
 
 static void stirBetween(stir_block stir, ...) {
     va_list va;
@@ -156,10 +154,10 @@ static void tests(void)
         CFReleaseNull(error);
         return 1;
     }, ^{
-        ok(![alice_resurrected.trust isInCircle:&error], "Ressurrected not in circle: %@", error);
+        ok(![alice_resurrected isInCircle:&error], "Ressurrected not in circle: %@", error);
         CFReleaseNull(error);
 
-        ok([bob_account.trust isInCircle:&error], "Should be in circle: %@", error);
+        ok([bob_account isInCircle:&error], "Should be in circle: %@", error);
         CFReleaseNull(error);
 
         return 1;
@@ -174,7 +172,7 @@ static void tests(void)
 
 int secd_65_account_retirement_reset(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(28);
 
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     

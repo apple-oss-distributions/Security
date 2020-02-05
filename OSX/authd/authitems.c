@@ -23,8 +23,6 @@ struct _auth_item_s {
     AuthorizationItem data;
     uint32_t type;
     size_t bufLen;
-    
-    CFStringRef cfKey;
 };
 
 static const char *
@@ -41,21 +39,6 @@ auth_item_get_string(auth_item_t item)
         ((uint8_t*)item->data.value)[item->bufLen-1] = '\0';
     }
     return item->data.value;
-}
-
-static CFStringRef
-auth_item_get_cf_key(auth_item_t item)
-{
-    if (!item->cfKey) {
-        item->cfKey = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, item->data.name, kCFStringEncodingUTF8, kCFAllocatorNull);
-    }
-    return item->cfKey;
-}
-
-static AuthorizationItem *
-auth_item_get_auth_item(auth_item_t item)
-{
-    return &item->data;
 }
 
 static xpc_object_t
@@ -90,9 +73,7 @@ static void
 _auth_item_finalize(CFTypeRef value)
 {
     auth_item_t item = (auth_item_t)value;
-    
-    CFReleaseNull(item->cfKey);
-    
+
     if (item->data.name) {
         free((void*)item->data.name);
         /* cannot set item->data.name to NULL because item->data.name is non-nullable public API (rdar://problem/32235322)
@@ -274,6 +255,10 @@ auth_item_create_with_xpc(xpc_object_t data)
         bool sensitive = xpc_dictionary_get_value(data, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
         if (sensitive) {
             size_t sensitiveLength = (size_t)xpc_dictionary_get_uint64(data, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
+            if (sensitiveLength > len) {
+                os_log_error(AUTHD_LOG, "Sensitive data len %zu is not valid", sensitiveLength);
+                goto done;
+            }
             item->bufLen = sensitiveLength;
             item->data.valueLength = sensitiveLength;
             item->data.value = calloc(1u, sensitiveLength);
@@ -362,6 +347,16 @@ _auth_items_equal(CFTypeRef value1, CFTypeRef value2)
     return CFEqual(items1->dictionary, items2->dictionary);
 }
 
+static void
+auth_items_add_item(auth_items_t items, auth_item_t item)
+{
+	CFStringRef cfName = CFStringCreateWithCString(kCFAllocatorDefault, item->data.name, kCFStringEncodingUTF8);
+	if (cfName) {
+		CFDictionarySetValue(items->dictionary, cfName, item);
+		CFRelease(cfName);
+	}
+}
+
 static CFStringRef
 _auth_items_copy_description(CFTypeRef value)
 {
@@ -430,8 +425,8 @@ _auth_items_parse_xpc(auth_items_t items, const xpc_object_t data)
         
         auth_item_t item = auth_item_create_with_xpc(value);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
         
         return true;
@@ -472,36 +467,6 @@ size_t
 auth_items_get_count(auth_items_t items)
 {
     return (size_t)CFDictionaryGetCount(items->dictionary);
-}
-
-AuthorizationItemSet *
-auth_items_get_item_set(auth_items_t items)
-{
-    uint32_t count = (uint32_t)CFDictionaryGetCount(items->dictionary);
-    if (count) {
-        size_t size = count * sizeof(AuthorizationItem);
-        if (items->set.items == NULL) {
-            items->set.items = calloc(1u, size);
-            require(items->set.items != NULL, done);
-        } else {
-            if (count > items->set.count) {
-                items->set.items = realloc(items->set.items, size);
-                require_action(items->set.items != NULL, done, items->set.count = 0);
-            }
-        }
-        items->set.count = count;
-        CFTypeRef keys[count], values[count];
-        CFDictionaryGetKeysAndValues(items->dictionary, keys, values);
-        for (uint32_t i = 0; i < count; i++) {
-            auth_item_t item = (auth_item_t)values[i];
-            items->set.items[i] = *auth_item_get_auth_item(item);
-        }
-    } else {
-        items->set.count = 0;
-    }
-    
-done:
-    return &items->set;
 }
 
 xpc_object_t
@@ -584,8 +549,8 @@ auth_items_set_key(auth_items_t items, const char *key)
     if (!item) {
         item = auth_item_create(AI_TYPE_RIGHT, key, NULL, 0, 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+			CFRelease(item);
         }
     }
 }
@@ -649,9 +614,12 @@ void
 auth_items_copy(auth_items_t items, auth_items_t src)
 {
     auth_items_iterate(src, ^bool(const char *key) {
+		if (!key) {
+			return true;
+		}
         CFStringRef lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
         auth_item_t item = (auth_item_t)CFDictionaryGetValue(src->dictionary, lookup);
-        CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
+		if (item) auth_items_add_item(items, item);
         CFReleaseSafe(lookup);
         return true;
     });
@@ -664,8 +632,7 @@ auth_items_content_copy(auth_items_t items, auth_items_t src)
 		CFStringRef lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
 		auth_item_t item = (auth_item_t)CFDictionaryGetValue(src->dictionary, lookup);
 		auth_item_t new_item = auth_item_create(item->type, item->data.name, item->data.value, item->data.valueLength, item->data.flags);
-		if (new_item)
-			CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(new_item), new_item);
+		if (new_item) auth_items_add_item(items, new_item);
 		CFReleaseSafe(lookup);
 		CFReleaseSafe(new_item);
 		return true;
@@ -684,8 +651,11 @@ auth_items_copy_with_flags(auth_items_t items, auth_items_t src, uint32_t flags)
     auth_items_iterate(src, ^bool(const char *key) {
         if (auth_items_check_flags(src, key, flags)) {
             CFStringRef lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
+			if (CFDictionaryContainsKey(items->dictionary, lookup)) {
+				CFDictionaryRemoveValue(items->dictionary, lookup); // we do not want to have preserved unretained key
+			}
             auth_item_t item = (auth_item_t)CFDictionaryGetValue(src->dictionary, lookup);
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
+			if (item) auth_items_add_item(items, item);
             CFReleaseSafe(lookup);
         }
         return true;
@@ -701,10 +671,11 @@ auth_items_content_copy_with_flags(auth_items_t items, auth_items_t src, uint32_
 			CFStringRef lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
 			auth_item_t item = (auth_item_t)CFDictionaryGetValue(src->dictionary, lookup);
 			auth_item_t new_item = auth_item_create(item->type, item->data.name, item->data.value, item->data.valueLength, item->data.flags);
-			if (new_item)
-				CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(new_item), new_item);
+			if (new_item) {
+				auth_items_add_item(items, new_item);
+				CFRelease(new_item);
+			}
 			CFReleaseSafe(lookup);
-			CFReleaseSafe(new_item);
 		}
 		return true;
 	});
@@ -752,8 +723,8 @@ auth_items_set_string(auth_items_t items, const char *key, const char *value)
     } else {
         item = auth_item_create(AI_TYPE_STRING, key, value, valLen, 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -788,8 +759,8 @@ auth_items_set_data(auth_items_t items, const char *key, const void *value, size
         } else {
             item = auth_item_create(AI_TYPE_DATA, key, value, len, 0);
             if (item) {
-                CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-                CFReleaseSafe(item);
+				auth_items_add_item(items, item);
+                CFRelease(item);
             }
         }
     }
@@ -845,8 +816,8 @@ auth_items_set_bool(auth_items_t items, const char *key, bool value)
     } else {
         item = auth_item_create(AI_TYPE_BOOL, key, &value, sizeof(bool), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -885,8 +856,8 @@ auth_items_set_int(auth_items_t items, const char *key, int32_t value)
     } else {
         item = auth_item_create(AI_TYPE_INT, key, &value, sizeof(int32_t), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -925,8 +896,8 @@ auth_items_set_uint(auth_items_t items, const char *key, uint32_t value)
     } else {
         item = auth_item_create(AI_TYPE_UINT, key, &value, sizeof(uint32_t), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -965,8 +936,8 @@ auth_items_set_int64(auth_items_t items, const char *key, int64_t value)
     } else {
         item = auth_item_create(AI_TYPE_INT64, key, &value, sizeof(int64_t), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -1005,8 +976,8 @@ auth_items_set_uint64(auth_items_t items, const char *key, uint64_t value)
     } else {
         item = auth_item_create(AI_TYPE_UINT64, key, &value, sizeof(uint64_t), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -1044,8 +1015,8 @@ void auth_items_set_double(auth_items_t items, const char *key, double value)
     } else {
         item = auth_item_create(AI_TYPE_DOUBLE, key, &value, sizeof(double), 0);
         if (item) {
-            CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-            CFReleaseSafe(item);
+			auth_items_add_item(items, item);
+            CFRelease(item);
         }
     }
 }
@@ -1098,8 +1069,8 @@ void auth_items_set_value(auth_items_t items, const char *key, uint32_t type, ui
 {
     auth_item_t item = auth_item_create(type, key, value, len, flags);
     if (item) {
-        CFDictionarySetValue(items->dictionary, auth_item_get_cf_key(item), item);
-        CFReleaseSafe(item);
+		auth_items_add_item(items, item);
+        CFRelease(item);
     }
 }
 
@@ -1223,23 +1194,18 @@ static auth_item_t
 _find_right_item(auth_rights_t rights, const char * key)
 {
     auth_item_t item = NULL;
-    CFStringRef lookup = NULL;
     require(key != NULL, done);
-    
-    lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
-    require(lookup != NULL, done);
-    
+
     CFIndex count = CFArrayGetCount(rights->array);
     for (CFIndex i = 0; i < count; i++) {
         auth_item_t tmp = (auth_item_t)CFArrayGetValueAtIndex(rights->array, i);
-        if (tmp && CFEqual(auth_item_get_cf_key(tmp), lookup)) {
+        if (tmp && strcmp(tmp->data.name, key) == 0) {
             item = tmp;
             break;
         }
     }
     
 done:
-    CFReleaseSafe(lookup);
     return item;
 }
 
@@ -1296,17 +1262,15 @@ bool auth_rights_exist(auth_rights_t rights, const char *key)
 
 void auth_rights_remove(auth_rights_t rights, const char *key)
 {
-    CFStringRef lookup = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault, key, kCFStringEncodingUTF8, kCFAllocatorNull);
     CFIndex count = CFArrayGetCount(rights->array);
     for (CFIndex i = 0; i < count; i++) {
         auth_item_t item = (auth_item_t)CFArrayGetValueAtIndex(rights->array, i);
-        if (CFEqual(auth_item_get_cf_key(item), lookup)) {
+        if (item && strcmp(item->data.name, key) == 0) {
             CFArrayRemoveValueAtIndex(rights->array, i);
             i--;
             count--;
         }
     }
-    CFReleaseSafe(lookup);
 }
 
 void auth_rights_clear(auth_rights_t rights)

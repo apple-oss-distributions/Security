@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2008-2019 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -27,12 +27,15 @@
 
 #include <AssertMacros.h>
 #include <CoreFoundation/CFDictionary.h>
+#include <Security/SecPolicyPriv.h>
 #include <Security/SecPolicyInternal.h>
 #include <Security/SecCertificateInternal.h>
+#include <Security/SecFramework.h>
 #include <utilities/SecCFWrappers.h>
+#include <utilities/SecInternalReleasePriv.h>
 #include <wctype.h>
 #include <dlfcn.h>
-#include <libDER/oidsPriv.h>
+#include <libDER/oids.h>
 
 /*
  * MARK: SecPolicyCheckCert Functions
@@ -44,7 +47,7 @@ typedef bool (*SecPolicyCheckCertFunction)(SecCertificateRef cert, CFTypeRef pvc
 /* This one is different from SecPolicyCheckCriticalExtensions because
  that one is an empty stub. The CriticalExtensions check is done in
  SecPolicyCheckBasicCertificateProcessing. */
-static bool SecPolicyCheckCertCriticalExtensions(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
+bool SecPolicyCheckCertCriticalExtensions(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
     if (SecCertificateHasUnknownCriticalExtension(cert)) {
         /* Certificate contains one or more unknown critical extensions. */
         return false;
@@ -152,19 +155,11 @@ bool SecPolicyCheckCertNonEmptySubject(SecCertificateRef cert, CFTypeRef __unuse
     return true;
 }
 
-
-/* This one is different from SecPolicyCheckQualifiedCertStatements because
- both are empty stubs. */
-static bool SecPolicyCheckCertQualifiedCertStatements(SecCertificateRef __unused cert,
-                                                      CFTypeRef __unused pvcValue) {
-    return true;
-}
-
 /* We have a wildcard reference identifier that looks like "*." followed by 2 or
    more labels. Use CFNetwork's function for determining if those labels comprise
    a top-level domain. We need to dlopen since CFNetwork is a client of ours. */
 typedef bool (*CFNIsTLD_f)(CFStringRef domain);
-static bool SecDNSIsTLD(CFStringRef reference) {
+bool SecDNSIsTLD(CFStringRef reference) {
     bool result = false; /* fail open for allocation and symbol lookup failures */
     static CFNIsTLD_f CFNIsDomainTopLevelFunctionPtr = NULL;
     static dispatch_once_t onceToken;
@@ -287,7 +282,7 @@ bool SecPolicyCheckCertSSLHostname(SecCertificateRef cert, CFTypeRef pvcValue) {
     }
 
     bool dnsMatch = false;
-    CFArrayRef dnsNames = SecCertificateCopyDNSNames(cert);
+    CFArrayRef dnsNames = SecCertificateCopyDNSNamesFromSAN(cert);
     if (dnsNames) {
         CFIndex ix, count = CFArrayGetCount(dnsNames);
         for (ix = 0; ix < count; ++ix) {
@@ -301,19 +296,25 @@ bool SecPolicyCheckCertSSLHostname(SecCertificateRef cert, CFTypeRef pvcValue) {
     }
 
     if (!dnsMatch) {
-        /* Maybe hostname is an IPv4 or IPv6 address, let's compare against
-         the values returned by SecCertificateCopyIPAddresses() instead. */
-        CFArrayRef ipAddresses = SecCertificateCopyIPAddresses(cert);
-        if (ipAddresses) {
-            CFIndex ix, count = CFArrayGetCount(ipAddresses);
-            for (ix = 0; ix < count; ++ix) {
+        /* Check whether hostname is an IPv4 or IPv6 address */
+        CFDataRef hostIPData = SecFrameworkCopyIPAddressData(hostName);
+        if (hostIPData) {
+            /* Check address against IP addresses in the SAN extension,
+               obtained by SecCertificateCopyIPAddresses. Comparisons
+               must always use the canonical data representation of the
+               address, since string notation may omit zeros, etc. */
+            CFArrayRef ipAddresses = SecCertificateCopyIPAddresses(cert);
+            CFIndex ix, count = (ipAddresses) ? CFArrayGetCount(ipAddresses) : 0;
+            for (ix = 0; ix < count && !dnsMatch; ++ix) {
                 CFStringRef ipAddress = (CFStringRef)CFArrayGetValueAtIndex(ipAddresses, ix);
-                if (!CFStringCompare(hostName, ipAddress, kCFCompareCaseInsensitive)) {
+                CFDataRef addrData = SecFrameworkCopyIPAddressData(ipAddress);
+                if (CFEqualSafe(hostIPData, addrData)) {
                     dnsMatch = true;
-                    break;
                 }
+                CFReleaseSafe(addrData);
             }
-            CFRelease(ipAddresses);
+            CFReleaseSafe(ipAddresses);
+            CFReleaseSafe(hostIPData);
         }
     }
 
@@ -345,7 +346,7 @@ bool SecPolicyCheckCertEmail(SecCertificateRef cert, CFTypeRef pvcValue) {
     return match;
 }
 
-static bool SecPolicyCheckCertValidLeaf(SecCertificateRef cert, CFTypeRef pvcValue) {
+bool SecPolicyCheckCertTemporalValidity(SecCertificateRef cert, CFTypeRef pvcValue) {
     CFAbsoluteTime verifyTime = CFDateGetAbsoluteTime(pvcValue);
     if (!SecCertificateIsValid(cert, verifyTime)) {
         /* Leaf certificate has expired. */
@@ -557,6 +558,22 @@ bool SecPolicyCheckCertLeafMarkerOidWithoutValueCheck(SecCertificateRef cert,
     return false;
 }
 
+/*
+ * The value is a dictionary. The dictionary contains keys indicating
+ * whether the value is for Prod or QA. The values are the same as
+ * in the options dictionary for SecPolicyCheckLeafMarkerOid.
+ */
+bool SecPolicyCheckCertLeafMarkersProdAndQA(SecCertificateRef cert, CFTypeRef pvcValue)
+{
+    CFTypeRef prodValue = CFDictionaryGetValue(pvcValue, kSecPolicyLeafMarkerProd);
+
+    if (!SecPolicyCheckCertLeafMarkerOid(cert, prodValue)) {
+        bool result = false;
+        return result;
+    }
+    return true;
+}
+
 static CFSetRef copyCertificatePolicies(SecCertificateRef cert) {
     CFMutableSetRef policies = NULL;
     policies = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
@@ -586,7 +603,7 @@ static bool checkPolicyOidData(SecCertificateRef cert , CFDataRef oid) {
 
 /* This one is different from SecPolicyCheckCertificatePolicyOid because
    that one checks the whole chain. (And uses policy_set_t...) */
-static bool SecPolicyCheckCertCertificatePolicyOid(SecCertificateRef cert, CFTypeRef pvcValue) {
+bool SecPolicyCheckCertCertificatePolicy(SecCertificateRef cert, CFTypeRef pvcValue) {
     CFTypeRef value = pvcValue;
     bool result = false;
 
@@ -603,7 +620,7 @@ static bool SecPolicyCheckCertCertificatePolicyOid(SecCertificateRef cert, CFTyp
     return result;
 }
 
-static bool SecPolicyCheckCertWeak(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
+bool SecPolicyCheckCertWeakKeySize(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
     if (cert && SecCertificateIsWeakKey(cert)) {
         /* Leaf certificate has a weak key. */
         return false;
@@ -611,12 +628,32 @@ static bool SecPolicyCheckCertWeak(SecCertificateRef cert, CFTypeRef __unused pv
     return true;
 }
 
-static bool SecPolicyCheckCertKeySize(SecCertificateRef cert, CFTypeRef pvcValue) {
+bool SecPolicyCheckCertKeySize(SecCertificateRef cert, CFTypeRef pvcValue) {
     CFDictionaryRef keySizes = pvcValue;
     if (!SecCertificateIsAtLeastMinKeySize(cert, keySizes)) {
         return false;
     }
     return true;
+}
+
+bool SecPolicyCheckCertWeakSignature(SecCertificateRef cert, CFTypeRef __unused pvcValue) {
+    bool result = true;
+    CFMutableArrayRef disallowedHashes = CFArrayCreateMutable(NULL, 3, &kCFTypeArrayCallBacks);
+    if (!disallowedHashes) {
+        return result;
+    }
+    CFArrayAppendValue(disallowedHashes, kSecSignatureDigestAlgorithmMD2);
+    CFArrayAppendValue(disallowedHashes, kSecSignatureDigestAlgorithmMD4);
+    CFArrayAppendValue(disallowedHashes, kSecSignatureDigestAlgorithmMD5);
+
+    /* Weak Signature failures only for non-self-signed certs */
+    Boolean isSelfSigned = false;
+    OSStatus status = SecCertificateIsSelfSigned(cert, &isSelfSigned);
+    if (!SecPolicyCheckCertSignatureHashAlgorithms(cert, disallowedHashes) && (status != errSecSuccess || !isSelfSigned)) {
+        result = false;
+    }
+    CFReleaseSafe(disallowedHashes);
+    return result;
 }
 
 static CFStringRef convertSignatureHashAlgorithm(SecSignatureHashAlgorithm algorithmEnum) {
@@ -634,9 +671,23 @@ static CFStringRef convertSignatureHashAlgorithm(SecSignatureHashAlgorithm algor
 }
 
 bool SecPolicyCheckCertSignatureHashAlgorithms(SecCertificateRef cert, CFTypeRef pvcValue) {
-    CFSetRef disallowedHashAlgorithms = pvcValue;
+    /* skip signature algorithm check on self-signed certs */
+    Boolean isSelfSigned = false;
+    OSStatus status = SecCertificateIsSelfSigned(cert, &isSelfSigned);
+    if ((status == errSecSuccess) && isSelfSigned) {
+        return true;
+    }
+
+    CFArrayRef disallowedHashAlgorithms = pvcValue;
     CFStringRef certAlg = convertSignatureHashAlgorithm(SecCertificateGetSignatureHashAlgorithm(cert));
-    if (CFSetContainsValue(disallowedHashAlgorithms, certAlg)) {
+    if (CFArrayContainsValue(disallowedHashAlgorithms, CFRangeMake(0,CFArrayGetCount(disallowedHashAlgorithms)), certAlg)) {
+        return false;
+    }
+    return true;
+}
+
+bool SecPolicyCheckCertUnparseableExtension(SecCertificateRef cert, CFTypeRef pvcValue) {
+    if (SecCertificateGetUnparseableKnownExtension(cert) != kCFNotFound) {
         return false;
     }
     return true;
@@ -649,76 +700,22 @@ static CFDictionaryRef SecLeafPVCCopyCallbacks(void) {
     CFMutableDictionaryRef leafCallbacks = NULL;
     leafCallbacks = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
                                                         &kCFTypeDictionaryKeyCallBacks, NULL);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckCriticalExtensions,
-                         SecPolicyCheckCertCriticalExtensions);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckKeyUsage,
-                         SecPolicyCheckCertKeyUsage);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckExtendedKeyUsage,
-                         SecPolicyCheckCertExtendedKeyUsage);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckNonEmptySubject,
-                         SecPolicyCheckCertNonEmptySubject);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckQualifiedCertStatements,
-                         SecPolicyCheckCertQualifiedCertStatements);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSSLHostname,
-                         SecPolicyCheckCertSSLHostname);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckEmail,
-                         SecPolicyCheckCertEmail);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckValidLeaf,
-                         SecPolicyCheckCertValidLeaf);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSubjectCommonNamePrefix,
-                         SecPolicyCheckCertSubjectCommonNamePrefix);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSubjectCommonName,
-                         SecPolicyCheckCertSubjectCommonName);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckNotValidBefore,
-                         SecPolicyCheckCertNotValidBefore);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSubjectOrganization,
-                         SecPolicyCheckCertSubjectOrganization);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSubjectOrganizationalUnit,
-                         SecPolicyCheckCertSubjectOrganizationalUnit);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckEAPTrustedServerNames,
-                         SecPolicyCheckCertEAPTrustedServerNames);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSubjectCommonNameTEST,
-                         SecPolicyCheckCertSubjectCommonNameTEST);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckLeafMarkerOid,
-                         SecPolicyCheckCertLeafMarkerOid);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckLeafMarkerOidWithoutValueCheck,
-                         SecPolicyCheckCertLeafMarkerOidWithoutValueCheck);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckCertificatePolicy,
-                         SecPolicyCheckCertCertificatePolicyOid);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckWeakLeaf,
-                         SecPolicyCheckCertWeak);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckKeySize,
-                         SecPolicyCheckCertKeySize);
-    CFDictionaryAddValue(leafCallbacks,
-                         kSecPolicyCheckSignatureHashAlgorithms,
-                         SecPolicyCheckCertSignatureHashAlgorithms);
+
+#undef POLICYCHECKMACRO
+#define __PC_ADD_CHECK_(NAME)
+#define __PC_ADD_CHECK_O(NAME) CFDictionaryAddValue(leafCallbacks, \
+kSecPolicyCheck##NAME, SecPolicyCheckCert##NAME);
+
+#define POLICYCHECKMACRO(NAME, TRUSTRESULT, SUBTYPE, LEAFCHECK, PATHCHECK, LEAFONLY, CSSMERR, OSSTATUS) \
+__PC_ADD_CHECK_##LEAFONLY(NAME)
+#include "SecPolicyChecks.list"
 
     return leafCallbacks;
 }
 
 void SecLeafPVCInit(SecLeafPVCRef pvc, SecCertificateRef leaf, CFArrayRef policies,
                     CFAbsoluteTime verifyTime) {
-    secdebug("alloc", "%p", pvc);
+    secdebug("alloc", "leafpvc %p", pvc);
     // Weird logging policies crashes.
     //secdebug("policy", "%@", policies);
     pvc->leaf = CFRetainSafe(leaf);
@@ -737,7 +734,7 @@ void SecLeafPVCInit(SecLeafPVCRef pvc, SecCertificateRef leaf, CFArrayRef polici
 
 
 void SecLeafPVCDelete(SecLeafPVCRef pvc) {
-    secdebug("alloc", "%p", pvc);
+    secdebug("alloc", "delete leaf pvc %p", pvc);
     CFReleaseNull(pvc->policies);
     CFReleaseNull(pvc->details);
     CFReleaseNull(pvc->callbacks);
@@ -797,8 +794,8 @@ static void SecLeafPVCValidateKey(const void *key, const void *value,
         return;
     }
 
-    /* kSecPolicyCheckValidLeaf is special */
-    if (CFEqual(key, kSecPolicyCheckValidLeaf)) {
+    /* kSecPolicyCheckTemporalValidity is special */
+    if (CFEqual(key, kSecPolicyCheckTemporalValidity)) {
         CFDateRef verifyDate = CFDateCreate(NULL, pvc->verifyTime);
         if(!fcn(pvc->leaf, verifyDate)) {
             SecLeafPVCSetResult(pvc, key, 0, kCFBooleanFalse);

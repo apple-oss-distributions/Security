@@ -30,6 +30,14 @@
 #include "diskrep.h"
 #include "machorep.h"
 
+#include <sys/cdefs.h>
+
+#if TARGET_OS_OSX
+__BEGIN_DECLS
+#include <AppleFSCompression/AppleFSCompression.h>
+__END_DECLS
+#endif
+
 namespace Security {
 namespace CodeSigning {
 
@@ -47,14 +55,16 @@ namespace CodeSigning {
 // if it is in Mach-O format, or in files in a _CodeSignature directory if not.
 // This DiskRep supports resource sealing.
 //
-class BundleDiskRep : public DiskRep {
+class BundleDiskRep : public DiskRep, public EditableDiskRep {
 public:
 	BundleDiskRep(const char *path, const Context *ctx = NULL);
 	BundleDiskRep(CFBundleRef ref, const Context *ctx = NULL);
 	~BundleDiskRep();
 	
 	CFDataRef component(CodeDirectory::SpecialSlot slot);
+	RawComponentMap createRawComponents();
 	CFDataRef identification();
+	DiskRep *mainExecRep() const { return mExecRep.get(); };
 	std::string mainExecutablePath();
 	CFURLRef copyCanonicalPath();
 	std::string resourcesRootPath();
@@ -78,7 +88,12 @@ public:
 	size_t pageSize(const SigningContext &ctx);
 
 	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags);
+	void strictValidateStructure(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags);
 	CFArrayRef allowedResourceOmissions();
+
+	void registerStapledTicket();
+
+	bool appleInternalForcePlatform() const {return forcePlatform;};
 
 	CFBundleRef bundle() const { return mBundle; }
 
@@ -118,6 +133,7 @@ private:
 	bool mComponentsFromExecValid;			// mComponentsFromExec is valid (tri-state)
 	std::set<CodeDirectory::SpecialSlot> mUsedComponents; // remember what components we've retrieved
 	std::set<OSStatus> mStrictErrors;		// strict validation errors encountered
+	bool forcePlatform;						// treat as anchor apple on apple internal
 };
 
 

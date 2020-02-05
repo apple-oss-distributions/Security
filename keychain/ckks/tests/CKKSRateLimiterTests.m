@@ -24,6 +24,7 @@
 #if OCTAGON
 
 #import <XCTest/XCTest.h>
+#import <Foundation/NSKeyedArchiver_Private.h>
 #import "keychain/ckks/CKKSOutgoingQueueEntry.h"
 #import "keychain/ckks/CKKSRateLimiter.h"
 
@@ -63,7 +64,7 @@
     self.oqe = nil;
 }
 
-- (int) get:(NSDictionary *)dict key:(NSString *)key {
+- (int)get:(NSDictionary *)dict key:(NSString *)key {
     id obj = dict[key];
     XCTAssertNotNil(obj, "Key %@ is in the dictionary", key);
     XCTAssert([obj isKindOfClass:[NSNumber class]], "Value for %@ is an NSNumber (%@)", key, [obj class]);
@@ -71,7 +72,15 @@
     return [obj intValue];
 }
 
-- (void) testConfig {
+- (unsigned)getUnsigned:(NSDictionary *)dict key:(NSString *)key {
+    id obj = dict[key];
+    XCTAssertNotNil(obj, "Key %@ is in the dictionary", key);
+    XCTAssert([obj isKindOfClass:[NSNumber class]], "Value for %@ is an NSNumber (%@)", key, [obj class]);
+    XCTAssertGreaterThan([obj unsignedIntValue], 0, "Value for %@ is at least non-zero", key);
+    return [obj unsignedIntValue];
+}
+
+- (void)testConfig {
     [self get:[self.rl config] key:@"rateAll"];
     [self get:[self.rl config] key:@"rateGroup"];
     [self get:[self.rl config] key:@"rateUUID"];
@@ -82,7 +91,7 @@
     [self get:[self.rl config] key:@"trimTime"];
 }
 
-- (void) testBasics {
+- (void)testBasics {
     NSDate *date = [NSDate date];
     NSDate *limit = nil;
     
@@ -241,7 +250,7 @@
     NSDate *limit = nil;
     int trimSize = [self get:[self.rl config] key:@"trimSize"];
     //int rateAll = [self get:[self.rl config] key:@"rateAll"];;
-    int overloadDuration = [self get:[self.rl config] key:@"overloadDuration"];;
+    unsigned overloadDuration = [self getUnsigned:[self.rl config] key:@"overloadDuration"];;
 
     for (int idx = 0; idx < (trimSize / 2); ++idx) {
         self.oqe.accessgroup = [NSString stringWithFormat:@"%d", idx];
@@ -272,15 +281,13 @@
     NSDate* limit = nil;
     [self.rl judge:self.oqe at:date limitTime:&limit];
 
-    NSMutableData* data = [[NSMutableData alloc] init];
-    NSKeyedArchiver* encoder = [[NSKeyedArchiver alloc] initForWritingWithMutableData: data];
+    NSKeyedArchiver* encoder = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
     [encoder encodeObject: self.rl forKey:@"unneeded"];
-    [encoder finishEncoding];
+    NSData* data = encoder.encodedData;
     XCTAssertNotNil(data, "Still have our data object");
     XCTAssertTrue(data.length > 0u, "Encoder produced some data");
 
-    NSKeyedUnarchiver* decoder = [[NSKeyedUnarchiver alloc] initForReadingWithData: data];
-    decoder.requiresSecureCoding = YES;
+    NSKeyedUnarchiver* decoder = [[NSKeyedUnarchiver alloc] initForReadingFromData: data error:nil];
     CKKSRateLimiter* rl = [decoder decodeObjectOfClass: [CKKSRateLimiter class] forKey:@"unneeded"];
     XCTAssertNotNil(rl, "Decoded data into a CKKSRateLimiter");
 

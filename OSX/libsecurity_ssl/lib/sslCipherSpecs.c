@@ -38,6 +38,9 @@
 #include <string.h>
 #include <assert.h>
 #include <Security/SecBase.h>
+#include <Security/SecureTransportPriv.h>
+
+#include "SecProtocolInternal.h"
 
 #include <TargetConditionals.h>
 
@@ -112,15 +115,6 @@ static const uint16_t STKnownCipherSuites[] = {
     TLS_RSA_WITH_AES_128_CBC_SHA,
     SSL_RSA_WITH_3DES_EDE_CBC_SHA,
 
-#if ENABLE_RC4
-    TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
-    TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-    TLS_ECDH_ECDSA_WITH_RC4_128_SHA,
-    TLS_ECDH_RSA_WITH_RC4_128_SHA,
-    SSL_RSA_WITH_RC4_128_SHA,
-    SSL_RSA_WITH_RC4_128_MD5,
-#endif
-
     /* TLS 1.3 ciphersuites */
 #if ENABLE_AES_GCM
     TLS_AES_128_GCM_SHA256,
@@ -144,7 +138,6 @@ static const uint16_t STKnownCipherSuites[] = {
     TLS_DH_anon_WITH_AES_256_CBC_SHA256,
     TLS_DH_anon_WITH_AES_128_CBC_SHA,
     TLS_DH_anon_WITH_AES_256_CBC_SHA,
-    SSL_DH_anon_WITH_RC4_128_MD5,
     SSL_DH_anon_WITH_3DES_EDE_CBC_SHA,
 
     TLS_ECDHE_ECDSA_WITH_NULL_SHA,
@@ -159,7 +152,6 @@ static const uint16_t STKnownCipherSuites[] = {
     TLS_PSK_WITH_AES_128_CBC_SHA256,
     TLS_PSK_WITH_AES_256_CBC_SHA,
     TLS_PSK_WITH_AES_128_CBC_SHA,
-    TLS_PSK_WITH_RC4_128_SHA,
     TLS_PSK_WITH_3DES_EDE_CBC_SHA,
     TLS_PSK_WITH_NULL_SHA384,
     TLS_PSK_WITH_NULL_SHA256,
@@ -169,11 +161,99 @@ static const uint16_t STKnownCipherSuites[] = {
     TLS_RSA_WITH_NULL_SHA256,
     SSL_RSA_WITH_NULL_SHA,
     SSL_RSA_WITH_NULL_MD5
-
 };
 
 static const unsigned STCipherSuiteCount = sizeof(STKnownCipherSuites)/sizeof(STKnownCipherSuites[0]);
 
+static tls_ciphersuite_group_t
+_SSLCiphersuteGroupToTLSCiphersuiteGroup(SSLCiphersuiteGroup group)
+{
+    switch (group) {
+        case kSSLCiphersuiteGroupDefault:
+            return tls_ciphersuite_group_default;
+        case kSSLCiphersuiteGroupCompatibility:
+            return tls_ciphersuite_group_compatibility;
+        case kSSLCiphersuiteGroupLegacy:
+            return tls_ciphersuite_group_legacy;
+        case kSSLCiphersuiteGroupATS:
+            return tls_ciphersuite_group_ats;
+        case kSSLCiphersuiteGroupATSCompatibility:
+            return tls_ciphersuite_group_ats_compatibility;
+    }
+    return tls_ciphersuite_group_default;
+}
+
+const SSLCipherSuite *
+SSLCiphersuiteGroupToCiphersuiteList(SSLCiphersuiteGroup group, size_t *listSize)
+{
+    tls_ciphersuite_group_t tls_group = _SSLCiphersuteGroupToTLSCiphersuiteGroup(group);
+    const tls_ciphersuite_t *list = sec_protocol_helper_ciphersuite_group_to_ciphersuite_list(tls_group, listSize);
+    return (const SSLCipherSuite *)list;
+}
+
+bool
+SSLCiphersuiteGroupContainsCiphersuite(SSLCiphersuiteGroup group, SSLCipherSuite suite)
+{
+    tls_ciphersuite_group_t tls_group = _SSLCiphersuteGroupToTLSCiphersuiteGroup(group);
+    return sec_protocol_helper_ciphersuite_group_contains_ciphersuite(tls_group, (tls_ciphersuite_t)suite);
+}
+
+static struct ssl_protocol_version_map_entry {
+    SSLProtocol protocol;
+    uint16_t codepoint;
+} ssl_protocol_version_map[] = {
+    { .protocol = kTLSProtocol13, .codepoint = tls_protocol_version_TLSv13 },
+    { .protocol = kTLSProtocol12, .codepoint = tls_protocol_version_TLSv12 },
+    { .protocol = kTLSProtocol11, .codepoint = tls_protocol_version_TLSv11 },
+    { .protocol = kTLSProtocol1, .codepoint = tls_protocol_version_TLSv10 },
+    { .protocol = kDTLSProtocol12, .codepoint = tls_protocol_version_DTLSv12 },
+    { .protocol = kDTLSProtocol1, .codepoint = tls_protocol_version_DTLSv10 },
+    { .protocol = kSSLProtocol3, .codepoint = 0x0300 },
+    { .protocol = kSSLProtocol2, .codepoint = 0x0000 },
+};
+static size_t ssl_protocol_version_map_len = sizeof(ssl_protocol_version_map) / sizeof(ssl_protocol_version_map[0]);
+
+uint16_t
+SSLProtocolGetVersionCodepoint(SSLProtocol protocol_version)
+{
+    for (size_t i = 0; i < ssl_protocol_version_map_len; i++) {
+        if (ssl_protocol_version_map[i].protocol == protocol_version) {
+            return ssl_protocol_version_map[i].codepoint;
+        }
+    }
+    return 0;
+}
+
+SSLProtocol
+SSLProtocolFromVersionCodepoint(uint16_t protocol_version)
+{
+    for (size_t i = 0; i < ssl_protocol_version_map_len; i++) {
+        if (ssl_protocol_version_map[i].codepoint == protocol_version) {
+            return ssl_protocol_version_map[i].protocol;
+        }
+    }
+    return kSSLProtocolUnknown;
+}
+
+SSLProtocol 
+SSLCiphersuiteMinimumTLSVersion(SSLCipherSuite ciphersuite)
+{
+    tls_protocol_version_t version = sec_protocol_helper_ciphersuite_minimum_TLS_version((tls_ciphersuite_t)ciphersuite);
+    return SSLProtocolFromVersionCodepoint((uint16_t)version);
+}
+
+SSLProtocol
+SSLCiphersuiteMaximumTLSVersion(SSLCipherSuite ciphersuite)
+{
+    tls_protocol_version_t version = sec_protocol_helper_ciphersuite_maximum_TLS_version((tls_ciphersuite_t)ciphersuite);
+    return SSLProtocolFromVersionCodepoint((uint16_t)version);
+}
+
+const char *
+SSLCiphersuiteGetName(SSLCipherSuite ciphersuite)
+{
+    return sec_protocol_helper_get_ciphersuite_name((tls_ciphersuite_t)ciphersuite);
+}
 
 /*
  * Convert an array of uint16_t

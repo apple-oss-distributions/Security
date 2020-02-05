@@ -118,8 +118,8 @@ static const SecAsn1Template smime_encryptionkeypref_template[] = {
 	  NSSSMIMEEncryptionKeyPref_IssuerSN },
     { SEC_ASN1_POINTER | SEC_ASN1_CONTEXT_SPECIFIC | 1,
 	  offsetof(NSSSMIMEEncryptionKeyPreference,id.recipientKeyID),
-	  SecCmsRecipientKeyIdentifierTemplate,
-	  NSSSMIMEEncryptionKeyPref_IssuerSN },
+	  SEC_ASN1_SUB(SecCmsRecipientKeyIdentifierTemplate),
+	  NSSSMIMEEncryptionKeyPref_RKeyID },
     { SEC_ASN1_POINTER | SEC_ASN1_CONTEXT_SPECIFIC | SEC_ASN1_XTRN | 2,
 	  offsetof(NSSSMIMEEncryptionKeyPreference,id.subjectKeyID),
 	  SEC_ASN1_SUB(kSecAsn1OctetStringTemplate),
@@ -758,8 +758,10 @@ static CFArrayRef CF_RETURNS_RETAINED copyCertsFromRawCerts(SecAsn1Item **rawCer
 
     for(dex=0; dex<numRawCerts; dex++) {
         certificate = SecCertificateCreateWithBytes(NULL, rawCerts[dex]->Data, rawCerts[dex]->Length);
-        CFArrayAppendValue(certs, certificate);
-        CFRelease(certificate);
+        if (certificate) {
+            CFArrayAppendValue(certs, certificate);
+            CFRelease(certificate);
+        }
         certificate = NULL;
     }
 
@@ -804,15 +806,17 @@ SecSMIMEGetCertFromEncryptionKeyPreference(SecAsn1Item **rawCerts, SecAsn1Item *
 	cert = CERT_FindCertificateByIssuerAndSN(certs, ekp.id.issuerAndSN);
 	break;
     case NSSSMIMEEncryptionKeyPref_RKeyID:
+        cert = CERT_FindCertificateBySubjectKeyID(certs, &ekp.id.recipientKeyID->subjectKeyIdentifier);
+        break;
     case NSSSMIMEEncryptionKeyPref_SubjectKeyID:
-            cert = CERT_FindCertificateBySubjectKeyID(certs, ekp.id.subjectKeyID);
+        cert = CERT_FindCertificateBySubjectKeyID(certs, ekp.id.subjectKeyID);
 	break;
     default:
 	PORT_Assert(0);
     }
 loser:
     if (tmppoolp) PORT_FreeArena(tmppoolp, PR_FALSE);
-    CFRelease(certs);
+    if (certs) CFRelease(certs);
     return cert;
 }
 

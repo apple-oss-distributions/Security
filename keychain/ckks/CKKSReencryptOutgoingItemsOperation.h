@@ -22,9 +22,11 @@
  */
 
 #if OCTAGON
-#import <Foundation/Foundation.h>
 #import <CloudKit/CloudKit.h>
+#import <Foundation/Foundation.h>
 #import "keychain/ckks/CKKSGroupOperation.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 @class CKKSKeychainView;
 
@@ -37,5 +39,6 @@
 
 @end
 
-#endif // OCTAGON
+NS_ASSUME_NONNULL_END
 
+#endif  // OCTAGON

@@ -31,7 +31,7 @@
 #include <AssertMacros.h>
 
 #include <TargetConditionals.h>
-#if (TARGET_OS_MAC && !(TARGET_OS_EMBEDDED || TARGET_OS_IPHONE))
+#if TARGET_OS_OSX
 #define ENABLE_CMS 0
 #else
 #define ENABLE_CMS 1
@@ -56,7 +56,7 @@
 #include <Security/SecBasePriv.h>
 #include <Security/SecCertificatePriv.h>
 
-#include "SecCMS.h"
+#include <Security/SecCMS.h>
 #include <Security/SecTrustPriv.h>
 
 
@@ -77,6 +77,8 @@ CFTypeRef kSecCMSSignedAttributes = CFSTR("kSecCMSSignedAttributes");
 CFTypeRef kSecCMSSignDate = CFSTR("kSecCMSSignDate");
 CFTypeRef kSecCMSAllCerts = CFSTR("kSecCMSAllCerts");
 CFTypeRef kSecCMSHashAgility = CFSTR("kSecCMSHashAgility");
+CFTypeRef kSecCMSHashAgilityV2 = CFSTR("kSecCMSHashAgilityV2");
+CFTypeRef kSecCMSExpirationDate = CFSTR("kSecCMSExpirationDate");
 
 CFTypeRef kSecCMSBulkEncryptionAlgorithm = CFSTR("kSecCMSBulkEncryptionAlgorithm");
 CFTypeRef kSecCMSEncryptionAlgorithmDESCBC = CFSTR("kSecCMSEncryptionAlgorithmDESCBC");
@@ -361,8 +363,7 @@ OSStatus SecCMSCreateSignedData(SecIdentityRef identity, CFDataRef data,
         } else if (CFEqual(kSecCMSHashingAlgorithmSHA512, algorithm_name)) {
             algorithm = SEC_OID_SHA512;
         } else {
-            // signing with MD5 is no longer allowed
-            algorithm = SEC_OID_UNKNOWN;
+            return errSecParam;
         }
     }
     
@@ -513,6 +514,22 @@ static OSStatus SecCMSVerifySignedData_internal(CFDataRef message, CFDataRef det
             }
         }
 
+        CFDictionaryRef hash_agility_values = NULL;
+        if (errSecSuccess == SecCmsSignerInfoGetAppleCodesigningHashAgilityV2(sigd->signerInfos[0], &hash_agility_values)) {
+            if (hash_agility_values) {
+                CFDictionarySetValue(attrs, kSecCMSHashAgilityV2, hash_agility_values);
+            }
+        }
+
+        CFAbsoluteTime expiration_time;
+        if (errSecSuccess == SecCmsSignerInfoGetAppleExpirationTime(sigd->signerInfos[0], &expiration_time)) {
+            CFDateRef expiration_date = CFDateCreate(NULL, expiration_time);
+            if (expiration_date) {
+                CFDictionarySetValue(attrs, kSecCMSExpirationDate, expiration_date);
+                CFReleaseSafe(expiration_date);
+            }
+        }
+
         *signed_attributes = attrs;
         CFReleaseSafe(certs);
     }
@@ -558,6 +575,10 @@ CFArrayRef SecCMSCertificatesOnlyMessageCopyCertificates(CFDataRef message) {
     SecCmsSignedDataRef sigd = NULL;
     CFMutableArrayRef certs = NULL;
 
+    if (!message) {
+        return NULL;
+    }
+
     SecAsn1Item encoded_message = { CFDataGetLength(message), (uint8_t*)CFDataGetBytePtr(message) };
     require_noerr_quiet(SecCmsMessageDecode(&encoded_message, NULL, NULL, NULL, NULL, NULL, NULL, &cmsg), out);
     /* expected to be a signed data message at the top level */
@@ -582,8 +603,10 @@ CFArrayRef SecCMSCertificatesOnlyMessageCopyCertificates(CFDataRef message) {
     }
 
 out:
-    if (cmsg)
-        SecCmsMessageDestroy(cmsg);
+    if (cmsg) { SecCmsMessageDestroy(cmsg); }
+    if (certs && CFArrayGetCount(certs) < 1) {
+        CFReleaseNull(certs);
+    }
 
     return certs;
 }

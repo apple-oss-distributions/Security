@@ -9,9 +9,13 @@
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
 
+
+bool KCJoiningOctagonPiggybackingEnabled(void);
+bool KCSetJoiningOctagonPiggybackingEnabled(bool value);
+
 NS_ASSUME_NONNULL_BEGIN
 
-@protocol KCJoiningRequestCircleDelegate
+@protocol KCJoiningRequestCircleDelegate <NSObject>
 /*!
  Get this devices peer info (As Application)
 
@@ -34,7 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
     
 @end
 
-@protocol KCJoiningRequestSecretDelegate
+@protocol KCJoiningRequestSecretDelegate <NSObject>
 /*!
  Get the shared secret for this session.
  Not called during creation or initialMessage: to allow the initial message to be sent before
@@ -88,7 +92,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-
+@class OTControl;
 @interface KCJoiningRequestCircleSession : NSObject
 
 - (bool) isDone;
@@ -102,13 +106,19 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype) initWithCircleDelegate: (NSObject<KCJoiningRequestCircleDelegate>*) circleDelegate
                                 session: (KCAESGCMDuplexSession*) session
-                                  error: (NSError**) error NS_DESIGNATED_INITIALIZER;
+                                  error: (NSError**) error;
+
+
+- (instancetype)initWithCircleDelegate:(NSObject<KCJoiningRequestCircleDelegate>*) circleDelegate
+                               session:(KCAESGCMDuplexSession*) session
+                             otcontrol:(OTControl*)otcontrol
+                                 error:(NSError**) error NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 @end
 
 
-@protocol KCJoiningAcceptCircleDelegate
+@protocol KCJoiningAcceptCircleDelegate <NSObject>
 /*!
  Handle the request's peer info and get the blob they can use to get in circle
  @param peer
@@ -137,7 +147,7 @@ typedef enum {
     kKCRetryWithNewChallenge
 } KCRetryOrNot;
 
-@protocol KCJoiningAcceptSecretDelegate
+@protocol KCJoiningAcceptSecretDelegate <NSObject>
 /*!
     Get the shared secret for this session
     @result

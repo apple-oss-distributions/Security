@@ -22,14 +22,14 @@
  */
 
 
-#include <Security/SecureObjectSync/SOSManifest.h>
-#include <Security/SecureObjectSync/SOSMessage.h>
+#include "keychain/SecureObjectSync/SOSManifest.h"
+#include "keychain/SecureObjectSync/SOSMessage.h"
 
 #include "secd_regressions.h"
 
 #include <utilities/SecCFWrappers.h>
 #include <utilities/der_plist.h>
-#include <Security/SecureObjectSync/SOSDigestVector.h>
+#include "keychain/SecureObjectSync/SOSDigestVector.h"
 #include <securityd/SecDbItem.h>
 
 static void testNullMessage(uint64_t msgid)
@@ -124,6 +124,8 @@ __unused static void testDeltaManifestMessage(const char *test_directive, const 
 
     CFReleaseNull(error);
     ok(sentMessage = SOSMessageCreateWithManifests(kCFAllocatorDefault, proposed, base, proposed, true, &error), "sentMessage create: %@", error);
+    CFReleaseNull(base);
+    CFReleaseNull(proposed);
     CFReleaseNull(error);
     ok(data = SOSMessageCreateData(sentMessage, msgid, &error), "sentMessage data create: %@ .. %@", error, sentMessage);
     CFReleaseNull(error);
@@ -182,6 +184,8 @@ __unused static void testObjectsMessage(const char *test_directive, const char *
         proposed = SOSManifestCreateWithBytes((const uint8_t *)dv2.digest, dv2.count * SOSDigestSize, &error);
     CFReleaseNull(error);
     ok(sentMessage = SOSMessageCreateWithManifests(kCFAllocatorDefault, proposed, base, proposed, true, &error), "sentMessage create: %@", error);
+    CFReleaseNull(base);
+    CFReleaseNull(proposed);
     CFDataRef O0, O1, O2, O3;
     CFDataRef o0 = CFDataCreate(kCFAllocatorDefault, NULL, 0);
     O0 = testCopyAddedObject(sentMessage, o0);

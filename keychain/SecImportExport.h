@@ -149,7 +149,7 @@ typedef CF_OPTIONS(uint32_t, SecKeyImportExportFlags)
 /*
  * Parameters specific to SecKeyRefs.
  */
-typedef struct
+typedef struct API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac)
 {
      /* for import and export */
      uint32_t                    version;        /* SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION */
@@ -166,10 +166,10 @@ typedef struct
      CSSM_KEYUSE                    keyUsage;    /* CSSM_KEYUSE_DECRYPT, CSSM_KEYUSE_SIGN,
                                                   *    etc. */
      CSSM_KEYATTR_FLAGS          keyAttributes;  /* CSSM_KEYATTR_PERMANENT, etc. */
-} SecKeyImportExportParameters;
+} SecKeyImportExportParameters API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac);
 
 
-typedef struct
+typedef struct API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac)
 {
      /* for import and export */
      uint32_t                    version;        /* SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION */
@@ -194,7 +194,7 @@ typedef struct
                                                   *    - kSecAttrIsSensitive for private keys
                                                   *    - kSecAttrIsExtractable by default
                                                   */
-} SecItemImportExportKeyParameters;
+} SecItemImportExportKeyParameters API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac);
 
 /*
  * SecKeychainItemExport()
@@ -251,10 +251,10 @@ typedef struct
 OSStatus SecKeychainItemExport(
      CFTypeRef                              keychainItemOrArray,
      SecExternalFormat                      outputFormat,
-     SecItemImportExportFlags               flags,                  /* kSecItemPemArmor, etc. */
+     SecItemImportExportFlags               flags,                  /* kSecItemPemArmour, etc. */
      const SecKeyImportExportParameters * __nullable keyParams,     /* optional */
      CFDataRef * __nonnull CF_RETURNS_RETAINED exportedData)        /* external representation returned here */
-          DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
+          API_DEPRECATED_WITH_REPLACEMENT("SecItemExport", macos(10.0, 10.7)) API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac);
 
 /*
  * SecItemExport()
@@ -311,10 +311,10 @@ OSStatus SecKeychainItemExport(
 OSStatus SecItemExport(
      CFTypeRef                              secItemOrArray,
      SecExternalFormat                      outputFormat,
-     SecItemImportExportFlags               flags,                   /* kSecItemPemArmor, etc. */
+     SecItemImportExportFlags               flags,                   /* kSecItemPemArmour, etc. */
      const SecItemImportExportKeyParameters * __nullable keyParams,  /* optional */
      CFDataRef * __nonnull CF_RETURNS_RETAINED exportedData)         /* external representation returned here */
-          __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_NA);
+          API_AVAILABLE(macos(10.7), ios(NA), bridgeos(NA));
 /*
  * SecKeychainItemImport()
  *
@@ -351,7 +351,7 @@ OSStatus SecItemExport(
  * be unwise for an application to count on that ability.
  *
  * PEM formatting is determined internally via inspection of the incoming
- * data, so the kSecItemPemArmuor in the flags field is ignored.
+ * data, so the kSecItemPemArmour in the flags field is ignored.
  *
  * Zero, one, or both of the following occurs upon successful completion
  * of this function:
@@ -472,7 +472,7 @@ OSStatus SecKeychainItemImport(
      const SecKeyImportExportParameters * __nullable keyParams,         /* optional */
      SecKeychainRef __nullable               importKeychain,            /* optional */
      CFArrayRef * __nullable CF_RETURNS_RETAINED outItems)              /* optional */
-          DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
+          API_DEPRECATED_WITH_REPLACEMENT("SecItemImport", macos(10.0, 10.7)) API_UNAVAILABLE(ios, watchos, tvos, bridgeos, iosmac);
 
 /*
  * SecItemImport()
@@ -510,7 +510,7 @@ OSStatus SecKeychainItemImport(
  * be unwise for an application to count on that ability.
  *
  * PEM formatting is determined internally via inspection of the incoming
- * data, so the kSecItemPemArmuor in the flags field is ignored.
+ * data, so the kSecItemPemArmour in the flags field is ignored.
  *
  * Zero, one, or both of the following occurs upon successful completion
  * of this function:
@@ -640,7 +640,7 @@ OSStatus SecItemImport(
      const SecItemImportExportKeyParameters * __nullable keyParams, /* optional */
      SecKeychainRef __nullable               importKeychain,        /* optional */
      CFArrayRef * __nullable CF_RETURNS_RETAINED outItems)          /* optional */
-          __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_NA);
+          API_AVAILABLE(macos(10.7), ios(NA), bridgeos(NA));
 #endif /* SEC_OS_OSX */
 
 /*!
@@ -651,11 +651,11 @@ OSStatus SecItemImport(
      @constant kSecImportExportAccess On OSX, specifies an access represented by a SecAccessRef for the initial access (ACL) of a key imported from PKCS#12 format.
 */
 extern const CFStringRef kSecImportExportPassphrase
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 extern const CFStringRef kSecImportExportKeychain
-    __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_NA);
+    API_AVAILABLE(macos(10.7), ios(NA), bridgeos(NA));
 extern const CFStringRef kSecImportExportAccess
-    __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_NA);
+    API_AVAILABLE(macos(10.7), ios(NA), bridgeos(NA));
 
 /*!
     @enum Import/Export item description
@@ -674,15 +674,15 @@ extern const CFStringRef kSecImportExportAccess
         certificates for this item's identity
 */
 extern const CFStringRef kSecImportItemLabel
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 extern const CFStringRef kSecImportItemKeyID
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 extern const CFStringRef kSecImportItemTrust
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 extern const CFStringRef kSecImportItemCertChain
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 extern const CFStringRef kSecImportItemIdentity
-    __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
+    API_AVAILABLE(macos(10.6), ios(2.0));
 
 /*!
      @function SecPKCS12Import
@@ -700,8 +700,7 @@ extern const CFStringRef kSecImportItemIdentity
        incorrect password was supplied, or data in the container is damaged.
 */
 OSStatus SecPKCS12Import(CFDataRef pkcs12_data, CFDictionaryRef options, CFArrayRef * __nonnull CF_RETURNS_RETAINED items)
-     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_2_0);
-
+     API_AVAILABLE(macos(10.6), ios(2.0));
 
 CF_IMPLICIT_BRIDGING_DISABLED
 CF_ASSUME_NONNULL_END

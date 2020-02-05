@@ -21,7 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <SecBase.h>
+#include <Security/SecBase.h>
 #include <Security/SecAccess.h>
 #include <Security/SecAccessPriv.h>
 #include <Security/SecTrustedApplication.h>
@@ -321,10 +321,7 @@ SecAccessRef SecAccessCreateWithOwnerAndACL(uid_t userId, gid_t groupId, SecAcce
 	CFRelease(debugStr);
 #endif
 
-    CFIndex rightsSize = numAcls > 0 ? numAcls : 1;
-
-	CSSM_ACL_AUTHORIZATION_TAG rights[rightsSize];
-	memset(rights, 0, sizeof(rights));
+	std::vector<CSSM_ACL_AUTHORIZATION_TAG> rights(numAcls);
 
 	for (CFIndex iCnt = 0; iCnt < numAcls; iCnt++)
 	{
@@ -384,7 +381,7 @@ SecAccessRef SecAccessCreateWithOwnerAndACL(uid_t userId, gid_t groupId, SecAcce
 				{ CSSM_LIST_TYPE_UNKNOWN, &subject1, &subject2 },
 				false,	// Delegate
 				// rights for this entry
-				{ (uint32)numAcls, rights },
+				{ (uint32)numAcls, rights.data() },
 				// rest is defaulted
 			}
 		}

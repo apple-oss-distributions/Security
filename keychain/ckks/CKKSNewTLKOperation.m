@@ -28,15 +28,21 @@
 #import "CKKSGroupOperation.h"
 #import "CKKSNearFutureScheduler.h"
 #import "keychain/ckks/CloudKitCategories.h"
+#import "keychain/categories/NSError+UsefulConstructors.h"
 
 #if OCTAGON
+
+#import "keychain/ckks/CKKSTLKShareRecord.h"
 
 @interface CKKSNewTLKOperation ()
 @property NSBlockOperation* cloudkitModifyOperationFinished;
 @property CKOperationGroup* ckoperationGroup;
+
+@property (nullable) CKKSCurrentKeySet* keyset;
 @end
 
 @implementation CKKSNewTLKOperation
+@synthesize keyset;
 
 - (instancetype)init {
     return nil;
@@ -64,8 +70,6 @@
      * items as if a different peer uploaded them).
      */
 
-    __weak __typeof(self) weakSelf = self;
-
     CKKSKeychainView* ckks = self.ckks;
 
     if(self.cancelled) {
@@ -79,7 +83,7 @@
     }
 
     // Synchronous, on some thread. Get back on the CKKS queue for SQL thread-safety.
-    [ckks dispatchSync: ^bool{
+    [ckks dispatchSyncWithAccountKeys: ^bool{
         if(self.cancelled) {
             ckksnotice("ckkstlk", ckks, "CKKSNewTLKOperation cancelled, quitting");
             return false;
@@ -98,9 +102,6 @@
         CKKSKey* newClassAKey = nil;
         CKKSKey* newClassCKey = nil;
         CKKSKey* wrappedOldTLK = nil;
-
-        NSMutableArray<CKRecord *>* recordsToSave = [[NSMutableArray alloc] init];
-        NSMutableArray<CKRecordID *>* recordIDsToDelete = [[NSMutableArray alloc] init];
 
         // Now, prepare data for the operation:
 
@@ -128,7 +129,14 @@
         //    /     |     \
         // oldTLK classA classC
 
-        newTLK = [[CKKSKey alloc] initSelfWrappedWithAESKey:[CKKSAESSIVKey randomKey]
+        CKKSAESSIVKey* newAESKey = [CKKSAESSIVKey randomKey:&error];
+        if(error) {
+            ckkserror("ckkstlk", ckks, "Couldn't create new TLK: %@", error);
+            self.error = error;
+            [ckks _onqueueAdvanceKeyStateMachineToState:SecCKKSZoneKeyStateError withError:error];
+            return false;
+        }
+        newTLK = [[CKKSKey alloc] initSelfWrappedWithAESKey:newAESKey
                                                        uuid:[[NSUUID UUID] UUIDString]
                                                    keyclass:SecCKKSKeyClassTLK
                                                       state:SecCKKSProcessedStateLocal
@@ -178,20 +186,24 @@
             wrappedOldTLK.currentkey = false;
         }
 
-        [recordsToSave addObject: [newTLK       CKRecordWithZoneID: ckks.zoneID]];
-        [recordsToSave addObject: [newClassAKey CKRecordWithZoneID: ckks.zoneID]];
-        [recordsToSave addObject: [newClassCKey CKRecordWithZoneID: ckks.zoneID]];
+        CKKSCurrentKeySet* keyset = [[CKKSCurrentKeySet alloc] init];
 
-        [recordsToSave addObject: [currentTLKPointer    CKRecordWithZoneID: ckks.zoneID]];
-        [recordsToSave addObject: [currentClassAPointer CKRecordWithZoneID: ckks.zoneID]];
-        [recordsToSave addObject: [currentClassCPointer CKRecordWithZoneID: ckks.zoneID]];
+        keyset.tlk = newTLK;
+        keyset.classA = newClassAKey;
+        keyset.classC = newClassCKey;
+
+        keyset.currentTLKPointer = currentTLKPointer;
+        keyset.currentClassAPointer = currentClassAPointer;
+        keyset.currentClassCPointer = currentClassCPointer;
+
+        keyset.proposed = YES;
 
         if(wrappedOldTLK) {
-            [recordsToSave addObject: [wrappedOldTLK CKRecordWithZoneID: ckks.zoneID]];
+            // TODO o no
         }
 
         // Save the proposed keys to the keychain. Note that we might reject this TLK later, but in that case, this TLK is just orphaned. No worries!
-        ckksinfo("ckkstlk", ckks, "Saving new keys %@ to database %@", recordsToSave, ckks.database);
+        ckksnotice("ckkstlk", ckks, "Saving new keys %@ to keychain", keyset);
 
         [newTLK       saveKeyMaterialToKeychain: &error];
         [newClassAKey saveKeyMaterialToKeychain: &error];
@@ -203,131 +215,44 @@
             return false;
         }
 
-        // Use the spare operation trick to wait for the CKModifyRecordsOperation to complete
-        self.cloudkitModifyOperationFinished = [NSBlockOperation named:@"newtlk-cloudkit-modify-operation-finished" withBlock:^{}];
-        [self dependOnBeforeGroupFinished: self.cloudkitModifyOperationFinished];
+        // Generate the TLK sharing records for all trusted peers
+        NSMutableSet<CKKSTLKShareRecord*>* tlkShares = [NSMutableSet set];
+        for(CKKSPeerProviderState* trustState in ckks.currentTrustStates) {
+            if(trustState.currentSelfPeers.currentSelf == nil || trustState.currentSelfPeersError) {
+                if(trustState.essential) {
+                    ckksnotice("ckkstlk", ckks, "Fatal error: unable to generate TLK shares for (%@): %@", newTLK, trustState.currentSelfPeersError);
+                    self.error = trustState.currentSelfPeersError;
+                    [ckks _onqueueAdvanceKeyStateMachineToState:SecCKKSZoneKeyStateError withError:trustState.currentSelfPeersError];
+                    return false;
+                }
+                ckksnotice("ckkstlk", ckks, "Unable to generate TLK shares for (%@): %@", newTLK, trustState);
+                continue;
+            }
 
-        CKModifyRecordsOperation* modifyRecordsOp = nil;
+            for(id<CKKSPeer> trustedPeer in trustState.currentTrustedPeers) {
+                if(!trustedPeer.publicEncryptionKey) {
+                    ckksnotice("ckkstlk", ckks, "No need to make TLK for %@; they don't have any encryption keys", trustedPeer);
+                    continue;
+                }
 
-        // Get the CloudKit operation ready...
-        modifyRecordsOp = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:recordsToSave recordIDsToDelete:recordIDsToDelete];
-        modifyRecordsOp.atomic = YES;
-        modifyRecordsOp.longLived = NO; // The keys are only in memory; mark this explicitly not long-lived
-        modifyRecordsOp.timeoutIntervalForRequest = 2;
-        modifyRecordsOp.qualityOfService = NSQualityOfServiceUtility;  // relatively important. Use Utility.
-        modifyRecordsOp.group = self.ckoperationGroup;
-        ckksnotice("ckkstlk", ckks, "Operation group is %@", self.ckoperationGroup);
+                ckksnotice("ckkstlk", ckks, "Generating TLK(%@) share for %@", newTLK, trustedPeer);
+                CKKSTLKShareRecord* share = [CKKSTLKShareRecord share:newTLK as:trustState.currentSelfPeers.currentSelf to:trustedPeer epoch:-1 poisoned:0 error:&error];
 
-        NSMutableDictionary<CKRecordID*, CKRecord*>* attemptedRecords = [[NSMutableDictionary alloc] init];
-        for(CKRecord* record in recordsToSave) {
-            attemptedRecords[record] = record;
+                [tlkShares addObject:share];
+            }
         }
 
-        modifyRecordsOp.perRecordCompletionBlock = ^(CKRecord *record, NSError * _Nullable error) {
-            __strong __typeof(weakSelf) strongSelf = weakSelf;
-            __strong __typeof(strongSelf.ckks) blockCKKS = strongSelf.ckks;
+        keyset.pendingTLKShares = [tlkShares allObjects];
 
-            // These should all fail or succeed as one. Do the hard work in the records completion block.
-            if(!error) {
-                ckksnotice("ckkstlk", blockCKKS, "Successfully completed upload for %@", record.recordID.recordName);
-            } else {
-                ckkserror("ckkstlk", blockCKKS, "error on row: %@ %@", error, record);
-            }
-        };
+        self.keyset = keyset;
 
+        [ckks _onqueueAdvanceKeyStateMachineToState:SecCKKSZoneKeyStateWaitForTLKUpload withError:nil];
 
-        modifyRecordsOp.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *savedRecords, NSArray<CKRecordID *> *deletedRecordIDs, NSError *ckerror) {
-            __strong __typeof(weakSelf) strongSelf = weakSelf;
-            __strong __typeof(strongSelf.ckks) strongCKKS = strongSelf.ckks;
-            if(!strongSelf || !strongCKKS) {
-                ckkserror("ckkstlk", strongCKKS, "received callback for released object");
-                return;
-            }
-
-            [strongCKKS dispatchSync: ^bool{
-                if(ckerror == nil) {
-                    ckksnotice("ckkstlk", strongCKKS, "Completed TLK CloudKit operation");
-
-                    // Success. Persist the keys to the CKKS database.
-                    NSError* localerror = nil;
-
-                    // Save the new CKRecords to the before persisting to database
-                    for(CKRecord* record in savedRecords) {
-                        if([newTLK matchesCKRecord: record]) {
-                            newTLK.storedCKRecord = record;
-                        } else if([newClassAKey matchesCKRecord: record]) {
-                            newClassAKey.storedCKRecord = record;
-                        } else if([newClassCKey matchesCKRecord: record]) {
-                            newClassCKey.storedCKRecord = record;
-                        } else if([wrappedOldTLK matchesCKRecord: record]) {
-                            wrappedOldTLK.storedCKRecord = record;
-
-                        } else if([currentTLKPointer matchesCKRecord: record]) {
-                            currentTLKPointer.storedCKRecord = record;
-                        } else if([currentClassAPointer matchesCKRecord: record]) {
-                            currentClassAPointer.storedCKRecord = record;
-                        } else if([currentClassCPointer matchesCKRecord: record]) {
-                            currentClassCPointer.storedCKRecord = record;
-                        }
-                    }
-
-                    [newTLK       saveToDatabaseAsOnlyCurrentKeyForClassAndState: &localerror];
-                    [newClassAKey saveToDatabaseAsOnlyCurrentKeyForClassAndState: &localerror];
-                    [newClassCKey saveToDatabaseAsOnlyCurrentKeyForClassAndState: &localerror];
-
-                    [currentTLKPointer    saveToDatabase: &localerror];
-                    [currentClassAPointer saveToDatabase: &localerror];
-                    [currentClassCPointer saveToDatabase: &localerror];
-
-                    [wrappedOldTLK saveToDatabase: &localerror];
-
-                    // TLKs are already saved in the local keychain; fire off a backup
-                    CKKSNearFutureScheduler* tlkNotifier = strongCKKS.savedTLKNotifier;
-                    ckksnotice("ckkstlk", strongCKKS, "triggering new TLK notification: %@", tlkNotifier);
-                    [tlkNotifier trigger];
-
-                    if(localerror != nil) {
-                        ckkserror("ckkstlk", strongCKKS, "couldn't save new key hierarchy to database; this is very bad: %@", localerror);
-                        [strongCKKS _onqueueAdvanceKeyStateMachineToState: SecCKKSZoneKeyStateError withError: localerror];
-                        return false;
-                    } else {
-                        // Everything is groovy.
-                        [strongCKKS _onqueueAdvanceKeyStateMachineToState: SecCKKSZoneKeyStateReady withError: nil];
-                    }
-                } else {
-                    ckkserror("ckkstlk", strongCKKS, "couldn't save new key hierarchy to CloudKit: %@", ckerror);
-                    [strongCKKS _onqueueAdvanceKeyStateMachineToState: SecCKKSZoneKeyStateNewTLKsFailed withError: nil];
-
-                    [strongCKKS _onqueueCKWriteFailed:ckerror attemptedRecordsChanged:attemptedRecords];
-
-                    // Delete these keys from the keychain only if CloudKit positively told us the write failed.
-                    // Other failures _might_ leave the writes written to cloudkit; who can say?
-                    if([ckerror ckksIsCKErrorRecordChangedError]) {
-                        NSError* localerror = nil;
-                        [newTLK deleteKeyMaterialFromKeychain: &localerror];
-                        [newClassAKey deleteKeyMaterialFromKeychain: &localerror];
-                        [newClassCKey deleteKeyMaterialFromKeychain: &localerror];
-                        if(localerror) {
-                            ckkserror("ckkstlk", strongCKKS, "couldn't delete now-useless key material from keychain: %@", localerror);
-                        }
-                    } else {
-                        ckksnotice("ckkstlk", strongCKKS, "Error is too scary; not deleting likely-useless key material from keychain");
-                    }
-                }
-                return true;
-            }];
-
-            // Notify that we're done
-            [strongSelf.operationQueue addOperation: strongSelf.cloudkitModifyOperationFinished];
-        };
-
-        [ckks.database addOperation: modifyRecordsOp];
         return true;
     }];
 }
 
 - (void)cancel {
-    [self.cloudkitModifyOperationFinished cancel];
     [super cancel];
 }
 

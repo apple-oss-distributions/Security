@@ -52,6 +52,7 @@
 #include <Security/secasn1t.h>
 #include <security_asn1/plarenas.h>
 #include <Security/keyTemplates.h>
+#include <utilities/SecCFWrappers.h>
 #include <CommonCrypto/CommonCryptor.h>
 #include <CommonCrypto/CommonRandomSPI.h>
 #include <CommonCrypto/CommonRandom.h>
@@ -70,13 +71,7 @@ SecCmsUtilEncryptSymKeyRSA(PLArenaPool *poolp, SecCertificateRef cert,
                               CSSM_DATA_PTR encKey)
 {
     OSStatus rv;
-    SecPublicKeyRef publickey;
-
-#if TARGET_OS_MAC && !TARGET_OS_IPHONE
-    rv = SecCertificateCopyPublicKey(cert,&publickey);
-#else
-    publickey = SecCertificateCopyPublicKey(cert);
-#endif
+    SecPublicKeyRef publickey = SecCertificateCopyKey(cert);
     if (publickey == NULL)
 	return SECFailure;
 
@@ -94,29 +89,23 @@ SecCmsUtilEncryptSymKeyRSAPubKey(PLArenaPool *poolp,
     unsigned int data_len;
     //KeyType keyType;
     void *mark = NULL;
+    CFDictionaryRef theirKeyAttrs = NULL;
 
     mark = PORT_ArenaMark(poolp);
     if (!mark)
 	goto loser;
-
-#if 0
-    /* sanity check */
-    keyType = SECKEY_GetPublicKeyType(publickey);
-    PORT_Assert(keyType == rsaKey);
-    if (keyType != rsaKey) {
-	goto loser;
-    }
-#endif
     /* allocate memory for the encrypted key */
-#if TARGET_OS_MAC && !TARGET_OS_IPHONE
-    rv = SecKeyGetStrengthInBits(publickey, NULL, &data_len);
-    if (rv)
+    theirKeyAttrs = SecKeyCopyAttributes(publickey);
+    if (!theirKeyAttrs) {
         goto loser;
+    }
+
+    CFNumberRef keySizeNum = CFDictionaryGetValue(theirKeyAttrs, kSecAttrKeySizeInBits);
+    if (!CFNumberGetValue(keySizeNum, kCFNumberIntType, &data_len)) {
+        goto loser;
+    }
     // Convert length to bytes;
-    data_len = data_len / 8;
-#else
-    data_len = SecKeyGetSize(publickey, kSecKeyEncryptedDataSize);
-#endif
+    data_len /= 8;
 
     encKey->Data = (unsigned char*)PORT_ArenaAlloc(poolp, data_len);
     encKey->Length = data_len;
@@ -129,9 +118,13 @@ SecCmsUtilEncryptSymKeyRSAPubKey(PLArenaPool *poolp,
 	goto loser;
 
     PORT_ArenaUnmark(poolp, mark);
+    CFReleaseNull(theirKeyAttrs);
     return SECSuccess;
 
 loser:
+    if (theirKeyAttrs) {
+        CFRelease(theirKeyAttrs);
+    }
     if (mark) {
 	PORT_ArenaRelease(poolp, mark);
     }
@@ -780,11 +773,7 @@ SecCmsUtilEncryptSymKeyECDH(
     encKey->Length = 0;
 
     /* Copy the recipient's static public ECDH key */
-#if TARGET_OS_IPHONE
-    theirPubKey = SecCertificateCopyPublicKey(cert);
-#else
-    rv = SecCertificateCopyPublicKey(cert, &theirPubKey);
-#endif
+    theirPubKey = SecCertificateCopyKey(cert);
     if (rv || !theirPubKey) {
         dprintf("SecCmsUtilEncryptSymKeyECDH: failed to get public key from cert, %d\n", (int)rv);
         goto out;
@@ -808,7 +797,7 @@ SecCmsUtilEncryptSymKeyECDH(
     }
 
     /* Generate ephemeral ECDH key */
-    const void *keys[] = { kSecAttrKeyType, kSecAttrKeySizeInBits, kSecAttrNoLegacy};
+    const void *keys[] = { kSecAttrKeyType, kSecAttrKeySizeInBits, kSecUseDataProtectionKeychain};
     const void *values[] = { keyType, keySizeNum, kCFBooleanTrue };
     ourKeyParams = CFDictionaryCreate(NULL, keys, values, 3,
                                       &kCFTypeDictionaryKeyCallBacks,
@@ -966,7 +955,7 @@ out:
     if (ourPubKey) { CFRelease(ourPubKey); }
     if (ourPrivKey) { CFRelease(ourPrivKey); }
     if (sharedInfoData) { CFRelease(sharedInfoData); }
-    if (kekLen) { CFRelease(kekLen); }
+    if (kekLen != NULL) { CFRelease(kekLen); }
     if (kekParams) { CFRelease(kekParams); }
     if (kekData) { CFRelease(kekData); }
     if (error) { CFRelease(error); }
@@ -1084,7 +1073,7 @@ SecCmsUtilDecryptSymKeyECDH(
     theirKeySizeInBits = pubKey->Length;
     pubKey->Length = (theirKeySizeInBits + 7) >> 3;
     theirPubData = CFDataCreate(NULL, pubKey->Data, pubKey->Length);
-    theirKeyLen = CFNumberCreate(NULL, kCFNumberSInt32Type, &theirKeySizeInBits);
+    theirKeyLen = CFNumberCreate(NULL, kCFNumberSInt64Type, &theirKeySizeInBits);
     const void *keys[] = { kSecAttrKeyType, kSecAttrKeyClass, kSecAttrKeySizeInBits };
     const void *values[] = { kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyClassPublic, theirKeyLen};
     theirKeyAttrs = CFDictionaryCreate(NULL, keys, values, 3,
@@ -1158,11 +1147,11 @@ out:
         PORT_FreeArena(pool, PR_FALSE);
     }
     if (theirPubData) { CFRelease(theirPubData); }
-    if (theirKeyLen) { CFRelease(theirKeyLen); }
+    if (theirKeyLen != NULL) { CFRelease(theirKeyLen); }
     if (theirPubKey) { CFRelease(theirPubKey); }
     if (theirKeyAttrs) { CFRelease(theirKeyAttrs); }
     if (sharedInfoData) { CFRelease(sharedInfoData); }
-    if (kekLen) { CFRelease(kekLen); }
+    if (kekLen != NULL) { CFRelease(kekLen); }
     if (kekParams) { CFRelease(kekParams); }
     if (kekData) { CFRelease(kekData); }
     if (error) { CFRelease(error); }

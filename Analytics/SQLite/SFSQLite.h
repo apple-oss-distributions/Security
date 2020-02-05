@@ -23,6 +23,11 @@
 
 // Header exposed for unit testing only
 
+#ifndef SECURITY_SFSQL_H
+#define SECURITY_SFSQL_H 1
+
+#if __OBJC2__
+
 #import <Foundation/Foundation.h>
 #import <sqlite3.h>
 
@@ -39,7 +44,7 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
     SFSQLiteSynchronousModeFull = 2
 };
 
-@protocol SFSQLiteDelegate
+@protocol SFSQLiteDelegate <NSObject>
 @property (nonatomic, readonly) SInt32 userVersion;
 
 - (BOOL)migrateDatabase:(SFSQLite *)db fromVersion:(SInt32)version;
@@ -47,6 +52,7 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
 
 // Wrapper around the SQLite API. Typically subclassed to add table accessor methods.
 @interface SFSQLite : NSObject {
+@private
     id<SFSQLiteDelegate> _delegate;
     NSString* _path;
     NSString* _schema;
@@ -62,7 +68,6 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
     NSMutableDictionary* _unitTestOverrides;
 #endif
     BOOL _hasMigrated;
-    BOOL _shouldVacuum;
     BOOL _corrupt;
     BOOL _traced;
 }
@@ -77,7 +82,6 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
 @property (nonatomic, assign)           SFSQLiteSynchronousMode synchronousMode;
 @property (nonatomic, readonly)         BOOL       isOpen;
 @property (nonatomic, readonly)         BOOL       hasMigrated;
-@property (nonatomic, assign)           BOOL       shouldVacuum; // vacuum the db on open (default:YES)
 @property (nonatomic, assign)           BOOL       traced;
 
 @property (nonatomic, strong) id<SFSQLiteDelegate> delegate;
@@ -103,9 +107,6 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
 - (void)analyze;
 - (void)vacuum;
 
-// Raise an exception. Including any database error in the description and removing the databse if it's corrupt.
-- (void)raise:(NSString *)format, ... NS_FORMAT_FUNCTION(1, 2);
-
 // The rowID assigned to the last record inserted into the database.
 - (SFSQLiteRowID)lastInsertRowID;
 
@@ -113,8 +114,8 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
 - (int)changes;
 
 // Execute one-or-more queries. Use prepared statements for anything performance critical.
-- (void)executeSQL:(NSString *)format, ... NS_FORMAT_FUNCTION(1, 2);
-- (void)executeSQL:(NSString *)format arguments:(va_list)args NS_FORMAT_FUNCTION(1, 0);
+- (BOOL)executeSQL:(NSString *)format, ... NS_FORMAT_FUNCTION(1, 2);
+- (BOOL)executeSQL:(NSString *)format arguments:(va_list)args NS_FORMAT_FUNCTION(1, 0);
 
 // Prepared statement pool accessors. Statements must be reset after they're used.
 - (SFSQLiteStatement *)statementForSQL:(NSString *)SQL;
@@ -150,3 +151,6 @@ typedef NS_ENUM(NSInteger, SFSQLiteSynchronousMode) {
 - (SInt32)dbUserVersion;
 
 @end
+
+#endif /* __OBJC2__ */
+#endif /* SECURITY_SFSQL_H */

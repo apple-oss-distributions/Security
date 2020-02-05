@@ -46,6 +46,9 @@
 #include <xpc/private.h>
 #include "securityd_service/securityd_service/securityd_service_client.h"
 
+// Includes for <rdar://problem/34677969> Always require the user's password on keychain approval dialogs
+#include "server.h"
+
 #define SECURITYAGENT_BOOTSTRAP_NAME_BASE               "com.apple.security.agent"
 #define SECURITYAGENT_LOGINWINDOW_BOOTSTRAP_NAME_BASE   "com.apple.security.agent.login"
 
@@ -147,7 +150,8 @@ SecurityAgentXPCConnection::activate(bool ignoreUid)
 			xpc_connection_set_target_uid(mXPCConnection, targetUid);
 			secnotice("SecurityAgentXPCConnection", "Creating a standard security agent");
 		} else {
-			mXPCConnection = xpc_connection_create_mach_service(SECURITYAGENT_LOGINWINDOW_BOOTSTRAP_NAME_BASE, NULL, 0);
+			mXPCConnection = xpc_connection_create_mach_service(SECURITYAGENT_LOGINWINDOW_BOOTSTRAP_NAME_BASE, NULL,
+                                                                XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
 			xpc_connection_set_instance(mXPCConnection, sessionUUID);
 			secnotice("SecurityAgentXPCConnection", "Creating a loginwindow security agent");
 		}
@@ -318,6 +322,10 @@ static void xpcArrayToAuthItemSet(AuthItemSet *setToBuild, xpc_object_t input) {
         bool sensitive = xpc_dictionary_get_value(item, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
         if (sensitive) {
             size_t sensitiveLength = (size_t)xpc_dictionary_get_uint64(item, AUTH_XPC_ITEM_SENSITIVE_VALUE_LENGTH);
+            if (sensitiveLength > length) {
+                secnotice("SecurityAgentXPCQuery", "Sensitive data len %zu is not valid", sensitiveLength);
+                return true;
+            }
             dataCopy = malloc(sensitiveLength);
             memcpy(dataCopy, data, sensitiveLength);
             memset_s((void *)data, length, 0, sensitiveLength); // clear the sensitive data, memset_s is never optimized away
@@ -486,12 +494,14 @@ QueryKeychainUse::QueryKeychainUse(bool needPass, const Database *db)
 {
 	// if passphrase checking requested, save KeychainDatabase reference
 	// (will quietly disable check if db isn't a keychain)
-	if (needPass)
-		mPassphraseCheck = dynamic_cast<const KeychainDatabase *>(db);
+
+    // Always require password due to <rdar://problem/34677969>
+    mPassphraseCheck = dynamic_cast<const KeychainDatabase *>(db);
 
     setTerminateOnSleep(true);
 }
 
+// Callers to this function must hold the common lock
 Reason QueryKeychainUse::queryUser (const char *database, const char *description, AclAuthorization action)
 {
     Reason reason = SecurityAgent::noReason;
@@ -506,7 +516,7 @@ Reason QueryKeychainUse::queryUser (const char *database, const char *descriptio
 
 	// item name into hints
 
-	hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_ITEM_NAME, AuthValueOverlay(description ? (uint32_t)strlen(description) : 0, const_cast<char*>(description))));
+    hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_ITEM_NAME, AuthValueOverlay(description ? (uint32_t)strlen(description) : 0, const_cast<char*>(description))));
 
 	// keychain name into hints
 	hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_PATH, AuthValueOverlay(database ? (uint32_t)strlen(database) : 0, const_cast<char*>(database))));
@@ -532,7 +542,12 @@ Reason QueryKeychainUse::queryUser (const char *database, const char *descriptio
             hints.erase(retryHint); hints.insert(retryHint); // replace
 
             setInput(hints, context);
-			invoke();
+
+            {
+                // Must drop the common lock while showing UI.
+                StSyncLock<Mutex, Mutex> syncLock(const_cast<KeychainDatabase*>(mPassphraseCheck)->common().uiLock(), const_cast<KeychainDatabase*>(mPassphraseCheck)->common());
+                invoke();
+            }
 
             if (retryCount > kMaximumAuthorizationTries)
 			{
@@ -546,21 +561,38 @@ Reason QueryKeychainUse::queryUser (const char *database, const char *descriptio
 				continue;
 
 			passwordItem->getCssmData(data);
+
+            // decode() replaces the master key, so do this only if we know the passphrase is correct.
+            // I suspect decode() is redundant but something might rely on its side effects so let's keep it.
+            if (const_cast<KeychainDatabase*>(mPassphraseCheck)->validatePassphrase(data) && const_cast<KeychainDatabase*>(mPassphraseCheck)->decode(data)) {
+                reason = SecurityAgent::noReason;
+            } else {
+                reason = SecurityAgent::invalidPassphrase;
+            }
 		}
-		while ((reason = (const_cast<KeychainDatabase*>(mPassphraseCheck)->decode(data) ? SecurityAgent::noReason : SecurityAgent::invalidPassphrase)));
+        while (reason != SecurityAgent::noReason);
+        
+        readChoice();
 	}
 	else
 	{
-		create("builtin", "confirm-access");
-        setInput(hints, context);
-		invoke();
+//        create("builtin", "confirm-access");
+//        setInput(hints, context);
+//        invoke();
+        
+        // This is a hack to support <rdar://problem/34677969>, we can never simply prompt for confirmation
+        secerror("ACL validation fallback case! Must ask user for account password because we have no database");
+        Session &session = Server::session();
+        try{
+            session.verifyKeyStorePassphrase(1, true, description);
+        } catch (...) {
+            return SecurityAgent::invalidPassphrase;
+        }
+        SecurityAgentXPCQuery::allow = true;
 	}
-
-    readChoice();
 
 	return reason;
 }
-
 
 //
 // Obtain passphrases and submit them to the accept() method until it is accepted
@@ -635,6 +667,11 @@ Reason QueryOld::operator () ()
 //
 Reason QueryUnlock::accept(CssmManagedData &passphrase)
 {
+    // Must hold the 'common' lock to call decode; otherwise there's a data corruption issue
+    StLock<Mutex> _(safer_cast<KeychainDatabase &>(database).common());
+
+    // Calling validatePassphrase here throws when trying to constitute a key.
+    // Unsure why but since this is for the KC unlock path and not a validation path the wrong password won't make things worse.
 	if (safer_cast<KeychainDatabase &>(database).decode(passphrase))
 		return SecurityAgent::noReason;
 	else
@@ -1035,7 +1072,7 @@ Reason QueryDBBlobSecret::accept(CssmManagedData &passphrase,
 
 // @@@  no pluggable authentication possible!
 Reason
-QueryKeychainAuth::operator () (const char *database, const char *description, AclAuthorization action, const char *prompt)
+QueryKeychainAuth::performQuery(const KeychainDatabase& db, const char *description, AclAuthorization action, const char *prompt)
 {
     Reason reason = SecurityAgent::noReason;
     AuthItemSet hints, context;
@@ -1044,7 +1081,7 @@ QueryKeychainAuth::operator () (const char *database, const char *description, A
 	string password;
 
     using CommonCriteria::Securityd::KeychainAuthLogger;
-    KeychainAuthLogger logger(mAuditToken, (short)AUE_ssauthint, database, description);
+    KeychainAuthLogger logger(mAuditToken, (short)AUE_ssauthint, db.dbName(), description);
 
     hints.insert(mClientHints.begin(), mClientHints.end());
 
@@ -1057,15 +1094,16 @@ QueryKeychainAuth::operator () (const char *database, const char *description, A
 	hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_ITEM_NAME, AuthValueOverlay(description ? (uint32_t)strlen(description) : 0, const_cast<char*>(description))));
 
 	// keychain name into hints
-	hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_PATH, AuthValueOverlay(database ? (uint32_t)strlen(database) : 0, const_cast<char*>(database))));
+	hints.insert(AuthItemRef(AGENT_HINT_KEYCHAIN_PATH, AuthValueOverlay(db.dbName() ? (uint32_t)strlen(db.dbName()) : 0, const_cast<char*>(db.dbName()))));
 
     create("builtin", "confirm-access-user-password");
 
     AuthItem *usernameItem;
     AuthItem *passwordItem;
 
+    // This entire do..while requires the UI lock because we do accept() in the condition, which in some cases is reentrant
+    StSyncLock<Mutex, Mutex> syncLock(db.common().uiLock(), db.common());
     do {
-
         AuthItemRef triesHint(AGENT_HINT_TRIES, AuthValueOverlay(sizeof(retryCount), &retryCount));
         hints.erase(triesHint); hints.insert(triesHint); // replace
 
@@ -1101,6 +1139,7 @@ QueryKeychainAuth::operator () (const char *database, const char *description, A
         usernameItem->getString(username);
         passwordItem->getString(password);
     } while ((reason = accept(username, password)));
+    syncLock.unlock();
 
     if (SecurityAgent::noReason == reason)
         logger.logSuccess();

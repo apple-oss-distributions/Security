@@ -21,33 +21,26 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #import <CloudKit/CloudKit.h>
-#import <XCTest/XCTest.h>
 #import <OCMock/OCMock.h>
+#import <XCTest/XCTest.h>
 
 #include <Security/SecItemPriv.h>
+#include "OSX/sec/Security/SecItemShim.h"
 
-#import "keychain/ckks/tests/CloudKitMockXCTest.h"
-#import "keychain/ckks/tests/CloudKitKeychainSyncingMockXCTest.h"
-#import "keychain/ckks/CKKSManifest.h"
-#import "keychain/ckks/CKKS.h"
-#import "keychain/ckks/CKKSKeychainView.h"
-#import "keychain/ckks/tests/MockCloudKit.h"
+#import "keychain/ckks/tests/CloudKitKeychainSyncingTestsBase.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 // 1 master manifest, 72 manifest leaf nodes = 73
 // 3 keys, 3 current keys, and 1 device state entry
 #define SYSTEM_DB_RECORD_COUNT (7 + ([CKKSManifest shouldSyncManifests] ? 73 : 0))
 
-@interface CloudKitKeychainSyncingTestsBase : CloudKitKeychainSyncingMockXCTest
-@property CKRecordZoneID* keychainZoneID;
-@property CKKSKeychainView* keychainView;
-@property FakeCKZone* keychainZone;
-
-@property (readonly) ZoneKeys* keychainZoneKeys;
-
-- (ZoneKeys*)keychainZoneKeys;
-@end
-
 @interface CloudKitKeychainSyncingTests : CloudKitKeychainSyncingTestsBase
 @end
 
+NS_ASSUME_NONNULL_END
+
+#endif /* OCTAGON */

@@ -226,7 +226,10 @@ struct SecCmsSignerInfoStr {
     CFAbsoluteTime		tsaLeafNotBefore;   /* Start date for Timestamp Authority leaf */
     CFAbsoluteTime		tsaLeafNotAfter;    /* Expiration date for Timestamp Authority leaf */
     CFMutableArrayRef	timestampCertList;
+    SecCertificateRef   timestampCert;
     CFDataRef           hashAgilityAttrValue;
+    CFDictionaryRef     hashAgilityV2AttrValues;
+    CFAbsoluteTime      expirationTime;
 };
 #define SEC_CMS_SIGNER_INFO_VERSION_ISSUERSN	1	/* what we *create* */
 #define SEC_CMS_SIGNER_INFO_VERSION_SUBJKEY	3	/* what we *create* */
@@ -319,9 +322,9 @@ struct SecCmsOriginatorIdentifierOrKeyStr {
 typedef struct SecCmsOriginatorIdentifierOrKeyStr SecCmsOriginatorIdentifierOrKey;
 
 struct SecCmsRecipientKeyIdentifierStr {
-    CSSM_DATA_PTR 				subjectKeyIdentifier;
-    CSSM_DATA_PTR 				date;			/* optional */
-    CSSM_DATA_PTR 				other;			/* optional */
+    CSSM_DATA 				subjectKeyIdentifier;
+    CSSM_DATA 				date;			/* optional */
+    CSSM_DATA 				other;			/* optional */
 };
 typedef struct SecCmsRecipientKeyIdentifierStr SecCmsRecipientKeyIdentifier;
 

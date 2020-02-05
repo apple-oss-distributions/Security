@@ -20,6 +20,7 @@
 #include <Security/SecRandom.h>
 
 #include <utilities/array_size.h>
+#include <utilities/SecCFRelease.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -336,9 +337,9 @@ tests(void)
                 fcntl(sp[1], F_SETNOSIGPIPE, 1);
 
                 bool break_on_req = (j!=0);
-                SSLClientAuthenticationType auth = (k == 0) ? kNeverAuthenticate
-                                                   : (k == 1) ? kTryAuthenticate
-                                                   : kAlwaysAuthenticate;
+                SSLAuthenticate auth = (k == 0) ? kNeverAuthenticate
+                        : (k == 1) ? kTryAuthenticate
+                            : kAlwaysAuthenticate;
 
                 CFArrayRef client_certs = (i == 0) ? NULL
                                           : (i == 1) ? trusted_client_chain()

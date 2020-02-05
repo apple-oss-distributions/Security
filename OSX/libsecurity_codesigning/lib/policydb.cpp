@@ -219,12 +219,12 @@ void PolicyDatabase::addFeature(const char *name, const char *value, const char 
 
 void PolicyDatabase::simpleFeature(const char *feature, void (^perform)())
 {
+	SQLite::Transaction update(*this);
 	if (!hasFeature(feature)) {
-		SQLite::Transaction update(*this);
 		perform();
 		addFeature(feature, "upgraded", "upgraded");
-		update.commit();
 	}
+	update.commit();
 }
 
 void PolicyDatabase::simpleFeature(const char *feature, const char *sql)
@@ -233,6 +233,14 @@ void PolicyDatabase::simpleFeature(const char *feature, const char *sql)
 		SQLite::Statement perform(*this, sql);
 		perform.execute();
 	});
+}
+	
+void PolicyDatabase::simpleFeatureNoTransaction(const char *feature, void (^perform)())
+{
+	if (!hasFeature(feature)) {
+		perform();
+		addFeature(feature, "upgraded", "upgraded");
+	}
 }
 
 
@@ -286,6 +294,142 @@ void PolicyDatabase::upgradeDatabase()
     simpleFeature("root_only", ^{
         UnixError::check(::chmod(dbPath(), S_IRUSR | S_IWUSR));
     });
+
+	simpleFeature("notarized_apps", ^{
+
+		// Insert a set of notarization requirements for notarized applications and installers, with a priority that will be higher than developer id priorities
+		// so they are guaranteed to match first.
+		SQLite::Statement addNotarizedExecutables(*this,
+			"INSERT INTO authority (type, allow, flags, priority, label, requirement) VALUES (1, 1, 2, 5.0, 'Notarized Developer ID', 'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and notarized')");
+		addNotarizedExecutables.execute();
+
+		SQLite::Statement addNotarizedInstallers(*this,
+			"INSERT INTO authority (type, allow, flags, priority, label, requirement) VALUES (2, 1, 2, 5.0, 'Notarized Developer ID', 'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and (certificate leaf[field.1.2.840.113635.100.6.1.14] or certificate leaf[field.1.2.840.113635.100.6.1.13]) and notarized')");
+		addNotarizedInstallers.execute();
+
+		// Bump the priority on apple system, apple installer, and mac app store entries so they are evaluated before Developer ID variants.
+		// This is important because notarized variants meet the requirement of the Developer ID variant and would could match that too.
+		SQLite::Statement bumpAppleSystemPriority(*this,
+			  "UPDATE authority SET priority = 20.0 WHERE label = 'Apple System'");
+		bumpAppleSystemPriority.execute();
+
+		SQLite::Statement bumpAppleInstallerPriority(*this,
+			  "UPDATE authority SET priority = 20.0 WHERE label = 'Apple Installer'");
+		bumpAppleInstallerPriority.execute();
+
+		SQLite::Statement bumpMacAppStorePriority(*this,
+			  "UPDATE authority SET priority = 10.0 WHERE label = 'Mac App Store'");
+		bumpMacAppStorePriority.execute();
+	});
+	
+	{
+		SQLite::Transaction devIdRequirementUpgrades(*this);
+		
+		simpleFeatureNoTransaction("legacy_devid", ^{
+			auto migrateReq = [](auto db, int type, string req) {
+				const string legacy =
+				" and (certificate leaf[timestamp.1.2.840.113635.100.6.1.33] absent or "
+				"certificate leaf[timestamp.1.2.840.113635.100.6.1.33] < timestamp \"20190408000000Z\")";
+				
+				const string unnotarized =
+				" and (certificate leaf[timestamp.1.2.840.113635.100.6.1.33] exists and "
+				"certificate leaf[timestamp.1.2.840.113635.100.6.1.33] >= timestamp \"20190408000000Z\")";
+				
+				SQLite::Statement update(*db, "UPDATE OR IGNORE authority "
+										 "SET requirement = :newreq "
+										 "WHERE requirement = :oldreq "
+										 "      AND type = :type "
+										 "      AND label = 'Developer ID'");
+				update.bind(":oldreq") = req;
+				update.bind(":type") = type;
+				update.bind(":newreq") = req + legacy;
+				update.execute();
+				
+				SQLite::Statement insert(*db, "INSERT OR IGNORE INTO authority "
+										 "(type, requirement, allow, priority, label) "
+										 "VALUES "
+										 "(:type, :req, 0, 4.0, "
+										 "'Unnotarized Developer ID')");
+				insert.bind(":type") = type;
+				insert.bind(":req") = req + unnotarized;
+				insert.execute();
+			};
+			
+			migrateReq(this, 1, "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists");
+			migrateReq(this, 2, "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and (certificate leaf[field.1.2.840.113635.100.6.1.14] or certificate leaf[field.1.2.840.113635.100.6.1.13])");
+			migrateReq(this, 3, "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists");
+		});
+	
+		simpleFeatureNoTransaction("legacy_devid_v2", ^{
+			auto migrateReq = [](auto db, int type, string oldreq, string newreq) {
+				const string legacy =
+				" and legacy";
+
+				SQLite::Statement update(*db, "UPDATE OR IGNORE authority "
+										 "SET requirement = :newreq "
+										 "WHERE requirement = :oldreq "
+										 "      AND type = :type "
+										 "      AND label = 'Developer ID'");
+				update.bind(":oldreq") = oldreq;
+				update.bind(":type") = type;
+				update.bind(":newreq") = newreq;
+				update.execute();
+			};
+
+			// App handling has moved to the sunfish path.  The legacy keyword won't work well for apps because we don't collect nested code hashes to whitelist them.
+			migrateReq(this, 2,
+					   "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and (certificate leaf[field.1.2.840.113635.100.6.1.14] or certificate leaf[field.1.2.840.113635.100.6.1.13]) and (certificate leaf[timestamp.1.2.840.113635.100.6.1.33] absent or certificate leaf[timestamp.1.2.840.113635.100.6.1.33] < timestamp \"20190408000000Z\")",
+					   "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and (certificate leaf[field.1.2.840.113635.100.6.1.14] or certificate leaf[field.1.2.840.113635.100.6.1.13]) and legacy");
+			migrateReq(this, 3,
+					   "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and (certificate leaf[timestamp.1.2.840.113635.100.6.1.33] absent or certificate leaf[timestamp.1.2.840.113635.100.6.1.33] < timestamp \"20190408000000Z\")",
+					   "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and legacy");
+		});
+		
+		simpleFeatureNoTransaction("unnotarized_without_timestamp", ^{
+			auto migrateReq = [](auto db, int type, string req) {
+				const string to_remove =
+				" and (certificate leaf[timestamp.1.2.840.113635.100.6.1.33] exists and "
+				"certificate leaf[timestamp.1.2.840.113635.100.6.1.33] >= timestamp \"20190408000000Z\")";
+				
+				SQLite::Statement update(*db, "UPDATE OR IGNORE authority "
+										 "SET requirement = :newreq "
+										 "WHERE requirement = :oldreq "
+										 "      AND type = :type "
+										 "      AND label = 'Unnotarized Developer ID'");
+				update.bind(":oldreq") = req + to_remove;
+				update.bind(":type") = type;
+				update.bind(":newreq") = req;
+				update.execute();
+			};
+			
+			migrateReq(this, kAuthorityInstall, "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and (certificate leaf[field.1.2.840.113635.100.6.1.14] or certificate leaf[field.1.2.840.113635.100.6.1.13])");
+			migrateReq(this, kAuthorityOpenDoc, "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists");
+		});
+		
+		devIdRequirementUpgrades.commit();
+	}
+	
+	simpleFeature("notarized_documents", ^{
+		SQLite::Statement addNotarizedDocs(*this,
+										   "INSERT INTO authority (type, allow, flags, priority, label, requirement) "
+										   "  VALUES (3, 1, 2, 5.0, 'Notarized Developer ID', "
+										   "          'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and notarized')");
+		addNotarizedDocs.execute();
+	});
+
+	simpleFeature("notarization_priority_fix", ^{
+		auto migrateReq = [](auto db, string label, float priority) {
+			SQLite::Statement update(*db,
+									 "UPDATE OR IGNORE authority "
+									 "SET priority = :newpriority "
+									 "WHERE label = :label");
+			update.bind(":newpriority") = priority;
+			update.bind(":label") = label;
+			update.execute();
+		};
+		migrateReq(this, "Developer ID", 4.0);
+		migrateReq(this, "Unnotarized Developer ID", 0.0);
+	});
 }
 
 
@@ -343,14 +487,14 @@ void PolicyDatabase::installExplicitSet(const char *authfile, const char *sigfil
 			
 			// load new data
 			CFIndex count = CFDictionaryGetCount(content);
-			CFStringRef keys[count];
-			CFDictionaryRef values[count];
-			CFDictionaryGetKeysAndValues(content, (const void **)keys, (const void **)values);
+			vector<CFStringRef> keys_vector(count, NULL);
+			vector<CFDictionaryRef> values_vector(count, NULL);
+			CFDictionaryGetKeysAndValues(content, (const void **)keys_vector.data(), (const void **)values_vector.data());
 			
 			SQLite::Statement insert(*this, "INSERT INTO authority (type, allow, requirement, label, filter_unsigned, flags, remarks)"
 				" VALUES (:type, 1, :requirement, 'GKE', :filter, :flags, :path)");
 			for (CFIndex n = 0; n < count; n++) {
-				CFDictionary info(values[n], errSecCSDbCorrupt);
+				CFDictionary info(values_vector[n], errSecCSDbCorrupt);
 				uint32_t flags = kAuthorityFlagWhitelist;
 				if (CFNumberRef versionRef = info.get<CFNumberRef>("version")) {
 					int version = cfNumber<int>(versionRef);
@@ -461,7 +605,7 @@ void setAssessment(bool masterSwitch)
 {
 	MutableDictionary *prefsDict = MutableDictionary::CreateMutableDictionary(prefsFile);
 	if (prefsDict == NULL)
-		prefsDict = new MutableDictionary::MutableDictionary();
+		prefsDict = new MutableDictionary();
 	prefsDict->setValue(SP_ENABLE_KEY, masterSwitch ? SP_ENABLED : SP_DISABLED);
 	prefsDict->writePlistToFile(prefsFile);
 	delete prefsDict;

@@ -20,6 +20,7 @@
  *
  * @APPLE_LICENSE_HEADER_END@
  */
+#if OCTAGON
 
 #import <XCTest/XCTest.h>
 #import <XCTest/XCTest.h>
@@ -69,7 +70,7 @@
         [expectation fulfill];
     });
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)), queue, ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), queue, ^{
         [c fulfill];
     });
 
@@ -80,4 +81,20 @@
     [self waitForExpectations: @[expectation] timeout:0.5];
 }
 
+-(void)testConditionChain {
+    CKKSCondition* chained = [[CKKSCondition alloc] init];
+    CKKSCondition* c = [[CKKSCondition alloc] initToChain: chained];
+
+    XCTAssertNotEqual(0, [chained wait:50*NSEC_PER_MSEC], "waiting on chained condition without fulfilling times out");
+    XCTAssertNotEqual(0, [c       wait:50*NSEC_PER_MSEC], "waiting on condition without fulfilling times out");
+
+    [c fulfill];
+    XCTAssertEqual(0, [c       wait:100*NSEC_PER_MSEC], "first wait after fulfill succeeds");
+    XCTAssertEqual(0, [chained wait:100*NSEC_PER_MSEC], "first chained wait after fulfill succeeds");
+    XCTAssertEqual(0, [c       wait:100*NSEC_PER_MSEC], "second wait after fulfill succeeds");
+    XCTAssertEqual(0, [chained wait:100*NSEC_PER_MSEC], "second chained wait after fulfill succeeds");
+}
+
 @end
+
+#endif /* OCTAGON */

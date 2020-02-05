@@ -32,24 +32,12 @@
 #include <security_utilities/crc.h>
 #include <security_utilities/casts.h>
 #include <unistd.h>
+#include <vector>
 
 /*
     Logically, these should go in /var/run/mds, but we know that /var/db/mds
     already exists at install time.
 */
-
-std::string SharedMemoryCommon::SharedMemoryFilePath(const char *segmentName, uid_t uid) {
-    std::string path;
-    uid = SharedMemoryCommon::fixUID(uid);
-    path = SharedMemoryCommon::kMDSMessagesDirectory;   // i.e. /private/var/db/mds/messages/
-    if (uid != 0) {
-        path += std::to_string(uid) + "/";              // e.g. /private/var/db/mds/messages/501/
-    }
-
-    path += SharedMemoryCommon::kUserPrefix;            // e.g. /var/db/mds/messages/se_
-    path += segmentName;                                // e.g. /var/db/mds/messages/501/se_SecurityMessages
-    return path;
-}
 
 static bool makedir(const char *path, mode_t mode) {
     // Returns true on success. Primarily to centralize logging
@@ -166,13 +154,13 @@ void SharedMemoryServer::WriteMessage (SegmentOffsetType domain, SegmentOffsetTy
 
 	// assemble the final message
 	ssize_t messageSize = kHeaderLength + messageLength;
-	u_int8_t finalMessage[messageSize];
-	SegmentOffsetType *fm  = (SegmentOffsetType*) finalMessage;
+	std::vector<u_int8_t> finalMessage(messageSize);
+	SegmentOffsetType *fm  = (SegmentOffsetType*) finalMessage.data();
 	fm[0] = OSSwapHostToBigInt32(domain);
 	fm[1] = OSSwapHostToBigInt32(event);
 	memcpy(&fm[2], message, messageLength);
 	
-	SegmentOffsetType crc = CalculateCRC(finalMessage, messageSize);
+	SegmentOffsetType crc = CalculateCRC(finalMessage.data(), messageSize);
 	
 	// write the length
 	WriteOffset(int_cast<size_t, SegmentOffsetType>(messageSize));
@@ -181,7 +169,7 @@ void SharedMemoryServer::WriteMessage (SegmentOffsetType domain, SegmentOffsetTy
 	WriteOffset(crc);
 	
 	// write the data
-	WriteData (finalMessage, int_cast<size_t, SegmentOffsetType>(messageSize));
+	WriteData (finalMessage.data(), int_cast<size_t, SegmentOffsetType>(messageSize));
 	
 	// write the data count
 	SetProducerOffset(int_cast<size_t, SegmentOffsetType>(mDataPtr - mDataArea));

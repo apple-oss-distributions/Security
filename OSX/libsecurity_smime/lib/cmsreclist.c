@@ -98,7 +98,7 @@ nss_cms_recipients_traverse(SecCmsRecipientInfoRef *recipientinfos, SecCmsRecipi
 			break;
 		    case SecCmsKeyAgreeRecipientIDRKeyID:
 			rle->kind = RLSubjKeyID;
-			rle->id.subjectKeyID = rek->recipientIdentifier.id.recipientKeyIdentifier.subjectKeyIdentifier;
+			rle->id.subjectKeyID = &rek->recipientIdentifier.id.recipientKeyIdentifier.subjectKeyIdentifier;
 			break;
 		    }
 		    recipient_list[rlindex++] = rle;
@@ -196,29 +196,29 @@ nss_cms_FindCertAndKeyByRecipientList(SecCmsRecipient **recipient_list, void *wi
 
     for (index = 0; recipient_list[index] != NULL; ++index)
     {
-	recipient = recipient_list[index];
+        recipient = recipient_list[index];
 
-	switch (recipient->kind)
-	{
-	case RLIssuerSN:
-	    identity = CERT_FindIdentityByIssuerAndSN(keychainOrArray, recipient->id.issuerAndSN);
-	    break;
-	case RLSubjKeyID:
-	    identity = CERT_FindIdentityBySubjectKeyID(keychainOrArray, recipient->id.subjectKeyID);
-	    break;
-	}
+        switch (recipient->kind)
+        {
+            case RLIssuerSN:
+                identity = CERT_FindIdentityByIssuerAndSN(keychainOrArray, recipient->id.issuerAndSN);
+                break;
+            case RLSubjKeyID:
+                identity = CERT_FindIdentityBySubjectKeyID(keychainOrArray, recipient->id.subjectKeyID);
+                break;
+        }
 
-	if (identity)
-	    break;
+        if (identity)
+            break;
     }
 
     if (!recipient)
-	goto loser;
+        goto loser;
 
-    if (SecIdentityCopyCertificate(identity, &cert))
-	goto loser;
-    if (SecIdentityCopyPrivateKey(identity, &privKey))
-	goto loser;
+    if (!identity || SecIdentityCopyCertificate(identity, &cert))
+        goto loser;
+    if (!identity || SecIdentityCopyPrivateKey(identity, &privKey))
+        goto loser;
     CFRelease(identity);
 
     recipient->cert = cert;
@@ -228,11 +228,11 @@ nss_cms_FindCertAndKeyByRecipientList(SecCmsRecipient **recipient_list, void *wi
 
 loser:
     if (identity)
-	CFRelease(identity);
+        CFRelease(identity);
     if (cert)
-	CFRelease(cert);
+        CFRelease(cert);
     if (privKey)
-	CFRelease(privKey);
+        CFRelease(privKey);
 
     return -1;
 }

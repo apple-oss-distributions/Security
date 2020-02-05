@@ -16,7 +16,7 @@
 
 
 #import <Security/SecureObjectSync/SOSCloudCircle.h>
-#import <Security/SecureObjectSync/SOSInternal.h>
+#import "keychain/SecureObjectSync/SOSInternal.h"
 
 #if !TARGET_OS_BRIDGE
 #include <dlfcn.h>
@@ -33,7 +33,7 @@ typedef struct _CFSecRecoveryKey *CFSecRecoveryKeyRef;
 
 static uint8_t backupPublicKey[] = { 'B', 'a', 'c', 'k', 'u', ' ', 'P', 'u', 'b', 'l', 'i', 'c', 'k', 'e', 'y' };
 static uint8_t passwordInfoKey[] = { 'p', 'a', 's', 's', 'w', 'o', 'r', 'd', ' ', 's', 'e', 'c', 'r', 'e', 't' };
-#if !(defined(__i386__) || TARGET_IPHONE_SIMULATOR || TARGET_OS_BRIDGE)
+#if !(defined(__i386__) || TARGET_OS_SIMULATOR || TARGET_OS_BRIDGE)
 static uint8_t masterkeyIDSalt[] = { 'M', 'a', 's', 't', 'e', 'r', ' ', 'K', 'e', 'y', ' ', 'I', 'd', 'e', 't' };
 #endif
 
@@ -77,7 +77,6 @@ ValidateRecoveryKey(CFStringRef masterkey, NSError **error)
     return res;
 }
 
-
 NSString *
 SecRKCreateRecoveryKeyString(NSError **error)
 {
@@ -96,7 +95,6 @@ SecRKCreateRecoveryKeyString(NSError **error)
         CFRelease(recoveryKey);
         return NULL;
     }
-
     return (__bridge NSString *)recoveryKey;
 }
 
@@ -124,8 +122,7 @@ SecRKCreateRecoveryKeyWithError(NSString *masterKey, NSError **error)
         CFRelease(rk);
         return NULL;
     }
-
-    return (__bridge SecRecoveryKey *)rk;
+    return (SecRecoveryKey *) CFBridgingRelease(rk);
 }
 
 static CFDataRef
@@ -208,7 +205,7 @@ CFDataRef (*localAppleIDauthSupportCreateVerifierPtr) (CFStringRef proto,
                                                 CFStringRef password,
                                                 CFErrorRef *error);
 
-#if !(defined(__i386__) || TARGET_IPHONE_SIMULATOR)
+#if !(defined(__i386__) || TARGET_OS_SIMULATOR)
 static CFStringRef getdlsymforString(void *framework, const char *symbol) {
     CFStringRef retval = NULL;
     void *tmpptr = dlsym(framework, symbol);
@@ -242,7 +239,7 @@ NSDictionary *
 SecRKCopyAccountRecoveryVerifier(NSString *recoveryKey,
                                  NSError **error) {
 
-#if defined(__i386__) || TARGET_IPHONE_SIMULATOR || TARGET_OS_BRIDGE
+#if defined(__i386__) || TARGET_OS_SIMULATOR || TARGET_OS_BRIDGE
     abort();
     return NULL;
 #else
@@ -286,10 +283,11 @@ SecRKCopyAccountRecoveryVerifier(NSString *recoveryKey,
 
 }
 
+// This recreates the key pair using the recovery key string.
 static NSData *
-RKBackupCreateECKey(SecRecoveryKey *rk, bool fullkey)
+RKBackupCreateECKey(SecRecoveryKey *rk, bool returnFullkey)
 {
-    CFMutableDataRef publicKeyData = NULL;
+    CFMutableDataRef keyData = NULL;
     CFDataRef derivedSecret = NULL;
     ccec_const_cp_t cp = ccec_cp_256();
     CFDataRef result = NULL;
@@ -308,16 +306,16 @@ RKBackupCreateECKey(SecRecoveryKey *rk, bool fullkey)
                                              fullKey);
     require_noerr(status, fail);
 
-    size_t space = ccec_compact_export_size(fullkey, ccec_ctx_pub(fullKey));
-    publicKeyData = CFDataCreateMutableWithScratch(SecCFAllocatorZeroize(), space);
-    require_quiet(publicKeyData, fail);
+    size_t space = ccec_compact_export_size(returnFullkey, ccec_ctx_pub(fullKey));
+    keyData = CFDataCreateMutableWithScratch(SecCFAllocatorZeroize(), space);
+    require_quiet(keyData, fail);
 
-    ccec_compact_export(fullkey, CFDataGetMutableBytePtr(publicKeyData), fullKey);
+    ccec_compact_export(returnFullkey, CFDataGetMutableBytePtr(keyData), fullKey);
 
-    CFTransferRetained(result, publicKeyData);
+    CFTransferRetained(result, keyData);
 fail:
     CFReleaseNull(derivedSecret);
-    CFReleaseNull(publicKeyData);
+    CFReleaseNull(keyData);
 
     return (__bridge NSData *)result;
 }
@@ -341,7 +339,7 @@ SecRKRegisterBackupPublicKey(SecRecoveryKey *rk, CFErrorRef *error)
     CFDataRef backupKey = (__bridge CFDataRef)SecRKCopyBackupPublicKey(rk);
     bool res = false;
 
-    require(backupKey, fail);
+    require_action_quiet(backupKey, fail, SOSCreateError(kSOSErrorBadKey, CFSTR("Failed to create key from rk"), NULL, error));
 
     res = SOSCCRegisterRecoveryPublicKey(backupKey, error);
 

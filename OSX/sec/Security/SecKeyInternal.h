@@ -35,8 +35,12 @@
 
 __BEGIN_DECLS
 
+#if TARGET_OS_OSX
+void SecKeySetAuxilliaryCDSAKeyForKey(SecKeyRef cf, SecKeyRef auxKey);
+SecKeyRef SecKeyCopyAuxilliaryCDSAKeyForKey(SecKeyRef cf);
+#endif
+
 extern struct ccrng_state *ccrng_seckey;
-CFIndex SecKeyGetAlgorithmIdentifier(SecKeyRef key);
 
 enum {
     // Keep in sync with SecKeyOperationType enum in SecKey.h

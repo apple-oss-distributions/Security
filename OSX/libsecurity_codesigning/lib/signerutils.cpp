@@ -24,17 +24,22 @@
 //
 // signerutils - utilities for signature generation
 //
-#include "signerutils.h"
-#include "signer.h"
-#include "SecCodeSigner.h"
-#include <Security/SecIdentity.h>
-#include <Security/CMSEncoder.h>
-#include "resources.h"
 #include "csutilities.h"
 #include "drmaker.h"
+#include "resources.h"
+#include "signerutils.h"
+#include "signer.h"
+
+#include <Security/SecCmsBase.h>
+#include <Security/SecIdentity.h>
+#include <Security/CMSEncoder.h>
+
+#include "SecCodeSigner.h"
+
 #include <security_utilities/unix++.h>
 #include <security_utilities/logging.h>
 #include <security_utilities/unixchild.h>
+
 #include <vector>
 
 // for helper validation
@@ -98,6 +103,7 @@ ArchEditor::~ArchEditor()
 ArchEditor::Arch::Arch(const Architecture &arch, CodeDirectory::HashAlgorithms hashTypes)
 	: architecture(arch)
 {
+	blobSize = 0;
 	for (auto type = hashTypes.begin(); type != hashTypes.end(); ++type)
 		cdBuilders.insert(make_pair(*type, new CodeDirectory::Builder(*type)));
 }
@@ -162,6 +168,7 @@ MachOEditor::~MachOEditor()
 	delete mNewCode;
 	if (mTempMayExist)
 		::remove(tempPath.c_str());		// ignore error (can't do anything about it)
+
 	this->kill();
 }
 
@@ -255,7 +262,11 @@ void MachOEditor::reset(Arch &arch)
 
 	for (auto type = mHashTypes.begin(); type != mHashTypes.end(); ++type) {
 		arch.eachDigest(^(CodeDirectory::Builder& builder) {
-			builder.reopen(tempPath, arch.source->offset(), arch.source->signingOffset());
+			/* Signature editing may have no need for cd builders, and not
+			 * have opened them, so only reopen them conditionally. */
+			if (builder.opened()) {
+				builder.reopen(tempPath, arch.source->offset(), arch.source->signingOffset());
+			}
 		});
 	}
 }
@@ -306,7 +317,19 @@ void MachOEditor::commit()
 		
 		// copy metadata from original file...
 		copy(sourcePath.c_str(), NULL, COPYFILE_SECURITY | COPYFILE_METADATA);
-		
+
+#if TARGET_OS_OSX
+		// determine AFSC status if we are told to preserve compression
+		bool conductCompression = false;
+		cmpInfo cInfo;
+		if (writer->getPreserveAFSC()) {
+			if (queryCompressionInfo(sourcePath.c_str(), &cInfo) == 0) {
+				if (cInfo.compressionType != 0 && cInfo.compressedSize > 0)
+					conductCompression = true;
+			}
+		}
+#endif
+
 		// ... but explicitly update the timestamps since we did change the file
 		char buf;
 		mFd.read(&buf, sizeof(buf), 0);
@@ -315,6 +338,28 @@ void MachOEditor::commit()
 		// move the new file into place
 		UnixError::check(::rename(tempPath.c_str(), sourcePath.c_str()));
 		mTempMayExist = false;		// we renamed it away
+
+#if TARGET_OS_OSX
+		// if the original file was compressed, compress the new file after move
+		if (conductCompression) {
+			CFMutableDictionaryRef options = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+			CFStringRef val = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%d"), cInfo.compressionType);
+			CFDictionarySetValue(options, kAFSCCompressionTypes, val);
+			CFRelease(val);
+
+			CompressionQueueContext compressionQueue = CreateCompressionQueue(NULL, NULL, NULL, NULL, options);
+
+			if (!CompressFile(compressionQueue, sourcePath.c_str(), NULL)) {
+				secinfo("signer", "%p Failed to queue compression of file %s", this, sourcePath.c_str());
+				MacOSError::throwMe(errSecCSInternalError);
+			}
+			FinishCompressionAndCleanUp(compressionQueue);
+
+			compressionQueue = NULL;
+			CFRelease(options);
+		}
+#endif
+
 	}
 	this->writer->flush();
 }
@@ -416,16 +461,56 @@ const CodeDirectory* CodeDirectorySet::primary() const
 	return mPrimary;
 }
 
-
-CFArrayRef CodeDirectorySet::hashBag() const
+CFArrayRef CodeDirectorySet::hashList() const
 {
 	CFRef<CFMutableArrayRef> hashList = makeCFMutableArray(0);
 	for (auto it = begin(); it != end(); ++it) {
-		CFRef<CFDataRef> cdhash = it->second->cdhash();
+		CFRef<CFDataRef> cdhash = it->second->cdhash(true);
 		CFArrayAppendValue(hashList, cdhash);
 	}
 	return hashList.yield();
 }
+
+CFDictionaryRef CodeDirectorySet::hashDict() const
+{
+	CFRef<CFMutableDictionaryRef> hashDict = makeCFMutableDictionary();
+
+	for (auto it = begin(); it != end(); ++it) {
+		SECOidTag tag = CodeDirectorySet::SECOidTagForAlgorithm(it->first);
+
+		if (tag == SEC_OID_UNKNOWN) {
+			MacOSError::throwMe(errSecCSUnsupportedDigestAlgorithm);
+		}
+
+		CFRef<CFNumberRef> hashType = makeCFNumber(int(tag));
+		CFRef<CFDataRef> fullCdhash = it->second->cdhash(false); // Full-length cdhash!
+		CFDictionarySetValue(hashDict, hashType, fullCdhash);
+	}
+
+	return hashDict.yield();
+}
+
+SECOidTag CodeDirectorySet::SECOidTagForAlgorithm(CodeDirectory::HashAlgorithm algorithm) {
+	SECOidTag tag;
+
+	switch (algorithm) {
+		case kSecCodeSignatureHashSHA1:
+			tag = SEC_OID_SHA1;
+			break;
+		case kSecCodeSignatureHashSHA256:
+		case kSecCodeSignatureHashSHA256Truncated: // truncated *page* hashes, not cdhash
+			tag = SEC_OID_SHA256;
+			break;
+		case kSecCodeSignatureHashSHA384:
+			tag = SEC_OID_SHA384;
+			break;
+		default:
+			tag = SEC_OID_UNKNOWN;
+	}
+
+	return tag;
+}
+
 
 
 } // end namespace CodeSigning

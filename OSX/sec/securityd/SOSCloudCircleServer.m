@@ -23,31 +23,37 @@
 
 
 #include <AssertMacros.h>
-#include <CoreFoundation/CFURL.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreFoundation/CFPriv.h>
 
-#include <Security/SecureObjectSync/SOSAccountTransaction.h>
+#import "keychain/SecureObjectSync/SOSAccountTransaction.h"
 
 #include <securityd/SOSCloudCircleServer.h>
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
 #include <Security/SecureObjectSync/SOSCloudCircleInternal.h>
-#include <Security/SecureObjectSync/SOSCircle.h>
-#include <Security/SecureObjectSync/SOSAccount.h>
-#include <Security/SecureObjectSync/SOSAccountPriv.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSTransportMessageIDS.h>
-#include <Security/SecureObjectSync/SOSFullPeerInfo.h>
-#include <Security/SecureObjectSync/SOSPeerInfoV2.h>
 
-#include <Security/SecureObjectSync/SOSPeerInfoInternal.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSMessage.h>
-#include <Security/SecureObjectSync/SOSBackupInformation.h>
-#include <Security/SecureObjectSync/SOSDataSource.h>
-#include <Security/SecureObjectSync/SOSKVSKeys.h>
-#import <Security/SecureObjectSync/SOSAccountTrustClassic.h>
-#import <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
-#import <Security/SecureObjectSync/SOSAccountTrustClassic+Expansion.h>
+#include "keychain/SecureObjectSync/SOSCircle.h"
+#include "keychain/SecureObjectSync/SOSAccount.h"
+#include "keychain/SecureObjectSync/SOSAccountPriv.h"
+#include "keychain/SecureObjectSync/SOSAccountGhost.h"
+
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSFullPeerInfo.h"
+#include "keychain/SecureObjectSync/SOSPeerInfoV2.h"
+#include "keychain/SecureObjectSync/SOSPeerInfoPriv.h"
+#include "keychain/SecureObjectSync/SOSPeerInfoInternal.h"
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSMessage.h"
+#include "keychain/SecureObjectSync/SOSBackupInformation.h"
+#include "keychain/SecureObjectSync/SOSDataSource.h"
+#include "keychain/SecureObjectSync/SOSKVSKeys.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Expansion.h"
+#import "keychain/SecureObjectSync/SOSAuthKitHelpers.h"
+#import "keychain/ot/OTManager.h"
+#import "NSError+UsefulConstructors.h"
 
 #include <utilities/SecADWrapper.h>
 #include <utilities/SecCFWrappers.h>
@@ -58,7 +64,7 @@
 #include <utilities/SecCoreCrypto.h>
 #include <utilities/SecTrace.h>
 
-#include <SOSCircle/CKBridge/SOSCloudKeychainClient.h>
+#include "keychain/SecureObjectSync/CKBridge/SOSCloudKeychainClient.h"
 
 #include <corecrypto/ccrng.h>
 #include <corecrypto/ccrng_pbkdf2_prng.h>
@@ -81,9 +87,11 @@
 #include <securityd/SecDbKeychainItem.h>
 
 #include <os/activity.h>
+#include <xpc/private.h>
+
 #include <os/state_private.h>
 
-#if TARGET_OS_EMBEDDED || TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_IPHONE
 #include <MobileGestalt.h>
 #else
 #include <AppleSystemInfo/AppleSystemInfo.h>
@@ -101,9 +109,11 @@ static int64_t getTimeDifference(time_t start);
 CFStringRef const SOSAggdSyncCompletionKey  = CFSTR("com.apple.security.sos.synccompletion");
 CFStringRef const SOSAggdSyncTimeoutKey = CFSTR("com.apple.security.sos.timeout");
 
-typedef SOSDataSourceFactoryRef (^SOSCCAccountDataSourceFactoryBlock)();
+typedef SOSDataSourceFactoryRef (^SOSCCAccountDataSourceFactoryBlock)(void);
 
 static SOSCCAccountDataSourceFactoryBlock accountDataSourceOverride = NULL;
+
+
 
 //
 // Forward declared
@@ -256,59 +266,71 @@ done:
 // Mark: Gestalt Handling
 //
 
-CF_EXPORT CFDictionaryRef _CFCopySystemVersionDictionary(void);
-CF_EXPORT CFStringRef _kCFSystemVersionBuildVersionKey;
+CFStringRef SOSGestaltVersion = NULL;
+CFStringRef SOSGestaltModel = NULL;
+CFStringRef SOSGestaltDeviceName = NULL;
 
-CFStringRef CopyOSVersion(void)
+void
+SOSCCSetGestalt_Server(CFStringRef deviceName,
+                       CFStringRef version,
+                       CFStringRef model,
+                       CFStringRef serial)
+{
+    SOSGestaltDeviceName = CFRetainSafe(deviceName);
+    SOSGestaltVersion = CFRetainSafe(version);
+    SOSGestaltModel = CFRetainSafe(model);
+    SOSGestaltSerial = CFRetainSafe(serial);
+}
+
+CFStringRef SOSCCCopyOSVersion(void)
 {
     static dispatch_once_t once;
-    static CFStringRef osVersion = NULL;
     dispatch_once(&once, ^{
-#if TARGET_OS_EMBEDDED || TARGET_IPHONE_SIMULATOR
-        osVersion = MGCopyAnswer(kMGQBuildVersion, NULL);
-#else
-        CFDictionaryRef versions = _CFCopySystemVersionDictionary();
+        if (SOSGestaltVersion == NULL) {
+            CFDictionaryRef versions = _CFCopySystemVersionDictionary();
+            if (versions) {
+                CFTypeRef versionValue = CFDictionaryGetValue(versions, _kCFSystemVersionBuildVersionKey);
+                if (isString(versionValue))
+                    SOSGestaltVersion = CFRetainSafe((CFStringRef) versionValue);
+            }
 
-        if (versions) {
-            CFTypeRef versionValue = CFDictionaryGetValue(versions, _kCFSystemVersionBuildVersionKey);
-
-            if (isString(versionValue))
-                osVersion = CFRetainSafe((CFStringRef) versionValue);
+            CFReleaseNull(versions);
+            if (SOSGestaltVersion == NULL) {
+                SOSGestaltVersion = CFSTR("Unknown model");
+            }
         }
-
-        CFReleaseNull(versions);
-#endif
-        // What to do on MacOS.
-        if (osVersion == NULL)
-            osVersion = CFSTR("Unknown model");
     });
-    return CFRetainSafe(osVersion);
+    return CFRetainSafe(SOSGestaltVersion);
 }
 
 
 static CFStringRef CopyModelName(void)
 {
     static dispatch_once_t once;
-    static CFStringRef modelName = NULL;
     dispatch_once(&once, ^{
-#if TARGET_OS_EMBEDDED || TARGET_IPHONE_SIMULATOR
-        modelName = MGCopyAnswer(kMGQDeviceName, NULL);
+        if (SOSGestaltModel == NULL) {
+#if TARGET_OS_IPHONE
+            SOSGestaltModel = MGCopyAnswer(kMGQDeviceName, NULL);
 #else
-        modelName = ASI_CopyComputerModelName(FALSE);
+            SOSGestaltModel = ASI_CopyComputerModelName(FALSE);
 #endif
-        if (modelName == NULL)
-            modelName = CFSTR("Unknown model");
+            if (SOSGestaltModel == NULL)
+                SOSGestaltModel = CFSTR("Unknown model");
+        }
     });
-    return CFStringCreateCopy(kCFAllocatorDefault, modelName);
+    return CFStringCreateCopy(kCFAllocatorDefault, SOSGestaltModel);
 }
 
 static CFStringRef CopyComputerName(SCDynamicStoreRef store)
 {
-    CFStringRef deviceName = SCDynamicStoreCopyComputerName(store, NULL);
-    if (deviceName == NULL) {
-        deviceName = CFSTR("Unknown name");
+    if (SOSGestaltDeviceName == NULL) {
+        CFStringRef deviceName = SCDynamicStoreCopyComputerName(store, NULL);
+        if (deviceName == NULL) {
+            deviceName = CFSTR("Unknown name");
+        }
+        return deviceName;
     }
-    return deviceName;
+    return SOSGestaltDeviceName;
 }
 
 static bool _EngineMessageProtocolV2Enabled(void)
@@ -338,7 +360,7 @@ static CFDictionaryRef CreateDeviceGestaltDictionary(SCDynamicStoreRef store, CF
 {
     CFStringRef modelName = CopyModelName();
     CFStringRef computerName = CopyComputerName(store);
-    CFStringRef osVersion = CopyOSVersion();
+    CFStringRef osVersion = SOSCCCopyOSVersion();
 
     SInt32 version = _EngineMessageProtocolV2Enabled() ? kEngineMessageProtocolVersion : 0;
     CFNumberRef protocolVersion = CFNumberCreate(0, kCFNumberSInt32Type, &version);
@@ -363,7 +385,7 @@ static void SOSCCProcessGestaltUpdate(SCDynamicStoreRef store, CFArrayRef keys, 
         if(txn.account){
             CFDictionaryRef gestalt = CreateDeviceGestaltDictionary(store, keys, context);
             if ([txn.account.trust updateGestalt:txn.account newGestalt:gestalt]) {
-                notify_post(kSOSCCCircleChangedNotification);
+                secnotice("circleOps", "Changed our peer's gestalt information.  This is not a circle change.");
             }
             CFReleaseSafe(gestalt);
         }
@@ -421,18 +443,23 @@ errOut:
     return retval;
 };
 
+#define FOR_EXISTING_ACCOUNT 1
+#define CREATE_ACCOUNT_IF_NONE 0
 
-
-static SOSAccount* GetSharedAccount(void) {
+static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
     static SOSAccount* sSharedAccount = NULL;
     static dispatch_once_t onceToken;
 
-#if !(TARGET_OS_EMBEDDED)
+#if !TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     if(geteuid() == 0){
         secerror("Cannot inflate account object as root");
         return NULL;
     }
 #endif
+    
+    if(onlyIfItExists) {
+        return sSharedAccount;
+    }
 
     dispatch_once(&onceToken, ^{
         secdebug("account", "Account Creation start");
@@ -440,7 +467,7 @@ static SOSAccount* GetSharedAccount(void) {
         CFDictionaryRef gestalt = CreateDeviceGestaltDictionaryAndRegisterForUpdate(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL);
 
         if (!gestalt) {
-#if TARGET_OS_IPHONE && TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_IPHONE && TARGET_OS_SIMULATOR
             gestalt = CFDictionaryCreateForCFTypes(kCFAllocatorDefault, NULL);
 #else
             secerror("Didn't get machine gestalt! This is going to be ugly.");
@@ -449,32 +476,38 @@ static SOSAccount* GetSharedAccount(void) {
         
         sSharedAccount = SOSKeychainAccountCreateSharedAccount(gestalt);
         
-        SOSAccountAddChangeBlock(sSharedAccount, ^(SOSCircleRef circle,
+        SOSAccountAddChangeBlock(sSharedAccount, ^(SOSAccount *account, SOSCircleRef circle,
                                                    CFSetRef peer_additions,      CFSetRef peer_removals,
                                                    CFSetRef applicant_additions, CFSetRef applicant_removals) {
             CFErrorRef pi_error = NULL;
-            SOSPeerInfoRef me = sSharedAccount.peerInfo;
-            if (!me) {
-                secerror("Error finding me for change: %@", pi_error);
+            SOSPeerInfoRef me = account.peerInfo;
+            if(!me) {
+                secinfo("circleOps", "Change block called with no peerInfo");
+                return;
+            }
+            
+            if(!SOSCircleHasPeer(circle, me, NULL)) {
+                secinfo("circleOps", "Change block called while not in circle");
+                return;
+            }
+            
+            // TODO: Figure out why peer_additions isn't right in some cases (like when joining a v2 circle with a v0 peer.
+            if (CFSetGetCount(peer_additions) != 0) {
+                secnotice("updates", "Requesting Ensure Peer Registration.");
+                SOSCloudKeychainRequestEnsurePeerRegistration(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL);
             } else {
-                // TODO: Figure out why peer_additions isn't right in some cases (like when joining a v2 circle with a v0 peer.
-                if (SOSCircleHasPeer(circle, me, NULL) && CFSetGetCount(peer_additions) != 0) {
-                    secnotice("updates", "Requesting Ensure Peer Registration.");
-                    SOSCloudKeychainRequestEnsurePeerRegistration(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL);
-                } else {
-                    secinfo("updates", "Not requesting Ensure Peer Registration, since it's not needed");
+                secinfo("updates", "Not requesting Ensure Peer Registration, since it's not needed");
+            }
+            
+            if (CFSetContainsValue(peer_additions, me)) {
+                // TODO: Potentially remove from here and move this to the engine
+                // TODO: We also need to do this when our views change.
+                CFMutableSetRef peers = SOSCircleCopyPeers(circle, kCFAllocatorDefault);
+                CFSetRemoveValue(peers, me);
+                if (!CFSetIsEmpty(peers)) {
+                    SOSCCRequestSyncWithPeers(peers);
                 }
-                
-                if (CFSetContainsValue(peer_additions, me)) {
-                    // TODO: Potentially remove from here and move this to the engine
-                    // TODO: We also need to do this when our views change.
-                    CFMutableSetRef peers = SOSCircleCopyPeers(circle, kCFAllocatorDefault);
-                    CFSetRemoveValue(peers, me);
-                    if (!CFSetIsEmpty(peers)) {
-                        SOSCCRequestSyncWithPeers(peers);
-                    }
-                    CFReleaseNull(peers);
-                }
+                CFReleaseNull(peers);
             }
             
             CFReleaseNull(pi_error);
@@ -491,13 +524,14 @@ static SOSAccount* GetSharedAccount(void) {
                     CFSetForEach(peer_removals, ^(const void *value) {
                         CFArrayAppendValue(removed, value);
                     });
-                    SOSAccountRemoveBackupPeers(sSharedAccount, removed, &localError);
+                    SOSAccountRemoveBackupPeers(account, removed, &localError);
                     if(localError)
                         secerror("Had trouble removing: %@, error: %@", removed, localError);
                     CFReleaseNull(localError);
                     CFReleaseNull(removed);
                 }
-                notify_post(kSOSCCCircleChangedNotification);
+                secnotice("circleOps", "peer counts changed, posting kSOSCCCircleChangedNotification");
+                account.notifyCircleChangeOnExit = true;
            }
         });
     
@@ -511,10 +545,10 @@ static SOSAccount* GetSharedAccount(void) {
                 
                 CFErrorRef error = NULL;
                 handledKeys = SOSTransportDispatchMessages(txn, changes, &error);
-                if (!handledKeys) {
+                if (!handledKeys || error) {
                     secerror("Error handling updates: %@", error);
-                    CFReleaseNull(error);
                 }
+                CFReleaseNull(error);
             });
             CFReleaseSafe(changes);
             return handledKeys;
@@ -534,29 +568,32 @@ static SOSAccount* GetSharedAccount(void) {
         // provide state handler to sysdiagnose and logging
         os_state_add_handler(dispatch_get_global_queue(0, 0), accountStateBlock);
 
+        [sSharedAccount ghostBustSchedule];
+
     });
-    
 
     return sSharedAccount;
 }
 
 CFTypeRef GetSharedAccountRef(void)
 {
-    return (__bridge CFTypeRef)GetSharedAccount();
+    return (__bridge CFTypeRef)GetSharedAccount(FOR_EXISTING_ACCOUNT);
 }
 
 static void do_with_account(void (^action)(SOSAccountTransaction* txn)) {
-    SOSAccount* account = GetSharedAccount();
+    @autoreleasepool {
+        SOSAccount* account = GetSharedAccount(CREATE_ACCOUNT_IF_NONE);
 
-    if(account){
-        [account performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
-            action(txn);
-        }];
+        if(account){
+            [account performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+                action(txn);
+            }];
+        }
     }
 }
 
 static bool isValidUser(CFErrorRef* error) {
-#if !(TARGET_OS_EMBEDDED)
+#if !TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     if(geteuid() == 0){
         secerror("Cannot inflate account object as root");
         SOSErrorCreate(kSOSErrorUnsupported, error, NULL, CFSTR("Cannot inflate account object as root"));
@@ -569,7 +606,7 @@ static bool isValidUser(CFErrorRef* error) {
 
 static bool do_if_after_first_unlock(CFErrorRef *error, dispatch_block_t action)
 {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
     action();
     return true;
 #else
@@ -591,29 +628,11 @@ fail:
 
 static bool do_with_account_if_after_first_unlock(CFErrorRef *error, bool (^action)(SOSAccountTransaction* txn, CFErrorRef* error))
 {
-    static dispatch_once_t initialNotificationToken;
     __block bool action_result = false;
 
     return isValidUser(error) && do_if_after_first_unlock(error, ^{
         do_with_account(^(SOSAccountTransaction* txn) {
             action_result = action(txn, error);
-
-            // The first time we run do_with_account_if_after_first_unlock and the bag is unlocked,
-            // if we are now 'in circle', notify our listeners of a 'circle change' and a 'view change'.
-            // This will prompt them to refetch circle status, and we can actually respond correctly now!
-            // If we are out of circle, don't send the notification--all clients 'know' we're out of circle anyway.
-            dispatch_once(&initialNotificationToken, ^{
-                CFErrorRef cferror = NULL;
-
-                SOSCCStatus status = [txn.account getCircleStatus:&cferror];
-                if(cferror) {
-                    secerror("error getting circle status on first unlock: %@", cferror);
-                } else if (status == kSOSCCInCircle) {
-                    secnotice("secdNotify", "Notified clients of kSOSCCCircleChangedNotification && kSOSCCViewMembershipChangedNotification for in-circle initial unlock");
-                    notify_post(kSOSCCCircleChangedNotification);
-                    notify_post(kSOSCCViewMembershipChangedNotification);
-                }
-            });
         });
 
     }) && action_result;
@@ -644,12 +663,50 @@ static bool do_with_account_while_unlocked(CFErrorRef *error, bool (^action)(SOS
         return result;
     }
 
-    result = SecAKSDoWhileUserBagLocked(&localError, ^{
+    result = SecAKSDoWithUserBagLockAssertion(&localError, ^{
+        // SOSAccountGhostBustingOptions need to be retrieved from RAMP while not holding the account queue
+        // yet we only want to request RAMP info if it's "time" to ghostbust.
+
+#if GHOSTBUST_PERIODIC && (TARGET_OS_IOS || TARGET_OS_OSX)
+        __block bool ghostbustnow = false;
+        __block SOSAccountGhostBustingOptions gbOptions = 0;
+
+        // Avoid mutual deadlock for just checking date.
+        SOSAccount *tmpAccount = GetSharedAccount(FOR_EXISTING_ACCOUNT);
+        if(tmpAccount && [tmpAccount isInCircle:(NULL)]) {
+            if(tmpAccount.settings) {
+                ghostbustnow = [tmpAccount ghostBustCheckDate];
+            }
+
+            if(ghostbustnow) {
+                gbOptions = [SOSAccount  ghostBustGetRampSettings];
+            }
+        }
+        
+#endif
+
         do_with_account(^(SOSAccountTransaction* txn) {
+            SOSAccount *account = txn.account;
+            if ([account isInCircle:(NULL)] && [SOSAuthKitHelpers accountIsHSA2]) {
+                if(![SOSAuthKitHelpers peerinfoHasMID: account]) {
+                    // This is the first good opportunity to update our FullPeerInfo and
+                    // push the resulting circle.
+                    [SOSAuthKitHelpers updateMIDInPeerInfo: account];
+                }
+            }
+#if GHOSTBUST_PERIODIC && (TARGET_OS_IOS || TARGET_OS_OSX)
+            if(ghostbustnow) {
+                [account ghostBustPeriodic:gbOptions complete:^(bool ghostBusted, NSError *error) {
+                    secnotice("ghostbust", "GhostBusting: %@", ghostBusted ? CFSTR("true"): CFSTR("false"));
+                }];
+            }
+#endif
             attempted_action = true;
             action_result = action(txn, error);
         });
     });
+
+
 
     // For <rdar://problem/24355048> 13E196: Circle join fails after successful recovery with a mach error if performed while device is locked
     // If we fail with an error attempting to get an assertion while someone else has one and the system is unlocked, it must be trying to lock.
@@ -663,7 +720,7 @@ static bool do_with_account_while_unlocked(CFErrorRef *error, bool (^action)(SOS
         CFReleaseNull(localError);
         CFReleaseNull(statusError);
         
-        return result;
+        return (result && action_result);
     }
     if(attempted_action){
         if (error && !*error && localError) {
@@ -708,14 +765,16 @@ static bool do_with_account_while_unlocked(CFErrorRef *error, bool (^action)(SOS
     return result && action_result;
 }
 
+
+
 CFTypeRef SOSKeychainAccountGetSharedAccount()
 {
     __block SOSAccount* result = NULL;
-
-    do_with_account(^(SOSAccountTransaction* txn) {
-        result = txn.account;
-    });
-
+    result = GetSharedAccount(FOR_EXISTING_ACCOUNT);
+    
+    if(!result) {
+        secnotice("secAccount", "Failed request for account object");
+    }
     return (__bridge CFTypeRef)result;
 }
 
@@ -723,13 +782,6 @@ CFTypeRef SOSKeychainAccountGetSharedAccount()
 // Mark: Credential processing
 //
 
-
-bool SOSCCTryUserCredentials_Server(CFStringRef user_label, CFDataRef user_password, CFErrorRef *error)
-{
-    return do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        return SOSAccountTryUserCredentials(txn.account, user_label, user_password, block_error);
-    });
-}
 
 SOSViewResultCode SOSCCView_Server(CFStringRef viewname, SOSViewActionCode action, CFErrorRef *error) {
     __block SOSViewResultCode status = kSOSCCGeneralViewError;
@@ -761,38 +813,21 @@ SOSViewResultCode SOSCCView_Server(CFStringRef viewname, SOSViewActionCode actio
     return status;
 }
 
+bool SOSCCViewSetWithAnalytics_Server(CFSetRef enabledViews, CFSetRef disabledViews, CFDataRef parentEvent) {
+    __block bool status = false;
+
+    do_with_account_if_after_first_unlock(NULL, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        status = [txn.account.trust updateViewSetsWithAnalytics:txn.account enabled:enabledViews disabled:disabledViews parentEvent:(__bridge NSData*)parentEvent];
+        return true;
+    });
+    return status;
+}
+
 
 bool SOSCCViewSet_Server(CFSetRef enabledViews, CFSetRef disabledViews) {
-    __block bool status = false;
-    
-    do_with_account_if_after_first_unlock(NULL, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        status = [txn.account.trust updateViewSets:txn.account enabled:enabledViews disabled:disabledViews];
-        return true;
-    });
-    return status;
+    return SOSCCViewSetWithAnalytics_Server(enabledViews, disabledViews, NULL);
 }
 
-SOSSecurityPropertyResultCode SOSCCSecurityProperty_Server(CFStringRef property, SOSSecurityPropertyActionCode action, CFErrorRef *error) {
-    
-    __block SOSViewResultCode status = kSOSCCGeneralSecurityPropertyError;
-    do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        switch(action) {
-            case kSOSCCSecurityPropertyQuery:
-                status = [txn.account.trust SecurityPropertyStatus:property err:error];
-                break;
-            case kSOSCCSecurityPropertyEnable:
-            case kSOSCCSecurityPropertyDisable: // fallthrough
-                status = [txn.account.trust UpdateSecurityProperty:txn.account property:property code:action err:error];
-                break;
-            default:
-                secnotice("secprop", "Bad SOSSecurityPropertyActionCode - %d", (int) action);
-                return false;
-                break;
-        }
-        return true;
-    });
-    return status;
-}
 
 void sync_the_last_data_to_kvs(CFTypeRef account, bool waitForeverForSynchronization){
     
@@ -869,6 +904,32 @@ static bool Flush(CFErrorRef *error) {
     return success;
 }
 
+bool SOSCCTryUserCredentials_Server(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, CFErrorRef *error) {
+    secnotice("updates", "Trying credentials and dsid (%@) for %@", dsid, user_label);
+
+    bool result = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        if (dsid != NULL && CFStringCompare(dsid, CFSTR(""), 0) != 0) {
+            SOSAccountAssertDSID(txn.account, dsid);
+        }
+        return true;
+    });
+
+    require_quiet(result, done);
+
+    require_quiet(SyncKVSAndWait(error), done); // Make sure we've seen what the server has
+    require_quiet(Flush(error), done);          // And processed it already...before asserting
+
+    result = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *block_error) {
+        return SOSAccountTryUserCredentials(txn.account, user_label, user_password, block_error);
+    });
+
+    require_quiet(result, done);
+    require_quiet(Flush(error), done);
+
+done:
+    return result;
+}
+
 static bool SOSCCAssertUserCredentialsAndOptionalDSID(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, CFErrorRef *error) {
     secnotice("updates", "Setting credentials and dsid (%@) for %@", dsid, user_label);
 
@@ -895,7 +956,71 @@ static bool SOSCCAssertUserCredentialsAndOptionalDSID(CFStringRef user_label, CF
         return SOSAccountGenerationSignatureUpdate(txn.account, error);
     });
 
+    secnotice("updates", "Complete credentials and dsid (%@) for %@: %d %@",
+              dsid, user_label, result, error ? *error : NULL);
 done:
+    return result;
+}
+
+static bool SOSCCAssertUserCredentialsAndOptionalDSIDWithAnalytics(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, NSData* parentEvent, CFErrorRef *error) {
+    secnotice("updates", "Setting credentials and dsid (%@) for %@", dsid, user_label);
+
+    NSError* localError = nil;
+    SFSignInAnalytics* parent = [NSKeyedUnarchiver unarchivedObjectOfClass:[SFSignInAnalytics class] fromData:parentEvent error:&localError];
+
+    SFSignInAnalytics *syncAndWaitEvent = nil;
+    SFSignInAnalytics *flushEvent = nil;
+    SFSignInAnalytics *secondFlushEvent = nil;
+    SFSignInAnalytics *generationSignatureUpdateEvent = nil;
+
+    bool result = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        if (dsid != NULL && CFStringCompare(dsid, CFSTR(""), 0) != 0) {
+            SOSAccountAssertDSID(txn.account, dsid);
+        }
+        return true;
+    });
+
+    require_quiet(result, done);
+    syncAndWaitEvent = [parent newSubTaskForEvent:@"syncAndWaitEvent"];
+    require_quiet(SyncKVSAndWait(error), done); // Make sure we've seen what the server has
+    [syncAndWaitEvent stopWithAttributes:nil];
+
+    flushEvent = [parent newSubTaskForEvent:@"flushEvent"];
+    require_quiet(Flush(error), done);          // And processed it already...before asserting
+    [flushEvent stopWithAttributes:nil];
+
+    result = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *block_error) {
+        return SOSAccountAssertUserCredentials(txn.account, user_label, user_password, block_error);
+    });
+
+    require_quiet(result, done);
+    secondFlushEvent = [parent newSubTaskForEvent:@"secondFlushEvent"];
+    require_quiet(Flush(error), done); // Process any incoming information..circles et.al. before fixing our signature
+    [secondFlushEvent stopWithAttributes:nil];
+
+    generationSignatureUpdateEvent = [parent newSubTaskForEvent:@"generationSignatureUpdateEvent"];
+    result = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        return SOSAccountGenerationSignatureUpdate(txn.account, error);
+    });
+    [generationSignatureUpdateEvent stopWithAttributes:nil];
+
+
+done:
+    if(syncAndWaitEvent){
+        [syncAndWaitEvent stopWithAttributes:nil];
+    }
+    if(flushEvent){
+        [flushEvent stopWithAttributes:nil];
+    }
+    if(secondFlushEvent){
+        [secondFlushEvent stopWithAttributes:nil];
+    }
+    if(generationSignatureUpdateEvent){
+        [generationSignatureUpdateEvent stopWithAttributes:nil];
+    }
+    secnotice("updates", "Complete credentials and dsid (%@) for %@: %d %@",
+              dsid, user_label, result, error ? *error : NULL);
+
     return result;
 }
 
@@ -905,6 +1030,10 @@ bool SOSCCSetUserCredentialsAndDSID_Server(CFStringRef user_label, CFDataRef use
     return SOSCCAssertUserCredentialsAndOptionalDSID(user_label, user_password, dsid, error);
 }
 
+bool SOSCCSetUserCredentialsAndDSIDWithAnalytics_Server(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, CFDataRef parentEvent, CFErrorRef *error)
+{
+    return SOSCCAssertUserCredentialsAndOptionalDSIDWithAnalytics(user_label, user_password, dsid, (__bridge NSData*)parentEvent, error);
+}
 bool SOSCCSetUserCredentials_Server(CFStringRef user_label, CFDataRef user_password, CFErrorRef *error)
 {
     return SOSCCAssertUserCredentialsAndOptionalDSID(user_label, user_password, NULL, error);
@@ -958,6 +1087,16 @@ bool SOSCCRequestToJoinCircle_Server(CFErrorRef* error)
     });
 }
 
+bool SOSCCRequestToJoinCircleWithAnalytics_Server(CFDataRef parentEvent, CFErrorRef* error)
+{
+    __block bool result = true;
+
+    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        result = SOSAccountJoinCirclesWithAnalytics(txn, (__bridge NSData*)parentEvent, block_error);
+        return result;
+    });
+}
+
 bool SOSCCAccountHasPublicKey_Server(CFErrorRef *error)
 {
     __block bool result = true;
@@ -996,6 +1135,31 @@ bool SOSCCRequestToJoinCircleAfterRestore_Server(CFErrorRef* error)
     returned = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
         SOSAccountEnsurePeerRegistration(txn.account, block_error);
         result = SOSAccountJoinCirclesAfterRestore(txn, block_error);
+        return result;
+    });
+    return returned;
+
+}
+
+bool SOSCCRequestToJoinCircleAfterRestoreWithAnalytics_Server(CFDataRef parentEvent, CFErrorRef* error)
+{
+    __block bool result = true;
+    bool returned = false;
+    returned = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        NSError* localError = nil;
+        SFSignInAnalytics* parent = [NSKeyedUnarchiver unarchivedObjectOfClass:[SFSignInAnalytics class] fromData:(__bridge NSData*)parentEvent error:&localError];
+
+        SFSignInAnalytics *ensurePeerRegistrationEvent = [parent newSubTaskForEvent:@"ensurePeerRegistrationEvent"];
+        SOSAccountEnsurePeerRegistration(txn.account, block_error);
+        if(block_error && *block_error){
+            NSError* blockError = (__bridge NSError*)*block_error;
+            if(blockError){
+                [ensurePeerRegistrationEvent logRecoverableError:blockError];
+                secerror("ensure peer registration error: %@", blockError);
+            }
+        }
+        [ensurePeerRegistrationEvent stopWithAttributes:nil];
+        result = SOSAccountJoinCirclesAfterRestoreWithAnalytics(txn, (__bridge NSData*)parentEvent, block_error);
         return result;
     });
     return returned;
@@ -1095,90 +1259,6 @@ SOSRingStatus SOSCCRingStatus_Server(CFStringRef ringName, CFErrorRef *error){
     return returned;
 }
 
-CFStringRef SOSCCCopyDeviceID_Server(CFErrorRef *error)
-{
-    __block CFStringRef result = NULL;
-    
-    (void) do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        result = SOSAccountCopyDeviceID(txn.account, error);
-        return (!isNull(result));
-    });
-    return result;
-}
-
-bool SOSCCSetDeviceID_Server(CFStringRef IDS, CFErrorRef *error){
-    
-    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        return SOSAccountSetMyDSID(txn, IDS, block_error);
-    });
-}
-
-bool SOSCCRequestSyncWithPeerOverKVS_Server(CFStringRef peerid, CFDataRef message, CFErrorRef *error)
-{
-    __block bool result = NULL;
-    
-    result = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        return SOSAccountSyncWithKVSPeerWithMessage(txn, peerid, message, error);
-    });
-    return result;
-}
-
-HandleIDSMessageReason SOSCCHandleIDSMessage_Server(CFDictionaryRef messageDict, CFErrorRef* error)
-{
-    __block HandleIDSMessageReason result = kHandleIDSMessageSuccess;
-    CFErrorRef action_error = NULL;
-    
-    if (!do_with_account_while_unlocked(&action_error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        result = [txn.account.ids_message_transport SOSTransportMessageIDSHandleMessage:txn.account m:messageDict err:block_error];
-        return true;
-    })) {
-        if (action_error) {
-            if(CFErrorIsMalfunctioningKeybagError(action_error)){
-                secnotice("updates", "SOSCCHandleIDSMessage_Server failed because device is locked; letting KeychainSyncingOverIDSProxy know");
-                result = kHandleIDSMessageLocked;        // tell KeychainSyncingOverIDSProxy to call us back when device unlock
-            } else {
-                secerror("Unexpected error: %@", action_error);
-            }
-            
-            if (error && *error == NULL) {
-                *error = action_error;
-                action_error = NULL;
-            }
-            CFReleaseNull(action_error);
-        }
-    }
-    return result;
-}
-
-bool SOSCCClearPeerMessageKeyInKVS_Server(CFStringRef peerID, CFErrorRef *error)
-{
-    __block bool result = false;
-
-    result = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        return SOSAccountClearPeerMessageKey(txn, peerID, error);
-    });
-
-    return result;
-}
-
-bool SOSCCIDSPingTest_Server(CFStringRef message, CFErrorRef *error){
-    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        return SOSAccountStartPingTest(txn.account, message, block_error);
-    });
-}
-
-bool SOSCCIDSServiceRegistrationTest_Server(CFStringRef message, CFErrorRef *error){
-    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        return SOSAccountSendIDSTestMessage(txn.account, message, block_error);
-    });
-}
-
-bool SOSCCIDSDeviceIDIsAvailableTest_Server(CFErrorRef *error){
-    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        return SOSAccountRetrieveDeviceIDFromKeychainSyncingOverIDSProxy(txn.account, block_error);
-    });
-}
-
 bool SOSCCAccountSetToNew_Server(CFErrorRef *error)
 {
 	return do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
@@ -1208,6 +1288,23 @@ bool SOSCCResetToEmpty_Server(CFErrorRef* error)
 
 }
 
+bool SOSCCResetToEmptyWithAnalytics_Server(CFDataRef parentEvent, CFErrorRef* error)
+{
+    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        if (!SOSAccountHasPublicKey(txn.account, error))
+            return false;
+        return [txn.account.trust resetAccountToEmptyWithAnalytics:txn.account transport:txn.account.circle_transport parentEvent:(__bridge NSData*)parentEvent err:block_error];
+    });
+
+}
+
+bool SOSCCRemoveThisDeviceFromCircleWithAnalytics_Server(CFDataRef parentEvent, CFErrorRef* error)
+{
+    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        return [txn.account.trust leaveCircleWithAccount:txn.account withAnalytics:(__bridge NSData*)parentEvent err:error];
+    });
+}
+
 bool SOSCCRemoveThisDeviceFromCircle_Server(CFErrorRef* error)
 {
     return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
@@ -1222,11 +1319,17 @@ bool SOSCCRemovePeersFromCircle_Server(CFArrayRef peers, CFErrorRef* error)
     });
 }
 
+bool SOSCCRemovePeersFromCircleWithAnalytics_Server(CFArrayRef peers, CFDataRef parentEvent, CFErrorRef* error)
+{
+    return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        return SOSAccountRemovePeersFromCircleWithAnalytics(txn.account, peers, (__bridge NSData*)parentEvent, block_error);
+    });
+}
 
 bool SOSCCLoggedOutOfAccount_Server(CFErrorRef *error)
 {
     return do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        secnotice("sosops", "Signed out of account!");
+        secnotice("circleOps", "Signed out of account!");
         
         bool waitForeverForSynchronization = true;
         
@@ -1387,6 +1490,96 @@ static uint64_t initialSyncTimeoutFromDefaultsWrite(void)
     return timeout;
 }
 
+bool SOSCCWaitForInitialSyncWithAnalytics_Server(CFDataRef parentEvent, CFErrorRef* error) {
+    __block dispatch_semaphore_t inSyncSema = NULL;
+    __block bool result = false;
+    __block bool synced = false;
+    bool timed_out = false;
+    __block CFStringRef inSyncCallID = NULL;
+    __block time_t start;
+    __block CFBooleanRef shouldUseInitialSyncV0 = false;
+    SFSignInAnalytics* syncingEvent = nil;
+
+    NSError* localError = nil;
+    SFSignInAnalytics* parent = [NSKeyedUnarchiver unarchivedObjectOfClass:[SFSignInAnalytics class] fromData:(__bridge NSData*)parentEvent error:&localError];
+
+    secnotice("initial sync", "Wait for initial sync start!");
+
+    result = do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        shouldUseInitialSyncV0 = (CFBooleanRef)SOSAccountGetValue(txn.account, kSOSInitialSyncTimeoutV0, error);
+        bool alreadyInSync = (SOSAccountHasCompletedInitialSync(txn.account));
+
+        if (!alreadyInSync) {
+            start = time(NULL);
+            inSyncSema = dispatch_semaphore_create(0);
+
+            SFSignInAnalytics* callWhenInSyncEvent = [parent newSubTaskForEvent:@"callWhenInSync"];
+            inSyncCallID = SOSAccountCallWhenInSync(txn.account, ^bool(SOSAccount* mightBeSynced) {
+                synced = true;
+
+                if(inSyncSema){
+                    dispatch_semaphore_signal(inSyncSema);
+                    NSDictionary* attributes = @{@"finishedSyncing" : @YES};
+                    [syncingEvent stopWithAttributes:attributes];
+                }
+                return true;
+            });
+            NSDictionary* attributes = @{};
+            [callWhenInSyncEvent stopWithAttributes:attributes];
+        }
+        else{
+            synced = true;
+        }
+        return true;
+    });
+
+    require_quiet(result, fail);
+
+
+    if(inSyncSema){
+        syncingEvent = [parent newSubTaskForEvent:@"initialSyncEvent"];
+        if(shouldUseInitialSyncV0){
+            secnotice("piggy","setting initial sync timeout to 5 minutes");
+            timed_out = dispatch_semaphore_wait(inSyncSema, dispatch_time(DISPATCH_TIME_NOW, 300ull * NSEC_PER_SEC));
+        }
+        else{
+            uint64_t timeoutFromDefaultsWrite = initialSyncTimeoutFromDefaultsWrite();
+            secnotice("piggy","setting initial sync timeout to %llu seconds", timeoutFromDefaultsWrite);
+            timed_out = dispatch_semaphore_wait(inSyncSema, dispatch_time(DISPATCH_TIME_NOW, timeoutFromDefaultsWrite * NSEC_PER_SEC));
+        }
+    }
+    if (timed_out && shouldUseInitialSyncV0) {
+        do_with_account(^(SOSAccountTransaction* txn) {
+            if (SOSAccountUnregisterCallWhenInSync(txn.account, inSyncCallID)) {
+                if(inSyncSema){
+                    inSyncSema = NULL; // We've canceled the timeout so we must be the last.
+                }
+            }
+        });
+        NSError* error = [NSError errorWithDomain:@"securityd" code:errSecTimedOut userInfo:@{NSLocalizedDescriptionKey: @"timed out waiting for initial sync"}];
+        [syncingEvent logUnrecoverableError:error];
+        NSDictionary* attributes = @{@"finishedSyncing" : @NO, @"legacyPiggybacking" : @YES};
+        [syncingEvent stopWithAttributes:attributes];
+    }
+
+    require_quiet(result, fail);
+
+    if(result)
+    {
+        SecADClientPushValueForDistributionKey(SOSAggdSyncCompletionKey, getTimeDifference(start));
+    }
+    else if(!result)
+    {
+        SecADAddValueForScalarKey(SOSAggdSyncTimeoutKey, 1);
+    }
+
+    secnotice("initial sync", "Finished!: %d", result);
+
+fail:
+    CFReleaseNull(inSyncCallID);
+    return result;
+}
+
 bool SOSCCWaitForInitialSync_Server(CFErrorRef* error) {
     
     __block dispatch_semaphore_t inSyncSema = NULL;
@@ -1404,7 +1597,6 @@ bool SOSCCWaitForInitialSync_Server(CFErrorRef* error) {
         bool alreadyInSync = (SOSAccountHasCompletedInitialSync(txn.account));
 
         if (!alreadyInSync) {
-            txn.account.isInitialSyncing = true;
             start = time(NULL);
             inSyncSema = dispatch_semaphore_create(0);
             
@@ -1457,10 +1649,6 @@ bool SOSCCWaitForInitialSync_Server(CFErrorRef* error) {
     {
         SecADAddValueForScalarKey(SOSAggdSyncTimeoutKey, 1);
     }
-
-    (void)do_with_account(^(SOSAccountTransaction *txn) {
-        txn.account.isInitialSyncing = false;
-    });
 
     secnotice("initial sync", "Finished!: %d", result);
 
@@ -1548,7 +1736,7 @@ CFDataRef SOSWrapToBackupSliceKeyBag(SOSBackupSliceKeyBagRef bskb, CFDataRef inp
     CFMutableDictionaryRef plaintext = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFDictionarySetValue(plaintext, CFSTR("data"), input);
 
-    require_quiet(ks_encrypt_data(bskb_handle, access, NULL, plaintext, NULL, &encrypted, false, error), exit);
+    require_quiet(ks_encrypt_data_legacy(bskb_handle, access, NULL, plaintext, NULL, &encrypted, false, error), exit);
 
 exit:
     CFReleaseNull(bskb);
@@ -1619,6 +1807,10 @@ CFDictionaryRef SOSCCCopyBackupInformation_Server(CFErrorRef *error) {
 
 bool SOSCCSetEscrowRecord_Server(CFStringRef escrow_label, uint64_t tries, CFErrorRef *error){
    
+    if (escrow_label == NULL) {
+        return false;
+    }
+
     __block bool result = true;
     __block CFErrorRef block_error = NULL;
     
@@ -1788,17 +1980,20 @@ bool SOSCCDeleteEngineState_Server(CFErrorRef* error)
 SOSPeerInfoRef SOSCCSetNewPublicBackupKey_Server(CFDataRef newPublicBackup, CFErrorRef *error){
     __block SOSPeerInfoRef result = NULL;
 
+    secnotice("devRecovery", "SOSCCSetNewPublicBackupKey_Server acquiring account lock");
     (void) do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+        secnotice("devRecovery", "SOSCCSetNewPublicBackupKey_Server acquired account lock");
         if(SOSAccountSetBackupPublicKey(txn,newPublicBackup, error)){
+            secnotice("devRecovery", "SOSCCSetNewPublicBackupKey_Server, new public backup is set in account");
             [txn restart];  // Finish the transaction to update any changes to the peer info.
 
             // Create a copy to be DERed/sent back to client
             result = SOSPeerInfoCreateCopy(kCFAllocatorDefault, txn.account.peerInfo, block_error);
-            secdebug("backup", "SOSCCSetNewPublicBackupKey_Server, new public backup is set");
+            secnotice("devRecovery", "SOSCCSetNewPublicBackupKey_Server, new public backup is set and pushed");
         }
         else
         {
-            secerror("SOSCCSetNewPublicBackupKey_Server, could not set new public backup");
+            secnotice("devRecovery", "SOSCCSetNewPublicBackupKey_Server, could not set new public backup");
         }
         return result != NULL;
     });
@@ -1824,70 +2019,12 @@ CFStringRef SOSCCCopyIncompatibilityInfo_Server(CFErrorRef* error)
     return result;
 }
 
-bool SOSCCCheckPeerAvailability_Server(CFErrorRef *error)
-{
-    __block bool pingedPeersInCircle = false;
-    __block dispatch_semaphore_t peerSemaphore = NULL;
-    __block bool peerIsAvailable = false;
-    
-    static dispatch_queue_t time_out;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        time_out = dispatch_queue_create("peersAvailableTimeout", DISPATCH_QUEUE_SERIAL);
-    });
-    __block int token = -1;
-    
-    bool result = do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        
-        peerSemaphore = dispatch_semaphore_create(0);
-        notify_register_dispatch(kSOSCCPeerAvailable, &token, time_out, ^(int token) {
-            if(peerSemaphore != NULL){
-                dispatch_semaphore_signal(peerSemaphore);
-                peerIsAvailable = true;
-                notify_cancel(token);
-            }
-        });
-        
-        pingedPeersInCircle = SOSAccountCheckPeerAvailability(txn.account, block_error);
-        return pingedPeersInCircle;
-    });
-    
-    if (result) {
-        dispatch_semaphore_wait(peerSemaphore, dispatch_time(DISPATCH_TIME_NOW, 7ull * NSEC_PER_SEC));
-    }
-    
-    if(time_out != NULL && peerSemaphore != NULL){
-        dispatch_sync(time_out, ^{
-            if(!peerIsAvailable){
-                peerSemaphore = NULL;
-                notify_cancel(token);
-                secnotice("peer available", "checking peer availability timed out, releasing semaphore");
-            }
-        });
-    }
-    if(!peerIsAvailable){
-        CFStringRef errorMessage = CFSTR("There are no peers in the circle currently available");
-        CFDictionaryRef userInfo = CFDictionaryCreateForCFTypes(kCFAllocatorDefault, kCFErrorLocalizedDescriptionKey, errorMessage, NULL);
-        if(error != NULL){
-            *error =CFErrorCreate(kCFAllocatorDefault, CFSTR("com.apple.security.ids.error"), kSecIDSErrorNoPeersAvailable, userInfo);
-            secerror("%@", *error);
-        }
-        CFReleaseNull(userInfo);
-        return false;
-    }
-    else
-        return true;
-}
-
-
 bool SOSCCkSecXPCOpIsThisDeviceLastBackup_Server(CFErrorRef *error) {
     bool result = do_with_account_while_unlocked(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
         return SOSAccountIsLastBackupPeer(txn.account, block_error);
     });
     return result;
 }
-
-
 
 enum DepartureReason SOSCCGetLastDepartureReason_Server(CFErrorRef* error)
 {
@@ -1970,13 +2107,6 @@ void SOSCCRequestSyncWithPeer(CFStringRef peerID) {
     CFReleaseNull(peers);
 }
 
-bool SOSCCRequestSyncWithPeerOverKVSUsingIDOnly_Server(CFStringRef deviceID, CFErrorRef *error)
-{
-    return do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        return SOSAccountSyncWithKVSUsingIDSID(txn.account, deviceID, error);
-    });
-}
-
 void SOSCCRequestSyncWithPeers(CFSetRef /*SOSPeerInfoRef/CFStringRef*/ peerIDs) {
     CFMutableArrayRef peerIDArray = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
 
@@ -2000,7 +2130,7 @@ void SOSCCRequestSyncWithPeersList(CFArrayRef /*CFStringRef*/ peerIDs) {
     os_activity_initiate("CloudCircle RequestSyncWithPeersList", OS_ACTIVITY_FLAG_DEFAULT, ^(void) {
         CFArrayRef empty = CFArrayCreateForCFTypes(kCFAllocatorDefault, NULL);
 
-        CFStringArrayPerfromWithDescription(peerIDs, ^(CFStringRef description) {
+        CFStringArrayPerformWithDescription(peerIDs, ^(CFStringRef description) {
             secnotice("syncwith", "Request Sync With: %@", description);
         });
 
@@ -2015,7 +2145,7 @@ void SOSCCRequestSyncWithBackupPeer(CFStringRef backupPeerId) {
         CFArrayRef empty = CFArrayCreateForCFTypes(kCFAllocatorDefault, NULL);
         CFArrayRef backupPeerList = CFArrayCreateForCFTypes(kCFAllocatorDefault, backupPeerId, NULL);
 
-        CFStringArrayPerfromWithDescription(backupPeerList, ^(CFStringRef description) {
+        CFStringArrayPerformWithDescription(backupPeerList, ^(CFStringRef description) {
             secnotice("syncwith", "Request backup sync With: %@", description);
         });
 
@@ -2028,7 +2158,7 @@ void SOSCCRequestSyncWithBackupPeer(CFStringRef backupPeerId) {
 }
 
 bool SOSCCIsSyncPendingFor(CFStringRef peerID, CFErrorRef *error) {
-    return SOSCloudKeychainHasPendingSyncWithPeer(peerID, error);
+    return false;
 }
 
 void SOSCCEnsurePeerRegistration(void)
@@ -2056,16 +2186,16 @@ SOSPeerInfoRef SOSCCCopyApplication_Server(CFErrorRef *error) {
         return application != NULL;
     });
     return application;
-    
 }
 
 bool SOSCCCleanupKVSKeys_Server(CFErrorRef *error) {
-    __block bool result = false;
-    do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
+    bool result = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
         return SOSAccountCleanupAllKVSKeys(txn.account, error);
     });
+    if(result && error && *error) {
+        CFReleaseNull(*error);
+    }
     return result;
-    
 }
 
 bool SOSCCTestPopulateKVSWithBadKeys_Server(CFErrorRef *error)
@@ -2147,7 +2277,7 @@ void SOSCCResetOTRNegotiation_Server(CFStringRef peerid)
 {
     CFErrorRef localError = NULL;
      do_with_account_while_unlocked(&localError, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-         SOSAccountResetOTRNegotiationCoder(txn, peerid);
+         SOSAccountResetOTRNegotiationCoder(txn.account, peerid);
          return true;
     });
     if(localError)
@@ -2169,14 +2299,7 @@ void SOSCCPeerRateLimiterSendNextMessage_Server(CFStringRef peerid, CFStringRef 
     }
 }
 
-XPC_RETURNS_RETAINED xpc_endpoint_t
-SOSCCCreateSOSEndpoint_server(CFErrorRef *error)
-{
-    SOSAccount* account = (__bridge SOSAccount *)(SOSKeychainAccountGetSharedAccount());
-    return [account xpcControlEndpoint];
-}
-
-void SOSCCPerformWithOctagonSigningKey(void (^action)(SecKeyRef octagonPrivKey, CFErrorRef error))
+void SOSCCPerformWithOctagonSigningKey(void (^action)(SecKeyRef octagonPrivSigningKey, CFErrorRef error))
 {
     CFErrorRef error = NULL;
     do_with_account_if_after_first_unlock(&error, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
@@ -2185,6 +2308,261 @@ void SOSCCPerformWithOctagonSigningKey(void (^action)(SecKeyRef octagonPrivKey, 
         CFErrorRef errorArg = err ? *err : NULL;
         action(signingKey, errorArg);
         CFReleaseNull(signingKey);
-        return error == NULL;
+        return true;
     });
+    CFReleaseNull(error);
+}
+
+void SOSCCPerformWithOctagonSigningPublicKey(void (^action)(SecKeyRef octagonPublicKey, CFErrorRef error))
+{
+    CFErrorRef error = NULL;
+    do_with_account_if_after_first_unlock(&error, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
+        SOSFullPeerInfoRef fpi = txn.account.trust.fullPeerInfo;
+        SecKeyRef signingKey = SOSFullPeerInfoCopyOctagonPublicSigningKey(fpi, err);
+        CFErrorRef errorArg = err ? *err : NULL;
+        action(signingKey, errorArg);
+        CFReleaseNull(signingKey);
+        return true;
+    });
+    CFReleaseNull(error);
+}
+
+void SOSCCPerformWithOctagonEncryptionKey(void (^action)(SecKeyRef octagonPrivEncryptionKey, CFErrorRef error))
+{
+    CFErrorRef error = NULL;
+    do_with_account_if_after_first_unlock(&error, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
+        SOSFullPeerInfoRef fpi = txn.account.trust.fullPeerInfo;
+        SecKeyRef signingKey = SOSFullPeerInfoCopyOctagonEncryptionKey(fpi, err);
+        CFErrorRef errorArg = err ? *err : NULL;
+        action(signingKey, errorArg);
+        CFReleaseNull(signingKey);
+        return true;
+    });
+    CFReleaseNull(error);
+}
+
+void SOSCCPerformWithOctagonEncryptionPublicKey(void (^action)(SecKeyRef octagonPublicEncryptionKey, CFErrorRef error))
+{
+    CFErrorRef error = NULL;
+    do_with_account_if_after_first_unlock(&error, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
+        SOSFullPeerInfoRef fpi = txn.account.trust.fullPeerInfo;
+        SecKeyRef signingKey = SOSFullPeerInfoCopyOctagonPublicEncryptionKey(fpi, err);
+        CFErrorRef errorArg = err ? *err : NULL;
+        action(signingKey, errorArg);
+        CFReleaseNull(signingKey);
+        return true;
+    });
+    CFReleaseNull(error);
+}
+
+void SOSCCPerformWithAllOctagonKeys(void (^action)(SecKeyRef octagonEncryptionKey, SecKeyRef octagonSigningKey, CFErrorRef error))
+{
+    CFErrorRef localError = NULL;
+    do_with_account_if_after_first_unlock(&localError, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
+        SecKeyRef encryptionKey = NULL;
+        SecKeyRef signingKey = NULL;
+        CFErrorRef errorArg = err ? *err : NULL;
+        
+        SOSFullPeerInfoRef fpi = txn.account.trust.fullPeerInfo;
+        require_action_quiet(fpi, fail, secerror("device does not have a peer"); SOSCreateError(kSOSErrorPeerNotFound, CFSTR("No Peer for Account"), NULL, &errorArg));
+        
+        signingKey = SOSFullPeerInfoCopyOctagonSigningKey(fpi, &errorArg);
+        require_action_quiet(signingKey && !errorArg, fail, secerror("SOSCCPerformWithAllOctagonKeys signing key error: %@", errorArg));
+        CFReleaseNull(errorArg);
+        
+        encryptionKey = SOSFullPeerInfoCopyOctagonEncryptionKey(fpi, &errorArg);
+        require_action_quiet(encryptionKey && !errorArg, fail, secerror("SOSCCPerformWithAllOctagonKeys encryption key error: %@", errorArg));
+        
+        action(encryptionKey, signingKey, errorArg);
+        CFReleaseNull(signingKey);
+        CFReleaseNull(encryptionKey);
+        CFReleaseNull(errorArg);
+        return true;
+    fail:
+        action(NULL, NULL, errorArg);
+        CFReleaseNull(errorArg);
+        CFReleaseNull(signingKey);
+        CFReleaseNull(encryptionKey);
+        return true;
+    });
+    CFReleaseNull(localError);
+}
+
+static bool saveOctagonKeysToKeychain(NSString* keyLabel, NSData* keyDataToSave, int keySize, SecKeyRef octagonPublicKey, NSError** error) {
+    NSError* localerror = nil;
+
+    CFDataRef publicKeyHash = SecKeyCopyPublicKeyHash(octagonPublicKey);
+
+    NSMutableDictionary* query = [@{
+                                    (id)kSecClass                   : (id)kSecClassKey,
+                                    (id)kSecAttrKeyType             : (id)kSecAttrKeyTypeEC,
+                                    (id)kSecAttrKeyClass            : (id)kSecAttrKeyClassPrivate,
+                                    (id)kSecAttrAccessGroup         : (id)kSOSInternalAccessGroup,
+                                    (id)kSecAttrLabel               : keyLabel,
+                                    (id)kSecAttrApplicationLabel    : (__bridge NSData*)(publicKeyHash),
+                                    (id)kSecAttrSynchronizable      : (id)kCFBooleanFalse,
+                                    (id)kSecUseDataProtectionKeychain : @YES,
+                                    (id)kSecValueData               : keyDataToSave,
+                                    } mutableCopy];
+
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, &result);
+
+    if(status == errSecSuccess) {
+        CFReleaseNull(publicKeyHash);
+        return true;
+    }
+    if(status == errSecDuplicateItem) {
+        // Add every primary key attribute to this find dictionary
+        NSMutableDictionary* findQuery = [[NSMutableDictionary alloc] init];
+        findQuery[(id)kSecClass] = query[(id)kSecClass];
+        findQuery[(id)kSecAttrKeyType] = query[(id)kSecAttrKeyTypeEC];
+        findQuery[(id)kSecAttrKeyClass] = query[(id)kSecAttrKeyClassPrivate];
+        findQuery[(id)kSecAttrAccessGroup] = query[(id)kSecAttrAccessGroup];
+        findQuery[(id)kSecAttrLabel] = query[(id)kSecAttrLabel];
+        findQuery[(id)kSecAttrApplicationLabel] = query[(id)kSecAttrApplicationLabel];
+        findQuery[(id)kSecUseDataProtectionKeychain] = query[(id)kSecUseDataProtectionKeychain];
+
+        NSMutableDictionary* updateQuery = [query mutableCopy];
+        updateQuery[(id)kSecClass] = nil;
+
+        status = SecItemUpdate((__bridge CFDictionaryRef)findQuery, (__bridge CFDictionaryRef)updateQuery);
+
+        if(status) {
+            localerror = [NSError
+                          errorWithDomain:NSOSStatusErrorDomain
+                          code:status
+                          description:[NSString stringWithFormat:@"SecItemUpdate: %d", (int)status]];
+        }
+    } else {
+        localerror = [NSError
+                      errorWithDomain:NSOSStatusErrorDomain
+                      code:status
+                      description:[NSString stringWithFormat:@"SecItemAdd: %d", (int)status]];
+    }
+    if(localerror && error) {
+        *error = localerror;
+    }
+
+    CFReleaseNull(publicKeyHash);
+
+    return (status == errSecSuccess);
+}
+
+static NSString* createKeyLabel(NSDictionary *gestalt, NSString* circleName, NSString* prefix)
+{
+    NSString *keyName = [NSString stringWithFormat:@"ID for %@-%@",SOSPeerGestaltGetName((__bridge CFDictionaryRef)(gestalt)), circleName];
+
+    NSString* octagonSigningKeyName = [prefix stringByAppendingString: keyName];
+
+    return octagonSigningKeyName;
+}
+
+static NSError* saveKeysToKeychain(SOSAccount* account, NSData* octagonSigningFullKey, NSData* octagonEncryptionFullKey, SecKeyRef octagonSigningPublicKeyRef, SecKeyRef octagonEncryptionPublicKeyRef)
+{
+    NSError* saveToKeychainError = nil;
+
+    NSString* circleName = (__bridge NSString*)(SOSCircleGetName(account.trust.trustedCircle));
+    NSString* signingPrefix = @"Octagon Peer Signing ";
+    NSString* encryptionPrefix = @"Octagon Peer Encryption ";
+    NSString* octagonSigningKeyName = createKeyLabel(account.gestalt, circleName, signingPrefix);
+    NSString* octagonEncryptionKeyName = createKeyLabel(account.gestalt, circleName, encryptionPrefix);
+
+    /* behavior mimics GeneratePermanentFullECKey_internal */
+    saveOctagonKeysToKeychain(octagonSigningKeyName, octagonSigningFullKey, 384, octagonSigningPublicKeyRef, &saveToKeychainError);
+    if(saveToKeychainError) {
+        secerror("octagon: could not save signing key: %@", saveToKeychainError);
+        return saveToKeychainError;
+    }
+    saveOctagonKeysToKeychain(octagonEncryptionKeyName, octagonEncryptionFullKey, 384, octagonEncryptionPublicKeyRef, &saveToKeychainError);
+    if(saveToKeychainError) {
+        secerror("octagon: could not save encryption key: %@", saveToKeychainError);
+        return saveToKeychainError;
+    }
+
+    return nil;
+}
+
+void SOSCCPerformUpdateOfAllOctagonKeys(CFDataRef octagonSigningFullKey, CFDataRef octagonEncryptionFullKey,
+                                        CFDataRef signingPublicKey, CFDataRef encryptionPublicKey,
+                                        SecKeyRef octagonSigningPublicKeyRef, SecKeyRef octagonEncryptionPublicKeyRef,
+                                        void (^action)(CFErrorRef error))
+{
+    CFErrorRef localError = NULL;
+    do_with_account_if_after_first_unlock(&localError, ^bool(SOSAccountTransaction *txn, CFErrorRef *err) {
+        CFErrorRef updateOctagonKeysError = NULL;
+        bool updatedPeerInfo = SOSAccountUpdatePeerInfoAndPush(txn.account, CFSTR("Updating Octagon Keys in SOS"), &updateOctagonKeysError, ^bool(SOSPeerInfoRef pi, CFErrorRef *error) {
+
+            //save octagon key set to the keychain
+            NSError* saveError = nil;
+            saveError = saveKeysToKeychain(txn.account, (__bridge NSData*)octagonSigningFullKey, (__bridge NSData*)octagonEncryptionFullKey,
+                     octagonSigningPublicKeyRef, octagonEncryptionPublicKeyRef);
+
+            if(saveError) {
+                secerror("octagon: failed to save Octagon keys to the keychain: %@", saveError);
+                action((__bridge CFErrorRef)saveError);
+                return false;
+            }
+
+            //now update the peer info to contain octagon keys
+            if(pi){
+                CFErrorRef setError = NULL;
+                SOSPeerInfoSetOctagonKeysInDescription(pi, octagonSigningPublicKeyRef, octagonEncryptionPublicKeyRef, &setError);
+                if(setError) {
+                    secerror("octagon: Failed to set Octagon Keys in peerInfo: %@", setError);
+                    action(setError);
+                    return false;
+                }
+            } else {
+                secnotice("octagon", "No peer info to update?");
+                NSError *noPIError = [NSError errorWithDomain:(__bridge NSString*)kSOSErrorDomain code:kSOSErrorPeerNotFound userInfo:@{NSLocalizedDescriptionKey : @"Device has no full peer info"}];
+                action((__bridge CFErrorRef)noPIError);
+                return false;
+            }
+
+            secnotice("octagon", "Success! Upated Octagon keys in SOS!");
+
+            action(nil);
+            return true;
+        });
+        return updatedPeerInfo;
+    });
+    CFReleaseNull(localError);
+}
+
+void SOSCCPerformWithTrustedPeers(void (^action)(CFSetRef sosPeerInfoRefs, CFErrorRef error))
+{
+    CFErrorRef cfAccountError = NULL;
+    do_with_account_if_after_first_unlock(&cfAccountError, ^bool(SOSAccountTransaction *txn, CFErrorRef *cferror) {
+        CFSetRef sosPeerSet = [txn.account.trust copyPeerSetMatching:^bool(SOSPeerInfoRef peer) {
+            return true;
+        }];
+
+        CFErrorRef errorArg = cferror ? *cferror : NULL;
+        action(sosPeerSet, errorArg);
+        CFReleaseNull(sosPeerSet);
+        return true;
+    });
+    CFReleaseNull(cfAccountError);
+}
+
+void SOSCCPerformWithPeerID(void (^action)(CFStringRef peerID, CFErrorRef error))
+{
+    CFErrorRef cfAccountError = NULL;
+    do_with_account_if_after_first_unlock(&cfAccountError, ^bool(SOSAccountTransaction *txn, CFErrorRef *cferror) {
+        SOSAccount* account = txn.account;
+        NSString* peerID = nil;
+        CFErrorRef localError = nil;
+        
+        if([account getCircleStatus:nil] == kSOSCCInCircle){
+            peerID = [txn.account peerID];
+        }
+        else{
+            SOSErrorCreate(kSOSErrorNoCircle, &localError, NULL, CFSTR("Not in circle"));
+        }
+        action((__bridge CFStringRef)peerID, localError);
+        CFReleaseNull(localError);
+        return true;
+    });
+    CFReleaseNull(cfAccountError);
 }

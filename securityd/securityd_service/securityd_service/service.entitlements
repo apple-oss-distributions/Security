@@ -4,6 +4,8 @@
 <dict>
 	<key>com.apple.keystore.access-keychain-keys</key>
 	<true/>
+	<key>com.apple.keystore.config.bind_kek_to_kb</key>
+	<true/>
 	<key>com.apple.keystore.config.set.user_uuid</key>
 	<true/>
 	<key>com.apple.keystore.device</key>
@@ -13,6 +15,8 @@
 	<key>com.apple.private.securityd.keychain</key>
 	<true/>
 	<key>com.apple.private.securityd.stash</key>
+	<true/>
+	<key>com.apple.private.applecredentialmanager.allow</key>
 	<true/>
 </dict>
 </plist>

@@ -21,17 +21,18 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #include <AssertMacros.h>
 
 #import <Foundation/Foundation.h>
+#import <Foundation/NSKeyedArchiver_Private.h>
 #import "CKKSItem.h"
 #import "CKKSSIV.h"
 
 #include <utilities/SecDb.h>
 #include <securityd/SecDbItem.h>
 #include <securityd/SecItemSchema.h>
-
-#if OCTAGON
 
 #import <CloudKit/CloudKit.h>
 
@@ -40,7 +41,7 @@
 
 - (instancetype) initWithCKRecord: (CKRecord*) record {
     if(self = [super init]) {
-        self.zoneID = record.recordID.zoneID;
+        _zoneID = record.recordID.zoneID;
         [self setFromCKRecord:record];
     }
     return self;
@@ -63,8 +64,7 @@
     if(!_encodedCKRecord) {
         return nil;
     }
-    NSKeyedUnarchiver *coder = [[NSKeyedUnarchiver alloc] initForReadingWithData:_encodedCKRecord];
-    coder.requiresSecureCoding = YES;
+    NSKeyedUnarchiver *coder = [[NSKeyedUnarchiver alloc] initForReadingFromData:_encodedCKRecord error:nil];
     CKRecord* ckRecord = [[CKRecord alloc] initWithCoder:coder];
     [coder finishDecoding];
 
@@ -79,11 +79,9 @@
     self.zoneID = ckRecord.recordID.zoneID;
     self.ckRecordType = ckRecord.recordType;
 
-    NSMutableData* data = [NSMutableData data];
-    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initForWritingWithMutableData:data];
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
     [ckRecord encodeWithCoder:archiver];
-    [archiver finishEncoding];
-    _encodedCKRecord = data;
+    _encodedCKRecord = archiver.encodedData;
 }
 
 - (CKRecord*) CKRecordWithZoneID: (CKRecordZoneID*) zoneID {

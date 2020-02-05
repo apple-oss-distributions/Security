@@ -37,7 +37,7 @@ namespace CodeSigning {
 // Construct a running process representation
 //
 ProcessCode::ProcessCode(pid_t pid, const audit_token_t* token, PidDiskRep *pidDiskRep /*= NULL */)
-	: GenericCode(KernelCode::active()), mPid(pid), mPidBased(pidDiskRep)
+	: SecCode(KernelCode::active()), mPid(pid), mPidBased(pidDiskRep)
 {
 	if (token)
 		mAudit = new audit_token_t(*token);
@@ -46,12 +46,6 @@ ProcessCode::ProcessCode(pid_t pid, const audit_token_t* token, PidDiskRep *pidD
 }
 
 
-mach_port_t ProcessCode::getHostingPort()
-{
-	return SecurityServer::ClientSession().hostingPort(pid());
-}
-	
-	
 int ProcessCode::csops(unsigned int ops, void *addr, size_t size)
 {
 	// pass pid and audit token both if we have it, or just the pid if we don't
@@ -84,7 +78,10 @@ CFDictionaryRef ProcessDynamicCode::infoDictionary()
 {
         if (mGuest->pidBased()->supportInfoPlist())
                 return SecStaticCode::infoDictionary();
-        return makeCFDictionary(0);
+        if (!mEmptyInfoDict) {
+                mEmptyInfoDict.take(makeCFDictionary(0));
+        }
+        return mEmptyInfoDict;
 }
 
 void ProcessDynamicCode::validateComponent(CodeDirectory::SpecialSlot slot, OSStatus fail /* = errSecCSSignatureFailed */)

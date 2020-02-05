@@ -27,6 +27,8 @@
 
 #if OCTAGON
 
+NS_ASSUME_NONNULL_BEGIN
+
 @class CKKSKeychainView;
 @class CKKSEgoManifest;
 
@@ -36,9 +38,12 @@
 @property size_t recordsFound;
 @property size_t recordsAdded;
 
+@property size_t missingLocalItemsFound;
+
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithCKKSKeychainView:(CKKSKeychainView*)ckks ckoperationGroup:(CKOperationGroup*)ckoperationGroup;
 
 @end
 
-#endif // OCTAGON
+NS_ASSUME_NONNULL_END
+#endif  // OCTAGON

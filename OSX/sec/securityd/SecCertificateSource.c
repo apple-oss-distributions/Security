@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2016-2017 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -35,6 +35,7 @@
 #include <Security/SecItemInternal.h>
 #include <Security/SecTrustSettingsPriv.h>
 #include <Security/SecPolicyInternal.h>
+#include <Security/SecPolicyPriv.h>
 
 #include <utilities/debugging.h>
 #include <utilities/SecCFWrappers.h>
@@ -233,8 +234,7 @@ static CF_RETURNS_RETAINED CFArrayRef _Nullable SecItemCertificateSourceResultsP
     return result;
 }
 
-static bool SecItemCertificateSourceCopyParents(
-                                                SecCertificateSourceRef source, SecCertificateRef certificate,
+static bool SecItemCertificateSourceCopyParents(SecCertificateSourceRef source, SecCertificateRef certificate,
                                                 void *context, SecCertificateSourceParents callback) {
     SecItemCertificateSourceRef msource = (SecItemCertificateSourceRef)source;
     CFDataRef normalizedIssuer = SecCertificateGetNormalizedIssuerContent(certificate);
@@ -260,13 +260,8 @@ static bool SecItemCertificateSourceContains(SecCertificateSourceRef source,
     /* Look up a certificate by issuer and serial number. */
     CFDataRef normalizedIssuer = SecCertificateGetNormalizedIssuerContent(certificate);
     CFRetainSafe(normalizedIssuer);
-    CFDataRef serialNumber =
-#if (TARGET_OS_MAC && !(TARGET_OS_EMBEDDED || TARGET_OS_IPHONE))
-    SecCertificateCopySerialNumber(certificate, NULL);
-#else
-    SecCertificateCopySerialNumber(certificate);
-#endif
     CFErrorRef localError = NULL;
+    CFDataRef serialNumber = SecCertificateCopySerialNumberData(certificate, &localError);
     bool result = SecItemCertificateExists(normalizedIssuer, serialNumber, msource->accessGroups, &localError);
     if (localError) {
         if (CFErrorGetCode(localError) != errSecItemNotFound) {
@@ -301,21 +296,16 @@ void SecItemCertificateSourceDestroy(SecCertificateSourceRef source) {
  *********** SecSystemAnchorSource object ************
  ********************************************************/
 
-static bool SecSystemAnchorSourceCopyParents(
-                                             SecCertificateSourceRef source, SecCertificateRef certificate,
+static bool SecSystemAnchorSourceCopyParents(SecCertificateSourceRef source, SecCertificateRef certificate,
                                              void *context, SecCertificateSourceParents callback) {
-    //#ifndef SECITEM_SHIM_OSX
     CFArrayRef parents = NULL;
     CFArrayRef anchors = NULL;
-    SecOTAPKIRef otapkiref = NULL;
 
     CFDataRef nic = SecCertificateGetNormalizedIssuerContent(certificate);
     /* 64 bits cast: the worst that can happen here is we truncate the length and match an actual anchor.
      It does not matter since we would be returning the wrong anchors */
     assert((unsigned long)CFDataGetLength(nic)<UINT_MAX); /* Debug check. correct as long as CFIndex is signed long */
 
-    otapkiref = SecOTAPKICopyCurrentOTAPKIRef();
-    require_quiet(otapkiref, errOut);
     anchors = subject_to_anchors(nic);
     require_quiet(anchors, errOut);
     parents = CopyCertsFromIndices(anchors);
@@ -323,8 +313,6 @@ static bool SecSystemAnchorSourceCopyParents(
 errOut:
     callback(context, parents);
     CFReleaseSafe(parents);
-    CFReleaseSafe(otapkiref);
-    //#endif // SECITEM_SHIM_OSX
     return true;
 }
 
@@ -487,8 +475,7 @@ struct SecMemoryCertificateSource {
 };
 typedef struct SecMemoryCertificateSource *SecMemoryCertificateSourceRef;
 
-static bool SecMemoryCertificateSourceCopyParents(
-                                                  SecCertificateSourceRef source, SecCertificateRef certificate,
+static bool SecMemoryCertificateSourceCopyParents(SecCertificateSourceRef source, SecCertificateRef certificate,
                                                   void *context, SecCertificateSourceParents callback) {
     SecMemoryCertificateSourceRef msource =
     (SecMemoryCertificateSourceRef)source;
@@ -528,8 +515,7 @@ static void dictAddValueToArrayForKey(CFMutableDictionaryRef dict,
         CFArrayAppendValue(values, value);
 }
 
-static void SecMemoryCertificateSourceApplierFunction(const void *value,
-                                                      void *context) {
+static void SecMemoryCertificateSourceApplierFunction(const void *value, void *context) {
     SecMemoryCertificateSourceRef msource =
     (SecMemoryCertificateSourceRef)context;
     SecCertificateRef certificate = (SecCertificateRef)value;
@@ -575,14 +561,20 @@ void SecMemoryCertificateSourceDestroy(SecCertificateSourceRef source) {
 /********************************************************
  ********* SecCAIssuerCertificateSource object **********
  ********************************************************/
-static bool SecCAIssuerCertificateSourceCopyParents(
-                                                    SecCertificateSourceRef source, SecCertificateRef certificate,
+static bool SecCAIssuerCertificateSourceCopyParents(SecCertificateSourceRef source, SecCertificateRef certificate,
                                                     void *context, SecCertificateSourceParents callback) {
-    return SecCAIssuerCopyParents(certificate, SecPathBuilderGetQueue((SecPathBuilderRef)context), context, callback);
+    /* Some expired certs have dead domains. Let's not check them. */
+    SecPathBuilderRef builder = (SecPathBuilderRef)context;
+    CFAbsoluteTime verifyDate = SecPathBuilderGetVerifyTime(builder);
+    if (SecPathBuilderHasTemporalParentChecks(builder) && !SecCertificateIsValid(certificate, verifyDate)) {
+        secinfo("async", "skipping CAIssuer fetch for expired %@", certificate);
+        callback(context, NULL);
+        return true;
+    }
+    return SecCAIssuerCopyParents(certificate, context, callback);
 }
 
-static bool SecCAIssuerCertificateSourceContains(
-                                                 SecCertificateSourceRef source, SecCertificateRef certificate) {
+static bool SecCAIssuerCertificateSourceContains(SecCertificateSourceRef source, SecCertificateRef certificate) {
     return false;
 }
 
@@ -602,8 +594,7 @@ const SecCertificateSourceRef kSecCAIssuerSource = &_kSecCAIssuerSource;
  ********** SecLegacyCertificateSource object ***********
  ********************************************************/
 
-static bool SecLegacyCertificateSourceCopyParents(
-                                                  SecCertificateSourceRef source, SecCertificateRef certificate,
+static bool SecLegacyCertificateSourceCopyParents(SecCertificateSourceRef source, SecCertificateRef certificate,
                                                   void *context, SecCertificateSourceParents callback) {
     CFArrayRef parents = SecItemCopyParentCertificates_osx(certificate, NULL);
     callback(context, parents);
@@ -611,8 +602,7 @@ static bool SecLegacyCertificateSourceCopyParents(
     return true;
 }
 
-static bool SecLegacyCertificateSourceContains(
-                                               SecCertificateSourceRef source, SecCertificateRef certificate) {
+static bool SecLegacyCertificateSourceContains(SecCertificateSourceRef source, SecCertificateRef certificate) {
     SecCertificateRef cert = SecItemCopyStoredCertificate(certificate, NULL);
     bool result = (cert) ? true : false;
     CFReleaseSafe(cert);
@@ -702,9 +692,19 @@ static bool SecLegacyAnchorSourceContains(SecCertificateSourceRef source,
     if ((status == errSecSuccess) && (trusted != NULL)) {
         CFIndex index, count = CFArrayGetCount(trusted);
         for (index = 0; index < count; index++) {
-            SecCertificateRef anchor = (SecCertificateRef)CFArrayGetValueAtIndex(trusted, index);
+            SecCertificateRef anchor = (SecCertificateRef)CFRetainSafe(CFArrayGetValueAtIndex(trusted, index));
+            if (anchor && (CFGetTypeID(anchor) != CFGetTypeID(certificate))) {
+                /* This should only happen if trustd and the Security framework are using different SecCertificate TypeIDs.
+                 * This occurs in TrustTests where we rebuild SecCertificate.c for code coverage purposes, so we end up with
+                 * two registered SecCertificate types. So we'll make a SecCertificate of our type. */
+                SecCertificateRef temp = SecCertificateCreateWithBytes(NULL, SecCertificateGetBytePtr(anchor), SecCertificateGetLength(anchor));
+                CFAssignRetained(anchor, temp);
+            }
             if (anchor && CFEqual(anchor, certificate)) {
                 result = true;
+            }
+            CFReleaseNull(anchor);
+            if (result) {
                 break;
             }
         }

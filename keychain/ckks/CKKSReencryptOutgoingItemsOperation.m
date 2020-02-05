@@ -28,6 +28,10 @@
 #import "keychain/ckks/CKKSOutgoingQueueEntry.h"
 #import "keychain/ckks/CKKSReencryptOutgoingItemsOperation.h"
 #import "keychain/ckks/CKKSItemEncrypter.h"
+#import "keychain/ckks/CloudKitCategories.h"
+#import "keychain/ckks/CKKSAnalytics.h"
+#import "keychain/categories/NSError+UsefulConstructors.h"
+#import "keychain/analytics/CKKSPowerCollection.h"
 
 #if OCTAGON
 
@@ -46,7 +50,7 @@
         _ckks = ckks;
         _ckoperationGroup = ckoperationGroup;
 
-        [self addNullableDependency:ckks.viewSetupOperation];
+        [self addNullableDependency:ckks.keyStateReadyDependency];
         [self addNullableDependency:ckks.holdReencryptOutgoingItemsOperation];
 
         // We also depend on the key hierarchy being reasonable
@@ -81,6 +85,8 @@
             return false;
         }
 
+        [CKKSPowerCollection CKKSPowerEvent:kCKKSPowerEventReencryptOutgoing  zone:ckks.zoneName count:oqes.count];
+
         for(CKKSOutgoingQueueEntry* oqe in oqes) {
             // If there's already a 'new' item replacing this one, drop the reencryption on the floor
             CKKSOutgoingQueueEntry* newOQE = [CKKSOutgoingQueueEntry tryFromDatabase:oqe.uuid state:SecCKKSStateNew zoneID:oqe.item.zoneID error:&error];
@@ -91,7 +97,7 @@
                 continue;
             }
             if(newOQE) {
-                ckksinfo("ckksreencrypt", ckks, "Have a new OQE superceding %@ (%@), skipping", oqe, newOQE);
+                ckksnotice("ckksreencrypt", ckks, "Have a new OQE superceding %@ (%@), skipping", oqe, newOQE);
                 // Don't use the state transition here, either, since this item isn't really changing states
                 [oqe deleteFromDatabase:&error];
                 if(error) {
@@ -103,13 +109,13 @@
                 continue;
             }
 
-            ckksinfo("ckksreencrypt", ckks, "Reencrypting item %@", oqe);
+            ckksnotice("ckksreencrypt", ckks, "Reencrypting item %@", oqe);
 
             NSDictionary* item = [CKKSItemEncrypter decryptItemToDictionary: oqe.item error:&error];
             if(error) {
                 if ([error.domain isEqualToString:@"securityd"] && error.code == errSecItemNotFound) {
-                    ckkserror("ckksreencrypt", ckks, "Coudn't find key in keychain; attempting to poke key hierarchy: %@", error)
-                    [ckks _onqueueAdvanceKeyStateMachineToState: nil withError: nil];
+                    ckkserror("ckksreencrypt", ckks, "Couldn't find key in keychain; attempting to poke key hierarchy: %@", error);
+                    [ckks.pokeKeyStateMachineScheduler trigger];
                 } else {
                     ckkserror("ckksreencrypt", ckks, "Couldn't decrypt item %@: %@", oqe, error);
                 }
@@ -174,6 +180,13 @@
             }
 
             newItems = true;
+        }
+
+        CKKSAnalytics* logger = [CKKSAnalytics logger];
+        if (self.error) {
+            [logger logRecoverableError:error forEvent:CKKSEventProcessReencryption inView:ckks withAttributes:nil];
+        } else {
+            [logger logSuccessForEvent:CKKSEventProcessReencryption inView:ckks];
         }
 
         if(newItems) {

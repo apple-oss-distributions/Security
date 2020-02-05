@@ -34,16 +34,23 @@ namespace CodeSigning {
 
 CFDataRef EmbeddedSignatureBlob::component(CodeDirectory::SpecialSlot slot) const
 {
-	if (const BlobCore *blob = this->find(slot)) {
-		if (CodeDirectory::slotAttributes(slot) & cdComponentIsBlob) {
-			return makeCFData(*blob);	// is a native Blob
-		} else if (const BlobWrapper *wrap = BlobWrapper::specific(blob)) {
-			return makeCFData(*wrap);
-		} else {
-			MacOSError::throwMe(errSecCSSignatureInvalid);
-		}
+	const BlobCore *blob = this->find(slot);
+	
+	if (blob) {
+		return blobData(slot, blob);
 	}
 	return NULL;
+}
+	
+CFDataRef EmbeddedSignatureBlob::blobData(CodeDirectory::SpecialSlot slot, BlobCore const *blob)
+{
+	if (CodeDirectory::slotAttributes(slot) & cdComponentIsBlob) {
+		return makeCFData(*blob);	// is a native Blob
+	} else if (const BlobWrapper *wrap = BlobWrapper::specific(blob)) {
+		return makeCFData(*wrap);
+	} else {
+		MacOSError::throwMe(errSecCSSignatureInvalid);
+	}
 }
 
 
@@ -62,6 +69,21 @@ CFDictionaryRef EntitlementBlob::entitlements() const
 		this->length() - sizeof(EntitlementBlob));
 }
 
+EntitlementDERBlob *EntitlementDERBlob::alloc(size_t length) {
+	size_t blobLength = length + sizeof(BlobCore);
+	if (blobLength < length) {
+		// overflow
+		return NULL;
+	}
+
+	EntitlementDERBlob *b = (EntitlementDERBlob *)malloc(blobLength);
+
+	if (b != NULL) {
+		b->BlobCore::initialize(kSecCodeMagicEntitlementDER, blobLength);
+	}
+
+	return b;
+}
 
 } // end namespace CodeSigning
 } // end namespace Security

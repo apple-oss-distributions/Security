@@ -26,7 +26,7 @@
 
 /* String constant declarations */
 
-#define SEC_CONST_DECL(k,v) const CFTypeRef k = CFSTR(v);
+#define SEC_CONST_DECL(k,v) const CFStringRef k = CFSTR(v);
 
 /* Class Key Constant */
 SEC_CONST_DECL (kSecClass, "class");
@@ -107,7 +107,7 @@ SEC_CONST_DECL (kSecAttrCRLEncoding, "crle");
 SEC_CONST_DECL (kSecAttrSynchronizable, "sync");
 SEC_CONST_DECL (kSecAttrTombstone, "tomb");
 SEC_CONST_DECL (kSecAttrMultiUser, "musr");
-SEC_CONST_DECL (kSecAttrNoLegacy, "nleg");
+SEC_CONST_DECL (kSecAttrNoLegacy, "nleg");      // Deprecated SPI version of kSecUseDataProtectionKeychain
 SEC_CONST_DECL (kSecAttrTokenOID, "toid");
 SEC_CONST_DECL (kSecAttrUUID, "UUID");
 SEC_CONST_DECL (kSecAttrPersistantReference, "persistref");
@@ -160,6 +160,8 @@ SEC_CONST_DECL (kSecUseSystemKeychain, "u_SystemKeychain");
 SEC_CONST_DECL (kSecUseSyncBubbleKeychain, "u_SyncBubbleKeychain");
 SEC_CONST_DECL (kSecUseCallerName, "u_CallerName");
 SEC_CONST_DECL (kSecUseTokenRawItems, "u_TokenRawItems");
+SEC_CONST_DECL (kSecUseCertificatesWithMatchIssuers, "u_CertWithIssuers");
+SEC_CONST_DECL (kSecUseDataProtectionKeychain, "nleg");     // API version replacing kSecAttrNoLegacy
 
 /* kSecAttrAccessible Value Constants. */
 SEC_CONST_DECL (kSecAttrAccessibleWhenUnlocked, "ak");
@@ -172,6 +174,8 @@ SEC_CONST_DECL (kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, "akpu");
 /* kSecAttrAccessible Value Constants (Private). */
 SEC_CONST_DECL (kSecAttrAccessibleAlwaysPrivate, "dk");
 SEC_CONST_DECL (kSecAttrAccessibleAlwaysThisDeviceOnlyPrivate, "dku");
+/* _kSecAttrAccessibleUntilReboot for class F. */
+SEC_CONST_DECL (kSecAttrAccessibleUntilReboot, "f");
 
 /* kSecAttrProtocol Value Constants. */
 SEC_CONST_DECL (kSecAttrProtocolFTP, "ftp ");
@@ -239,6 +243,7 @@ SEC_CONST_DECL (kSecAttrSynchronizableAny, "syna");
    any SecItem apis directly. */
 SEC_CONST_DECL (kSecPrivateKeyAttrs, "private");
 SEC_CONST_DECL (kSecPublicKeyAttrs, "public");
+SEC_CONST_DECL (kSecKeyApplePayEnabled, "applepay");
 
 /* This is here only temporarily until MobileActivation starts using kSecAttrTokenOID instead of this specific attribute. */
 SEC_CONST_DECL (kSecAttrSecureEnclaveKeyBlob, "toid");
@@ -260,6 +265,7 @@ SEC_CONST_DECL (kSecUseAuthenticationContext, "u_AuthCtx");
 /* kSecAttrTokenID Value Constants. */
 SEC_CONST_DECL (kSecAttrTokenIDSecureEnclave, "com.apple.setoken");
 SEC_CONST_DECL (kSecAttrTokenIDAppleKeyStore, "com.apple.setoken:aks");
+SEC_CONST_DECL (kSecAttrTokenIDSecureElement, "com.apple.secelemtoken");
 
 /* Internal kSecAttrAccessGroup for syncing */
 SEC_CONST_DECL (kSOSInternalAccessGroup, "com.apple.security.sos");
@@ -271,6 +277,6 @@ SEC_CONST_DECL (kSOSInternalAccessGroup, "com.apple.security.sos");
 #define DO_SEC_CONST_DECL_V(VIEWNAME, DEFSTRING)
 
 #define DOVIEWMACRO(VIEWNAME, DEFSTRING, CMDSTRING, SYSTEM, DEFAULTSETTING, INITIALSYNCSETTING, ALWAYSONSETTING, BACKUPSETTING, V0SETTING) DO_SEC_CONST_DECL_##V0SETTING(VIEWNAME, DEFSTRING)
-#include "Security/SecureObjectSync/ViewList.list"
+#include "keychain/SecureObjectSync/ViewList.list"
 #undef DOVIEWMACRO
 

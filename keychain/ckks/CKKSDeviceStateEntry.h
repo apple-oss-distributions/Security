@@ -26,13 +26,18 @@
 
 #if OCTAGON
 
-#include <utilities/SecDb.h>
 #include <securityd/SecDbItem.h>
+#include <utilities/SecDb.h>
 
 #import <CloudKit/CloudKit.h>
 #import "keychain/ckks/CKKS.h"
-#import "keychain/ckks/CKKSSQLDatabaseObject.h"
 #import "keychain/ckks/CKKSRecordHolder.h"
+#import "keychain/ckks/CKKSAccountStateTracker.h"
+#import "keychain/ckks/CKKSSQLDatabaseObject.h"
+
+#import "keychain/ot/OTClique.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 /*
  * This is the backing class for "device state" records: each device in an iCloud account copies
@@ -46,31 +51,46 @@
 @interface CKKSDeviceStateEntry : CKKSCKRecordHolder
 @property NSString* device;
 
-@property NSString* circlePeerID;
+@property (nullable) NSString* osVersion;
+@property (nullable) NSDate* lastUnlockTime;
+
+@property (nullable) NSString* circlePeerID;
+@property (nullable) NSString* octagonPeerID;
+
 @property SOSCCStatus circleStatus;
-@property CKKSZoneKeyState* keyState;
 
-@property NSString* currentTLKUUID;
-@property NSString* currentClassAUUID;
-@property NSString* currentClassCUUID;
+// Some devices don't have Octagon, and won't upload this. Therefore, it might not be present,
+// and I'd rather not coerce to "error" or "absent"
+@property (nullable) OTCliqueStatusWrapper* octagonStatus;
 
-+ (instancetype)fromDatabase:(NSString*)device zoneID:(CKRecordZoneID*)zoneID error:(NSError * __autoreleasing *)error;
-+ (instancetype)tryFromDatabase:(NSString*)device zoneID:(CKRecordZoneID*)zoneID error:(NSError * __autoreleasing *)error;
-+ (instancetype)tryFromDatabaseFromCKRecordID:(CKRecordID*)recordID error:(NSError * __autoreleasing *)error;
-+ (NSArray<CKKSDeviceStateEntry*>*)allInZone:(CKRecordZoneID*)zoneID error:(NSError * __autoreleasing *)error;
+@property (nullable) CKKSZoneKeyState* keyState;
+
+@property (nullable) NSString* currentTLKUUID;
+@property (nullable) NSString* currentClassAUUID;
+@property (nullable) NSString* currentClassCUUID;
+
++ (instancetype)fromDatabase:(NSString*)device zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (instancetype)tryFromDatabase:(NSString*)device zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (instancetype)tryFromDatabaseFromCKRecordID:(CKRecordID*)recordID error:(NSError* __autoreleasing*)error;
++ (NSArray<CKKSDeviceStateEntry*>*)allInZone:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initForDevice:(NSString*)device
-                 circlePeerID:(NSString*)circlePeerID
+                    osVersion:(NSString* _Nullable)osVersion
+               lastUnlockTime:(NSDate* _Nullable)lastUnlockTime
+                octagonPeerID:(NSString* _Nullable)octagonPeerID
+                octagonStatus:(OTCliqueStatusWrapper* _Nullable)octagonStatus
+                 circlePeerID:(NSString* _Nullable)circlePeerID
                  circleStatus:(SOSCCStatus)circleStatus
-                     keyState:(CKKSZoneKeyState*)keyState
-               currentTLKUUID:(NSString*)currentTLKUUID
-            currentClassAUUID:(NSString*)currentClassAUUID
-            currentClassCUUID:(NSString*)currentClassCUUID
+                     keyState:(CKKSZoneKeyState* _Nullable)keyState
+               currentTLKUUID:(NSString* _Nullable)currentTLKUUID
+            currentClassAUUID:(NSString* _Nullable)currentClassAUUID
+            currentClassCUUID:(NSString* _Nullable)currentClassCUUID
                        zoneID:(CKRecordZoneID*)zoneID
-              encodedCKRecord:(NSData*)encodedrecord;
+              encodedCKRecord:(NSData* _Nullable)encodedrecord;
 @end
 
-#endif // OCTAGON
-#endif /* CKKSDeviceStateEntry_h */
+NS_ASSUME_NONNULL_END
 
+#endif  // OCTAGON
+#endif  /* CKKSDeviceStateEntry_h */

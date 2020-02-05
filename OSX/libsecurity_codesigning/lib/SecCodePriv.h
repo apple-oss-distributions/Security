@@ -38,16 +38,19 @@ extern "C" {
 
 /*
  *	Private constants for SecCodeCopySigningInformation.
- *	These are returned with the 
  */
+extern const CFStringRef kSecCodeInfoCdHashesFull;          /* Internal */
 extern const CFStringRef kSecCodeInfoCodeDirectory;			/* Internal */
 extern const CFStringRef kSecCodeInfoCodeOffset;			/* Internal */
 extern const CFStringRef kSecCodeInfoDiskRepInfo;           /* Internal */
 extern const CFStringRef kSecCodeInfoResourceDirectory;		/* Internal */
+extern const CFStringRef kSecCodeInfoNotarizationDate;      /* Internal */
+extern const CFStringRef kSecCodeInfoCMSDigestHashType;     /* Internal */
+extern const CFStringRef kSecCodeInfoCMSDigest;             /* Internal */
 
-extern const CFStringRef kSecCodeInfoDiskRepOSPlatform;          /* Number */
-extern const CFStringRef kSecCodeInfoDiskRepOSVersionMin;        /* Number */
-extern const CFStringRef kSecCodeInfoDiskRepOSSDKVersion;        /* Number */
+extern const CFStringRef kSecCodeInfoDiskRepVersionPlatform;     /* Number */
+extern const CFStringRef kSecCodeInfoDiskRepVersionMin;          /* Number */
+extern const CFStringRef kSecCodeInfoDiskRepVersionSDK;          /* Number */
 extern const CFStringRef kSecCodeInfoDiskRepNoLibraryValidation; /* String */
 
 /*!
@@ -126,24 +129,28 @@ OSStatus SecCodeCopyInternalRequirement(SecStaticCodeRef code, SecRequirementTyp
 	SecCSFlags flags, SecRequirementRef *requirement);
 
 
+#if TARGET_OS_OSX
 /*!
-	@function SecCodeCreateWithPID
+	@function SecCodeCreateWithAuditToken
 	Asks the kernel to return a SecCode object for a process identified
-	by a UNIX process id (pid). This is a shorthand for asking SecGetRootCode()
-	for a guest whose "pid" attribute has the given pid value.
+	by a UNIX audit token. This is a shorthand for asking SecGetRootCode()
+	for a guest whose "audit" attribute has the given audit token.
 	
-	This is a deprecated convenience function.
-	Call SecCodeCopyGuestWithAttributes instead.
-	
-	@param pid A process id for an existing UNIX process on the system.
+	@param audit A process audit token for an existing UNIX process on the system.
 	@param flags Optional flags. Pass kSecCSDefaultFlags for standard behavior.
 	@param process On successful return, a SecCode object reference identifying
 	the requesteed process.
 	@result Upon success, errSecSuccess. Upon error, an OSStatus value documented in
 	CSCommon.h or certain other Security framework headers.
 */
+OSStatus SecCodeCreateWithAuditToken(const audit_token_t *audit,
+                                     SecCSFlags flags, SecCodeRef *process)
+    AVAILABLE_MAC_OS_X_VERSION_10_15_AND_LATER;
+    
+/* Deprecated and unsafe, DO NOT USE. */
 OSStatus SecCodeCreateWithPID(pid_t pid, SecCSFlags flags, SecCodeRef *process)
 	AVAILABLE_MAC_OS_X_VERSION_10_5_AND_LATER_BUT_DEPRECATED_IN_MAC_OS_X_VERSION_10_6;
+#endif
 
 
 /*
@@ -212,6 +219,18 @@ CFDataRef SecCodeCopyComponent(SecCodeRef code, int slot, CFDataRef hash);
         it was not a plain file, or anything is irregular.
 */
 OSStatus SecCodeValidateFileResource(SecStaticCodeRef code, CFStringRef relativePath, CFDataRef fileData, SecCSFlags flags);
+
+
+/*
+ @constant kSecCSStrictValidateStructure
+ A subset of the work kSecCSStrictValidate performs, omitting work that
+ is unnecessary on some platforms. Since the definition of what can be
+ omitted is in flux, and since we would like to remove that notion
+ entirely eventually, we makes this a private flag.
+ */
+CF_ENUM(uint32_t) {
+	kSecCSStrictValidateStructure = 1 << 13,
+};
 
 #ifdef __cplusplus
 }

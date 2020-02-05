@@ -25,7 +25,8 @@
  * CMSEncoder.c - encode, sign, and/or encrypt CMS messages.
  */
 
-#include "CMSEncoder.h"
+#include <Security/CMSEncoder.h>
+#include <Security/CMSPrivate.h>
 #include "CMSUtils.h"
 #include <Security/SecBase.h>
 #include <Security/SecCmsEncoder.h>
@@ -97,6 +98,8 @@ struct _CMSEncoder {
 
     CMSCertificateChainMode chainMode;
     CFDataRef           hashAgilityAttrValue;
+    CFDictionaryRef     hashAgilityV2AttrValues;
+    CFAbsoluteTime      expirationTime;
 };
 
 static void cmsEncoderInit(CFTypeRef enc);
@@ -279,12 +282,20 @@ static int convertOid(
         // CFStringRef: OID representation is a dotted-decimal string
         CFStringRef inStr = (CFStringRef)inRef;
         CFIndex max = CFStringGetLength(inStr) * 3;
-        char buf[max];
-        if (!CFStringGetCString(inStr, buf, max-1, kCFStringEncodingASCII))
+        char *buf = (char *)malloc(max);
+        if (!buf) {
+            return errSecMemoryError;
+        }
+        if (!CFStringGetCString(inStr, buf, max-1, kCFStringEncodingASCII)) {
+            free(buf);
             return errSecParam;
+        }
 
-        if(encodeOid((unsigned char *)buf, &oidData, &oidLen) != 0)
+        if (encodeOid((unsigned char *)buf, &oidData, &oidLen) != 0) {
+            free(buf);
             return errSecParam;
+        }
+        free(buf);
     }
     else if (CFGetTypeID(inRef) == CFDataGetTypeID()) {
         // CFDataRef: OID representation is in binary DER format
@@ -451,6 +462,9 @@ static OSStatus cmsSetupForSignedData(
         case kCMSCertificateChainWithRoot:
             chainMode = SecCmsCMCertChainWithRoot;
             break;
+        case kCMSCertificateChainWithRootOrFail:
+            chainMode = SecCmsCMCertChainWithRootOrFail;
+            break;
         default:
             break;
     }
@@ -523,6 +537,24 @@ static OSStatus cmsSetupForSignedData(
             if(ortn) {
                 ortn = cmsRtnToOSStatus(ortn);
                 CSSM_PERROR("SecCmsSignerInfoAddAppleCodesigningHashAgility", ortn);
+                break;
+            }
+        }
+        if(cmsEncoder->signedAttributes & kCMSAttrAppleCodesigningHashAgilityV2) {
+            ortn = SecCmsSignerInfoAddAppleCodesigningHashAgilityV2(signerInfo, cmsEncoder->hashAgilityV2AttrValues);
+            /* libsecurity_smime made a copy of the attribute value. We don't need it anymore. */
+            CFReleaseNull(cmsEncoder->hashAgilityV2AttrValues);
+            if(ortn) {
+                ortn = cmsRtnToOSStatus(ortn);
+                CSSM_PERROR("SecCmsSignerInfoAddAppleCodesigningHashAgilityV2", ortn);
+                break;
+            }
+        }
+        if (cmsEncoder->signedAttributes & kCMSAttrAppleExpirationTime) {
+            ortn = SecCmsSignerInfoAddAppleExpirationTime(signerInfo, cmsEncoder->expirationTime);
+            if(ortn) {
+                ortn = cmsRtnToOSStatus(ortn);
+                CSSM_PERROR("SecCmsSignerInfoAddAppleExpirationTime", ortn);
                 break;
             }
         }
@@ -1008,6 +1040,40 @@ OSStatus CMSEncoderSetAppleCodesigningHashAgility(
     return errSecSuccess;
 }
 
+/*
+ * Set the hash agility attribute for a CMSEncoder.
+ * This is only used if the kCMSAttrAppleCodesigningHashAgilityV2 attribute
+ * is included.
+ */
+OSStatus CMSEncoderSetAppleCodesigningHashAgilityV2(
+                                                  CMSEncoderRef   cmsEncoder,
+                                                  CFDictionaryRef  hashAgilityV2AttrValues)
+{
+    if (cmsEncoder == NULL || cmsEncoder->encState != ES_Init) {
+        return errSecParam;
+    }
+    cmsEncoder->hashAgilityV2AttrValues = CFRetainSafe(hashAgilityV2AttrValues);
+    return errSecSuccess;
+}
+
+/*
+ * Set the expiration time for a CMSEncoder.
+ * This is only used if the kCMSAttrAppleExpirationTime attribute is included.
+ */
+OSStatus CMSEncoderSetAppleExpirationTime(
+                                          CMSEncoderRef cmsEncoder,
+                                          CFAbsoluteTime time)
+{
+    if(cmsEncoder == NULL) {
+        return errSecParam;
+    }
+    if(cmsEncoder->encState != ES_Init) {
+        return errSecParam;
+    }
+    cmsEncoder->expirationTime = time;
+    return errSecSuccess;
+}
+
 OSStatus CMSEncoderSetCertificateChainMode(
                                            CMSEncoderRef			cmsEncoder,
                                            CMSCertificateChainMode	chainMode)
@@ -1023,6 +1089,7 @@ OSStatus CMSEncoderSetCertificateChainMode(
         case kCMSCertificateSignerOnly:
         case kCMSCertificateChain:
         case kCMSCertificateChainWithRoot:
+        case kCMSCertificateChainWithRootOrFail:
             break;
         default:
             return errSecParam;

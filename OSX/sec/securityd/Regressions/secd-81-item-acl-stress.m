@@ -28,7 +28,7 @@
 #if USE_KEYSTORE
 #include <coreauthd_spi.h>
 #include "SecdTestKeychainUtilities.h"
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 #include <MobileKeyBag/MobileKeyBag.h>
 #endif
 
@@ -202,6 +202,8 @@ static void fillItem(CFMutableDictionaryRef item, uint32_t num)
             CFDictionarySetValue(item, attr, value);
         CFReleaseSafe(value);
     });
+
+    CFDictionarySetValue(item, kSecValueData, (__bridge CFDataRef)[NSData dataWithBytes:"some data" length:9]);
 }
 
 static void tests(bool isPasscodeSet)
@@ -341,8 +343,8 @@ int secd_81_item_acl_stress(int argc, char *const *argv)
         keybag_state_t state;
         int passcode_len=(int)strlen(passcode);
 
-        ok(kIOReturnSuccess==aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &test_keybag), "create keybag");
-        ok(kIOReturnSuccess==aks_get_lock_state(test_keybag, &state), "get keybag state");
+        ok(kAKSReturnSuccess==aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &test_keybag), "create keybag");
+        ok(kAKSReturnSuccess==aks_get_lock_state(test_keybag, &state), "get keybag state");
         ok(!(state&keybag_state_locked), "keybag unlocked");
         SecItemServerSetKeychainKeybag(test_keybag);
     });

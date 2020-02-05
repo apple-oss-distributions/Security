@@ -30,14 +30,13 @@
 #include <AssertMacros.h>
 
 #include <libDER/libDER.h>
-#include <libDER/oidsPriv.h>
+#include <libDER/oids.h>
 
 #include <Security/SecCertificate.h>
 #include <Security/SecCertificatePriv.h>
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecItem.h>
 #include <Security/SecInternal.h>
-#include <Security/oids.h>
 
 #include <utilities/SecIOFormat.h>
 #include <utilities/SecCFError.h>
@@ -59,6 +58,7 @@ struct SecCertificateVC {
     CFRuntimeBase       _base;
     SecCertificateRef   certificate;
     CFArrayRef          usageConstraints;
+    CFNumberRef         revocationReason;
     bool                optionallyEV;
     bool                isWeakHash;
     bool                require_revocation_response;
@@ -69,6 +69,7 @@ static void SecCertificateVCDestroy(CFTypeRef cf) {
     SecCertificateVCRef cvc = (SecCertificateVCRef) cf;
     CFReleaseNull(cvc->certificate);
     CFReleaseNull(cvc->usageConstraints);
+    CFReleaseNull(cvc->revocationReason);
 }
 
 static Boolean SecCertificateVCCompare(CFTypeRef cf1, CFTypeRef cf2) {
@@ -174,23 +175,7 @@ static bool SecCertificateVCCouldBeEV(SecCertificateRef certificate) {
     }
 
     /* 6.3.2 Validity Periods */
-    CFAbsoluteTime jul2016 = 489024000;
-    CFAbsoluteTime notAfter = SecCertificateNotValidAfter(certificate);
-    CFAbsoluteTime notBefore = SecCertificateNotValidBefore(certificate);
-    if (SecCertificateNotValidBefore(certificate) < jul2016) {
-        /* Validity Period no greater than 60 months.
-         60 months is no more than 5 years and 2 leap days. */
-        CFAbsoluteTime maxPeriod = 60*60*24*(365*5+2);
-        require_action_quiet(notAfter - notBefore <= maxPeriod, notEV,
-                             secnotice("ev", "Leaf's validity period is more than 60 months"));
-    } else {
-        /* Validity Period no greater than 39 months.
-         39 months is no more than 3 years, 2 31-day months,
-         1 30-day month, and 1 leap day */
-        CFAbsoluteTime maxPeriod = 60*60*24*(365*3+2*31+30+1);
-        require_action_quiet(notAfter - notBefore <= maxPeriod, notEV,
-                             secnotice("ev", "Leaf has validity period longer than 39 months and issued after 30 June 2016"));
-    }
+    // Will be checked by the policy server (see SecPolicyCheckValidityPeriodMaximums)
 
     /* 7.1.3 Algorithm Object Identifiers */
     CFAbsoluteTime jan2016 = 473299200;
@@ -239,27 +224,27 @@ exit:
  ************* SecCertificatePathVC object ***************
  ********************************************************/
 struct SecCertificatePathVC {
-    CFRuntimeBase		_base;
-    CFIndex				count;
+    CFRuntimeBase       _base;
+    CFIndex             count;
 
     /* Index of next parent source to search for parents. */
-    CFIndex				nextParentSource;
+    CFIndex             nextParentSource;
 
-    /* Index of last certificate in chain who's signature has been verified.
+    /* Index of last certificate in chain whose signature has been verified.
      0 means nothing has been checked.  1 means the leaf has been verified
-     against it's issuer, etc. */
-    CFIndex				lastVerifiedSigner;
+     against its issuer, etc. */
+    CFIndex             lastVerifiedSigner;
 
     /* Index of first self issued certificate in the chain.  -1 mean there is
      none.  0 means the leaf is self signed.  */
-    CFIndex				selfIssued;
+    CFIndex             selfIssued;
 
     /* True iff cert at index selfIssued does in fact self verify. */
-    bool				isSelfSigned;
+    bool                isSelfSigned;
 
     /* True if the root of this path is an anchor. Trustedness of the
      * anchor is determined by the PVC. */
-    bool				isAnchored;
+    bool                isAnchored;
 
     policy_tree_t       policy_tree;
     uint8_t             policy_tree_verification_result;
@@ -277,7 +262,21 @@ struct SecCertificatePathVC {
 
     bool                pathValidated;
 
-    SecCertificateVCRef	certificates[];
+    /* If checkedIssuers is true, then the value of unknownCAIndex contains
+     * the index of the first CA which violates known-only constraints, or
+     * -1 if all CA certificates are either known or not constrained. */
+    bool                checkedIssuers;
+    CFIndex             unknownCAIndex;
+
+    /* Enumerated value to determine whether CT is required for the leaf
+     * certificate (because a CA in the path has a require-ct constraint).
+     * If non-zero, CT is required; value indicates overridable status. */
+    SecPathCTPolicy     requiresCT;
+
+    /* Issuance time, as determined by earliest SCT timestamp for leaf. */
+    CFAbsoluteTime      issuanceTime;
+
+    SecCertificateVCRef certificates[];
 };
 CFGiblisWithHashFor(SecCertificatePathVC)
 
@@ -287,7 +286,7 @@ static void SecCertificatePathVCPrunePolicyTree(SecCertificatePathVCRef certific
     }
 }
 
-static void SecCertificatePathVCDeleteRVCs(SecCertificatePathVCRef path) {
+void SecCertificatePathVCDeleteRVCs(SecCertificatePathVCRef path) {
     if (path->rvcs) {
         CFIndex certIX, certCount = path->rvcCount;
         for (certIX = 0; certIX < certCount; ++certIX) {
@@ -505,12 +504,22 @@ exit:
     return outCerts;
 }
 
-SecCertificatePathRef SecCertificatePathVCCopyCertificatePath(SecCertificatePathVCRef path) {
-    CFArrayRef certs = SecCertificatePathVCCopyCertificates(path);
-    SecCertificatePathRef newPath = SecCertificatePathCreateWithCertificates(certs, NULL);
-    CFReleaseNull(certs);
-    return newPath;
+CFArrayRef SecCertificatePathVCCreateSerialized(SecCertificatePathVCRef path) {
+    CFMutableArrayRef serializedCerts = NULL;
+    require_quiet(path, exit);
+    size_t count = path->count;
+    require_quiet(serializedCerts = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks), exit);
+    SecCertificatePathVCForEachCertificate(path, ^(SecCertificateRef cert, bool * __unused stop) {
+        CFDataRef certData = SecCertificateCopyData(cert);
+        if (certData) {
+            CFArrayAppendValue(serializedCerts, certData);
+            CFRelease(certData);
+        }
+    });
+exit:
+    return serializedCerts;
 }
+
 
 /* Record the fact that we found our own root cert as our parent
  certificate. */
@@ -593,8 +602,11 @@ CFIndex SecCertificatePathVCGetCount(
 
 SecCertificateRef SecCertificatePathVCGetCertificateAtIndex(
                                                           SecCertificatePathVCRef certificatePath, CFIndex ix) {
-    check(certificatePath && ix >= 0 && ix < certificatePath->count);
-    return (certificatePath->certificates[ix])->certificate;
+    if (!certificatePath || ix < 0 || ix >= certificatePath->count) {
+        return NULL;
+    }
+    SecCertificateVCRef cvc = certificatePath->certificates[ix];
+    return cvc ? cvc->certificate : NULL;
 }
 
 void SecCertificatePathVCForEachCertificate(SecCertificatePathVCRef path, void(^operation)(SecCertificateRef certificate, bool *stop)) {
@@ -631,11 +643,7 @@ SecKeyRef SecCertificatePathVCCopyPublicKeyAtIndex(
                                                  SecCertificatePathVCRef certificatePath, CFIndex ix) {
     SecCertificateRef certificate =
     SecCertificatePathVCGetCertificateAtIndex(certificatePath, ix);
-#if TARGET_OS_OSX
-    return SecCertificateCopyPublicKey_ios(certificate);
-#else
-    return SecCertificateCopyPublicKey(certificate);
-#endif
+    return SecCertificateCopyKey(certificate);
 }
 
 CFArrayRef SecCertificatePathVCGetUsageConstraintsAtIndex(
@@ -681,6 +689,23 @@ SecPathVerifyStatus SecCertificatePathVCVerify(SecCertificatePathVCRef certifica
     }
 
     return kSecPathVerifySuccess;
+}
+
+/* Is the the issuer of the last cert a subject of a previous cert in the chain.See <rdar://33136765>. */
+bool SecCertificatePathVCIsCycleInGraph(SecCertificatePathVCRef path) {
+    bool isCircle = false;
+    CFDataRef issuer = SecCertificateGetNormalizedIssuerContent(SecCertificatePathVCGetRoot(path));
+    if (!issuer) { return isCircle; }
+    CFIndex ix = path->count - 2;
+    for (; ix >= 0; ix--) {
+        SecCertificateVCRef cvc = path->certificates[ix];
+        CFDataRef subject = SecCertificateGetNormalizedSubjectContent(cvc->certificate);
+        if (subject && CFEqual(issuer, subject)) {
+            isCircle = true;
+            break;
+        }
+    }
+    return isCircle;
 }
 
 bool SecCertificatePathVCIsValid(SecCertificatePathVCRef certificatePath, CFAbsoluteTime verifyTime) {
@@ -836,27 +861,21 @@ CFAbsoluteTime SecCertificatePathVCGetEarliestNextUpdate(SecCertificatePathVCRef
         if (thisCertNextUpdate == 0) {
             if (certIX > 0) {
                 /* We allow for CA certs to not be revocation checked if they
-                 have no ocspResponders nor CRLDPs to check against, but the leaf
+                 have no ocspResponders to check against, but the leaf
                  must be checked in order for us to claim we did revocation
                  checking. */
                 SecCertificateRef cert = SecCertificatePathVCGetCertificateAtIndex(path, rvc->certIX);
                 CFArrayRef ocspResponders = NULL;
                 ocspResponders = SecCertificateGetOCSPResponders(cert);
-#if ENABLE_CRLS
-                CFArrayRef crlDPs = NULL;
-                crlDPs = SecCertificateGetCRLDistributionPoints(cert);
-#endif
-                if ((!ocspResponders || CFArrayGetCount(ocspResponders) == 0)
-#if ENABLE_CRLS
-                    && (!crlDPs || CFArrayGetCount(crlDPs) == 0)
-#endif
-                    ) {
+                if (!ocspResponders || CFArrayGetCount(ocspResponders) == 0) {
                     /* We can't check this cert so we don't consider it a soft
-                     failure that we didn't. Ideally we should support crl
-                     checking and remove this workaround, since that more
-                     strict. */
+                     failure that we didn't. */
                     continue;
                 }
+            }
+            /* Make sure to always skip roots for whom we can't check revocation */
+            if (certIX == certCount - 1) {
+                continue;
             }
             secdebug("rvc", "revocation checking soft failure for cert: %ld",
                      certIX);
@@ -872,6 +891,23 @@ CFAbsoluteTime SecCertificatePathVCGetEarliestNextUpdate(SecCertificatePathVCRef
     return enu;
 }
 
+void SecCertificatePathVCSetRevocationReasonForCertificateAtIndex(SecCertificatePathVCRef certificatePath,
+                                                                  CFIndex ix, CFNumberRef revocationReason) {
+    if (ix > certificatePath->count - 1) { return; }
+    SecCertificateVCRef cvc = certificatePath->certificates[ix];
+    cvc->revocationReason = CFRetainSafe(revocationReason);
+}
+
+CFNumberRef SecCertificatePathVCGetRevocationReason(SecCertificatePathVCRef certificatePath) {
+    for (CFIndex ix = 0; ix < certificatePath->count; ix++) {
+        SecCertificateVCRef cvc = certificatePath->certificates[ix];
+        if (cvc->revocationReason) {
+            return cvc->revocationReason;
+        }
+    }
+    return NULL;
+}
+
 bool SecCertificatePathVCIsRevocationRequiredForCertificateAtIndex(SecCertificatePathVCRef certificatePath,
                                                                    CFIndex ix) {
     if (ix > certificatePath->count - 1) { return false; }
@@ -884,6 +920,22 @@ void SecCertificatePathVCSetRevocationRequiredForCertificateAtIndex(SecCertifica
     if (ix > certificatePath->count - 1) { return; }
     SecCertificateVCRef cvc = certificatePath->certificates[ix];
     cvc->require_revocation_response = true;
+}
+
+bool SecCertificatePathVCCheckedIssuers(SecCertificatePathVCRef certificatePath) {
+    return certificatePath->checkedIssuers;
+}
+
+void SecCertificatePathVCSetCheckedIssuers(SecCertificatePathVCRef certificatePath, bool checked) {
+    certificatePath->checkedIssuers = checked;
+}
+
+CFIndex SecCertificatePathVCUnknownCAIndex(SecCertificatePathVCRef certificatePath) {
+    return certificatePath->unknownCAIndex;
+}
+
+void SecCertificatePathVCSetUnknownCAIndex(SecCertificatePathVCRef certificatePath, CFIndex index) {
+    certificatePath->unknownCAIndex = index;
 }
 
 bool SecCertificatePathVCIsPathValidated(SecCertificatePathVCRef certificatePath) {
@@ -916,6 +968,27 @@ bool SecCertificatePathVCIsCT(SecCertificatePathVCRef certificatePath) {
 
 void SecCertificatePathVCSetIsCT(SecCertificatePathVCRef certificatePath, bool isCT) {
     certificatePath->isCT = isCT;
+}
+
+SecPathCTPolicy SecCertificatePathVCRequiresCT(SecCertificatePathVCRef certificatePath) {
+    if (!certificatePath) { return kSecPathCTNotRequired; }
+    return certificatePath->requiresCT;
+}
+
+void SecCertificatePathVCSetRequiresCT(SecCertificatePathVCRef certificatePath, SecPathCTPolicy requiresCT) {
+    if (certificatePath->requiresCT > requiresCT) {
+        return; /* once set, CT policy may be only be changed to a more strict value */
+    }
+    certificatePath->requiresCT = requiresCT;
+}
+
+CFAbsoluteTime SecCertificatePathVCIssuanceTime(SecCertificatePathVCRef certificatePath) {
+    if (!certificatePath) { return 0; }
+    return certificatePath->issuanceTime;
+}
+
+void SecCertificatePathVCSetIssuanceTime(SecCertificatePathVCRef certificatePath, CFAbsoluteTime issuanceTime) {
+    certificatePath->issuanceTime = issuanceTime;
 }
 
 bool SecCertificatePathVCIsAllowlisted(SecCertificatePathVCRef certificatePath) {

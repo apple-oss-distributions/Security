@@ -28,20 +28,24 @@
 #import "CKKSOutgoingQueueEntry.h"
 #import "CKKSKey.h"
 #import "CKKSManifest.h"
-#import "CKKSAnalyticsLogger.h"
+#import "CKKSAnalytics.h"
+#import "CKKSPowerCollection.h"
 #import "keychain/ckks/CKKSCurrentItemPointer.h"
+#import "keychain/ot/ObjCImprovements.h"
 
 #include <securityd/SecItemServer.h>
 #include <securityd/SecItemDb.h>
 #include <Security/SecItemPriv.h>
 
 #include <utilities/SecADWrapper.h>
+#import <utilities/SecCoreAnalytics.h>
 
 #if OCTAGON
 
 @interface CKKSIncomingQueueOperation ()
 @property bool newOutgoingEntries;
 @property bool pendingClassAEntries;
+@property bool missingKey;
 @end
 
 @implementation CKKSIncomingQueueOperation
@@ -58,27 +62,28 @@
             [self addDependency: ckks.keyStateReadyDependency];
         }
 
+        [self addNullableDependency: ckks.holdIncomingQueueOperation];
+
         _errorOnClassAFailure = errorOnClassAFailure;
         _pendingClassAEntries = false;
 
         [self linearDependencies:ckks.incomingQueueOperations];
 
         if ([CKKSManifest shouldSyncManifests]) {
-            __weak __typeof(self) weakSelf = self;
-            __weak CKKSKeychainView* weakCKKS = ckks;
+            WEAKIFY(self);
             CKKSResultOperation* updateManifestOperation = [CKKSResultOperation operationWithBlock:^{
-                __strong __typeof(self) strongSelf = weakSelf;
-                __strong CKKSKeychainView* strongCKKS = weakCKKS;
+                STRONGIFY(self);
+                CKKSKeychainView* strongCKKS = self.ckks;
                 __block NSError* error = nil;
-                if (!strongCKKS || !strongSelf) {
+                if (!strongCKKS || !self) {
                     ckkserror("ckksincoming", strongCKKS, "update manifest operation fired for released object");
                     return;
                 }
 
-                [strongCKKS dispatchSyncWithAccountQueue:^bool{
+                [strongCKKS dispatchSyncWithAccountKeys:^bool{
                     strongCKKS.latestManifest = [CKKSManifest latestTrustedManifestForZone:strongCKKS.zoneName error:&error];
                     if (error) {
-                        strongSelf.error = error;
+                        self.error = error;
                         ckkserror("ckksincoming", strongCKKS, "failed to get latest manifest: %@", error);
                         return false;
                     }
@@ -102,29 +107,27 @@
 
     NSError* error = nil;
     for(CKKSCurrentItemPointer* p in queueEntries) {
-        if ([CKKSManifest shouldSyncManifests]) {
-            if (![manifest validateCurrentItem:p withError:&error]) {
-                ckkserror("ckksincoming", ckks, "Unable to validate current item pointer (%@) against manifest (%@)", p, manifest);
-                [[CKKSAnalyticsLogger logger] logSoftFailureForEventNamed:@"CKKSManifestCurrentItemPointerValidation" withAttributes:@{CKKSManifestZoneKey : ckks.zoneID.zoneName, CKKSManifestSignerIDKey : manifest.signerID ?: @"no signer", CKKSManifestGenCountKey : @(manifest.generationCount)}];
-                if ([CKKSManifest shouldEnforceManifests]) {
-                    return false;
+        @autoreleasepool {
+            if ([CKKSManifest shouldSyncManifests]) {
+                if (![manifest validateCurrentItem:p withError:&error]) {
+                    ckkserror("ckksincoming", ckks, "Unable to validate current item pointer (%@) against manifest (%@)", p, manifest);
+                    if ([CKKSManifest shouldEnforceManifests]) {
+                        return false;
+                    }
                 }
             }
-            else {
-                [[CKKSAnalyticsLogger logger] logSuccessForEventNamed:@"CKKSManifestCurrentItemPointerValidation"];
+
+            p.state = SecCKKSProcessedStateLocal;
+
+            [p saveToDatabase:&error];
+            ckksnotice("ckkspointer", ckks, "Saving new current item pointer: %@", p);
+            if(error) {
+                ckkserror("ckksincoming", ckks, "Error saving new current item pointer: %@ %@", error, p);
             }
+
+            // Schedule a view change notification
+            [ckks.notifyViewChangedScheduler trigger];
         }
-
-        p.state = SecCKKSProcessedStateLocal;
-
-        [p saveToDatabase:&error];
-        ckksnotice("ckkspointer", ckks, "Saving new current item pointer: %@", p);
-        if(error) {
-            ckkserror("ckksincoming", ckks, "Error saving new current item pointer: %@ %@", error, p);
-        }
-
-        // Schedule a view change notification
-        [ckks.notifyViewChangedScheduler trigger];
     }
 
     if(queueEntries.count > 0) {
@@ -141,132 +144,109 @@
 
     NSMutableArray* newOrChangedRecords = [[NSMutableArray alloc] init];
     NSMutableArray* deletedRecordIDs = [[NSMutableArray alloc] init];
-    NSInteger manifestGenerationCount = manifest.generationCount;
-    NSString* manifestSignerID = manifest.signerID ?: @"no signer";
 
     for(id entry in queueEntries) {
-        if(self.cancelled) {
-            ckksnotice("ckksincoming", ckks, "CKKSIncomingQueueOperation cancelled, quitting");
-            return false;
-        }
+        @autoreleasepool {
+            if(self.cancelled) {
+                ckksnotice("ckksincoming", ckks, "CKKSIncomingQueueOperation cancelled, quitting");
+                return false;
+            }
 
-        NSError* error = nil;
+            NSError* error = nil;
 
-        CKKSIncomingQueueEntry* iqe = (CKKSIncomingQueueEntry*) entry;
-        ckksnotice("ckksincoming", ckks, "ready to process an incoming queue entry: %@ %@ %@", iqe, iqe.uuid, iqe.action);
+            CKKSIncomingQueueEntry* iqe = (CKKSIncomingQueueEntry*) entry;
+            ckksnotice("ckksincoming", ckks, "ready to process an incoming queue entry: %@ %@ %@", iqe, iqe.uuid, iqe.action);
 
-        // Note that we currently unencrypt the item before deleting it, instead of just deleting it
-        // This finds the class, which is necessary for the deletion process. We could just try to delete
-        // across all classes, though...
-        NSMutableDictionary* attributes = [[CKKSItemEncrypter decryptItemToDictionary: iqe.item error:&error] mutableCopy];
-        if(!attributes || error) {
-            if([ckks.lockStateTracker isLockedError:error]) {
-                NSError* localerror = nil;
-                ckkserror("ckksincoming", ckks, "Keychain is locked; can't decrypt IQE %@", iqe);
-                CKKSKey* key = [CKKSKey tryFromDatabase:iqe.item.parentKeyUUID zoneID:ckks.zoneID error:&localerror];
-                if(localerror || ([key.keyclass isEqualToString:SecCKKSKeyClassA] && self.errorOnClassAFailure)) {
+            // Note that we currently unencrypt the item before deleting it, instead of just deleting it
+            // This finds the class, which is necessary for the deletion process. We could just try to delete
+            // across all classes, though...
+            NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:iqe.item error:&error];
+
+            if(!attributes || error) {
+                if([ckks.lockStateTracker isLockedError:error]) {
+                    NSError* localerror = nil;
+                    ckkserror("ckksincoming", ckks, "Keychain is locked; can't decrypt IQE %@", iqe);
+                    CKKSKey* key = [CKKSKey tryFromDatabase:iqe.item.parentKeyUUID zoneID:ckks.zoneID error:&localerror];
+                    if(localerror || ([key.keyclass isEqualToString:SecCKKSKeyClassA] && self.errorOnClassAFailure)) {
+                        self.error = error;
+                    }
+
+                    // If this isn't an error, make sure it gets processed later.
+                    if([key.keyclass isEqualToString:SecCKKSKeyClassA] && !self.errorOnClassAFailure) {
+                        self.pendingClassAEntries = true;
+                    }
+
+                } else if ([error.domain isEqualToString:@"securityd"] && error.code == errSecItemNotFound) {
+                    ckkserror("ckksincoming", ckks, "Coudn't find key in keychain; will attempt to poke key hierarchy: %@", error)
+                    self.missingKey = true;
+
+                } else {
+                    ckkserror("ckksincoming", ckks, "Couldn't decrypt IQE %@ for some reason: %@", iqe, error);
                     self.error = error;
                 }
-
-                // If this isn't an error, make sure it gets processed later.
-                if([key.keyclass isEqualToString:SecCKKSKeyClassA] && !self.errorOnClassAFailure) {
-                    self.pendingClassAEntries = true;
-                }
-
-            } else if ([error.domain isEqualToString:@"securityd"] && error.code == errSecItemNotFound) {
-                ckkserror("ckksincoming", ckks, "Coudn't find key in keychain; attempting to poke key hierarchy: %@", error)
-                [ckks _onqueueAdvanceKeyStateMachineToState: nil withError: nil];
-
-            } else {
-                ckkserror("ckksincoming", ckks, "Couldn't decrypt IQE %@ for some reason: %@", iqe, error);
-                self.error = error;
-            }
-            continue;
-        }
-
-        // Add the UUID (which isn't stored encrypted)
-        [attributes setValue: iqe.item.uuid forKey: (__bridge NSString*) kSecAttrUUID];
-
-        // Add the PCS plaintext fields, if they exist
-        if(iqe.item.plaintextPCSServiceIdentifier) {
-            [attributes setValue: iqe.item.plaintextPCSServiceIdentifier forKey: (__bridge NSString*) kSecAttrPCSPlaintextServiceIdentifier];
-        }
-        if(iqe.item.plaintextPCSPublicKey) {
-            [attributes setValue: iqe.item.plaintextPCSPublicKey forKey: (__bridge NSString*) kSecAttrPCSPlaintextPublicKey];
-        }
-        if(iqe.item.plaintextPCSPublicIdentity) {
-            [attributes setValue: iqe.item.plaintextPCSPublicIdentity forKey: (__bridge NSString*) kSecAttrPCSPlaintextPublicIdentity];
-        }
-
-        // This item is also synchronizable (by definition)
-        [attributes setValue: @(YES) forKey: (__bridge NSString*) kSecAttrSynchronizable];
-
-        NSString* classStr = [attributes objectForKey: (__bridge NSString*) kSecClass];
-        if(![classStr isKindOfClass: [NSString class]]) {
-            self.error = [NSError errorWithDomain:@"securityd"
-                                             code:errSecInternalError
-                                         userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Item did not have a reasonable class: %@", classStr]}];
-            ckkserror("ckksincoming", ckks, "Synced item seems wrong: %@", self.error);
-            continue;
-        }
-
-        const SecDbClass * classP = !classStr ? NULL : kc_class_with_name((__bridge CFStringRef) classStr);
-
-        if(!classP) {
-            ckkserror("ckksincoming", ckks, "unknown class in object: %@ %@", classStr, iqe);
-            iqe.state = SecCKKSStateError;
-            [iqe saveToDatabase:&error];
-            if(error) {
-                ckkserror("ckksincoming", ckks, "Couldn't save errored IQE to database: %@", error);
-                self.error = error;
-            }
-            continue;
-        }
-
-        if([iqe.action isEqualToString: SecCKKSActionAdd] || [iqe.action isEqualToString: SecCKKSActionModify]) {
-            BOOL requireManifestValidation = [CKKSManifest shouldEnforceManifests];
-            BOOL manifestValidatesItem = [manifest validateItem:iqe.item withError:&error];
-            if (manifestValidatesItem) {
-                [[CKKSAnalyticsLogger logger] logSuccessForEventNamed:@"CKKSManifestValidateItemAdd"];
-            }
-            else {
-                [[CKKSAnalyticsLogger logger] logSoftFailureForEventNamed:@"CKKSManifestValidateItemAdd" withAttributes:@{CKKSManifestZoneKey : ckks.zoneID.zoneName, CKKSManifestSignerIDKey : manifestSignerID, CKKSManifestGenCountKey : @(manifestGenerationCount)}];
-            }
-            
-            if (!requireManifestValidation || manifestValidatesItem) {
-                [self _onqueueHandleIQEChange: iqe attributes:attributes class:classP];
-                [newOrChangedRecords addObject:[iqe.item CKRecordWithZoneID:ckks.zoneID]];
-            }
-            else {
-                ckkserror("ckksincoming", ckks, "could not validate incoming item against manifest with error: %@", error);
-                if (![self _onqueueUpdateIQE:iqe withState:SecCKKSStateUnauthenticated error:&error]) {
-                    ckkserror("ckksincoming", ckks, "failed to save incoming item back to database in unauthenticated state with error: %@", error);
-                    return false;
-                }
-                
+                self.errorItemsProcessed += 1;
                 continue;
             }
-        } else if ([iqe.action isEqualToString: SecCKKSActionDelete]) {
-            BOOL requireManifestValidation = [CKKSManifest shouldEnforceManifests];
-            BOOL manifestValidatesDelete = ![manifest itemUUIDExistsInManifest:iqe.uuid];
-            if (manifestValidatesDelete) {
-                [[CKKSAnalyticsLogger logger] logSuccessForEventNamed:@"CKKSManifestValidateItemDelete"];
+
+            NSString* classStr = [attributes objectForKey: (__bridge NSString*) kSecClass];
+            if(![classStr isKindOfClass: [NSString class]]) {
+                self.error = [NSError errorWithDomain:@"securityd"
+                                                 code:errSecInternalError
+                                             userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Item did not have a reasonable class: %@", classStr]}];
+                ckkserror("ckksincoming", ckks, "Synced item seems wrong: %@", self.error);
+                self.errorItemsProcessed += 1;
+                continue;
             }
-            else {
-                [[CKKSAnalyticsLogger logger] logSoftFailureForEventNamed:@"CKKSManifestValidateItemDelete" withAttributes:@{CKKSManifestZoneKey : ckks.zoneID.zoneName, CKKSManifestSignerIDKey : manifestSignerID, CKKSManifestGenCountKey : @(manifestGenerationCount)}];
+
+            const SecDbClass * classP = !classStr ? NULL : kc_class_with_name((__bridge CFStringRef) classStr);
+
+            if(!classP) {
+                ckkserror("ckksincoming", ckks, "unknown class in object: %@ %@", classStr, iqe);
+                iqe.state = SecCKKSStateError;
+                [iqe saveToDatabase:&error];
+                if(error) {
+                    ckkserror("ckksincoming", ckks, "Couldn't save errored IQE to database: %@", error);
+                    self.error = error;
+                }
+                self.errorItemsProcessed += 1;
+                continue;
             }
+
+            if([iqe.action isEqualToString: SecCKKSActionAdd] || [iqe.action isEqualToString: SecCKKSActionModify]) {
+                BOOL requireManifestValidation = [CKKSManifest shouldEnforceManifests];
+                BOOL manifestValidatesItem = [manifest validateItem:iqe.item withError:&error];
+
+                if (!requireManifestValidation || manifestValidatesItem) {
+                    [self _onqueueHandleIQEChange: iqe attributes:attributes class:classP];
+                    [newOrChangedRecords addObject:[iqe.item CKRecordWithZoneID:ckks.zoneID]];
+                }
+                else {
+                    ckkserror("ckksincoming", ckks, "could not validate incoming item against manifest with error: %@", error);
+                    if (![self _onqueueUpdateIQE:iqe withState:SecCKKSStateUnauthenticated error:&error]) {
+                        ckkserror("ckksincoming", ckks, "failed to save incoming item back to database in unauthenticated state with error: %@", error);
+                        return false;
+                    }
+                    self.errorItemsProcessed += 1;
+                    continue;
+                }
+            } else if ([iqe.action isEqualToString: SecCKKSActionDelete]) {
+                BOOL requireManifestValidation = [CKKSManifest shouldEnforceManifests];
+                BOOL manifestValidatesDelete = ![manifest itemUUIDExistsInManifest:iqe.uuid];
             
-            if (!requireManifestValidation || manifestValidatesDelete) {
-                // if the item does not exist in the latest manifest, we're good to delete it
-                [self _onqueueHandleIQEDelete: iqe class:classP];
-                [deletedRecordIDs addObject:[[CKRecordID alloc] initWithRecordName:iqe.uuid zoneID:ckks.zoneID]];
-            }
-            else {
-                // if the item DOES exist in the manifest, we can't trust the deletion
-                ckkserror("ckksincoming", ckks, "could not validate incoming item deletion against manifest");
-                if (![self _onqueueUpdateIQE:iqe withState:SecCKKSStateUnauthenticated error:&error]) {
-                    ckkserror("ckksincoming", ckks, "failed to save incoming item deletion back to database in unauthenticated state with error: %@", error);
-                    return false;
+                if (!requireManifestValidation || manifestValidatesDelete) {
+                    // if the item does not exist in the latest manifest, we're good to delete it
+                    [self _onqueueHandleIQEDelete: iqe class:classP];
+                    [deletedRecordIDs addObject:[[CKRecordID alloc] initWithRecordName:iqe.uuid zoneID:ckks.zoneID]];
+                }
+                else {
+                    // if the item DOES exist in the manifest, we can't trust the deletion
+                    ckkserror("ckksincoming", ckks, "could not validate incoming item deletion against manifest");
+                    if (![self _onqueueUpdateIQE:iqe withState:SecCKKSStateUnauthenticated error:&error]) {
+                        ckkserror("ckksincoming", ckks, "failed to save incoming item deletion back to database in unauthenticated state with error: %@", error);
+
+                        self.errorItemsProcessed += 1;
+                        return false;
+                    }
                 }
             }
         }
@@ -277,10 +257,41 @@
         [ckks.notifyViewChangedScheduler trigger];
     }
 
+    if(self.missingKey) {
+        [ckks.pokeKeyStateMachineScheduler trigger];
+    }
+
     if ([CKKSManifest shouldSyncManifests]) {
         [egoManifest updateWithNewOrChangedRecords:newOrChangedRecords deletedRecordIDs:deletedRecordIDs];
     }
     return true;
+}
+
++ (NSDictionary* _Nullable)decryptCKKSItemToAttributes:(CKKSItem*)item error:(NSError**)error
+{
+    NSMutableDictionary* attributes = [[CKKSItemEncrypter decryptItemToDictionary:item error:error] mutableCopy];
+    if(!attributes) {
+        return nil;
+    }
+
+    // Add the UUID (which isn't stored encrypted)
+    attributes[(__bridge NSString*)kSecAttrUUID] = item.uuid;
+
+    // Add the PCS plaintext fields, if they exist
+    if(item.plaintextPCSServiceIdentifier) {
+        attributes[(__bridge NSString*)kSecAttrPCSPlaintextServiceIdentifier] = item.plaintextPCSServiceIdentifier;
+    }
+    if(item.plaintextPCSPublicKey) {
+        attributes[(__bridge NSString*)kSecAttrPCSPlaintextPublicKey] = item.plaintextPCSPublicKey;
+    }
+    if(item.plaintextPCSPublicIdentity) {
+        attributes[(__bridge NSString*)kSecAttrPCSPlaintextPublicIdentity] = item.plaintextPCSPublicIdentity;
+    }
+
+    // This item is also synchronizable (by definition)
+    [attributes setValue:@(YES) forKey:(__bridge NSString*)kSecAttrSynchronizable];
+
+    return attributes;
 }
 
 - (bool)_onqueueUpdateIQE:(CKKSIncomingQueueEntry*)iqe withState:(NSString*)newState error:(NSError**)error
@@ -310,7 +321,31 @@
         return;
     }
 
-    [ckks dispatchSyncWithAccountQueue: ^bool{
+    WEAKIFY(self);
+    self.completionBlock = ^(void) {
+        STRONGIFY(self);
+        if (!self) {
+            ckkserror("ckksincoming", ckks, "received callback for released object");
+            return;
+        }
+
+        CKKSAnalytics* logger = [CKKSAnalytics logger];
+
+        if (!self.error) {
+            [logger logSuccessForEvent:CKKSEventProcessIncomingQueueClassC inView:ckks];
+            if (!self.pendingClassAEntries) {
+                [logger logSuccessForEvent:CKKSEventProcessIncomingQueueClassA inView:ckks];
+            }
+        } else {
+            [logger logRecoverableError:self.error
+                               forEvent:self.errorOnClassAFailure ? CKKSEventProcessIncomingQueueClassA : CKKSEventProcessIncomingQueueClassC
+                                 inView:ckks
+                         withAttributes:NULL];
+        }
+    };
+
+    __block bool errored = false;
+    [ckks dispatchSync: ^bool{
         if(self.cancelled) {
             ckksnotice("ckksincoming", ckks, "CKKSIncomingQueueOperation cancelled, quitting");
             return false;
@@ -333,18 +368,17 @@
         __block NSError* error = nil;
 
         if ([CKKSManifest shouldSyncManifests]) {
-            NSDictionary<NSString*, NSNumber*>* stateCounts = [CKKSIncomingQueueEntry countsByState:ckks.zoneID error:&error];
-            if (error) {
+            NSInteger unauthenticatedItemCount = [CKKSIncomingQueueEntry countByState:SecCKKSStateUnauthenticated zone:ckks.zoneID error:&error];
+            if (error || unauthenticatedItemCount < 0) {
                 ckkserror("ckksincoming", ckks, "Error fetching incoming queue state counts: %@", error);
                 self.error = error;
                 return false;
             }
-            NSUInteger unauthenticatedItemCount = stateCounts[SecCKKSStateUnauthenticated].unsignedIntegerValue;
 
             // take any existing unauthenticated entries and put them back in the new state
             NSArray<CKKSIncomingQueueEntry*>* unauthenticatedEntries = nil;
             NSString* lastMaxUUID = nil;
-            NSUInteger numEntriesProcessed = 0;
+            NSInteger numEntriesProcessed = 0;
             while (numEntriesProcessed < unauthenticatedItemCount &&  (unauthenticatedEntries == nil || unauthenticatedEntries.count == SecCKKSIncomingQueueItemsAtOnce)) {
                 if(self.cancelled) {
                     ckksnotice("ckksincoming", ckks, "CKKSIncomingQueueOperation cancelled, quitting");
@@ -378,16 +412,31 @@
                 }
             }
         }
+        errored = !ok;
+        return ok;
+    }];
 
-        // Iterate through all incoming queue entries a chunk at a time (for peak memory concerns)
-        NSArray<CKKSIncomingQueueEntry*> * queueEntries = nil;
-        NSString* lastMaxUUID = nil;
-        NSUInteger processedItems = 0;
-        while(queueEntries == nil || queueEntries.count == SecCKKSIncomingQueueItemsAtOnce) {
+    if(errored) {
+        ckksnotice("ckksincoming", ckks, "Early-exiting from IncomingQueueOperation");
+        return;
+    }
+
+    // Now for the tricky bit: take and drop the account queue for each batch of queue entries
+    // This is for peak memory concerns, but also to allow keychain API clients to make changes while we're processing many items
+    // Note that IncomingQueueOperations are no longer transactional: they can partially succeed. This might make them harder to reason about.
+    __block NSUInteger lastCount = SecCKKSIncomingQueueItemsAtOnce;
+    __block NSString* lastMaxUUID = nil;
+
+    while(lastCount == SecCKKSIncomingQueueItemsAtOnce) {
+        [ckks dispatchSync: ^bool{
+            NSArray<CKKSIncomingQueueEntry*> * queueEntries = nil;
             if(self.cancelled) {
                 ckksnotice("ckksincoming", ckks, "CKKSIncomingQueueOperation cancelled, quitting");
+                errored = true;
                 return false;
             }
+
+            NSError* error = nil;
 
             queueEntries = [CKKSIncomingQueueEntry fetch: SecCKKSIncomingQueueItemsAtOnce
                                           startingAtUUID:lastMaxUUID
@@ -398,29 +447,43 @@
             if(error != nil) {
                 ckkserror("ckksincoming", ckks, "Error fetching incoming queue records: %@", error);
                 self.error = error;
+                errored = true;
                 return false;
             }
+
+            lastCount = queueEntries.count;
 
             if([queueEntries count] == 0) {
                 // Nothing to do! exit.
                 ckksnotice("ckksincoming", ckks, "Nothing in incoming queue to process");
-                break;
+                return true;
             }
+
+            [CKKSPowerCollection CKKSPowerEvent:kCKKSPowerEventOutgoingQueue zone:ckks.zoneName count:[queueEntries count]];
 
             if (![self processQueueEntries:queueEntries withManifest:ckks.latestManifest egoManifest:ckks.egoManifest]) {
                 ckksnotice("ckksincoming", ckks, "processQueueEntries didn't complete successfully");
+                errored = true;
                 return false;
             }
-            processedItems += [queueEntries count];
 
             // Find the highest UUID for the next fetch.
             for(CKKSIncomingQueueEntry* iqe in queueEntries) {
                 lastMaxUUID = ([lastMaxUUID compare:iqe.uuid] == NSOrderedDescending) ? lastMaxUUID : iqe.uuid;
             };
-        }
+            return true;
+        }];
 
-        // Process other queues: CKKSCurrentItemPointers
-        ckksnotice("ckksincoming", ckks, "Processed %lu items in incoming queue", processedItems);
+        if(errored) {
+            ckksnotice("ckksincoming", ckks, "Early-exiting from IncomingQueueOperation");
+            return;
+        }
+    }
+
+    ckksnotice("ckksincoming", ckks, "Processed %lu items in incoming queue (%lu errors)", (unsigned long)self.successfulItemsProcessed, (unsigned long)self.errorItemsProcessed);
+
+    [ckks dispatchSync: ^bool{
+        NSError* error = nil;
 
         NSArray<CKKSCurrentItemPointer*>* newCIPs = [CKKSCurrentItemPointer remoteItemPointers:ckks.zoneID error:&error];
         if(error || !newCIPs) {
@@ -429,7 +492,7 @@
             if (![self processNewCurrentItemPointers:newCIPs withManifest:ckks.latestManifest egoManifest:ckks.egoManifest]) {
                 return false;
             }
-            ckksnotice("ckksincoming", ckks, "Processed %lu items in CIP queue", newCIPs.count);
+            ckksnotice("ckksincoming", ckks, "Processed %lu items in CIP queue", (unsigned long)newCIPs.count);
         }
 
         if(self.newOutgoingEntries) {
@@ -441,24 +504,7 @@
             [self.ckks processIncomingQueueAfterNextUnlock];
         }
 
-        __weak __typeof(self) weakSelf = self;
-        self.completionBlock = ^(void) {
-            __strong __typeof(self) strongSelf = weakSelf;
-            if (!strongSelf) {
-                ckkserror("ckksincoming", ckks, "received callback for released object");
-                return;
-            }
-
-            if (!strongSelf.error) {
-                CKKSAnalyticsLogger* logger = [CKKSAnalyticsLogger logger];
-                [logger logSuccessForEvent:CKKSEventProcessIncomingQueueClassC inView:ckks];
-                if (!strongSelf.pendingClassAEntries) {
-                    [logger logSuccessForEvent:CKKSEventProcessIncomingQueueClassA inView:ckks];
-                }
-            }
-        };
-
-        return ok;
+        return true;
     }];
 }
 
@@ -503,37 +549,26 @@
 
             CFComparisonResult compare = CFStringCompare(itemUUID, olditemUUID, 0);
             CKKSOutgoingQueueEntry* oqe = nil;
-            switch(compare) {
-                case kCFCompareLessThan:
-                    // item wins; delete olditem
-                    ckksnotice("ckksincoming", ckks, "Primary key conflict; replacing %@ with CK item %@", olditem, item);
-                    if(replace) {
-                        *replace = CFRetainSafe(item);
-                        moddate = (__bridge NSDate*) CFDictionaryGetValue(item->attributes, kSecAttrModificationDate);
-                    }
-
+            if (compare == kCFCompareGreaterThan) {
+                // olditem wins; don't change olditem; delete item
+                ckksnotice("ckksincoming", ckks, "Primary key conflict; dropping CK item %@", item);
+                oqe = [CKKSOutgoingQueueEntry withItem:item action:SecCKKSActionDelete ckks:ckks error:&error];
+                [oqe saveToDatabase: &error];
+                self.newOutgoingEntries = true;
+                moddate = nil;
+            } else {
+                // item wins
+                ckksnotice("ckksincoming", ckks, "Primary key conflict; replacing %@ with CK item %@", olditem, item);
+                if(replace) {
+                    *replace = CFRetainSafe(item);
+                    moddate = (__bridge NSDate*) CFDictionaryGetValue(item->attributes, kSecAttrModificationDate);
+                }
+                // delete olditem if UUID differs (same UUID is the normal update case)
+                if (compare != kCFCompareEqualTo) {
                     oqe = [CKKSOutgoingQueueEntry withItem:olditem action:SecCKKSActionDelete ckks:ckks error:&error];
                     [oqe saveToDatabase: &error];
                     self.newOutgoingEntries = true;
-                    break;
-                case kCFCompareGreaterThan:
-                    // olditem wins; don't change olditem; delete item
-                    ckksnotice("ckksincoming", ckks, "Primary key conflict; dropping CK item %@", item);
-
-                    oqe = [CKKSOutgoingQueueEntry withItem:item action:SecCKKSActionDelete ckks:ckks error:&error];
-                    [oqe saveToDatabase: &error];
-                    self.newOutgoingEntries = true;
-                    moddate = nil;
-                    break;
-
-                case kCFCompareEqualTo:
-                    // remote item wins; this is the normal update case
-                    ckksnotice("ckksincoming", ckks, "Primary key conflict; replacing %@ with CK item %@", olditem, item);
-                    if(replace) {
-                        *replace = CFRetainSafe(item);
-                        moddate = (__bridge NSDate*) CFDictionaryGetValue(item->attributes, kSecAttrModificationDate);
-                    }
-                    break;
+                }
             }
         });
 
@@ -574,12 +609,18 @@
         if(error) {
             ckkserror("ckksincoming", ckks, "couldn't delete CKKSIncomingQueueEntry: %@", error);
             self.error = error;
+            self.errorItemsProcessed += 1;
+        } else {
+            self.successfulItemsProcessed += 1;
         }
 
         if(moddate) {
-            // Log the number of seconds it took to propagate this change
-            uint64_t secondsDelay = (uint64_t) ([[NSDate date] timeIntervalSinceDate:moddate]);
-            SecADClientPushValueForDistributionKey((__bridge CFStringRef) SecCKKSAggdPropagationDelay, secondsDelay);
+            // Log the number of ms it took to propagate this change
+            uint64_t delayInMS = [[NSDate date] timeIntervalSinceDate:moddate] * 1000;
+            [SecCoreAnalytics sendEvent:@"com.apple.ckks.item.propagation" event:@{
+                @"time" : @(delayInMS)
+            }];
+
         }
 
     } else {
@@ -592,6 +633,8 @@
             ckkserror("ckksincoming", ckks, "Couldn't save errored IQE to database: %@", error);
             self.error = error;
         }
+
+        self.errorItemsProcessed += 1;
     }
 }
 
@@ -657,10 +700,14 @@
         if(error) {
             ckkserror("ckksincoming", ckks, "couldn't delete CKKSIncomingQueueEntry: %@", error);
             self.error = error;
+            self.errorItemsProcessed += 1;
+        } else {
+            self.successfulItemsProcessed += 1;
         }
     } else {
         ckkserror("ckksincoming", ckks, "IQE not correctly processed, but why? %@ %@", error, cferror);
         self.error = error;
+        self.errorItemsProcessed += 1;
     }
 }
 

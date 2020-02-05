@@ -29,12 +29,12 @@
 
 #include <CoreFoundation/CFDictionary.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -52,7 +52,6 @@
 
 #include "SecdTestKeychainUtilities.h"
 
-static int kTestTestCount = 79;
 
 static void tests(void)
 {
@@ -159,9 +158,10 @@ static void tests(void)
     is([alice_account getCircleStatus:&error],kSOSCCNotInCircle,"alice is not in the account (%@)", error);
     is([bob_account getCircleStatus:&error], kSOSCCNotInCircle,"bob is not in the account (%@)", error);
     is([carol_account getCircleStatus:&error], kSOSCCInCircle,"carol is in the account (%@)", error);
-    
+
     CFReleaseNull(gencount);
     CFReleaseNull(cfpassword);
+    CFReleaseNull(user_privkey);
     alice_account = nil;
     bob_account = nil;
     carol_account = nil;
@@ -171,7 +171,7 @@ static void tests(void)
 
 int secd_52_offering_gencount_reset(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(63);
     
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     

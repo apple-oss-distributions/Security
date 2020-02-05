@@ -27,6 +27,7 @@
  */
 
 #include <securityd/SecCAIssuerCache.h>
+#include <securityd/SecTrustLoggingServer.h>
 #include <utilities/debugging.h>
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecFramework.h>
@@ -46,6 +47,7 @@
 
 #include <CoreFoundation/CFUtilities.h>
 #include <utilities/SecFileLocations.h>
+#include <utilities/SecCFWrappers.h>
 
 static const char expireSQL[] = "DELETE FROM issuers WHERE expires<?";
 static const char beginTxnSQL[] = "BEGIN EXCLUSIVE TRANSACTION";
@@ -186,7 +188,7 @@ static int SecCAIssuerCacheCommitTxn(SecCAIssuerCacheRef this) {
 
 static SecCAIssuerCacheRef SecCAIssuerCacheCreate(const char *db_name) {
 	SecCAIssuerCacheRef this;
-	int s3e;
+	int s3e = SQLITE_OK;
     bool create = true;
 
     require(this = (SecCAIssuerCacheRef)calloc(sizeof(struct __SecCAIssuerCache), 1), errOut);
@@ -237,6 +239,9 @@ static SecCAIssuerCacheRef SecCAIssuerCacheCreate(const char *db_name) {
 	return this;
 
 errOut:
+    if (s3e != SQLITE_OK) {
+        TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationCreate, TAFatalError, s3e);
+    }
 	if (this) {
         if (this->queue)
             dispatch_release(this->queue);
@@ -264,18 +269,63 @@ static void SecCAIssuerCacheInit(void) {
         atexit(SecCAIssuerCacheGC);
 }
 
+static CF_RETURNS_RETAINED CFDataRef convertArrayOfCertsToData(CFArrayRef certificates) {
+    if (!certificates || CFArrayGetCount(certificates) == 0) {
+        return NULL;
+    }
+
+    CFMutableDataRef output = CFDataCreateMutable(NULL, 0);
+    CFArrayForEach(certificates, ^(const void *value) {
+        CFDataRef certData = SecCertificateCopyData((SecCertificateRef)value);
+        if (certData) {
+            CFDataAppend(output, certData);
+        }
+        CFReleaseNull(certData);
+    });
+
+    return output;
+}
+
+static CF_RETURNS_RETAINED CFArrayRef convertDataToArrayOfCerts(uint8_t *data, size_t dataLen) {
+    if  (!data || dataLen == 0) {
+        return NULL;
+    }
+
+    CFMutableArrayRef output = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+    uint8_t *nextCertPtr = data;
+    size_t remainingDataLen = dataLen;
+    while (nextCertPtr < data + dataLen) {
+        SecCertificateRef cert = SecCertificateCreateWithBytes(NULL, nextCertPtr, remainingDataLen);
+        if (cert) {
+            CFArrayAppendValue(output, cert);
+            nextCertPtr += SecCertificateGetLength(cert);
+            remainingDataLen -= SecCertificateGetLength(cert);
+            CFReleaseNull(cert);
+        } else {
+            /* We don't know where the next cert starts, so we should just stop */
+            break;
+        }
+    }
+
+    if (CFArrayGetCount(output) < 1) {
+        CFReleaseNull(output);
+    }
+    return output;
+}
+
 /* Instance implemenation. */
 
-static void _SecCAIssuerCacheAddCertificate(SecCAIssuerCacheRef this,
-                                            SecCertificateRef certificate,
+static void _SecCAIssuerCacheAddCertificates(SecCAIssuerCacheRef this,
+                                            CFArrayRef certificates,
                                             CFURLRef uri, CFAbsoluteTime expires) {
     int s3e;
+    CFDataRef certsData = NULL;
+    CFDataRef uriData = NULL;
 
     secdebug("caissuercache", "adding certificate from %@", uri);
     require_noerr(s3e = SecCAIssuerCacheEnsureTxn(this), errOut);
 
     /* issuer.uri */
-    CFDataRef uriData;
     require_action(uriData = CFURLCreateData(kCFAllocatorDefault, uri,
         kCFStringEncodingUTF8, false), errOut, s3e = SQLITE_NOMEM);
     s3e = sqlite3_bind_blob_wrapper(this->insertIssuer, 1,
@@ -286,24 +336,30 @@ static void _SecCAIssuerCacheAddCertificate(SecCAIssuerCacheRef this,
     if (!s3e) s3e = sqlite3_bind_double(this->insertIssuer, 2, expires);
 
     /* issuer.certificate */
-    if (!s3e) s3e = sqlite3_bind_blob_wrapper(this->insertIssuer, 3,
-        SecCertificateGetBytePtr(certificate),
-        SecCertificateGetLength(certificate), SQLITE_TRANSIENT);
+    require_action(certsData = convertArrayOfCertsToData(certificates), errOut,
+                   s3e = SQLITE_NOMEM);
+    if (!s3e) {
+        s3e = sqlite3_bind_blob_wrapper(this->insertIssuer, 3,
+                                        CFDataGetBytePtr(certsData),
+                                        CFDataGetLength(certsData), SQLITE_TRANSIENT);
+    }
+    CFReleaseNull(certsData);
 
     /* Execute the insert statement. */
     if (!s3e) s3e = sqlite3_step(this->insertIssuer);
     require_noerr(s3e = sec_sqlite3_reset(this->insertIssuer, s3e), errOut);
 
 errOut:
-    if (s3e) {
+    if (s3e != SQLITE_OK) {
         secerror("caissuer cache add failed: %s", sqlite3_errmsg(this->s3h));
+        TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationWrite, TAFatalError, s3e);
         /* TODO: Blow away the cache and create a new db. */
     }
 }
 
-static SecCertificateRef _SecCAIssuerCacheCopyMatching(SecCAIssuerCacheRef this,
+static CFArrayRef _SecCAIssuerCacheCopyMatching(SecCAIssuerCacheRef this,
                                                        CFURLRef uri) {
-    SecCertificateRef certificate = NULL;
+    CFArrayRef certificates = NULL;
     int s3e = SQLITE_OK;
 
     CFDataRef uriData = NULL;
@@ -320,27 +376,27 @@ static SecCertificateRef _SecCAIssuerCacheCopyMatching(SecCAIssuerCacheRef this,
 
         const void *respData = sqlite3_column_blob(this->selectIssuer, 0);
         int respLen = sqlite3_column_bytes(this->selectIssuer, 0);
-        certificate = SecCertificateCreateWithBytes(NULL, respData, respLen);
+        certificates = convertDataToArrayOfCerts((uint8_t *)respData, respLen);
     }
 
     require_noerr(s3e = sec_sqlite3_reset(this->selectIssuer, s3e), errOut);
 
 errOut:
-    if (s3e) {
+    if (s3e != SQLITE_OK) {
         if (s3e != SQLITE_DONE) {
             secerror("caissuer cache lookup failed: %s", sqlite3_errmsg(this->s3h));
+            TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationRead, TAFatalError, s3e);
             /* TODO: Blow away the cache and create a new db. */
         }
 
-        if (certificate) {
-            CFRelease(certificate);
-            certificate = NULL;
+        if (certificates) {
+            CFRelease(certificates);
+            certificates = NULL;
         }
     }
 
-    secdebug("caissuercache", "returning %s for %@", (certificate ? "cached response" : "NULL"), uri);
-
-    return certificate;
+    secdebug("caissuercache", "returning %s for %@", (certificates ? "cached response" : "NULL"), uri);
+    return certificates;
 }
 
 static void _SecCAIssuerCacheGC(void *context) {
@@ -355,8 +411,9 @@ static void _SecCAIssuerCacheGC(void *context) {
     require_noerr(s3e = SecCAIssuerCacheCommitTxn(this), errOut);
 
 errOut:
-    if (s3e) {
+    if (s3e != SQLITE_OK) {
         secerror("caissuer cache expire failed: %s", sqlite3_errmsg(this->s3h));
+        TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationWrite, TAFatalError, s3e);
         /* TODO: Blow away the cache and create a new db. */
     }
 }
@@ -368,15 +425,16 @@ static void _SecCAIssuerCacheFlush(void *context) {
     secdebug("caissuercache", "flushing pending changes");
     s3e = SecCAIssuerCacheCommitTxn(this);
 
-    if (s3e) {
+    if (s3e != SQLITE_OK) {
         secerror("caissuer cache flush failed: %s", sqlite3_errmsg(this->s3h));
+        TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationWrite, TAFatalError, s3e);
         /* TODO: Blow away the cache and create a new db. */
     }
 }
 
 /* Public API */
 
-void SecCAIssuerCacheAddCertificate(SecCertificateRef certificate,
+void SecCAIssuerCacheAddCertificates(CFArrayRef certificates,
                                     CFURLRef uri, CFAbsoluteTime expires) {
     dispatch_once(&kSecCAIssuerCacheOnce, ^{
         SecCAIssuerCacheInit();
@@ -385,20 +443,21 @@ void SecCAIssuerCacheAddCertificate(SecCertificateRef certificate,
         return;
 
     dispatch_sync(kSecCAIssuerCache->queue, ^{
-        _SecCAIssuerCacheAddCertificate(kSecCAIssuerCache, certificate, uri, expires);
+        _SecCAIssuerCacheAddCertificates(kSecCAIssuerCache, certificates, uri, expires);
+        _SecCAIssuerCacheFlush(kSecCAIssuerCache);
     });
 }
 
-SecCertificateRef SecCAIssuerCacheCopyMatching(CFURLRef uri) {
+CFArrayRef SecCAIssuerCacheCopyMatching(CFURLRef uri) {
     dispatch_once(&kSecCAIssuerCacheOnce, ^{
         SecCAIssuerCacheInit();
     });
-    __block SecCertificateRef cert = NULL;
+    __block CFArrayRef certs = NULL;
     if (kSecCAIssuerCache)
         dispatch_sync(kSecCAIssuerCache->queue, ^{
-            cert = _SecCAIssuerCacheCopyMatching(kSecCAIssuerCache, uri);
+            certs = _SecCAIssuerCacheCopyMatching(kSecCAIssuerCache, uri);
         });
-    return cert;
+    return certs;
 }
 
 /* This should be called on a normal non emergency exit. This function
@@ -418,13 +477,5 @@ void SecCAIssuerCacheGC(void) {
     if (kSecCAIssuerCache)
         dispatch_sync(kSecCAIssuerCache->queue, ^{
             _SecCAIssuerCacheGC(kSecCAIssuerCache);
-        });
-}
-
-/* Call this periodically or perhaps when we are exiting due to low memory. */
-void SecCAIssuerCacheFlush(void) {
-    if (kSecCAIssuerCache)
-        dispatch_sync(kSecCAIssuerCache->queue, ^{
-            _SecCAIssuerCacheFlush(kSecCAIssuerCache);
         });
 }

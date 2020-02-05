@@ -21,6 +21,11 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#ifndef SECURITY_SFSQLSTATEMENT_H
+#define SECURITY_SFSQLSTATEMENT_H 1
+
+#if __OBJC2__
+
 #import <Foundation/Foundation.h>
 #import <sqlite3.h>
 
@@ -70,3 +75,6 @@
 - (NSDictionary *)allObjectsByColumnName;
 
 @end
+
+#endif /* __OBJC2__ */
+#endif /* SECURITY_SFSQLSTATEMENT_H */

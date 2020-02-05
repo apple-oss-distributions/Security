@@ -21,26 +21,13 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#import <Foundation/Foundation.h>
-
 #if OCTAGON
+#import <CloudKit/CloudKit.h>
+#import <Foundation/Foundation.h>
+#import "keychain/ckks/CKKSResultOperation.h"
+#import "keychain/ckks/CKKSFetchAllRecordZoneChangesOperation.h"
 
-/* Fetch Reasons */
-@protocol SecCKKSFetchBecause
-@end
-typedef NSString<SecCKKSFetchBecause> CKKSFetchBecause;
-extern CKKSFetchBecause* const CKKSFetchBecauseAPNS;
-extern CKKSFetchBecause* const CKKSFetchBecauseAPIFetchRequest;
-extern CKKSFetchBecause* const CKKSFetchBecauseCurrentItemFetchRequest;
-extern CKKSFetchBecause* const CKKSFetchBecauseInitialStart;
-extern CKKSFetchBecause* const CKKSFetchBecauseSecuritydRestart;
-extern CKKSFetchBecause* const CKKSFetchBecausePreviousFetchFailed;
-extern CKKSFetchBecause* const CKKSFetchBecauseKeyHierarchy;
-extern CKKSFetchBecause* const CKKSFetchBecauseTesting;
-
-@protocol CKKSChangeFetcherErrorOracle
-- (bool) isFatalCKFetchError: (NSError*) error;
-@end
+NS_ASSUME_NONNULL_BEGIN
 
 /*
  * This class implements a CloudKit-fetch-with-retry.
@@ -49,24 +36,35 @@ extern CKKSFetchBecause* const CKKSFetchBecauseTesting;
  */
 
 @class CKKSKeychainView;
-#import "keychain/ckks/CKKSGroupOperation.h"
-#import <CloudKit/CloudKit.h>
+@class CKKSReachabilityTracker;
+@class CKKSNearFutureScheduler;
 
 @interface CKKSZoneChangeFetcher : NSObject
+@property (readonly) Class<CKKSFetchRecordZoneChangesOperation> fetchRecordZoneChangesOperationClass;
+@property (readonly) CKContainer* container;
+@property CKKSReachabilityTracker* reachabilityTracker;
 
-@property (weak) CKKSKeychainView* ckks;
-@property CKRecordZoneID* zoneID;
+@property (readonly) NSError* lastCKFetchError;
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithCKKSKeychainView:(CKKSKeychainView*)ckks;
+- (instancetype)initWithContainer:(CKContainer*)container
+                       fetchClass:(Class<CKKSFetchRecordZoneChangesOperation>)fetchRecordsOperationClass
+              reachabilityTracker:(CKKSReachabilityTracker *)reachabilityTracker;
+
+- (void)registerClient:(id<CKKSChangeFetcherClient>)client;
 
 - (CKKSResultOperation*)requestSuccessfulFetch:(CKKSFetchBecause*)why;
-- (CKKSResultOperation*)requestSuccessfulResyncFetch:(CKKSFetchBecause*)why;
+- (CKKSResultOperation*)requestSuccessfulFetchForManyReasons:(NSSet<CKKSFetchBecause*>*)why;
+- (CKKSResultOperation*)requestSuccessfulFetchDueToAPNS:(CKRecordZoneNotification*)notification;
 
--(void)cancel;
+// We don't particularly care what this does, as long as it finishes
+- (void)holdFetchesUntil:(CKKSResultOperation* _Nullable)holdOperation;
+
+- (void)cancel;
+
+// I don't recommend using these unless you're a test.
+@property CKKSNearFutureScheduler* fetchScheduler;
 @end
 
-
+NS_ASSUME_NONNULL_END
 #endif
-
-

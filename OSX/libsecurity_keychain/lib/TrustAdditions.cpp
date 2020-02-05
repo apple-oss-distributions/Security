@@ -47,9 +47,9 @@
 #include <Security/cssmtype.h>
 #include <Security/cssmapplePriv.h>            // for CSSM_APPLE_TP_OCSP_OPTIONS, CSSM_APPLE_TP_OCSP_OPT_FLAGS
 
-#include "SecTrustPriv.h"
-#include "SecTrustSettings.h"
-#include "SecTrustSettingsPriv.h"
+#include <Security/SecTrustPriv.h>
+#include <Security/SecTrustSettings.h>
+#include <Security/SecTrustSettingsPriv.h>
 
 //
 // Macros
@@ -416,7 +416,6 @@ static SecCertificateRef _rootCertificateWithSubjectOfCertificate(SecCertificate
     SecKeyRef keyRef = NULL;
     SecCertificateRef resultCert = NULL;
 	// note: Sec* APIs are not re-entrant due to the API lock
-	// status = SecCertificateCopyPublicKey(certificate, &keyRef);
 	BEGIN_SECAPI_INTERNAL_CALL
 	keyRef = Certificate::required(certificate)->publicKey()->handle();
 	END_SECAPI_INTERNAL_CALL

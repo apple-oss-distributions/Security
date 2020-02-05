@@ -42,6 +42,7 @@
 #include "child.h"
 #include <syslog.h>
 #include <mach/mach_error.h>
+#include "SecRandom.h"
 #include <securityd_client/xdr_cssm.h>
 #include <securityd_client/xdr_auth.h>
 #include <securityd_client/xdr_dldb.h>
@@ -49,6 +50,7 @@
 #include <security_utilities/casts.h>
 #include <Security/AuthorizationTagsPriv.h>
 #include <AssertMacros.h>
+#include <security_utilities/errors.h>
 
 #include <CoreFoundation/CFNumber.h>
 #include <CoreFoundation/CFDictionary.h>
@@ -63,10 +65,10 @@
 #define BEGIN_IPCN	*rcode = CSSM_OK; try {
 #define BEGIN_IPC(name)	BEGIN_IPCN RefPointer<Connection> connRef(&Server::connection(replyPort, auditToken)); \
 		Connection &connection __attribute__((unused)) = *connRef; \
-        secinfo("SS", "request entry " #name " (pid:%d ession:%d)", connection.process().pid(), connection.session().sessionId());
+        secinfo("SecServer", "request entry " #name " (pid:%d ession:%d)", connection.process().pid(), connection.session().sessionId());
 
 #define END_IPC(base)	END_IPCN(base) Server::requestComplete(*rcode); return KERN_SUCCESS;
-#define END_IPCN(base) 	secinfo("SS", "request return: %d", *(rcode)); \
+#define END_IPCN(base) 	secinfo("SecServer", "request return: %d", *(rcode)); \
 	} \
 	catch (const CommonError &err) { *rcode = CssmError::cssmError(err, CSSM_ ## base ## _BASE_ERROR); } \
 	catch (const std::bad_alloc &) { *rcode = CssmError::merge(CSSM_ERRCODE_MEMORY_ERROR, CSSM_ ## base ## _BASE_ERROR); } \
@@ -219,6 +221,13 @@ Database *pickDb(Database *db1, Database *db2)
 	return Server::optionalDatabase(noDb);
 }
 
+static void checkPathLength(char const *str) {
+    if (strlen(str) >= PATH_MAX) {
+        secerror("SecServer: path too long");
+        CssmError::throwMe(CSSMERR_CSSM_MEMORY_ERROR);
+    }
+}
+
 //
 // Setup/Teardown functions.
 //
@@ -229,7 +238,7 @@ Database *pickDb(Database *db1, Database *db2)
 kern_return_t ucsp_server_setup(UCSP_ARGS, mach_port_t taskPort, ClientSetupInfo info, const char *identity)
 {
 	BEGIN_IPCN
-    secinfo("SS", "request entry: setup");
+    secinfo("SecServer", "request entry: setup");
 	Server::active().setupConnection(Server::connectNewProcess, replyPort,
 		taskPort, auditToken, &info);
 	END_IPCN(CSSM)
@@ -241,7 +250,7 @@ kern_return_t ucsp_server_setup(UCSP_ARGS, mach_port_t taskPort, ClientSetupInfo
 
 kern_return_t ucsp_server_setupThread(UCSP_ARGS, mach_port_t taskPort)
 {
-    secinfo("SS", "request entry: setupThread");
+    secinfo("SecServer", "request entry: setupThread");
 	BEGIN_IPCN
 	Server::active().setupConnection(Server::connectNewThread, replyPort, taskPort, auditToken);
 	END_IPCN(CSSM)
@@ -250,20 +259,10 @@ kern_return_t ucsp_server_setupThread(UCSP_ARGS, mach_port_t taskPort)
 	return KERN_SUCCESS;
 }
 
-
-kern_return_t ucsp_server_teardown(UCSP_ARGS)
-{
-	BEGIN_IPCN
-    secinfo("SS", "request entry: teardown");
-	Server::active().endConnection(replyPort);
-	END_IPCN(CSSM)
-	return KERN_SUCCESS;
-}
-
 kern_return_t ucsp_server_verifyPrivileged(UCSP_ARGS)
 {
 	BEGIN_IPCN
-    secinfo("SS", "request entry: verifyPrivileged");
+    secinfo("SecServer", "request entry: verifyPrivileged");
 	// doing nothing (we just want securityd's audit credentials returned)
 	END_IPCN(CSSM)
 	return KERN_SUCCESS;
@@ -273,7 +272,7 @@ kern_return_t ucsp_server_verifyPrivileged2(UCSP_ARGS, mach_port_t *originPort)
 {
 	BEGIN_IPCN
 
-    secinfo("SS", "request entry: verifyPrivileged2");
+    secinfo("SecServer", "request entry: verifyPrivileged2");
 	// send the port back to the sender to check for a MitM (6986198)
 	*originPort = servicePort;
 	END_IPCN(CSSM)
@@ -306,15 +305,16 @@ kern_return_t ucsp_server_getDbName(UCSP_ARGS, DbHandle db, char name[PATH_MAX])
 {
 	BEGIN_IPC(getDbName)
 	string result = Server::database(db)->dbName();
-	assert(result.length() < PATH_MAX);
-	memcpy(name, result.c_str(), result.length() + 1);
+    checkPathLength(result.c_str());
+    memcpy(name, result.c_str(), result.length() + 1);
 	END_IPC(DL)
 }
 
 kern_return_t ucsp_server_setDbName(UCSP_ARGS, DbHandle db, const char *name)
 {
 	BEGIN_IPC(setDbName)
-	Server::database(db)->dbName(name);
+    checkPathLength(name);
+    Server::database(db)->dbName(name);
 	END_IPC(DL)
 }
 
@@ -541,6 +541,7 @@ kern_return_t ucsp_server_createDb(UCSP_ARGS, DbHandle *db,
 	CopyOutAccessCredentials creds(cred, credLength);
 	CopyOutEntryAcl owneracl(owner, ownerLength);
 	CopyOut flatident(ident, identLength, reinterpret_cast<xdrproc_t>(xdr_DLDbFlatIdentifierRef));
+    checkPathLength((*reinterpret_cast<DLDbFlatIdentifier*>(flatident.data())).name);
 #ifndef __clang_analyzer__
 	*db = (new KeychainDatabase(*reinterpret_cast<DLDbFlatIdentifier*>(flatident.data()), params, connection.process(), creds, owneracl))->handle();
 #endif
@@ -553,6 +554,8 @@ kern_return_t ucsp_server_cloneDb(UCSP_ARGS, DbHandle srcDb, DATA_IN(ident), DbH
     secnotice("integrity", "cloning a db");
 
     CopyOut flatident(ident, identLength, reinterpret_cast<xdrproc_t>(xdr_DLDbFlatIdentifierRef));
+
+    checkPathLength((*reinterpret_cast<DLDbFlatIdentifier*>(flatident.data())).name);
 
     RefPointer<KeychainDatabase> srcKC = Server::keychain(srcDb);
     secnotice("integrity", "cloning db %d", srcKC->handle());
@@ -658,6 +661,8 @@ kern_return_t ucsp_server_decodeDb(UCSP_ARGS, DbHandle *db,
 	CopyOut flatident(ident, identLength, reinterpret_cast<xdrproc_t>(xdr_DLDbFlatIdentifierRef));
 	DLDbFlatIdentifier* flatID = (DLDbFlatIdentifier*) flatident.data();
 	DLDbIdentifier id = *flatID; // invokes a casting operator
+
+    checkPathLength(id.dbName());
 
 #ifndef __clang_analyzer__
 	*db = (new KeychainDatabase(id, SSBLOB(DbBlob, blob),
@@ -772,6 +777,8 @@ kern_return_t ucsp_server_stashDbCheck(UCSP_ARGS, DbHandle db)
 kern_return_t ucsp_server_isLocked(UCSP_ARGS, DbHandle db, boolean_t *locked)
 {
     BEGIN_IPC(isLocked)
+    // Must hold the DB's common's lock to safely determine if it's locked. Locking is a mess in there.
+    StLock<Mutex> _(Server::database(db)->common());
     *locked = Server::database(db)->isLocked();
     END_IPC(DL)
 }
@@ -1116,30 +1123,6 @@ kern_return_t ucsp_server_deriveKey(UCSP_ARGS, DbHandle db, DATA_IN(context), Ke
 	END_IPC(CSP)
 }
 
-
-//
-// Random generation
-//
-kern_return_t ucsp_server_generateRandom(UCSP_ARGS, uint32 ssid, DATA_IN(context), DATA_OUT(data))
-{
-	BEGIN_IPC(generateRandom)
-	CopyOutContext ctx(context, contextLength);
-	if (ssid)
-		CssmError::throwMe(CSSM_ERRCODE_FUNCTION_NOT_IMPLEMENTED);
-
-	// default version (use /dev/random)
-	Allocator &allocator = Allocator::standard(Allocator::sensitive);
-	if (size_t bytes = ctx.context().getInt(CSSM_ATTRIBUTE_OUTPUT_SIZE)) {
-		void *buffer = allocator.malloc(bytes);
-		Server::active().random(buffer, bytes);
-		*data = buffer;
-		*dataLength = int_cast<size_t, mach_msg_type_number_t>(bytes);
-		Server::releaseWhenDone(allocator, buffer);
-	}
-	END_IPC(CSP)
-}
-
-
 //
 // ACL management.
 // Watch out for the memory-management tap-dance.
@@ -1335,76 +1318,15 @@ kern_return_t ucsp_server_postNotification(UCSP_ARGS, uint32 domain, uint32 even
 // Child check-in service.
 // Note that this isn't using the standard argument pattern.
 //
-kern_return_t ucsp_server_childCheckIn(mach_port_t serverPort,
+kern_return_t ucsp_server_childCheckIn(audit_token_t auditToken, mach_port_t serverPort,
 	mach_port_t servicePort, mach_port_t taskPort)
 {
 	BEGIN_IPCS
-	ServerChild::checkIn(servicePort, TaskPort(taskPort).pid());
+	ServerChild::checkIn(servicePort, audit_token_to_pid(auditToken));
+    // Will be NULL from newer frameworks, but mach_port_deallocate doesn't seem to mind
 	END_IPCS(mach_port_deallocate(mach_task_self(), taskPort))
 }
 
-
-//
-// Code Signing Hosting registration.
-// Note that the Code Signing Proxy facility (implementing the "cshosting"
-// IPC protocol) is elsewhere.
-//
-kern_return_t ucsp_server_registerHosting(UCSP_ARGS, mach_port_t hostingPort, uint32 flags)
-{
-	BEGIN_IPC(registerHosting)
-	connection.process().registerCodeSigning(hostingPort, flags);
-	END_IPC(CSSM)
-}
-
-kern_return_t ucsp_server_hostingPort(UCSP_ARGS, pid_t hostPid, mach_port_t *hostingPort)
-{
-	BEGIN_IPC(hostingPort)
-	if (RefPointer<Process> process = Server::active().findPid(hostPid))
-		*hostingPort = process->hostingPort();
-	else
-		*hostingPort = MACH_PORT_NULL;
-	secinfo("hosting", "hosting port for for pid=%d is port %d", hostPid, *hostingPort);
-	END_IPC(CSSM)
-}
-
-
-kern_return_t ucsp_server_setGuest(UCSP_ARGS, SecGuestRef guest, SecCSFlags flags)
-{
-	BEGIN_IPC(setGuest)
-	connection.guestRef(guest, flags);
-	END_IPC(CSSM)
-}
-
-
-kern_return_t ucsp_server_createGuest(UCSP_ARGS, SecGuestRef host,
-	uint32_t status, const char *path, DATA_IN(cdhash), DATA_IN(attributes),
-	SecCSFlags flags, SecGuestRef *newGuest)
-{
-	BEGIN_IPC(createGuest)
-	*newGuest = connection.process().createGuest(host, status, path, DATA(cdhash), DATA(attributes), flags);
-	END_IPC(CSSM)
-}
-
-kern_return_t ucsp_server_setGuestStatus(UCSP_ARGS, SecGuestRef guest,
-	uint32_t status, DATA_IN(attributes))
-{
-	BEGIN_IPC(setGuestStatus)
-	connection.process().setGuestStatus(guest, status, DATA(attributes));
-	END_IPC(CSSM)
-}
-
-kern_return_t ucsp_server_removeGuest(UCSP_ARGS, SecGuestRef host, SecGuestRef guest)
-{
-	BEGIN_IPC(removeGuest)
-	connection.process().removeGuest(host, guest);
-	END_IPC(CSSM)
-}
-
-kern_return_t ucsp_server_helpCheckLoad(UCSP_ARGS, const char path[PATH_MAX], uint32_t type)
-{
-	BEGIN_IPC(helpCheckLoad)
-	END_IPC(CSSM)
-}
 
 //
 // Testing-related RPCs

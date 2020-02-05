@@ -30,6 +30,7 @@
 #include <security_utilities/blob.h>
 #include <security_utilities/superblob.h>
 #include <security_utilities/hashing.h>
+#include <security_utilities/debugging_internal.h>
 #include <Security/CodeSigning.h>
 #include "codedirectory.h"
 #include <map>
@@ -99,18 +100,26 @@ private:
 class Requirement::Context {
 protected:
 	Context()
-		: certs(NULL), info(NULL), entitlements(NULL), identifier(""), directory(NULL) { }
+		: certs(NULL), info(NULL), entitlements(NULL), identifier(""), directory(NULL), packageChecksum(NULL), packageAlgorithm(kSecCodeSignatureNoHash), forcePlatform(false), secureTimestamp(NULL) { }
 
 public:
-	Context(CFArrayRef certChain, CFDictionaryRef infoDict, CFDictionaryRef entitlementDict,
-			const std::string &ident, const CodeDirectory *dir)
-		: certs(certChain), info(infoDict), entitlements(entitlementDict), identifier(ident), directory(dir) { }
+	Context(CFArrayRef certChain, CFDictionaryRef infoDict, CFDictionaryRef entitlementDict, const std::string &ident,
+			const CodeDirectory *dir, CFDataRef packageChecksum, SecCSDigestAlgorithm packageAlgorithm, bool force_platform, CFDateRef secure_timestamp,
+			const char *teamID)
+		: certs(certChain), info(infoDict), entitlements(entitlementDict), identifier(ident), directory(dir),
+			packageChecksum(packageChecksum), packageAlgorithm(packageAlgorithm), forcePlatform(force_platform),
+			secureTimestamp(secure_timestamp), teamIdentifier(teamID)   { }
 
 	CFArrayRef certs;								// certificate chain
 	CFDictionaryRef info;							// Info.plist
 	CFDictionaryRef entitlements;					// entitlement plist
 	std::string identifier;						// signing identifier
 	const CodeDirectory *directory;				// CodeDirectory
+	CFDataRef packageChecksum;					// package checksum
+	SecCSDigestAlgorithm packageAlgorithm; 		// package checksum algorithm
+	bool forcePlatform;
+	CFDateRef secureTimestamp;
+	const char *teamIdentifier;					// team identifier
 
 	SecCertificateRef cert(int ix) const;			// get a cert from the cert chain (NULL if not found)
 	unsigned int certCount() const;				// length of cert chain (including root)
@@ -150,7 +159,7 @@ enum ExprOp {
 	opCDHash,						// match hash of CodeDirectory directly [cd hash]
 	opNot,							// logical inverse [expr]
 	opInfoKeyField,					// Info.plist key field [string; match suffix]
-	opCertField,					// Certificate field [cert index; field name; match suffix]
+	opCertField,					// Certificate field, existence only [cert index; field name; match suffix]
 	opTrustedCert,					// require trust settings to approve one particular cert [cert index]
 	opTrustedCerts,					// require trust settings to approve the cert chain
 	opCertGeneric,					// Certificate component by OID [cert index; oid; match suffix]
@@ -160,6 +169,9 @@ enum ExprOp {
 	opNamedAnchor,					// named anchor type
 	opNamedCode,					// named subroutine
 	opPlatform,						// platform constraint [integer]
+	opNotarized,					// has a developer id+ ticket
+	opCertFieldDate,				// extension value as timestamp [cert index; field name; match suffix]
+	opLegacyDevID,					// meets legacy (pre-notarization required) policy
 	exprOpCount						// (total opcode count in use)
 };
 
@@ -174,6 +186,12 @@ enum MatchOperation {
 	matchGreaterThan,				// greater than (string with numeric comparison)
 	matchLessEqual,					// less or equal (string with numeric comparison)
 	matchGreaterEqual,				// greater or equal (string with numeric comparison)
+	matchOn,						// on (timestamp comparison)
+	matchBefore,					// before (timestamp comparison)
+	matchAfter,						// after (timestamp comparison)
+	matchOnOrBefore,				// on or before (timestamp comparison)
+	matchOnOrAfter,					// on or after (timestamp comparison)
+	matchAbsent,					// not present (kCFNull)
 };
 
 

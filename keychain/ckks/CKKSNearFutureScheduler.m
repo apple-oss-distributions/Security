@@ -21,14 +21,23 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #import "CKKSNearFutureScheduler.h"
 #import "CKKSCondition.h"
+#import "keychain/ckks/NSOperationCategories.h"
+#import "keychain/ckks/CKKSResultOperation.h"
+#import "keychain/ot/ObjCImprovements.h"
 #include <os/transaction_private.h>
 
 @interface CKKSNearFutureScheduler ()
 @property NSString* name;
 @property dispatch_time_t initialDelay;
 @property dispatch_time_t continuingDelay;
+
+@property NSInteger operationDependencyDescriptionCode;
+@property CKKSResultOperation* operationDependency;
+@property (nonnull) NSOperationQueue* operationQueue;
 
 @property NSDate* predictedNextFireTime;
 @property bool liveRequest;
@@ -43,32 +52,60 @@
 
 @implementation CKKSNearFutureScheduler
 
--(instancetype)initWithName:(NSString*)name delay:(dispatch_time_t)ns keepProcessAlive:(bool)keepProcessAlive block:(void (^)(void))futureOperation
+-(instancetype)initWithName:(NSString*)name
+                      delay:(dispatch_time_t)ns
+           keepProcessAlive:(bool)keepProcessAlive
+  dependencyDescriptionCode:(NSInteger)code
+                      block:(void (^)(void))futureBlock
 {
-    return [self initWithName:name initialDelay:ns continuingDelay:ns keepProcessAlive:keepProcessAlive block:futureOperation];
+    return [self initWithName:name
+                 initialDelay:ns
+              continuingDelay:ns
+             keepProcessAlive:keepProcessAlive
+    dependencyDescriptionCode:code
+                        block:futureBlock];
 }
 
 -(instancetype)initWithName:(NSString*)name
                initialDelay:(dispatch_time_t)initialDelay
             continuingDelay:(dispatch_time_t)continuingDelay
            keepProcessAlive:(bool)keepProcessAlive
-                      block:(void (^)(void))futureOperation
+  dependencyDescriptionCode:(NSInteger)code
+                      block:(void (^)(void))futureBlock
 {
     if((self = [super init])) {
         _name = name;
 
-        _queue = dispatch_queue_create([[NSString stringWithFormat:@"near-future-scheduler-%@",name] UTF8String], DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create([[NSString stringWithFormat:@"near-future-scheduler-%@",name] UTF8String], DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
         _initialDelay = initialDelay;
         _continuingDelay = continuingDelay;
-        _futureOperation = futureOperation;
+        _futureBlock = futureBlock;
 
         _liveRequest = false;
         _liveRequestReceived = [[CKKSCondition alloc] init];
         _predictedNextFireTime = nil;
 
         _keepProcessAlive = keepProcessAlive;
+
+        _operationQueue = [[NSOperationQueue alloc] init];
+        _operationDependencyDescriptionCode = code;
+        _operationDependency = [self makeOperationDependency];
     }
     return self;
+}
+
+- (void)changeDelays:(dispatch_time_t)initialDelay continuingDelay:(dispatch_time_t)continuingDelay
+{
+    dispatch_sync(self.queue, ^{
+        self.initialDelay = initialDelay;
+        self.continuingDelay = continuingDelay;
+    });
+}
+
+- (CKKSResultOperation*)makeOperationDependency {
+    CKKSResultOperation* op = [CKKSResultOperation named:[NSString stringWithFormat:@"nfs-%@", self.name] withBlock:^{}];
+    op.descriptionErrorCode = self.operationDependencyDescriptionCode;
+    return op;
 }
 
 -(NSString*)description {
@@ -86,7 +123,7 @@
     // If we have a live request, send the next fire time back. Otherwise, wait a tiny tiny bit to see if we receive a request.
     if(self.liveRequest) {
         return self.predictedNextFireTime;
-    } else if([self.liveRequestReceived wait:100*NSEC_PER_USEC] == 0) {
+    } else if([self.liveRequestReceived wait:50*NSEC_PER_USEC] == 0) {
         return self.predictedNextFireTime;
     }
 
@@ -95,7 +132,17 @@
 
 -(void)waitUntil:(uint64_t)delay {
     dispatch_sync(self.queue, ^{
-        [self _onqueueTrigger:delay];
+        [self _onqueueTrigger:delay maximumDelay:DISPATCH_TIME_FOREVER];
+    });
+}
+
+- (void)triggerAt:(uint64_t)delay {
+    WEAKIFY(self);
+    dispatch_async(self.queue, ^{
+        STRONGIFY(self);
+        self.liveRequest = true;
+        [self.liveRequestReceived fulfill];
+        [self _onqueueTrigger:(delay == DISPATCH_TIME_FOREVER ? DISPATCH_TIME_NOW : delay) maximumDelay:delay];
     });
 }
 
@@ -103,10 +150,16 @@
     dispatch_assert_queue(self.queue);
 
     if(self.liveRequest) {
-        self.futureOperation();
+        // Put a new dependency in place, and save the old one for execution
+        NSOperation* dependency = self.operationDependency;
+        self.operationDependency = [self makeOperationDependency];
+
+        self.futureBlock();
         self.liveRequest = false;
         self.liveRequestReceived = [[CKKSCondition alloc] init];
         self.transaction = nil;
+
+        [self.operationQueue addOperation: dependency];
 
         self.predictedNextFireTime = [NSDate dateWithTimeIntervalSinceNow: (NSTimeInterval) ((double) self.continuingDelay) / (double) NSEC_PER_SEC];
     } else {
@@ -117,26 +170,27 @@
 }
 
 -(void)trigger {
-    __weak __typeof(self) weakSelf = self;
+    WEAKIFY(self);
     dispatch_async(self.queue, ^{
+        STRONGIFY(self);
         // The timer tick should call the block!
         self.liveRequest = true;
         [self.liveRequestReceived fulfill];
 
-        [weakSelf _onqueueTrigger:DISPATCH_TIME_NOW];
+        [self _onqueueTrigger:DISPATCH_TIME_NOW maximumDelay:DISPATCH_TIME_FOREVER];
     });
 }
 
--(void)_onqueueTrigger:(dispatch_time_t)requestedDelay {
+-(void)_onqueueTrigger:(dispatch_time_t)requestedDelay maximumDelay:(dispatch_time_t)maximumDelay {
     dispatch_assert_queue(self.queue);
-    __weak __typeof(self) weakSelf = self;
+    WEAKIFY(self);
 
     // If we don't have one already, set up an os_transaction
     if(self.keepProcessAlive && self.transaction == nil) {
         self.transaction = os_transaction_create([[NSString stringWithFormat:@"com.apple.securityd.%@",self.name] UTF8String]);
     }
 
-    if(requestedDelay != DISPATCH_TIME_NOW) {
+    if(requestedDelay != DISPATCH_TIME_NOW && self.predictedNextFireTime != nil) {
         NSDate* delayTime = [NSDate dateWithTimeIntervalSinceNow: (NSTimeInterval) ((double) requestedDelay) / (double) NSEC_PER_SEC];
         if([delayTime compare:self.predictedNextFireTime] != NSOrderedDescending) {
             // The next fire time is after this delay. Do nothing with the request.
@@ -144,6 +198,17 @@
             // Need to cancel the timer and reset it below.
             dispatch_source_cancel(self.timer);
             self.predictedNextFireTime = nil;
+        }
+    }
+
+    if(maximumDelay != DISPATCH_TIME_FOREVER && self.predictedNextFireTime != nil) {
+        NSDate* delayTime = [NSDate dateWithTimeIntervalSinceNow: (NSTimeInterval) ((double) requestedDelay) / (double) NSEC_PER_SEC];
+        if([delayTime compare:self.predictedNextFireTime] != NSOrderedDescending) {
+            // Need to cancel the timer and reset it below.
+            dispatch_source_cancel(self.timer);
+            self.predictedNextFireTime = nil;
+        } else {
+            // The next fire time is before the maximum delay. Do nothing with the request.
         }
     }
 
@@ -157,10 +222,17 @@
                                         (dispatch_source_timer_flags_t)0,
                                         self.queue);
         dispatch_source_set_event_handler(self.timer, ^{
-            [weakSelf _onqueueTimerTick];
+            STRONGIFY(self);
+            [self _onqueueTimerTick];
         });
 
-        dispatch_time_t actualDelay = self.initialDelay > requestedDelay ? self.initialDelay : requestedDelay;
+        dispatch_time_t actualDelay = self.initialDelay;
+        if(requestedDelay != DISPATCH_TIME_NOW) {
+            actualDelay = MAX(actualDelay, requestedDelay);
+        }
+        if(maximumDelay != DISPATCH_TIME_FOREVER) {
+            actualDelay = MIN(actualDelay, maximumDelay);
+        }
 
         dispatch_source_set_timer(self.timer,
                                   dispatch_walltime(NULL, actualDelay),
@@ -174,10 +246,12 @@
 
 -(void)cancel {
     dispatch_sync(self.queue, ^{
-        if(self.timer != nil && 0 == dispatch_source_testcancel(self.timer)) {
-            dispatch_source_cancel(self.timer);
-        }
+            if(self.timer != nil && 0 == dispatch_source_testcancel(self.timer)) {
+                dispatch_source_cancel(self.timer);
+            }
     });
 }
 
 @end
+
+#endif // OCTAGON

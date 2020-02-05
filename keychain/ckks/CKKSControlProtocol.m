@@ -71,8 +71,17 @@ NSXPCInterface* CKKSSetupControlProtocol(NSXPCInterface* interface) {
         char *classes[] = {
             "CKPrettyError",
             "CKRecordID",
+            "NSArray",
+            "NSData",
+            "NSDate",
+            "NSDictionary",
+            "NSError",
+            "NSNull",
+            "NSNumber",
+            "NSOrderedSet",
+            "NSSet",
+            "NSString",
             "NSURL",
-            "NSError"
         };
 
         for (unsigned n = 0; n < sizeof(classes)/sizeof(classes[0]); n++) {
@@ -84,17 +93,17 @@ NSXPCInterface* CKKSSetupControlProtocol(NSXPCInterface* interface) {
     });
 
     @try {
-        [interface setClasses:errClasses forSelector:@selector(rpcResetLocal:reply:)                   argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcResetCloudKit:reply:)                argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(rpcResetCloudKit:reason:reply:)                argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcResync:reply:)                       argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(rpcStatus:reply:)                       argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcStatus:reply:)                       argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(rpcFastStatus:reply:)                   argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcFetchAndProcessChanges:reply:)       argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcFetchAndProcessClassAChanges:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcPushOutgoingChanges:reply:)          argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcGetAnalyticsJSONWithReply:)          argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcForceUploadAnalyticsWithReply:)      argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcGetAnalyticsSysdiagnoseWithReply:)   argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(rpcGetCKDeviceIDWithReply:)             argumentIndex:0 ofReply:YES];
     }
+
     @catch(NSException* e) {
         secerror("CKKSSetupControlProtocol failed, continuing, but you might crash later: %@", e);
 #if DEBUG

@@ -25,10 +25,13 @@
 #include <security_utilities/hashing.h>
 #include <security_utilities/osxcode.h>
 #include <security_utilities/blob.h>
+#include <security_utilities/debugging_internal.h>
 #include <security_cdsa_utilities/cssmdata.h>
 #include <Security/CodeSigning.h>
 #include <string>
 #include <map>
+
+#define LEGACY_HASH_LIMIT 16*1024
 
 namespace Security {
 
@@ -42,7 +45,7 @@ namespace Security {
 //
 class OSXVerifier {
 public:
-	static const size_t legacyHashLimit = 16 * 1024;
+	static const size_t legacyHashLimit = LEGACY_HASH_LIMIT;
 	static const uint32_t commentAlignment = 4;
 	
 public:

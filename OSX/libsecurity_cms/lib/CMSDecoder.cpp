@@ -25,8 +25,8 @@
  * CMSDecoder.cpp - Interface for decoding CMS messages.
  */
 
-#include "CMSDecoder.h"
-#include "CMSPrivate.h"
+#include <Security/CMSDecoder.h>
+#include <Security/CMSPrivate.h>
 #include "CMSUtils.h"
 #include <../libsecurity_codesigning/lib/csutilities.h>
 
@@ -42,6 +42,7 @@
 #include <Security/oidsattr.h>
 #include <Security/SecTrustPriv.h>
 #include <CoreFoundation/CFRuntime.h>
+#include <utilities/SecCFWrappers.h>
 #include <pthread.h>
 #include <syslog.h>
 #include <AssertMacros.h>
@@ -311,7 +312,9 @@ OSStatus CMSDecoderFinalizeMessage(
                 (SecCmsSignedDataRef)SecCmsContentInfoGetContent(ci);
 				/* dig down one more layer for eContentType */
 				ci = SecCmsSignedDataGetContentInfo(cmsDecoder->signedData);
-				cmsDecoder->eContentType = SecCmsContentInfoGetContentTypeOID(ci);
+				if (ci) {
+					cmsDecoder->eContentType = SecCmsContentInfoGetContentTypeOID(ci);
+				}
 				break;
 			default:
 				break;
@@ -426,7 +429,7 @@ OSStatus CMSDecoderCopySignerStatus(
                                     SecTrustRef			*secTrust,				/* optional; RETURNED */
                                     OSStatus			*certVerifyResultCode)	/* optional; RETURNED */
 {
-	if((cmsDecoder == NULL) || (cmsDecoder->decState != DS_Final) || (!policyOrArray)) {
+	if((cmsDecoder == NULL) || (cmsDecoder->decState != DS_Final) || (!policyOrArray) || !signerStatus) {
 		return errSecParam;
 	}
 	
@@ -492,8 +495,7 @@ OSStatus CMSDecoderCopySignerStatus(
 	if(secTrust != NULL) {
 		*secTrust = theTrust;
 		/* we'll release our reference at the end */
-		if (theTrust)
-			CFRetain(theTrust);
+		CFRetainSafe(theTrust);
 	}
 	SecCmsSignerInfoRef signerInfo =
     SecCmsSignedDataGetSignerInfo(cmsDecoder->signedData, (int)signerIndex);
@@ -1003,8 +1005,8 @@ OSStatus CMSDecoderCopySignerAppleCodesigningHashAgility(
     int numContentInfos = 0;
     CFDataRef returnedValue = NULL;
 
-    require(cmsDecoder && hashAgilityAttrValue, xit);
-    require_noerr(CMSDecoderGetCmsMessage(cmsDecoder, &cmsg), xit);
+    require(cmsDecoder && hashAgilityAttrValue, exit);
+    require_noerr(CMSDecoderGetCmsMessage(cmsDecoder, &cmsg), exit);
     numContentInfos = SecCmsMessageContentLevelCount(cmsg);
     for (int dex = 0; !signedData && dex < numContentInfos; dex++)
     {
@@ -1018,11 +1020,96 @@ OSStatus CMSDecoderCopySignerAppleCodesigningHashAgility(
                     break;
                 }
     }
-xit:
+exit:
     if (status == errSecSuccess && returnedValue) {
         *hashAgilityAttrValue = (CFDataRef) CFRetain(returnedValue);
     } else {
         *hashAgilityAttrValue = NULL;
     }
+    return status;
+}
+
+/*
+ * Obtain the Hash Agility V2 attribute value of signer 'signerIndex'
+ * of a CMS message, if present.
+ *
+ * Returns errSecParam if the CMS message was not signed or if signerIndex
+ * is greater than the number of signers of the message minus one.
+ *
+ * This cannot be called until after CMSDecoderFinalizeMessage() is called.
+ */
+OSStatus CMSDecoderCopySignerAppleCodesigningHashAgilityV2(
+    CMSDecoderRef        cmsDecoder,
+    size_t                signerIndex,            /* usually 0 */
+    CFDictionaryRef  CF_RETURNS_RETAINED *hashAgilityV2AttrValues)            /* RETURNED */
+{
+    OSStatus status = errSecParam;
+    SecCmsMessageRef cmsg;
+    SecCmsSignedDataRef signedData = NULL;
+    int numContentInfos = 0;
+    CFDictionaryRef returnedValue = NULL;
+
+    require(cmsDecoder && hashAgilityV2AttrValues, exit);
+    require_noerr(CMSDecoderGetCmsMessage(cmsDecoder, &cmsg), exit);
+    numContentInfos = SecCmsMessageContentLevelCount(cmsg);
+    for (int dex = 0; !signedData && dex < numContentInfos; dex++)
+    {
+        SecCmsContentInfoRef ci = SecCmsMessageContentLevel(cmsg, dex);
+        SECOidTag tag = SecCmsContentInfoGetContentTypeTag(ci);
+        if (tag == SEC_OID_PKCS7_SIGNED_DATA)
+            if ((signedData = (SecCmsSignedDataRef)SecCmsContentInfoGetContent(ci))) {
+                SecCmsSignerInfoRef signerInfo = SecCmsSignedDataGetSignerInfo(signedData, (int)signerIndex);
+                if (signerInfo)
+                {
+                    status = SecCmsSignerInfoGetAppleCodesigningHashAgilityV2(signerInfo, &returnedValue);
+                    break;
+                }
+            }
+    }
+exit:
+    if (status == errSecSuccess && returnedValue) {
+        *hashAgilityV2AttrValues = (CFDictionaryRef) CFRetain(returnedValue);
+    } else {
+        *hashAgilityV2AttrValues = NULL;
+    }
+    return status;
+}
+
+/*
+ * Obtain the expiration time of signer 'signerIndex' of a CMS message, if
+ * present. This is part of the signed attributes of the message.
+ *
+ * Returns errSecParam if the CMS message was not signed or if signerIndex
+ * is greater than the number of signers of the message minus one.
+ *
+ * This cannot be called until after CMSDecoderFinalizeMessage() is called.
+ */
+OSStatus CMSDecoderCopySignerAppleExpirationTime(
+    CMSDecoderRef      cmsDecoder,
+    size_t             signerIndex,
+    CFAbsoluteTime     *expirationTime)            /* RETURNED */
+{
+    OSStatus status = errSecParam;
+    SecCmsMessageRef cmsg = NULL;
+    int numContentInfos  = 0;
+    SecCmsSignedDataRef signedData = NULL;
+
+    require(cmsDecoder && expirationTime, xit);
+    require_noerr(CMSDecoderGetCmsMessage(cmsDecoder, &cmsg), xit);
+    numContentInfos = SecCmsMessageContentLevelCount(cmsg);
+    for (int dex = 0; !signedData && dex < numContentInfos; dex++) {
+        SecCmsContentInfoRef ci = SecCmsMessageContentLevel(cmsg, dex);
+        SECOidTag tag = SecCmsContentInfoGetContentTypeTag(ci);
+        if (tag == SEC_OID_PKCS7_SIGNED_DATA) {
+            if ((signedData = (SecCmsSignedDataRef)SecCmsContentInfoGetContent(ci))) {
+                SecCmsSignerInfoRef signerInfo = SecCmsSignedDataGetSignerInfo(signedData, (int)signerIndex);
+                if (signerInfo) {
+                    status = SecCmsSignerInfoGetAppleExpirationTime(signerInfo, expirationTime);
+                    break;
+                }
+            }
+        }
+    }
+xit:
     return status;
 }

@@ -25,7 +25,7 @@
 #define server_entitlement_helpers_h
 
 #include <Security/SecTask.h>
-#include <ipc/securityd_client.h>
+#include "ipc/securityd_client.h"
 
 CFStringRef SecTaskCopyApplicationIdentifier(SecTaskRef task);
 CFArrayRef SecTaskCopyAccessGroups(SecTaskRef task);
@@ -36,10 +36,6 @@ CFStringRef SecTaskCopyStringForEntitlement(SecTaskRef task,
 CFArrayRef SecTaskCopyArrayOfStringsForEntitlement(SecTaskRef task,
                                                    CFStringRef entitlement);
 
-#if TARGET_OS_IPHONE
-void secTaskDiagnoseEntitlements(CFArrayRef accessGroups);
-extern pthread_key_t taskThreadKey;
-#endif
 #if TARGET_OS_IOS
 CFArrayRef SecTaskCopySharedWebCredentialDomains(SecTaskRef task);
 #endif

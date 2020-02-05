@@ -21,9 +21,9 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#import "CKKSSQLDatabaseObject.h"
-#include <utilities/SecDb.h>
 #include <securityd/SecDbItem.h>
+#include <utilities/SecDb.h>
+#import "CKKSSQLDatabaseObject.h"
 
 #ifndef CKKSZoneStateEntry_h
 #define CKKSZoneStateEntry_h
@@ -31,6 +31,9 @@
 #if OCTAGON
 
 #import <CloudKit/CloudKit.h>
+#import "keychain/ckks/CKKSFixups.h"
+
+NS_ASSUME_NONNULL_BEGIN
 
 /*
  * This class hold the state for a particular zone: has the zone been created, have we subscribed to it,
@@ -45,32 +48,39 @@
 
 @class CKKSRateLimiter;
 
-@interface CKKSZoneStateEntry : CKKSSQLDatabaseObject {
-
-}
+@interface CKKSZoneStateEntry : CKKSSQLDatabaseObject
 
 @property NSString* ckzone;
 @property bool ckzonecreated;
 @property bool ckzonesubscribed;
-@property (getter=getChangeToken,setter=setChangeToken:) CKServerChangeToken* changeToken;
-@property NSData* encodedChangeToken;
-@property NSDate* lastFetchTime;
+@property (nullable, getter=getChangeToken, setter=setChangeToken:) CKServerChangeToken* changeToken;
+@property (nullable) NSData* encodedChangeToken;
+@property (nullable) NSDate* lastFetchTime;
 
-@property CKKSRateLimiter* rateLimiter;
-@property NSData* encodedRateLimiter;
+@property CKKSFixup lastFixup;
 
-+ (instancetype) state: (NSString*) ckzone;
+@property (nullable) CKKSRateLimiter* rateLimiter;
+@property (nullable) NSData* encodedRateLimiter;
 
-+ (instancetype) fromDatabase: (NSString*) ckzone error: (NSError * __autoreleasing *) error;
-+ (instancetype) tryFromDatabase: (NSString*) ckzone error: (NSError * __autoreleasing *) error;
++ (instancetype)state:(NSString*)ckzone;
 
-- (instancetype) initWithCKZone: (NSString*) ckzone zoneCreated: (bool) ckzonecreated zoneSubscribed: (bool) ckzonesubscribed changeToken: (NSData*) changetoken lastFetch: (NSDate*) lastFetch encodedRateLimiter: (NSData*) encodedRateLimiter;
++ (instancetype)fromDatabase:(NSString*)ckzone error:(NSError* __autoreleasing*)error;
++ (instancetype)tryFromDatabase:(NSString*)ckzone error:(NSError* __autoreleasing*)error;
 
-- (CKServerChangeToken*) getChangeToken;
-- (void) setChangeToken: (CKServerChangeToken*) token;
+- (instancetype)initWithCKZone:(NSString*)ckzone
+                   zoneCreated:(bool)ckzonecreated
+                zoneSubscribed:(bool)ckzonesubscribed
+                   changeToken:(NSData* _Nullable)changetoken
+                     lastFetch:(NSDate* _Nullable)lastFetch
+                     lastFixup:(CKKSFixup)lastFixup
+            encodedRateLimiter:(NSData* _Nullable)encodedRateLimiter;
 
-- (BOOL)isEqual: (id) object;
+- (CKServerChangeToken*)getChangeToken;
+- (void)setChangeToken:(CKServerChangeToken* _Nullable)token;
+
+- (BOOL)isEqual:(id)object;
 @end
 
+NS_ASSUME_NONNULL_END
 #endif
 #endif /* CKKSZoneStateEntry_h */

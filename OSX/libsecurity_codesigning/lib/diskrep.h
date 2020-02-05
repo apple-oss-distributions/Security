@@ -82,6 +82,8 @@ public:
 	virtual void flush();									// flush caches (refetch as needed)
     virtual CFDictionaryRef diskRepInformation();           // information from diskrep
 
+	virtual void registerStapledTicket();
+
 	// default values for signing operations
 	virtual std::string recommendedIdentifier(const SigningContext &ctx) = 0; // default identifier
 	virtual CFDictionaryRef defaultResourceRules(const SigningContext &ctx); // default resource rules [none]
@@ -90,7 +92,10 @@ public:
 	virtual size_t pageSize(const SigningContext &ctx);		// default main executable page size [infinite, i.e. no paging]
 
 	virtual void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags); // perform strict validation
+	virtual void strictValidateStructure(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags) { }; // perform structural strict validation
 	virtual CFArrayRef allowedResourceOmissions();			// allowed (default) resource omission rules
+
+	virtual bool appleInternalForcePlatform() const {return false;};
 
 	bool mainExecutableIsMachO() { return mainExecutableImage() != NULL; }
 
@@ -154,6 +159,27 @@ public:
 	static const size_t monolithicPageSize = 0;		// default page size for non-Mach-O executables
 };
 
+/*
+ * Editable Disk Reps allow editing of their existing code signature.
+ * Specifically, they allow for individual components to be replaced,
+ * while preserving all other components.
+ * Lots of restrictions apply, e.g. machO signatures' superblobs may
+ * not change in size, and components covered by the code directory
+ * cannot be replaced without adjusting the code directory.
+ * Replacing or adding CMS blobs (having reserved enough size in the
+ * superblob beforehand) is the original reason this trait exists.
+ */
+class EditableDiskRep {
+public:
+	typedef std::map<CodeDirectory::Slot, CFCopyRef<CFDataRef>> RawComponentMap;
+	
+	/* Return all components in raw form.
+	 * Signature editing will add all the components obtained hereby
+	 * back to their specific slots, though some of them may have
+	 * been replaced in the map.
+	 */
+	virtual RawComponentMap createRawComponents() = 0;
+};
 
 //
 // Write-access objects.
@@ -186,10 +212,18 @@ public:
 	void signature(CFDataRef data)			{ component(cdSignatureSlot, data); }
 	void codeDirectory(const CodeDirectory *cd, CodeDirectory::SpecialSlot slot)
 		{ component(slot, CFTempData(cd->data(), cd->length())); }
-	
+
+#if TARGET_OS_OSX
+	bool getPreserveAFSC()					{ return mPreserveAFSC; }
+	void setPreserveAFSC(bool flag)			{ mPreserveAFSC = flag; }
+#endif
+
 private:
 	Architecture mArch;
 	uint32_t mAttributes;
+#if TARGET_OS_OSX
+	bool mPreserveAFSC = false; // preserve AFSC compression
+#endif
 };
 
 //
@@ -241,6 +275,7 @@ public:
 	size_t pageSize(const SigningContext &ctx) { return mOriginal->pageSize(ctx); }
 
 	void strictValidate(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags) { mOriginal->strictValidate(cd, tolerated, flags); }
+	void strictValidateStructure(const CodeDirectory* cd, const ToleratedErrors& tolerated, SecCSFlags flags) { mOriginal->strictValidateStructure(cd, tolerated, flags); }
 	CFArrayRef allowedResourceOmissions() { return mOriginal->allowedResourceOmissions(); }
 
 private:

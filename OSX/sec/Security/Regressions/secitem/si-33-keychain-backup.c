@@ -24,12 +24,7 @@
 
 #include <TargetConditionals.h>
 
-#if TARGET_IPHONE_SIMULATOR
-#define USE_KEYSTORE  0
-#else /* No AppleKeyStore.kext on this OS. */
-#define USE_KEYSTORE  1
-#endif
-
+#include "securityd/SecKeybagSupport.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecBase.h>
@@ -37,10 +32,11 @@
 #include <Security/SecInternal.h>
 #include <Security/SecItemPriv.h>
 #include <utilities/array_size.h>
+#include <utilities/SecCFWrappers.h>
 
 #if USE_KEYSTORE
 #include <AssertMacros.h>
-#include <libaks.h>
+#include "OSX/utilities/SecAKSWrappers.h"
 #endif
 
 #include <stdlib.h>
@@ -160,10 +156,9 @@ SKIP: {
     skip("no persistent ref", 3, ok(p->persist[0], "got back persistent ref from first internet password"));
 
     is(CFGetTypeID(p->persist[0]), CFDataGetTypeID(), "result is a CFData");
-    p->query3 = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
-        &kCFTypeDictionaryValueCallBacks);
+    p->query3 = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(p->query3, kSecValuePersistentRef, p->persist[0]);
-    update = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    update = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(update, kSecAttrServer, CFSTR("zuigt.com"));
     ok_status(SecItemUpdate(p->query3, update), "update via persitant ref");
 
@@ -180,8 +175,7 @@ SKIP: {
     skip("no persistent ref", 2, ok(p->persist[1], "got back persistent ref"));
 
     /* Verify that item2 wasn't affected by the update. */
-    p->query4 = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
-                                          &kCFTypeDictionaryValueCallBacks);
+    p->query4 = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(p->query4, kSecValuePersistentRef, p->persist[1]);
     CFDictionaryAddValue(p->query4, kSecReturnAttributes, kCFBooleanTrue);
     ok_status(SecItemCopyMatching(p->query4, &results2), "find non updated internet password by persistent ref");
@@ -246,7 +240,7 @@ static void test_persistent2(struct test_persistent_s *p)
 }
 
 static CFMutableDictionaryRef test_create_lockdown_identity_query(void) {
-    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
     CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("test-delete-me"));
     CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("lockdown-identities"));
@@ -254,7 +248,7 @@ static CFMutableDictionaryRef test_create_lockdown_identity_query(void) {
 }
 
 static CFMutableDictionaryRef test_create_managedconfiguration_query(void) {
-    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
     CFDictionaryAddValue(query, kSecAttrService, CFSTR("com.apple.managedconfiguration"));
     CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("Public"));
@@ -286,7 +280,7 @@ static void test_no_find_lockdown_identity_item(void) {
 }
 
 static CFMutableDictionaryRef test_create_sysbound_query(void) {
-    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
     CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("sysbound"));
     CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("apple"));
@@ -321,6 +315,54 @@ static void test_find_sysbound_item(OSStatus expectedCode) {
     CFReleaseSafe(query);
 }
 
+/*
+ * BT
+ */
+
+static CFMutableDictionaryRef test_create_bt_query(bool sync) {
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(NULL);
+    CFDictionaryAddValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionaryAddValue(query, kSecAttrAccessGroup, CFSTR("com.apple.bluetooth"));
+    CFDictionaryAddValue(query, kSecAttrSynchronizable, sync ? kCFBooleanTrue : kCFBooleanFalse);
+    CFDictionarySetValue(query, kSecAttrAccount, sync ? CFSTR("sync") : CFSTR("non-sync"));
+    return query;
+}
+
+static void test_add_bt_items(const char *data) {
+    CFMutableDictionaryRef query = NULL;
+
+    CFDataRef pwdata = CFDataCreate(NULL, (UInt8 *)data, strlen(data));
+
+    query = test_create_bt_query(false);
+    (void)SecItemDelete(query);
+    CFDictionarySetValue(query, kSecValueData, pwdata);
+    ok_status(SecItemAdd(query, NULL), "test_add_bt_item(nonsync)");
+    CFReleaseSafe(query);
+
+    query = test_create_bt_query(true);
+    (void)SecItemDelete(query);
+    CFDictionarySetValue(query, kSecValueData, pwdata);
+    ok_status(SecItemAdd(query, NULL), "test_add_bt_item(sync)");
+    CFReleaseSafe(query);
+
+    CFReleaseSafe(pwdata);
+}
+
+static void test_find_bt_item(OSStatus expectedCode, bool sync, const char *data) {
+    CFMutableDictionaryRef query = test_create_bt_query(sync);
+    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+    CFDataRef pwdata = NULL;
+    is_status(SecItemCopyMatching(query, (CFTypeRef *)&pwdata), expectedCode,
+              "test_find_bt_item: %s", data);
+    CFIndex len = strlen(data);
+    is(len, CFDataGetLength(pwdata), "length wrong(%s)", data);
+    ok(memcmp(data, CFDataGetBytePtr(pwdata), len) == 0, "length wrong(%s)", data);
+    CFReleaseSafe(query);
+}
+
+/*
+ * MC
+ */
 
 static void test_add_managedconfiguration_item(void) {
     CFMutableDictionaryRef query = test_create_managedconfiguration_query();
@@ -348,10 +390,16 @@ static CFDataRef create_keybag(keybag_handle_t bag_type, CFDataRef password)
     int bagLen = 0;
 
     keybag_handle_t handle = bad_keybag_handle;
-    require_noerr(aks_create_bag(DATA_ARG(password), bag_type, &handle), out);
-    require_noerr(aks_save_bag(handle, &bag, &bagLen), out);
+    kern_return_t bag_created = aks_create_bag(DATA_ARG(password), bag_type, &handle);
+    ok_status(bag_created, "Bag should have been created");
+    require_noerr(bag_created, out);
+
+    kern_return_t bag_saved = aks_save_bag(handle, &bag, &bagLen);
+    ok_status(bag_saved, "Bag should have been saved");
+    require_noerr(bag_saved, out);
 
     result = CFDataCreate(kCFAllocatorDefault, bag, bagLen);
+    isnt(result, NULL, "Result should not be null");
 out:
     return result;
 }
@@ -365,12 +413,22 @@ static void tests(void)
         (void)SecItemDelete(lock_down_query);
         CFReleaseNull(lock_down_query);
     }
+    {
+        CFMutableDictionaryRef sysbound_query = test_create_sysbound_query();
+        (void)SecItemDelete(sysbound_query);
+        CFReleaseNull(sysbound_query);
+    }
+    {
+        CFMutableDictionaryRef managed_configuration_query = test_create_managedconfiguration_query();
+        (void)SecItemDelete(managed_configuration_query);
+        CFReleaseNull(managed_configuration_query);
+    }
 
     int v_eighty = 80;
     CFNumberRef eighty = CFNumberCreate(NULL, kCFNumberSInt32Type, &v_eighty);
     const char *v_data = "test";
     CFDataRef pwdata = CFDataCreate(NULL, (UInt8 *)v_data, strlen(v_data));
-    CFMutableDictionaryRef query = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutableForCFTypes(NULL);
     CFDictionaryAddValue(query, kSecClass, kSecClassInternetPassword);
     CFDictionaryAddValue(query, kSecAttrServer, CFSTR("members.spamcop.net"));
     CFDictionaryAddValue(query, kSecAttrAccount, CFSTR("smith"));
@@ -394,6 +452,7 @@ static void tests(void)
 
     test_add_lockdown_identity_items();
     test_add_sysbound_item();
+    test_add_bt_items("kaka1");
 
 #if USE_KEYSTORE
     keybag = create_keybag(kAppleKeyStoreBackupBag, password);
@@ -408,6 +467,8 @@ static void tests(void)
     test_remove_lockdown_identity_items();
     test_remove_sysbound_item();
 
+    test_add_bt_items("kaka2");
+    
     ok_status(_SecKeychainRestoreBackup(backup, keybag, password),
         "_SecKeychainRestoreBackup");
     CFReleaseSafe(backup);
@@ -415,6 +476,11 @@ static void tests(void)
     test_no_find_lockdown_identity_item();
     test_find_sysbound_item(errSecItemNotFound);
     test_find_managedconfiguration_item();
+    /*
+     * Check that the kaka1 entry was "overwritten"
+     */
+    test_find_bt_item(errSecSuccess, true, "kaka2");
+    test_find_bt_item(errSecSuccess, false, "kaka1");
 
     ok_status(SecItemCopyMatching(query, NULL),
         "Found the item we added after restore");
@@ -508,7 +574,7 @@ static void tests(void)
 
 int si_33_keychain_backup(int argc, char *const *argv)
 {
-	plan_tests(64);
+	plan_tests(77);
 
 	tests();
 

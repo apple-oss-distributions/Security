@@ -357,6 +357,17 @@ CFArrayRef SecCertificateCopySignedCertificateTimestamps(SecCertificateRef certi
 CFDataRef SecCertificateCopyPrecertTBS(SecCertificateRef certificate)
     __OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_9_0);
 
+/* Returns a dictionary of dictionaries for system-trusted CT logs, indexed by the LogID */
+CFDictionaryRef SecCertificateCopyTrustedCTLogs(void)
+    __OSX_AVAILABLE_STARTING(__MAC_10_15, __IPHONE_13_0);
+
+/* Returns a dictionary for the CT log matching the provided
+ * key ID, or NULL if no matching log is found.
+ * And by keyID we mean LogID as specified in RFC 6962.
+ */
+CFDictionaryRef SecCertificateCopyCTLogForKeyID(CFDataRef keyID)
+    __OSX_AVAILABLE_STARTING(__MAC_10_15, __IPHONE_13_0);
+
 /* Return the auth capabilities bitmask from the iAP marker extension */
 CF_RETURNS_RETAINED CFDataRef SecCertificateCopyiAPAuthCapabilities(SecCertificateRef certificate)
     __OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_10_0);
@@ -366,6 +377,7 @@ typedef CF_ENUM(uint32_t, SeciAuthVersion) {
     kSeciAuthVersion1 = 1, /* unused */
     kSeciAuthVersion2 = 2,
     kSeciAuthVersion3 = 3,
+    kSeciAuthVersionSW = 4,
 } __OSX_AVAILABLE_STARTING(__MAC_10_12, __IPHONE_10_0);
 
 /* Return the iAuth version indicated by the certificate. This function does
@@ -388,6 +400,48 @@ CFDataRef SecCertificateGetSubjectKeyID(SecCertificateRef certificate)
 CFArrayRef SecCertificateCopyiPhoneDeviceCAChain(void)
     __OSX_AVAILABLE_STARTING(__MAC_10_13, __IPHONE_11_0);
 
+typedef CF_ENUM(uint32_t, SeciAPSWAuthCapabilitiesType) {
+    kSeciAPSWAuthGeneralCapabilities = 0,
+    kSeciAPSWAuthAirPlayCapabilities = 1,
+    kSeciAPSWAuthHomeKitCapabilities = 2,
+} __OSX_AVAILABLE_STARTING(__MAC_10_13_4, __IPHONE_11_3);
+
+/* Return the iAP SW Auth capabilities bitmask from the specificed
+ * SeciAPSWAuthCapabilitiesType type marker extensions. */
+CF_RETURNS_RETAINED
+CFDataRef SecCertificateCopyiAPSWAuthCapabilities(SecCertificateRef certificate,
+                                                  SeciAPSWAuthCapabilitiesType type)
+    __OSX_AVAILABLE_STARTING(__MAC_10_13_4, __IPHONE_11_3);
+
+/*!
+ @function SecCertificateCopyExtensionValue
+ @abstract Return the value in an extension of a certificate.
+ @param certificate A reference to the certificate containing the desired extension
+ @param extensionOID A CFData containing the binary value of ObjectIdentifier of the
+ desired extension or a CFString containing the decimal value of the ObjectIdentifier.
+ @param isCritical On return, a boolean value representing whether the extension was critical.
+ @result If an extension exists in the certificate with the extensionOID, the returned CFData
+ is the (unparsed) Value of the extension.
+ @discussion If the certificate has multiple extensions with the same extension OID, the first
+ extension with the input OID is returned.
+ */
+CF_RETURNS_RETAINED
+CFDataRef SecCertificateCopyExtensionValue(SecCertificateRef certificate,
+                                           CFTypeRef extensionOID, bool *isCritical)
+    __OSX_AVAILABLE_STARTING(__MAC_10_13_4, __IPHONE_11_3);
+
+/* Return an array of CFURLRefs each of which is an ocspResponder for this
+ certificate. */
+CFArrayRef SecCertificateGetOCSPResponders(SecCertificateRef certificate)
+    API_AVAILABLE(macos(10.15), ios(13.0), watchos(6.0), tvos(13.0));
+
+
+/* Return the component type string in a component certificate. */
+CF_RETURNS_RETAINED
+CFStringRef SecCertificateCopyComponentType(SecCertificateRef certificate)
+    API_AVAILABLE(macos(10.15), ios(13.0), watchos(6.0), tvos(13.0));
+
+bool SecCertificateGetDeveloperIDDate(SecCertificateRef certificate, CFAbsoluteTime *time, CFErrorRef * CF_RETURNS_RETAINED error);
 
 /*
  * Legacy functions (OS X only)
@@ -438,7 +492,8 @@ OSStatus SecCertificateInferLabel(SecCertificateRef certificate, CFStringRef *la
  * if no appropriate printable name found.
  */
 const CSSM_DATA *SecInferLabelFromX509Name(
-     const CSSM_X509_NAME *x509Name);
+     const CSSM_X509_NAME *x509Name)
+    DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 /* Accessors for fields in the cached certificate */
 
@@ -545,6 +600,17 @@ CSSM_RETURN SecDigestGetData(CSSM_ALGORITHMS alg, CSSM_DATA* digest, const CSSM_
 /* DEPRECATED: Use SecCertificateIsValid instead. */
 bool SecCertificateIsValidX(SecCertificateRef certificate, CFAbsoluteTime verifyTime)
     __OSX_AVAILABLE_BUT_DEPRECATED(__MAC_10_7, __MAC_10_9, __IPHONE_NA, __IPHONE_NA);
+
+/*!
+  @function SecCertificateCopyPublicKeySHA1DigestFromCertificateData
+  @abstract Returns the SHA1 hash of the public key of a certificate or NULL
+  @param allocator CFAllocator to allocate the certificate with.
+  @param der_certificate DER encoded X.509 certificate.
+  @result SHA1 hash of the public key of a certificate or NULL
+*/
+CFDataRef SecCertificateCopyPublicKeySHA1DigestFromCertificateData(CFAllocatorRef allocator,
+                                                                   CFDataRef der_certificate)
+    __OSX_AVAILABLE_BUT_DEPRECATED(__MAC_10_7, __MAC_10_13_2, __IPHONE_NA, __IPHONE_NA); // Likely incorrect.
 
 #endif /* SEC_OS_OSX */
 

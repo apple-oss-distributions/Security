@@ -37,106 +37,39 @@
 #import "keychain/ckks/CKKSViewManager.h"
 #import "keychain/ckks/CKKSKey.h"
 
-const SecCKKSItemEncryptionVersion currentCKKSItemEncryptionVersion = CKKSItemEncryptionVersion2;
-
-NSString* const SecCKKSActionAdd = @"add";
-NSString* const SecCKKSActionDelete = @"delete";
-NSString* const SecCKKSActionModify = @"modify";
-
-CKKSItemState* const SecCKKSStateNew = (CKKSItemState*) @"new";
-CKKSItemState* const SecCKKSStateUnauthenticated = (CKKSItemState*) @"unauthenticated";
-CKKSItemState* const SecCKKSStateInFlight = (CKKSItemState*) @"inflight";
-CKKSItemState* const SecCKKSStateReencrypt = (CKKSItemState*) @"reencrypt";
-CKKSItemState* const SecCKKSStateError = (CKKSItemState*) @"error";
-CKKSItemState* const SecCKKSStateDeleted = (CKKSItemState*) @"deleted";
-
-CKKSProcessedState* const SecCKKSProcessedStateLocal = (CKKSProcessedState*) @"local";
-CKKSProcessedState* const SecCKKSProcessedStateRemote = (CKKSProcessedState*) @"remote";
-
-CKKSKeyClass* const SecCKKSKeyClassTLK = (CKKSKeyClass*) @"tlk";
-CKKSKeyClass* const SecCKKSKeyClassA = (CKKSKeyClass*) @"classA";
-CKKSKeyClass* const SecCKKSKeyClassC = (CKKSKeyClass*) @"classC";
-
-NSString* const SecCKKSContainerName = @"com.apple.security.keychain";
-bool SecCKKSContainerUsePCS = false;
-
-NSString* const SecCKKSSubscriptionID = @"keychain-changes";
-NSString* const SecCKKSAPSNamedPort = @"com.apple.securityd.aps";
-
-NSString* const SecCKRecordItemType = @"item";
-NSString* const SecCKRecordVersionKey = @"uploadver";
-NSString* const SecCKRecordEncryptionVersionKey = @"encver";
-NSString* const SecCKRecordDataKey = @"data";
-NSString* const SecCKRecordParentKeyRefKey = @"parentkeyref";
-NSString* const SecCKRecordWrappedKeyKey = @"wrappedkey";
-NSString* const SecCKRecordGenerationCountKey = @"gen";
-
-NSString* const SecCKRecordPCSServiceIdentifier = @"pcsservice";
-NSString* const SecCKRecordPCSPublicKey = @"pcspublickey";
-NSString* const SecCKRecordPCSPublicIdentity = @"pcspublicidentity";
-NSString* const SecCKRecordServerWasCurrent = @"server_wascurrent";
-
-NSString* const SecCKRecordIntermediateKeyType = @"synckey";
-NSString* const SecCKRecordKeyClassKey = @"class";
-
-NSString* const SecCKRecordCurrentKeyType = @"currentkey";
-
-NSString* const SecCKRecordCurrentItemType = @"currentitem";
-NSString* const SecCKRecordItemRefKey = @"item";
-
-NSString* const SecCKRecordDeviceStateType = @"devicestate";
-NSString* const SecCKRecordCirclePeerID = @"peerid";
-NSString* const SecCKRecordCircleStatus = @"circle";
-NSString* const SecCKRecordKeyState = @"keystate";
-NSString* const SecCKRecordCurrentTLK = @"currentTLK";
-NSString* const SecCKRecordCurrentClassA = @"currentClassA";
-NSString* const SecCKRecordCurrentClassC = @"currentClassC";
-
-NSString* const SecCKRecordManifestType = @"manifest";
-NSString* const SecCKRecordManifestDigestValueKey = @"digest_value";
-NSString* const SecCKRecordManifestGenerationCountKey = @"generation_count";
-NSString* const SecCKRecordManifestLeafRecordIDsKey = @"leaf_records";
-NSString* const SecCKRecordManifestPeerManifestRecordIDsKey = @"peer_manifests";
-NSString* const SecCKRecordManifestCurrentItemsKey = @"current_items";
-NSString* const SecCKRecordManifestSignaturesKey = @"signatures";
-NSString* const SecCKRecordManifestSignerIDKey = @"signer_id";
-NSString* const SecCKRecordManifestSchemaKey = @"schema";
-
-NSString* const SecCKRecordManifestLeafType = @"manifest_leaf";
-NSString* const SecCKRecordManifestLeafDERKey = @"der";
-NSString* const SecCKRecordManifestLeafDigestKey = @"digest";
-
-CKKSZoneKeyState* const SecCKKSZoneKeyStateReady = (CKKSZoneKeyState*) @"ready";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateError = (CKKSZoneKeyState*) @"error";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateCancelled = (CKKSZoneKeyState*) @"cancelled";
-
-CKKSZoneKeyState* const SecCKKSZoneKeyStateInitializing = (CKKSZoneKeyState*) @"initializing";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateInitialized = (CKKSZoneKeyState*) @"initialized";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateFetchComplete = (CKKSZoneKeyState*) @"fetchcomplete";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateNeedFullRefetch = (CKKSZoneKeyState*) @"needrefetch";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateWaitForTLK = (CKKSZoneKeyState*) @"waitfortlk";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateWaitForUnlock = (CKKSZoneKeyState*) @"waitforunlock";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateUnhealthy = (CKKSZoneKeyState*) @"unhealthy";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateBadCurrentPointers = (CKKSZoneKeyState*) @"badcurrentpointers";
-CKKSZoneKeyState* const SecCKKSZoneKeyStateNewTLKsFailed = (CKKSZoneKeyState*) @"newtlksfailed";
+#import "keychain/ot/OTManager.h"
 
 NSDictionary<CKKSZoneKeyState*, NSNumber*>* CKKSZoneKeyStateMap(void) {
     static NSDictionary<CKKSZoneKeyState*, NSNumber*>* map = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         map = @{
-          SecCKKSZoneKeyStateReady:              [NSNumber numberWithUnsignedInt: 0],
-          SecCKKSZoneKeyStateError:              [NSNumber numberWithUnsignedInt: 1],
-          SecCKKSZoneKeyStateCancelled:          [NSNumber numberWithUnsignedInt: 2],
+          SecCKKSZoneKeyStateReady:              @0U,
+          SecCKKSZoneKeyStateError:              @1U,
+          SecCKKSZoneKeyStateCancelled:          @2U,
 
-          SecCKKSZoneKeyStateInitializing:       [NSNumber numberWithUnsignedInt: 3],
-          SecCKKSZoneKeyStateInitialized:        [NSNumber numberWithUnsignedInt: 4],
-          SecCKKSZoneKeyStateFetchComplete:      [NSNumber numberWithUnsignedInt: 5],
-          SecCKKSZoneKeyStateWaitForTLK:         [NSNumber numberWithUnsignedInt: 6],
-          SecCKKSZoneKeyStateWaitForUnlock:      [NSNumber numberWithUnsignedInt: 7],
-          SecCKKSZoneKeyStateUnhealthy:          [NSNumber numberWithUnsignedInt: 8],
-          SecCKKSZoneKeyStateBadCurrentPointers: [NSNumber numberWithUnsignedInt: 9],
-          SecCKKSZoneKeyStateNewTLKsFailed:      [NSNumber numberWithUnsignedInt:10],
+          SecCKKSZoneKeyStateInitializing:       @3U,
+          SecCKKSZoneKeyStateInitialized:        @4U,
+          SecCKKSZoneKeyStateFetchComplete:      @5U,
+          SecCKKSZoneKeyStateWaitForTLK:         @6U,
+          SecCKKSZoneKeyStateWaitForUnlock:      @7U,
+          SecCKKSZoneKeyStateUnhealthy:          @8U,
+          SecCKKSZoneKeyStateBadCurrentPointers: @9U,
+          SecCKKSZoneKeyStateNewTLKsFailed:      @10U,
+          SecCKKSZoneKeyStateNeedFullRefetch:    @11U,
+          SecCKKSZoneKeyStateHealTLKShares:      @12U,
+          SecCKKSZoneKeyStateHealTLKSharesFailed:@13U,
+          SecCKKSZoneKeyStateWaitForFixupOperation:@14U,
+          SecCKKSZoneKeyStateReadyPendingUnlock: @15U,
+          SecCKKSZoneKeyStateFetch:              @16U,
+          SecCKKSZoneKeyStateResettingZone:      @17U,
+          SecCKKSZoneKeyStateResettingLocalData: @18U,
+          SecCKKSZoneKeyStateLoggedOut:          @19U,
+          SecCKKSZoneKeyStateZoneCreationFailed: @20U,
+          SecCKKSZoneKeyStateWaitForTrust:       @21U,
+          SecCKKSZoneKeyStateWaitForTLKUpload:   @22U,
+          SecCKKSZoneKeyStateWaitForTLKCreation: @23U,
+          SecCKKSZoneKeyStateProcess:            @24U,
         };
     });
     return map;
@@ -173,17 +106,23 @@ CKKSZoneKeyState* CKKSZoneKeyRecover(NSNumber* stateNumber) {
     return SecCKKSZoneKeyStateError;
 }
 
-const NSUInteger SecCKKSItemPaddingBlockSize = 20;
-
-NSString* const SecCKKSAggdPropagationDelay   = @"com.apple.security.ckks.propagationdelay";
-NSString* const SecCKKSAggdPrimaryKeyConflict = @"com.apple.security.ckks.pkconflict";
-NSString* const SecCKKSAggdViewKeyCount = @"com.apple.security.ckks.keycount";
-NSString* const SecCKKSAggdItemReencryption = @"com.apple.security.ckks.reencrypt";
-
-NSString* const SecCKKSUserDefaultsSuite = @"com.apple.security.ckks";
+bool CKKSKeyStateTransient(CKKSZoneKeyState* state) {
+    // Easier to compare against a blacklist of end states
+    bool nontransient = [state isEqualToString:SecCKKSZoneKeyStateReady] ||
+        [state isEqualToString:SecCKKSZoneKeyStateReadyPendingUnlock] ||
+        [state isEqualToString:SecCKKSZoneKeyStateWaitForTrust] ||
+        [state isEqualToString:SecCKKSZoneKeyStateWaitForTLK] ||
+        [state isEqualToString:SecCKKSZoneKeyStateWaitForTLKCreation] ||
+        [state isEqualToString:SecCKKSZoneKeyStateWaitForTLKUpload] ||
+        [state isEqualToString:SecCKKSZoneKeyStateWaitForUnlock] ||
+        [state isEqualToString:SecCKKSZoneKeyStateError] ||
+        [state isEqualToString:SecCKKSZoneKeyStateCancelled];
+    return !nontransient;
+}
 
 #if OCTAGON
-static bool enableCKKS = true;
+// If you want CKKS to run in your daemon/tests, you must call SecCKKSEnable before bringing up the keychain db
+static bool enableCKKS = false;
 static bool testCKKS = false;
 
 bool SecCKKSIsEnabled(void) {
@@ -259,6 +198,47 @@ bool SecCKKSSetEnforceManifests(bool value) {
     return CKKSEnforceManifests;
 }
 
+// defaults write com.apple.security.ckks reduce-rate-limiting YES
+static bool CKKSReduceRateLimiting = false;
+bool SecCKKSReduceRateLimiting(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Use the default value as above, or apply the preferences value if it exists
+        NSUserDefaults* defaults = [[NSUserDefaults alloc] initWithSuiteName:SecCKKSUserDefaultsSuite];
+        NSString* key = @"reduce-rate-limiting";
+        [defaults registerDefaults: @{key: CKKSReduceRateLimiting ? @YES : @NO}];
+
+        CKKSReduceRateLimiting = !![defaults boolForKey:@"reduce-rate-limiting"];
+        secnotice("ckks", "reduce-rate-limiting is %@", CKKSReduceRateLimiting ? @"on" : @"off");
+    });
+
+    return CKKSReduceRateLimiting;
+}
+
+bool SecCKKSSetReduceRateLimiting(bool value) {
+    (void) SecCKKSReduceRateLimiting(); // Call this once to read the defaults write
+    CKKSReduceRateLimiting = value;
+    secnotice("ckks", "reduce-rate-limiting is now %@", CKKSReduceRateLimiting ? @"on" : @"off");
+    return CKKSReduceRateLimiting;
+}
+
+// Here's a mechanism for CKKS feature flags with default values from NSUserDefaults:
+/*static bool CKKSShareTLKs = true;
+bool SecCKKSShareTLKs(void) {
+    return true;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Use the default value as above, or apply the preferences value if it exists
+        NSUserDefaults* defaults = [[NSUserDefaults alloc] initWithSuiteName:SecCKKSUserDefaultsSuite];
+        [defaults registerDefaults: @{@"tlksharing": CKKSShareTLKs ? @YES : @NO}];
+
+        CKKSShareTLKs = !![defaults boolForKey:@"tlksharing"];
+        secnotice("ckksshare", "TLK sharing is %@", CKKSShareTLKs ? @"on" : @"off");
+    });
+
+    return CKKSShareTLKs;
+}*/
+
 // Feature flags to twiddle behavior for tests
 static bool CKKSDisableAutomaticUUID = false;
 bool SecCKKSTestDisableAutomaticUUID(void) {
@@ -303,16 +283,6 @@ void SecCKKSTestResetFlags(void) {
     SecCKKSTestSetDisableKeyNotifications(false);
 }
 
-XPC_RETURNS_RETAINED xpc_endpoint_t
-SecServerCreateCKKSEndpoint(void)
-{
-    if (SecCKKSIsEnabled()) {
-        return [[CKKSViewManager manager] xpcControlEndpoint];
-    } else {
-        return NULL;
-    }
-}
-
 #else /* NO OCTAGON */
 
 bool SecCKKSIsEnabled(void) {
@@ -332,25 +302,30 @@ bool SecCKKSResetSyncing(void) {
     return SecCKKSIsEnabled();
 }
 
-XPC_RETURNS_RETAINED xpc_endpoint_t
-SecServerCreateCKKSEndpoint(void)
-{
-    return NULL;
-}
 #endif /* OCTAGON */
 
 
 
 void SecCKKSInitialize(SecDbRef db) {
 #if OCTAGON
-    CKKSViewManager* manager = [CKKSViewManager manager];
-    [manager initializeZones];
+    @autoreleasepool {
+        CKKSViewManager* manager = [CKKSViewManager manager];
+        [manager createViews];
+        [manager setupAnalytics];
 
-    SecDbAddNotifyPhaseBlock(db, ^(SecDbConnectionRef dbconn, SecDbTransactionPhase phase, SecDbTransactionSource source, CFArrayRef changes) {
-        SecCKKSNotifyBlock(dbconn, phase, source, changes);
-    });
+        SecDbAddNotifyPhaseBlock(db, ^(SecDbConnectionRef dbconn, SecDbTransactionPhase phase, SecDbTransactionSource source, CFArrayRef changes) {
+            SecCKKSNotifyBlock(dbconn, phase, source, changes);
+        });
 
-    [manager.completedSecCKKSInitialize fulfill];
+        [manager.completedSecCKKSInitialize fulfill];
+
+        if(!SecCKKSTestsEnabled()) {
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                [OctagonAPSReceiver receiverForEnvironment:APSEnvironmentProduction namedDelegatePort:SecCKKSAPSNamedPort apsConnectionClass:[APSConnection class]];
+            });
+        }
+    }
 #endif
 }
 
@@ -398,5 +373,18 @@ void CKKSRegisterSyncStatusCallback(CFStringRef cfuuid, SecBoolCFErrorCallback c
     };
 
     [[CKKSViewManager manager] registerSyncStatusCallback: (__bridge NSString*) cfuuid callback:nscallback];
+#endif
+}
+
+void SecCKKSPerformLocalResync() {
+#if OCTAGON
+    secnotice("ckks", "Local keychain was reset; performing local resync");
+    [[CKKSViewManager manager] rpcResyncLocal:nil reply:^(NSError *result) {
+        if(result) {
+            secnotice("ckks", "Local keychain reset resync finished with an error: %@", result);
+        } else {
+            secnotice("ckks", "Local keychain reset resync finished successfully");
+        }
+    }];
 #endif
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2017-2018 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -30,41 +30,72 @@
 #ifndef _SECURITY_SECREVOCATIONSERVER_H_
 #define _SECURITY_SECREVOCATIONSERVER_H_
 
-#include <securityd/SecPolicyServer.h>
+#include <securityd/SecTrustServer.h>
 #include <securityd/SecRevocationDb.h>
-
-#define ENABLE_CRLS (TARGET_OS_MAC && !TARGET_OS_IPHONE)
+#include <securityd/SecOCSPRequest.h>
+#include <securityd/SecOCSPResponse.h>
 
 typedef struct OpaqueSecORVC *SecORVCRef;
-#if ENABLE_CRLS
-typedef struct OpaqueSecCRVC *SecCRVCRef;
-#endif
 
 /* Revocation verification context. */
 struct OpaqueSecRVC {
     /* Pointer to the builder for this revocation check */
-    SecPathBuilderRef builder;
+    SecPathBuilderRef   builder;
 
     /* Index of cert in pvc that this RVC is for 0 = leaf, etc. */
-    CFIndex certIX;
+    CFIndex             certIX;
 
     /* The OCSP Revocation verification context */
-    SecORVCRef orvc;
-
-#if ENABLE_CRLS
-    SecCRVCRef crvc;
-#endif
+    SecORVCRef          orvc;
 
     /* Valid database info for this revocation check */
-    SecValidInfoRef valid_info;
+    SecValidInfoRef     valid_info;
 
-    bool done;
+    bool                done;
 };
 typedef struct OpaqueSecRVC *SecRVCRef;
 
+/* OCSP Revocation verification context. */
+struct OpaqueSecORVC {
+    /* Pointer to the builder for this revocation check. */
+    SecPathBuilderRef builder;
+
+    /* Pointer to the generic rvc for this revocation check */
+    SecRVCRef rvc;
+
+    /* The ocsp request we send to each responder. */
+    SecOCSPRequestRef ocspRequest;
+
+    /* The freshest response we received so far, from stapling or cache or responder. */
+    SecOCSPResponseRef ocspResponse;
+
+    /* The best validated candidate single response we received so far, from stapling or cache or responder. */
+    SecOCSPSingleResponseRef ocspSingleResponse;
+
+    /* Index of cert in builder that this RVC is for 0 = leaf, etc. */
+    CFIndex certIX;
+
+    /* Date until which this revocation status is valid. */
+    CFAbsoluteTime nextUpdate;
+
+    /* URL of current responder. For logging purposes. */
+    CFURLRef responder;
+
+    bool done;
+};
+
 bool SecPathBuilderCheckRevocation(SecPathBuilderRef builder);
+void SecPathBuilderCheckKnownIntermediateConstraints(SecPathBuilderRef builder);
 CFAbsoluteTime SecRVCGetEarliestNextUpdate(SecRVCRef rvc);
 void SecRVCDelete(SecRVCRef rvc);
+bool SecRVCHasDefinitiveValidInfo(SecRVCRef rvc);
+bool SecRVCHasRevokedValidInfo(SecRVCRef rvc);
+void SecRVCSetValidDeterminedErrorResult(SecRVCRef rvc);
+
+/* OCSP verification callbacks */
+void SecORVCConsumeOCSPResponse(SecORVCRef rvc, SecOCSPResponseRef ocspResponse /*CF_CONSUMED*/,
+                                CFTimeInterval maxAge, bool updateCache, bool fromCache);
+void SecORVCUpdatePVC(SecORVCRef rvc);
 
 
 #endif /* _SECURITY_SECREVOCATIONSERVER_H_ */

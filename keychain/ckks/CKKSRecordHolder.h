@@ -21,40 +21,37 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <utilities/SecDb.h>
-#include <securityd/SecDbItem.h>
-
-#ifndef CKKSRecordHolder_h
-#define CKKSRecordHolder_h
-
 #if OCTAGON
 
-#import "keychain/ckks/CKKSSQLDatabaseObject.h"
 #import <CloudKit/CloudKit.h>
+#include <securityd/SecDbItem.h>
+#include <utilities/SecDb.h>
+#import "keychain/ckks/CKKSSQLDatabaseObject.h"
 
-@class CKKSWrappedAESSIVKey;
+NS_ASSUME_NONNULL_BEGIN
 
 // Helper class that includes a single encoded CKRecord
-@interface CKKSCKRecordHolder : CKKSSQLDatabaseObject {
-}
+@interface CKKSCKRecordHolder : CKKSSQLDatabaseObject
 
-- (instancetype)initWithCKRecord: (CKRecord*) record;
-- (instancetype)initWithCKRecordType: (NSString*) recordType encodedCKRecord: (NSData*) encodedCKRecord zoneID:(CKRecordZoneID*)zoneID;
+- (instancetype)initWithCKRecord:(CKRecord*)record;
+- (instancetype)initWithCKRecordType:(NSString*)recordType
+                     encodedCKRecord:(NSData* _Nullable)encodedCKRecord
+                              zoneID:(CKRecordZoneID*)zoneID;
 
-@property (copy) CKRecordZoneID* zoneID;
-@property (copy) NSString* ckRecordType;
-@property (copy) NSData* encodedCKRecord;
-@property (getter=storedCKRecord,setter=setStoredCKRecord:) CKRecord* storedCKRecord;
+@property CKRecordZoneID* zoneID;
+@property NSString* ckRecordType;
+@property (nullable, copy) NSData* encodedCKRecord;
+@property (nullable, getter=storedCKRecord, setter=setStoredCKRecord:) CKRecord* storedCKRecord;
 
-- (CKRecord*) CKRecordWithZoneID: (CKRecordZoneID*) zoneID;
+- (CKRecord*)CKRecordWithZoneID:(CKRecordZoneID*)zoneID;
 
 // All of the following are virtual: you must override to use
-- (NSString*) CKRecordName;
-- (CKRecord*) updateCKRecord: (CKRecord*) record zoneID: (CKRecordZoneID*) zoneID;
-- (void) setFromCKRecord: (CKRecord*) record; // When you override this, make sure to call [setStoredCKRecord]
-- (bool) matchesCKRecord: (CKRecord*) record;
+- (NSString*)CKRecordName;
+- (CKRecord*)updateCKRecord:(CKRecord*)record zoneID:(CKRecordZoneID*)zoneID;
+- (void)setFromCKRecord:(CKRecord*)record;  // When you override this, make sure to call [setStoredCKRecord]
+- (bool)matchesCKRecord:(CKRecord*)record;
 
 @end
 
+NS_ASSUME_NONNULL_END
 #endif
-#endif /* CKKSRecordHolder_h */

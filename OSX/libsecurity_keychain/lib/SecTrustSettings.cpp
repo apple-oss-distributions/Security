@@ -27,9 +27,9 @@
  */
 
 #include "SecBridge.h"
-#include "SecCertificatePriv.h"
-#include "SecTrustSettings.h"
-#include "SecTrustSettingsPriv.h"
+#include <Security/SecCertificatePriv.h>
+#include <Security/SecTrustSettings.h>
+#include <Security/SecTrustSettingsPriv.h>
 #include "SecTrustSettingsCertificates.h"
 #include "SecCFRelease.h"
 #include "TrustSettingsUtils.h"
@@ -303,6 +303,7 @@ static void tsRegisterCallback()
 static void tsTrustSettingsChanged()
 {
 	tsPurgeCache();
+    SecTrustSettingsPurgeUserAdminCertsCache();
 
 	/* The only interesting data is our pid */
 	NameValueDictionary nvd;
@@ -433,7 +434,7 @@ static OSStatus tsCopyCertsCommon(
 
 static void tsAddConditionalCerts(CFMutableArrayRef certArray)
 {
-#if TARGET_OS_MAC && !TARGET_IPHONE_SIMULATOR && !TARGET_OS_IPHONE && !TARGET_OS_NANO
+#if TARGET_OS_OSX
 	struct certmap_entry_s {
 		CFStringRef bundleId;
 		const UInt8* data;
@@ -846,6 +847,7 @@ OSStatus SecTrustSettingsCopyCertificates(
 	OSStatus status;
 	TrustSettings* ts;
 	CFMutableArrayRef trustedCertArray = NULL;
+    SecTrustRef trust = NULL;
 
 	status = TrustSettings::CreateTrustSettings(domain, CREATE_NO, TRIM_NO, ts);
 	if (status != errSecSuccess) {
@@ -892,7 +894,6 @@ OSStatus SecTrustSettingsCopyCertificates(
         SecPolicyRef policy = SecPolicyCreateBasicX509();
 	    trustedCertArray = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
         for (i = 0; i < count ; i++) {
-            SecTrustRef trust;
             SecTrustResultType result;
             SecCertificateRef certificate = (SecCertificateRef) CFArrayGetValueAtIndex(outArray, i);
             status = SecTrustCreateWithCertificates(certificate, policy, &trust);
@@ -908,6 +909,7 @@ OSStatus SecTrustSettingsCopyCertificates(
             if (result != kSecTrustResultFatalTrustFailure) {
                 CFArrayAppendValue(trustedCertArray, certificate);
             }
+            CFReleaseNull(trust);
         }
 		tsAddConditionalCerts(trustedCertArray);
         if (CFArrayGetCount(trustedCertArray) == 0) {
@@ -925,16 +927,17 @@ out:
         CFReleaseSafe(outArray);
 		CFReleaseSafe(trustedCertArray);
      }
+    CFReleaseNull(trust);
     return status;
 	END_RCSAPI
 }
 
 static CFArrayRef gUserAdminCerts = NULL;
 static bool gUserAdminCertsCacheBuilt = false;
-static ReadWriteLock gUserAdminCertsLock;
+static ModuleNexus<ReadWriteLock> gUserAdminCertsLock;
 
 void SecTrustSettingsPurgeUserAdminCertsCache(void) {
-    StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Write);
+    StReadWriteLock _(gUserAdminCertsLock(), StReadWriteLock::Write);
     CFReleaseNull(gUserAdminCerts);
     gUserAdminCertsCacheBuilt = false;
 }
@@ -946,7 +949,7 @@ OSStatus SecTrustSettingsCopyCertificatesForUserAdminDomains(
     OSStatus result = errSecSuccess;
 
     { /* Hold the read lock for the check */
-        StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Read);
+        StReadWriteLock _(gUserAdminCertsLock(), StReadWriteLock::Read);
         if (gUserAdminCertsCacheBuilt) {
             if (gUserAdminCerts) {
                 *certArray = (CFArrayRef)CFRetain(gUserAdminCerts);
@@ -991,7 +994,7 @@ OSStatus SecTrustSettingsCopyCertificatesForUserAdminDomains(
 
     /* For valid results, update the global cache */
     if (result == errSecSuccess || result == errSecNoTrustSettings) {
-        StReadWriteLock _(gUserAdminCertsLock, StReadWriteLock::Write);
+        StReadWriteLock _(gUserAdminCertsLock(), StReadWriteLock::Write);
         CFReleaseNull(gUserAdminCerts);
         gUserAdminCerts = (CFArrayRef)CFRetainSafe(outArray);
         gUserAdminCertsCacheBuilt = true;
@@ -1079,10 +1082,8 @@ void SecTrustSettingsSetTrustedCertificateForSSLHost(
 	Boolean hasPolicyConstraint = false;
 	Boolean hasPolicyValue = false;
 	Boolean policyConstraintChanged = false;
-	Boolean changed = false;
 	CFIndex indexOfEntryWithAllowedErrorForExpiredCert = kCFNotFound;
 	CFIndex indexOfEntryWithAllowedErrorForHostnameMismatch = kCFNotFound;
-	CFIndex indexOfEntryWithAllowedErrorNotSet = kCFNotFound;
 	CFIndex i, count;
 	int32_t trustSettingsResultCode = kSecTrustSettingsResultTrustAsRoot;
 	OSStatus status = errSecSuccess;
@@ -1166,11 +1167,9 @@ void SecTrustSettingsSetTrustedCertificateForSSLHost(
 					indexOfEntryWithAllowedErrorForExpiredCert = i;
 				} else if (eOld == CSSMERR_APPLETP_HOSTNAME_MISMATCH) {
 					indexOfEntryWithAllowedErrorForHostnameMismatch = i;
-				} else if (eOld == CSSM_OK) {
-					indexOfEntryWithAllowedErrorNotSet = i;
 				}
 				if (trustSettingsResultCode != rOld) {
-					changed = policyConstraintChanged = true;  // we are changing existing policy constraint's result
+					policyConstraintChanged = true;  // we are changing existing policy constraint's result
 				}
 			}
 		}

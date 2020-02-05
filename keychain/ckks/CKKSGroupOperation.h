@@ -21,65 +21,23 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-
-#ifndef CKKSGroupOperation_h
-#define CKKSGroupOperation_h
+#if OCTAGON
 
 #import <Foundation/Foundation.h>
 #include <dispatch/dispatch.h>
+#import "keychain/ckks/CKKSResultOperation.h"
 
-@class CKKSCondition;
+NS_ASSUME_NONNULL_BEGIN
 
-@interface NSOperation (CKKSUsefulPrintingOperation)
-- (NSString*)description;
-- (BOOL)isPending;
-
-// If op is nonnull, op becomes a dependency of this operation
-- (void)addNullableDependency: (NSOperation*) op;
-
-// Add all operations in this collection as dependencies, then add yourself to the collection
--(void)linearDependencies:(NSHashTable*)collection;
-@end
-
-@interface NSBlockOperation (CKKSUsefulConstructorOperation)
-+(instancetype)named: (NSString*)name withBlock: (void(^)(void)) block;
-@end
-
-
-#define CKKSResultErrorDomain @"CKKSResultOperationError"
-enum {
-    CKKSResultSubresultError = 1,
-    CKKSResultSubresultCancelled = 2,
-    CKKSResultTimedOut = 3,
-};
-
-@interface CKKSResultOperation : NSBlockOperation
-@property NSError* error;
-@property NSDate* finishDate;
-@property CKKSCondition* completionHandlerDidRunCondition;
-
-// Very similar to addDependency, but:
-//   if the dependent operation has an error or is canceled, cancel this operation
-- (void)addSuccessDependency: (CKKSResultOperation*) operation;
-
-// Call to check if you should run.
-// Note: all subclasses must call this if they'd like to comply with addSuccessDependency
-// Also sets your .error property to encapsulate the upstream error
-- (bool)allDependentsSuccessful;
-
-// Allows you to time out CKKSResultOperations: if they haven't started by now, they'll cancel themselves
-// and set their error to indicate the timeout
-- (instancetype)timeout:(dispatch_time_t)timeout;
-
-// Convenience constructor.
-+(instancetype)operationWithBlock:(void (^)(void))block;
-+(instancetype)named: (NSString*)name withBlock: (void(^)(void)) block;
-@end
-
-@interface CKKSGroupOperation : CKKSResultOperation {
+@interface CKKSGroupOperation : CKKSResultOperation
+{
     BOOL executing;
     BOOL finished;
 }
+
++ (instancetype)operationWithBlock:(void (^)(void))block;
++ (instancetype)named:(NSString*)name withBlock:(void (^)(void))block;
++ (instancetype)named:(NSString*)name withBlockTakingSelf:(void(^)(CKKSGroupOperation* strongOp))block;
 
 @property NSOperationQueue* operationQueue;
 
@@ -88,8 +46,10 @@ enum {
 // For subclasses: override this to execute at Group operation start time
 - (void)groupStart;
 
-- (void)runBeforeGroupFinished: (NSOperation*) suboperation;
-- (void)dependOnBeforeGroupFinished: (NSOperation*) suboperation;
+- (void)runBeforeGroupFinished:(NSOperation*)suboperation;
+- (void)dependOnBeforeGroupFinished:(NSOperation*)suboperation;
 @end
 
-#endif // CKKSGroupOperation_h
+NS_ASSUME_NONNULL_END
+
+#endif  // OCTAGON

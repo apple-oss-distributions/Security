@@ -25,6 +25,7 @@
 #import "keychain/ckks/CKKSGroupOperation.h"
 
 #if OCTAGON
+NS_ASSUME_NONNULL_BEGIN
 
 @class CKKSKeychainView;
 
@@ -36,5 +37,5 @@
 
 @end
 
-#endif // OCTAGON
-
+NS_ASSUME_NONNULL_END
+#endif  // OCTAGON

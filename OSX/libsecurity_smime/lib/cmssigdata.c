@@ -223,7 +223,7 @@ SecCmsSignedDataEncodeBeforeData(SecCmsSignedDataRef sigd)
 
 extern const SecAsn1Template kSecAsn1TSATSTInfoTemplate;
 
-OSStatus createTSAMessageImprint(SecCmsSignedDataRef signedData, CSSM_DATA_PTR encDigest, 
+OSStatus createTSAMessageImprint(SecCmsSignerInfoRef signerInfo, SECAlgorithmID *digestAlg, CSSM_DATA_PTR encDigest,
     SecAsn1TSAMessageImprint *messageImprint)
 {
     // Calculate hash of encDigest and put in messageImprint.hashedMessage
@@ -231,21 +231,17 @@ OSStatus createTSAMessageImprint(SecCmsSignedDataRef signedData, CSSM_DATA_PTR e
     
     OSStatus status = SECFailure;
     
-    require(signedData && messageImprint, xit);
-	
-    SECAlgorithmID **digestAlgorithms = SecCmsSignedDataGetDigestAlgs(signedData);
-    require(digestAlgorithms, xit);
+    require(signerInfo && digestAlg && messageImprint, xit);
 
-    SecCmsDigestContextRef digcx = SecCmsDigestContextStartMultiple(digestAlgorithms);
+    SecCmsDigestContextRef digcx = SecCmsDigestContextStartSingle(digestAlg);
     require(digcx, xit);
     require(encDigest, xit);
     
-    SecCmsSignerInfoRef signerinfo = SecCmsSignedDataGetSignerInfo(signedData, 0);  // NB - assume 1 signer only!
-    messageImprint->hashAlgorithm = signerinfo->digestAlg;
+    messageImprint->hashAlgorithm = *digestAlg;
 
     SecCmsDigestContextUpdate(digcx, encDigest->Data, encDigest->Length);
     
-    require_noerr(SecCmsDigestContextFinishSingle(digcx, (SecArenaPoolRef)signedData->cmsg->poolp,
+    require_noerr(SecCmsDigestContextFinishSingle(digcx, (SecArenaPoolRef)signerInfo->cmsg->poolp,
         &messageImprint->hashedMessage), xit);
     
     status = SECSuccess;
@@ -354,7 +350,8 @@ static OSStatus validateTSAResponseAndAddTimeStamp(SecCmsSignerInfoRef signerinf
         The code for this is essentially the same code taht is done during a timestamp
         verify, except that we also need to check the nonce.
     */
-    require_noerr(status = decodeTimeStampToken(signerinfo, &respDER.timeStampTokenDER, NULL, expectedNonce), xit);
+    CSSM_DATA *encDigest = SecCmsSignerInfoGetEncDigest(signerinfo);
+    require_noerr(status = decodeTimeStampToken(signerinfo, &respDER.timeStampTokenDER, encDigest, expectedNonce), xit);
 
     status = SecCmsSignerInfoAddTimeStamp(signerinfo, &respDER.timeStampTokenDER);
 
@@ -426,7 +423,7 @@ SecCmsSignedDataEncodeAfterData(SecCmsSignedDataRef sigd)
     SecCmsContentInfoRef cinfo;
     SECOidTag digestalgtag;
     OSStatus ret = SECFailure;
-    OSStatus rv;
+    OSStatus rv = errSecSuccess;
     CSSM_DATA_PTR contentType;
     int certcount;
     int i, ci, n, rci, si;
@@ -500,7 +497,7 @@ SecCmsSignedDataEncodeAfterData(SecCmsSignedDataRef sigd)
         // Calculate hash of encDigest and put in messageImprint.hashedMessage
         SecCmsSignerInfoRef signerinfo = SecCmsSignedDataGetSignerInfo(sigd, 0);    // NB - assume 1 signer only!
         CSSM_DATA *encDigest = SecCmsSignerInfoGetEncDigest(signerinfo);
-        require_noerr(createTSAMessageImprint(sigd, encDigest, &messageImprint), tsxit);
+        require_noerr(createTSAMessageImprint(signerinfo, &signerinfo->digestAlg, encDigest, &messageImprint), tsxit);
         
         // Callback to fire up XPC service to talk to TimeStamping server, etc.
         require_noerr(rv =(*sigd->cmsg->tsaCallback)(sigd->cmsg->tsaContext, &messageImprint,
@@ -752,8 +749,11 @@ SecCmsSignedDataVerifySignerInfo(SecCmsSignedDataRef sigd, int i,
     CSSM_DATA_PTR contentType, digest;
     OSStatus status, status2;
 
-    cinfo = &(sigd->contentInfo);
+    if (sigd == NULL || sigd->signerInfos == NULL || i >= SecCmsSignedDataSignerInfoCount(sigd)) {
+        return errSecParam;
+    }
 
+    cinfo = &(sigd->contentInfo);
     signerinfo = sigd->signerInfos[i];
 
     /* Signature or digest level verificationStatus errors should supercede
@@ -762,19 +762,19 @@ SecCmsSignedDataVerifySignerInfo(SecCmsSignedDataRef sigd, int i,
     /* Find digest and contentType for signerinfo */
     algiddata = SecCmsSignerInfoGetDigestAlg(signerinfo);
     if (algiddata == NULL) {
-        return errSecInternalError; // shouldn't have happened, this is likely due to corrupted data
+        return errSecInvalidDigestAlgorithm;
     }
     
     digest = SecCmsSignedDataGetDigestByAlgTag(sigd, algiddata->offset);
-	if(digest == NULL) {
-		/* 
-		 * No digests; this probably had detached content the caller has to 
-		 * deal with. 
-		 * FIXME: need some error return for this (as well as many 
-		 * other places in this library).
-		 */
-		return errSecDataNotAvailable;
-	}
+    if(digest == NULL) {
+        /*
+         * No digests; this probably had detached content the caller has to
+         * deal with.
+         * FIXME: need some error return for this (as well as many
+         * other places in this library).
+         */
+        return errSecDataNotAvailable;
+    }
     contentType = SecCmsContentInfoGetContentTypeOID(cinfo);
 
     /* verify signature */
@@ -873,7 +873,7 @@ SecCmsSignedDataAddCertChain(SecCmsSignedDataRef sigd, SecCertificateRef cert)
     usage = certUsageEmailSigner;
 
     /* do not include root */
-    certlist = CERT_CertChainFromCert(cert, usage, PR_FALSE);
+    certlist = CERT_CertChainFromCert(cert, usage, PR_FALSE, PR_FALSE);
     if (certlist == NULL)
 	return SECFailure;
 

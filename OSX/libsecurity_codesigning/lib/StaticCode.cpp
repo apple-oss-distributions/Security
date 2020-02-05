@@ -29,12 +29,14 @@
 #include "reqmaker.h"
 #if TARGET_OS_OSX
 #include "drmaker.h"
+#include "notarization.h"
 #endif
 #include "reqdumper.h"
 #include "reqparser.h"
 #include "sigblob.h"
 #include "resources.h"
 #include "detachedrep.h"
+#include "signerutils.h"
 #if TARGET_OS_OSX
 #include "csdatabase.h"
 #endif
@@ -99,13 +101,14 @@ static inline OSStatus errorForSlot(CodeDirectory::SpecialSlot slot)
 //
 // Construct a SecStaticCode object given a disk representation object
 //
-SecStaticCode::SecStaticCode(DiskRep *rep)
+SecStaticCode::SecStaticCode(DiskRep *rep, uint32_t flags)
 	: mCheckfix30814861builder1(NULL),
 	  mRep(rep),
 	  mValidated(false), mExecutableValidated(false), mResourcesValidated(false), mResourcesValidContext(NULL),
 	  mProgressQueue("com.apple.security.validation-progress", false, QOS_CLASS_UNSPECIFIED),
 	  mOuterScope(NULL), mResourceScope(NULL),
-	  mDesignatedReq(NULL), mGotResourceBase(false), mMonitor(NULL), mLimitedAsync(NULL)
+	  mDesignatedReq(NULL), mGotResourceBase(false), mMonitor(NULL), mLimitedAsync(NULL),
+	  mFlags(flags), mNotarizationChecked(false), mStaplingChecked(false), mNotarizationDate(NAN)
 #if TARGET_OS_OSX
     , mEvalDetails(NULL)
 #else
@@ -343,6 +346,7 @@ void SecStaticCode::resetValidity()
 		mResourcesValidContext = NULL;
 	}
 	mDir = NULL;
+	mCodeDirectories.clear();
 	mSignature = NULL;
 	for (unsigned n = 0; n < cdSlotCount; n++)
 		mCache[n] = NULL;
@@ -354,6 +358,9 @@ void SecStaticCode::resetValidity()
 	mGotResourceBase = false;
 	mTrust = NULL;
 	mCertChain = NULL;
+	mNotarizationChecked = false;
+	mStaplingChecked = false;
+	mNotarizationDate = NAN;
 #if TARGET_OS_OSX
 	mEvalDetails = NULL;
 #endif
@@ -384,7 +391,7 @@ CFDataRef SecStaticCode::component(CodeDirectory::SpecialSlot slot, OSStatus fai
 					return NULL;
 
 				if (!codeDirectory()->validateSlot(CFDataGetBytePtr(data), // ... and it's no good
-						CFDataGetLength(data), -slot))
+						CFDataGetLength(data), -slot, false))
 					MacOSError::throwMe(errorForSlot(slot)); // ... then bail
 			}
 			cache = data;	// it's okay, cache it
@@ -400,6 +407,41 @@ CFDataRef SecStaticCode::component(CodeDirectory::SpecialSlot slot, OSStatus fai
 
 
 //
+// Get the CodeDirectories.
+// Throws (if check==true) or returns NULL (check==false) if there are none.
+// Always throws if the CodeDirectories exist but are invalid.
+// NEVER validates against the signature.
+//
+const SecStaticCode::CodeDirectoryMap *
+SecStaticCode::codeDirectories(bool check /* = true */) const
+{
+	if (mCodeDirectories.empty()) {
+		try {
+			loadCodeDirectories(mCodeDirectories);
+		} catch (...) {
+			if (check)
+				throw;
+			// We wanted a NON-checked peek and failed to safely decode the existing CodeDirectories.
+			// Pretend this is unsigned, but make sure we didn't somehow cache an invalid CodeDirectory.
+			if (!mCodeDirectories.empty()) {
+				assert(false);
+				Syslog::warning("code signing internal problem: mCodeDirectories set despite exception exit");
+				MacOSError::throwMe(errSecCSInternalError);
+			}
+		}
+	} else {
+		return &mCodeDirectories;
+	}
+	if (!mCodeDirectories.empty()) {
+		return &mCodeDirectories;
+	}
+	if (check) {
+		MacOSError::throwMe(errSecCSUnsigned);
+	}
+	return NULL;
+}
+
+//
 // Get the CodeDirectory.
 // Throws (if check==true) or returns NULL (check==false) if there is none.
 // Always throws if the CodeDirectory exists but is invalid.
@@ -410,11 +452,10 @@ const CodeDirectory *SecStaticCode::codeDirectory(bool check /* = true */) const
 	if (!mDir) {
 		// pick our favorite CodeDirectory from the choices we've got
 		try {
-			CodeDirectoryMap candidates;
-			if (loadCodeDirectories(candidates)) {
+			CodeDirectoryMap const *candidates = codeDirectories(check);
+			if (candidates != NULL) {
 				CodeDirectory::HashAlgorithm type = CodeDirectory::bestHashOf(mHashAlgorithms);
-				mDir = candidates[type];								// and the winner is...
-				candidates.swap(mCodeDirectories);
+				mDir = candidates->at(type);	// and the winner is...
 			}
 		} catch (...) {
 			if (check)
@@ -508,6 +549,26 @@ CFArrayRef SecStaticCode::cdHashes()
 		mCDHashes = cdList.get();
 	}
 	return mCDHashes;
+}
+
+//
+// Get a dictionary of untruncated cdhashes for all digest types in this signature.
+//
+CFDictionaryRef SecStaticCode::cdHashesFull()
+{
+	if (!mCDHashFullDict) {
+		CFRef<CFMutableDictionaryRef> cdDict = makeCFMutableDictionary();
+		for (auto const &it : mCodeDirectories) {
+			CodeDirectory::HashAlgorithm alg = it.first;
+			const CodeDirectory *cd = (const CodeDirectory *)CFDataGetBytePtr(it.second);
+			CFRef<CFDataRef> hash = cd->cdhash(false);
+			if (hash) {
+				CFDictionaryAddValue(cdDict, CFTempNumber(alg), hash);
+			}
+		}
+		mCDHashFullDict = cdDict.get();
+	}
+	return mCDHashFullDict;
 }
 
 
@@ -639,6 +700,58 @@ CFAbsoluteTime SecStaticCode::signingTimestamp()
 	return mSigningTimestamp;
 }
 
+#if TARGET_OS_OSX
+#define kSecSHA256HashSize 32
+// subject:/C=US/ST=California/L=San Jose/O=Adobe Systems Incorporated/OU=Information Systems/OU=Digital ID Class 3 - Microsoft Software Validation v2/CN=Adobe Systems Incorporated
+// issuer :/C=US/O=VeriSign, Inc./OU=VeriSign Trust Network/OU=Terms of use at https://www.verisign.com/rpa (c)10/CN=VeriSign Class 3 Code Signing 2010 CA
+// Not Before: Dec 15 00:00:00 2010 GMT
+// Not After : Dec 14 23:59:59 2012 GMT
+static const unsigned char ASI_CS_12[] = {
+	0x77,0x82,0x9C,0x64,0x33,0x45,0x2E,0x4A,0xD3,0xA8,0xE4,0x6F,0x00,0x6C,0x27,0xEA,
+	0xFB,0xD3,0xF2,0x6D,0x50,0xF3,0x6F,0xE0,0xE9,0x6D,0x06,0x59,0x19,0xB5,0x46,0xFF
+};
+
+bool SecStaticCode::checkfix41082220(OSStatus cssmTrustResult)
+{
+	// only applicable to revoked results
+	if (cssmTrustResult != CSSMERR_TP_CERT_REVOKED) {
+		return false;
+	}
+
+	// only this leaf certificate
+	if (CFArrayGetCount(mCertChain) == 0) {
+		return false;
+	}
+	CFRef<CFDataRef> leafHash(SecCertificateCopySHA256Digest((SecCertificateRef)CFArrayGetValueAtIndex(mCertChain, 0)));
+	if (memcmp(ASI_CS_12, CFDataGetBytePtr(leafHash), kSecSHA256HashSize) != 0) {
+		return false;
+	}
+
+	// detached dmg signature
+	if (!isDetached() || format() != std::string("disk image")) {
+		return false;
+	}
+
+	// sha-1 signed
+	if (hashAlgorithms().size() != 1 || hashAlgorithm() != kSecCodeSignatureHashSHA1) {
+		return false;
+	}
+
+	// not a privileged binary - no TeamID and no entitlements
+	if (component(cdEntitlementSlot) || teamID()) {
+		return false;
+	}
+
+	// no flags and old version
+	if (codeDirectory()->version != 0x20100 || codeDirectory()->flags != 0) {
+		return false;
+	}
+
+	Security::Syslog::warning("CodeSigning: Check-fix enabled for dmg '%s' with identifier '%s' signed with revoked certificates",
+							  mainExecutablePath().c_str(), identifier().c_str());
+	return true;
+}
+#endif // TARGET_OS_OSX
 
 //
 // Verify the CMS signature.
@@ -689,14 +802,17 @@ bool SecStaticCode::verifySignature()
 		MacOSError::throwMe(errSecCSSignatureFailed);
 	}
 
-	// retrieve auxiliary data bag and verify against current state
-	CFRef<CFDataRef> hashBag;
-	switch (OSStatus rc = CMSDecoderCopySignerAppleCodesigningHashAgility(cms, 0, &hashBag.aref())) {
+	// retrieve auxiliary v1 data bag and verify against current state
+	CFRef<CFDataRef> hashAgilityV1;
+	switch (OSStatus rc = CMSDecoderCopySignerAppleCodesigningHashAgility(cms, 0, &hashAgilityV1.aref())) {
 	case noErr:
-		if (hashBag) {
-			CFRef<CFDictionaryRef> hashDict = makeCFDictionaryFrom(hashBag);
+		if (hashAgilityV1) {
+			CFRef<CFDictionaryRef> hashDict = makeCFDictionaryFrom(hashAgilityV1);
 			CFArrayRef cdList = CFArrayRef(CFDictionaryGetValue(hashDict, CFSTR("cdhashes")));
 			CFArrayRef myCdList = this->cdHashes();
+
+			/* Note that this is not very "agile": There's no way to calculate the exact
+			 * list for comparison if it contains hash algorithms we don't know yet... */
 			if (cdList == NULL || !CFEqual(cdList, myCdList))
 				MacOSError::throwMe(errSecCSSignatureFailed);
 		}
@@ -705,6 +821,62 @@ bool SecStaticCode::verifySignature()
 		break;
 	default:
 		MacOSError::throwMe(rc);
+	}
+
+	// retrieve auxiliary v2 data bag and verify against current state
+	CFRef<CFDictionaryRef> hashAgilityV2;
+	switch (OSStatus rc = CMSDecoderCopySignerAppleCodesigningHashAgilityV2(cms, 0, &hashAgilityV2.aref())) {
+		case noErr:
+			if (hashAgilityV2) {
+				/* Require number of code directoris and entries in the hash agility
+				 * dict to be the same size (no stripping out code directories).
+				 */
+				if (CFDictionaryGetCount(hashAgilityV2) != mCodeDirectories.size()) {
+					MacOSError::throwMe(errSecCSSignatureFailed);
+				}
+
+				/* Require every cdhash of every code directory whose hash
+				 * algorithm we know to be in the agility dictionary.
+				 *
+				 * We check untruncated cdhashes here because we can.
+				 */
+				bool foundOurs = false;
+				for (auto& entry : mCodeDirectories) {
+					SECOidTag tag = CodeDirectorySet::SECOidTagForAlgorithm(entry.first);
+
+					if (tag == SEC_OID_UNKNOWN) {
+						// Unknown hash algorithm, ignore.
+						continue;
+					}
+
+					CFRef<CFNumberRef> key = makeCFNumber(int(tag));
+					CFRef<CFDataRef> entryCdhash;
+					entryCdhash = (CFDataRef)CFDictionaryGetValue(hashAgilityV2, (void*)key.get());
+
+					CodeDirectory const *cd = (CodeDirectory const*)CFDataGetBytePtr(entry.second);
+					CFRef<CFDataRef> ourCdhash = cd->cdhash(false); // Untruncated cdhash!
+					if (!CFEqual(entryCdhash, ourCdhash)) {
+						MacOSError::throwMe(errSecCSSignatureFailed);
+					}
+
+					if (entry.first == this->hashAlgorithm()) {
+						foundOurs = true;
+					}
+				}
+
+				/* Require the cdhash of our chosen code directory to be in the dictionary.
+				 * In theory, the dictionary could be full of unsupported cdhashes, but we
+				 * really want ours, which is bound to be supported, to be covered.
+				 */
+				if (!foundOurs) {
+					MacOSError::throwMe(errSecCSSignatureFailed);
+				}
+			}
+			break;
+		case -1:	/* CMS used to return this for "no attribute found", so tolerate it. Now returning noErr/NULL */
+			break;
+		default:
+			MacOSError::throwMe(rc);
 	}
 
 	// internal signing time (as specified by the signer; optional)
@@ -804,6 +976,9 @@ bool SecStaticCode::verifySignature()
 						continue;		// retry validation while tolerating expiration
 					}
 				}
+				if (checkfix41082220(result)) {
+					break; // success
+				}
 				Security::Syslog::error("SecStaticCode: verification failed (trust result %d, error %d)", trustResult, (int)result);
 				MacOSError::throwMe(result);
 			}
@@ -883,7 +1058,7 @@ bool SecStaticCode::verifySignature()
     }
     
     // Did we implicitly trust the signer?
-    mTrustedSigningCertChain = (trustResult == kSecTrustResultUnspecified);
+    mTrustedSigningCertChain = (trustResult == kSecTrustResultUnspecified || trustResult == kSecTrustResultProceed);
 
     return false; // XXX: Not checking for expired certs
 #endif
@@ -974,7 +1149,7 @@ void SecStaticCode::validateComponent(CodeDirectory::SpecialSlot slot, OSStatus 
 		if (codeDirectory()->slotIsPresent(-slot)) // was supposed to be there...
 				MacOSError::throwMe(fail);	// ... and is missing
 	} else {
-		if (!codeDirectory()->validateSlot(CFDataGetBytePtr(data), CFDataGetLength(data), -slot))
+		if (!codeDirectory()->validateSlot(CFDataGetBytePtr(data), CFDataGetLength(data), -slot, false))
 			MacOSError::throwMe(fail);
 	}
 }
@@ -1009,7 +1184,8 @@ void SecStaticCode::validateExecutable()
 				__block bool good = true;
 				CodeDirectory::multipleHashFileData(fd, thisPage, hashAlgorithms(), ^(CodeDirectory::HashAlgorithm type, Security::DynamicHash *hasher) {
 					const CodeDirectory* cd = (const CodeDirectory*)CFDataGetBytePtr(mCodeDirectories[type]);
-					if (!hasher->verify((*cd)[slot]))
+					if (!hasher->verify(cd->getSlot(slot,
+													mValidationFlags & kSecCSValidatePEH)))
 						good = false;
 				});
 				if (!good) {
@@ -1067,7 +1243,9 @@ void SecStaticCode::validateResources(SecCSFlags flags)
 
 	if (doit) {
 		if (mLimitedAsync == NULL) {
-			mLimitedAsync = new LimitedAsync(diskRep()->fd().mediumType() == kIOPropertyMediumTypeSolidStateKey);
+			bool runMultiThreaded = ((flags & kSecCSSingleThreaded) == kSecCSSingleThreaded) ? false :
+					(diskRep()->fd().mediumType() == kIOPropertyMediumTypeSolidStateKey);
+			mLimitedAsync = new LimitedAsync(runMultiThreaded);
 		}
 
 		try {
@@ -1292,7 +1470,7 @@ CFDataRef SecStaticCode::copyComponent(CodeDirectory::SpecialSlot slot, CFDataRe
 	const CodeDirectory* cd = this->codeDirectory();
 	if (CFCopyRef<CFDataRef> component = this->component(slot)) {
 		if (hash) {
-			const void *slotHash = (*cd)[slot];
+			const void *slotHash = cd->getSlot(slot, false);
 			if (cd->hashSize != CFDataGetLength(hash) || 0 != memcmp(slotHash, CFDataGetBytePtr(hash), cd->hashSize)) {
 				Syslog::notice("copyComponent hash mismatch slot %d length %d", slot, int(CFDataGetLength(hash)));
 				return NULL;	// mismatch
@@ -1358,12 +1536,12 @@ bool SecStaticCode::checkfix30814861(string path, bool addition) {
 	CFRef<CFDictionaryRef> inf = diskRepInformation();
 	try {
 		CFDictionary info(diskRepInformation(), errSecCSNotSupported);
-		uint32_t platformCmd =
-			cfNumber(info.get<CFNumberRef>(kSecCodeInfoDiskRepOSPlatform, errSecCSNotSupported), 0);
+		uint32_t platform =
+			cfNumber(info.get<CFNumberRef>(kSecCodeInfoDiskRepVersionPlatform, errSecCSNotSupported), 0);
 		uint32_t sdkVersion =
-			cfNumber(info.get<CFNumberRef>(kSecCodeInfoDiskRepOSSDKVersion, errSecCSNotSupported), 0);
+			cfNumber(info.get<CFNumberRef>(kSecCodeInfoDiskRepVersionSDK, errSecCSNotSupported), 0);
 
-		if (platformCmd != LC_VERSION_MIN_IPHONEOS || sdkVersion >= 0x00090000) {
+		if (platform != PLATFORM_IOS || sdkVersion >= 0x00090000) {
 			return false;
 		}
 	} catch (const MacOSError &error) {
@@ -1722,11 +1900,20 @@ const Requirement *SecStaticCode::defaultDesignatedRequirement()
 #if TARGET_OS_OSX
 		// full signature: Gin up full context and let DRMaker do its thing
 		validateDirectory();		// need the cert chain
+		CFRef<CFDateRef> secureTimestamp;
+		if (CFAbsoluteTime time = this->signingTimestamp()) {
+			secureTimestamp.take(CFDateCreate(NULL, time));
+		}
 		Requirement::Context context(this->certificates(),
 			this->infoDictionary(),
 			this->entitlements(),
 			this->identifier(),
-			this->codeDirectory()
+			this->codeDirectory(),
+			NULL,
+			kSecCodeSignatureNoHash,
+			false,
+			secureTimestamp,
+			this->teamID()
 		);
 		return DRMaker(context).make();
 #else
@@ -1759,7 +1946,15 @@ bool SecStaticCode::satisfiesRequirement(const Requirement *req, OSStatus failur
 	bool result = false;
 	assert(req);
 	validateDirectory();
-	result = req->validates(Requirement::Context(mCertChain, infoDictionary(), entitlements(), codeDirectory()->identifier(), codeDirectory()), failure);
+	CFRef<CFDateRef> secureTimestamp;
+	if (CFAbsoluteTime time = this->signingTimestamp()) {
+		secureTimestamp.take(CFDateCreate(NULL, time));
+	}
+	result = req->validates(Requirement::Context(mCertChain, infoDictionary(), entitlements(),
+												 codeDirectory()->identifier(), codeDirectory(),
+												 NULL, kSecCodeSignatureNoHash, mRep->appleInternalForcePlatform(),
+												 secureTimestamp, teamID()),
+							failure);
 	return result;
 }
 
@@ -1828,12 +2023,16 @@ CFDictionaryRef SecStaticCode::signingInformation(SecCSFlags flags)
 	CFDictionaryAddValue(dict, kSecCodeInfoSource, CFTempString(this->signatureSource()));
 	CFDictionaryAddValue(dict, kSecCodeInfoUnique, this->cdHash());
 	CFDictionaryAddValue(dict, kSecCodeInfoCdHashes, this->cdHashes());
+	CFDictionaryAddValue(dict, kSecCodeInfoCdHashesFull, this->cdHashesFull());
 	const CodeDirectory* cd = this->codeDirectory(false);
 	CFDictionaryAddValue(dict, kSecCodeInfoDigestAlgorithm, CFTempNumber(cd->hashType));
 	CFRef<CFArrayRef> digests = makeCFArrayFrom(^CFTypeRef(CodeDirectory::HashAlgorithm type) { return CFTempNumber(type); }, hashAlgorithms());
 	CFDictionaryAddValue(dict, kSecCodeInfoDigestAlgorithms, digests);
 	if (cd->platform)
 		CFDictionaryAddValue(dict, kSecCodeInfoPlatformIdentifier, CFTempNumber(cd->platform));
+	if (cd->runtimeVersion()) {
+		CFDictionaryAddValue(dict, kSecCodeInfoRuntimeVersion, CFTempNumber(cd->runtimeVersion()));
+	}
 
 	//
 	// Deliver any Info.plist only if it looks intact
@@ -1916,8 +2115,26 @@ CFDictionaryRef SecStaticCode::signingInformation(SecCSFlags flags)
 		if (CFRef<CFDictionaryRef> ddict = diskRepInformation())
 			CFDictionaryAddValue(dict, kSecCodeInfoDiskRepInfo, ddict);
 		} catch (...) { }
+		if (mNotarizationChecked && !isnan(mNotarizationDate)) {
+			CFRef<CFDateRef> date = CFDateCreate(NULL, mNotarizationDate);
+			if (date) {
+				CFDictionaryAddValue(dict, kSecCodeInfoNotarizationDate, date.get());
+			} else {
+				secerror("Error creating date from timestamp: %f", mNotarizationDate);
+			}
+		}
 	}
 
+	if (flags & kSecCSCalculateCMSDigest) {
+		try {
+			CFDictionaryAddValue(dict, kSecCodeInfoCMSDigestHashType, CFTempNumber(cmsDigestHashType()));
+			
+			CFRef<CFDataRef> cmsDigest = createCmsDigest();
+			if (cmsDigest) {
+				CFDictionaryAddValue(dict, kSecCodeInfoCMSDigest, cmsDigest.get());
+			}
+		} catch (...) { }
+	}
 
 	//
 	// kSecCSContentInformation adds more information about the physical layout
@@ -1987,6 +2204,25 @@ void SecStaticCode::staticValidate(SecCSFlags flags, const SecRequirement *req)
 {
 	setValidationFlags(flags);
 
+#if TARGET_OS_OSX
+	if (!mStaplingChecked) {
+		mRep->registerStapledTicket();
+		mStaplingChecked = true;
+	}
+
+	if (mFlags & kSecCSForceOnlineNotarizationCheck) {
+		if (!mNotarizationChecked) {
+			if (this->cdHash()) {
+				bool is_revoked = checkNotarizationServiceForRevocation(this->cdHash(), (SecCSDigestAlgorithm)this->hashAlgorithm(), &mNotarizationDate);
+				if (is_revoked) {
+					MacOSError::throwMe(errSecCSRevokedNotarization);
+				}
+			}
+			mNotarizationChecked = true;
+		}
+	}
+#endif // TARGET_OS_OSX
+
 	// initialize progress/cancellation state
 	if (flags & kSecCSReportProgress)
 		prepareProgress(estimateResourceWorkload() + 2);	// +1 head, +1 tail
@@ -2016,9 +2252,12 @@ void SecStaticCode::staticValidate(SecCSFlags flags, const SecRequirement *req)
 		this->validateResources(flags);
 
 	// perform strict validation if desired
-	if (flags & kSecCSStrictValidate)
+	if (flags & kSecCSStrictValidate) {
 		mRep->strictValidate(codeDirectory(), mTolerateErrors, mValidationFlags);
 	reportProgress();
+	} else if (flags & kSecCSStrictValidateStructure) {
+		mRep->strictValidateStructure(codeDirectory(), mTolerateErrors, mValidationFlags);
+	}
 
 	// allow monitor intervention
 	if (CFRef<CFTypeRef> veto = reportEvent(CFSTR("validated"), NULL)) {
@@ -2104,10 +2343,35 @@ bool SecStaticCode::isAppleDeveloperCert(CFArrayRef certs)
 {
 	static const std::string appleDeveloperRequirement = "(" + std::string(WWDRRequirement) + ") or (" + MACWWDRRequirement + ") or (" + developerID + ") or (" + distributionCertificate + ") or (" + iPhoneDistributionCert + ")";
 	SecPointer<SecRequirement> req = new SecRequirement(parseRequirement(appleDeveloperRequirement), true);
-	Requirement::Context ctx(certs, NULL, NULL, "", NULL);
+	Requirement::Context ctx(certs, NULL, NULL, "", NULL, NULL, kSecCodeSignatureNoHash, false, NULL, "");
 
 	return req->requirement()->validates(ctx);
 }
 
+CFDataRef SecStaticCode::createCmsDigest()
+{
+	/*
+	 * The CMS digest is a hash of the primary (first, most compatible) code directory,
+	 * but its hash algorithm is fixed and not related to the code directory's
+	 * hash algorithm.
+	 */
+	
+	auto it = codeDirectories()->begin();
+	
+	if (it == codeDirectories()->end()) {
+		return NULL;
+	}
+
+	CodeDirectory const * const cd = reinterpret_cast<CodeDirectory const*>(CFDataGetBytePtr(it->second));
+	
+	RefPointer<DynamicHash> hash = cd->hashFor(mCMSDigestHashType);
+	CFMutableDataRef data = CFDataCreateMutable(NULL, hash->digestLength());
+	CFDataSetLength(data, hash->digestLength());
+	hash->update(cd, cd->length());
+	hash->finish(CFDataGetMutableBytePtr(data));
+	
+	return data;
+}
+	
 } // end namespace CodeSigning
 } // end namespace Security

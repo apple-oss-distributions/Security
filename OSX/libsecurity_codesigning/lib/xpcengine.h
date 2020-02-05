@@ -38,7 +38,11 @@ CFDictionaryRef xpcEngineUpdate(CFTypeRef target, SecAssessmentFlags flags, CFDi
 bool xpcEngineControl(const char *name);
 void xpcEngineRecord(CFDictionaryRef info);
 void xpcEngineCheckDevID(CFBooleanRef* result);
+void xpcEngineCheckNotarized(CFBooleanRef* result);
 
+void xpcEngineTicketRegister(CFDataRef ticketData);
+void xpcEngineTicketLookup(CFDataRef hashData, SecCSDigestAlgorithm hashType, SecAssessmentTicketFlags flags, double *date);
+void xpcEngineLegacyCheck(CFDataRef hashData, SecCSDigestAlgorithm hashType, CFStringRef teamID);
 
 } // end namespace CodeSigning
 } // end namespace Security

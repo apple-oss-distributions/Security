@@ -60,6 +60,8 @@ bool SecDbItemQuery(SecDbQueryRef query, CFArrayRef accessGroups, SecDbConnectio
 
 void query_pre_add(Query *q, bool force_date);
 
+bool SecItemIsSystemBound(CFDictionaryRef item, const SecDbClass *cls, bool multiUser);
+
 //
 // MARK: backup restore stuff
 //
@@ -83,6 +85,7 @@ bool SecServerImportKeychainInPlist(SecDbConnectionRef dbt,
                                     keybag_handle_t dest_keybag,
                                     CFDictionaryRef keychain,
                                     enum SecItemFilter filter,
+                                    bool removeKeychainContent,
                                     CFErrorRef *error);
 
 CFStringRef
@@ -93,8 +96,8 @@ SecServerBackupGetKeybagUUID(CFDictionaryRef keychain, CFErrorRef *error);
 bool SecServerDeleteAllForUser(SecDbConnectionRef dbt, CFDataRef musrView, bool keepU, CFErrorRef *error);
 #endif
 
-bool kc_transaction(SecDbConnectionRef dbt, CFErrorRef *error, bool(^perform)());
-bool kc_transaction_type(SecDbConnectionRef dbt, SecDbTransactionType type, CFErrorRef *error, bool(^perform)());
+bool kc_transaction(SecDbConnectionRef dbt, CFErrorRef *error, bool(^perform)(void));
+bool kc_transaction_type(SecDbConnectionRef dbt, SecDbTransactionType type, CFErrorRef *error, bool(^perform)(void));
 bool s3dl_copy_matching(SecDbConnectionRef dbt, Query *q, CFTypeRef *result,
                         CFArrayRef accessGroups, CFErrorRef *error);
 bool s3dl_query_add(SecDbConnectionRef dbt, Query *q, CFTypeRef *result, CFErrorRef *error);

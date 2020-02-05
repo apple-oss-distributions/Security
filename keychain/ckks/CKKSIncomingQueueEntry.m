@@ -21,6 +21,8 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#if OCTAGON
+
 #include <AssertMacros.h>
 
 #import <Foundation/Foundation.h>
@@ -30,8 +32,6 @@
 #include <utilities/SecDb.h>
 #include <securityd/SecDbItem.h>
 #include <securityd/SecItemSchema.h>
-
-#if OCTAGON
 
 #import <CloudKit/CloudKit.h>
 #import "CKKSIncomingQueueEntry.h"
@@ -119,13 +119,13 @@
 }
 
 
-+ (instancetype)fromDatabaseRow: (NSDictionary*) row {
++ (instancetype)fromDatabaseRow:(NSDictionary<NSString *, CKKSSQLResult*>*) row {
     return [[CKKSIncomingQueueEntry alloc] initWithCKKSItem: [CKKSItem fromDatabaseRow: row]
-                                                     action: row[@"action"]
-                                                      state: row[@"state"]];
+                                                     action:row[@"action"].asString
+                                                      state:row[@"state"].asString];
 }
 
-+ (NSDictionary<NSString*,NSNumber*>*)countsByState:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error {
++ (NSDictionary<NSString*,NSNumber*>*)countsByStateInZone:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error {
     NSMutableDictionary* results = [[NSMutableDictionary alloc] init];
 
     [CKKSSQLDatabaseObject queryDatabaseTable: [[self class] sqlTable]
@@ -134,11 +134,27 @@
                                       groupBy: @[@"state"]
                                       orderBy:nil
                                         limit: -1
-                                   processRow: ^(NSDictionary* row) {
-                                       results[row[@"state"]] = [NSNumber numberWithInteger: [row[@"count(rowid)"] integerValue]];
+                                   processRow: ^(NSDictionary<NSString*, CKKSSQLResult*>* row) {
+                                       results[row[@"state"].asString] = row[@"count(rowid)"].asNSNumberInteger;
                                    }
                                         error: error];
     return results;
+}
+
++ (NSInteger)countByState:(CKKSItemState *)state zone:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error {
+    __block NSInteger result = -1;
+
+    [CKKSSQLDatabaseObject queryDatabaseTable: [[self class] sqlTable]
+                                        where: @{@"ckzone": CKKSNilToNSNull(zoneID.zoneName), @"state": state }
+                                      columns: @[@"count(*)"]
+                                      groupBy: nil
+                                      orderBy: nil
+                                        limit: -1
+                                   processRow: ^(NSDictionary<NSString*, CKKSSQLResult*>* row) {
+                                       result = row[@"count(*)"].asNSInteger;
+                                   }
+                                        error: error];
+    return result;
 }
 
 @end

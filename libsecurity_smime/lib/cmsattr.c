@@ -114,19 +114,25 @@ loser:
 OSStatus
 SecCmsAttributeAddValue(PLArenaPool *poolp, SecCmsAttribute *attr, SecAsn1Item * value)
 {
-    SecAsn1Item copiedvalue;
+    SecAsn1Item *copiedvalue;
     void *mark;
 
     PORT_Assert (poolp != NULL);
 
     mark = PORT_ArenaMark(poolp);
 
-    /* XXX we need an object memory model #$%#$%! */
-    if (SECITEM_CopyItem(poolp, &copiedvalue, value) != SECSuccess)
-	goto loser;
+    if (value != NULL) {
+        if ((copiedvalue = SECITEM_AllocItem(poolp, NULL, value->Length)) == NULL)
+            goto loser;
 
-    if (SecCmsArrayAdd(poolp, (void ***)&(attr->values), (void *)&copiedvalue) != SECSuccess)
-	goto loser;
+        if (SECITEM_CopyItem(poolp, copiedvalue, value) != SECSuccess)
+            goto loser;
+
+        if (SecCmsArrayAdd(poolp, (void ***)&(attr->values), (void *)copiedvalue) != SECSuccess)
+            goto loser;
+
+        SecCmsArraySort((void **)(attr->values), SecCmsUtilDERCompare, NULL, NULL);
+    }
 
     PORT_ArenaUnmark(poolp, mark);
     return SECSuccess;
@@ -237,6 +243,7 @@ cms_attr_choose_attr_value_template(void *src_or_dest, Boolean encoding, const c
 	switch (oiddata->offset) {
 	case SEC_OID_PKCS9_SMIME_CAPABILITIES:
 	case SEC_OID_SMIME_ENCRYPTION_KEY_PREFERENCE:
+	case SEC_OID_APPLE_HASH_AGILITY_V2:
 	    /* these guys need to stay DER-encoded */
 	default:
 	    /* same goes for OIDs that are not handled here */
@@ -260,6 +267,7 @@ cms_attr_choose_attr_value_template(void *src_or_dest, Boolean encoding, const c
 	    theTemplate = SEC_ASN1_GET(kSecAsn1OctetStringTemplate);
 	    break;
 	case SEC_OID_PKCS9_SIGNING_TIME:
+	case SEC_OID_APPLE_EXPIRATION_TIME:
 	    encoded = PR_FALSE;
 	    theTemplate = SEC_ASN1_GET(kSecAsn1UTCTimeTemplate); // @@@ This should be a choice between UTCTime and GeneralizedTime -- mb
 	    break;

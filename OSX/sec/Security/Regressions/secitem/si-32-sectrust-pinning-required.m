@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2017-2018 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -41,13 +41,13 @@ static NSArray *root = nil;
 static NSDate *verifyDate = nil;
 
 static void setup_globals(void) {
-    SecCertificateRef leaf = SecCertificateCreateWithBytes(NULL, _ids_prod, sizeof(_ids_prod));
-    SecCertificateRef intermediate = SecCertificateCreateWithBytes(NULL, _AppleServerAuth, sizeof(_AppleServerAuth));
-    SecCertificateRef rootcert = SecCertificateCreateWithBytes(NULL, _AppleRootCA, sizeof(_AppleRootCA));
+    SecCertificateRef leaf = SecCertificateCreateWithBytes(NULL, _ids_test, sizeof(_ids_test));
+    SecCertificateRef intermediate = SecCertificateCreateWithBytes(NULL, _TestAppleServerAuth, sizeof(_TestAppleServerAuth));
+    SecCertificateRef rootcert = SecCertificateCreateWithBytes(NULL, _TestAppleRootCA, sizeof(_TestAppleRootCA));
 
     certs = @[(__bridge id)leaf,(__bridge id)intermediate];
     root = @[(__bridge id)rootcert];
-    verifyDate = [NSDate dateWithTimeIntervalSinceReferenceDate:508000000.0]; //February 5, 2017 at 7:06:40 AM PST
+    verifyDate = [NSDate dateWithTimeIntervalSinceReferenceDate:560000000.0]; //September 30, 2018 at 4:33:20 AM PDT
 
     CFReleaseNull(leaf);
     CFReleaseNull(intermediate);

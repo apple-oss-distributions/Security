@@ -41,7 +41,7 @@
 #include <Security/SecItemInternal.h>
 #include <Security/SecAccessControl.h>
 #include <Security/SecAccessControlPriv.h>
-#include <Security/SecPolicyInternal.h>
+#include <Security/SecPolicyPriv.h>
 #include <Security/SecuritydXPC.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <CommonCrypto/CommonDigestSPI.h>
@@ -599,7 +599,8 @@ static void query_add_return(const void *key, const void *value, Query *q)
  */
 static void query_add_use(const void *key, const void *value, Query *q)
 {
-    if (CFEqual(key, kSecUseItemList)) {
+    // Gotta use a string literal because we just outlawed this symbol on iOS
+    if (CFEqual(key, CFSTR("u_ItemList"))) {
         /* TODO: Add sanity checking when we start using this. */
         q->q_use_item_list = value;
     } else if (CFEqual(key, kSecUseTombstones)) {
@@ -629,13 +630,13 @@ static void query_add_use(const void *key, const void *value, Query *q)
         }
 #if TARGET_OS_IPHONE
     } else if (CFEqual(key, kSecUseSystemKeychain)) {
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
         q->q_keybag = KEYBAG_DEVICE;
 #endif
         q->q_system_keychain = true;
     } else if (CFEqual(key, kSecUseSyncBubbleKeychain)) {
         if (isNumber(value) && CFNumberGetValue(value, kCFNumberSInt32Type, &q->q_sync_bubble) && q->q_sync_bubble > 0) {
-#if TARGET_OS_EMBEDDED
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
             q->q_keybag = KEYBAG_DEVICE;
 #endif
         } else {

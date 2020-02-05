@@ -199,6 +199,15 @@ void Dumper::expr(SyntaxLevel level)
 	case opCertField:
 		print("certificate"); certSlot(); print("["); dotString(); print("]"); match();
 		break;
+	case opCertFieldDate:
+		print("certificate"); certSlot(); print("[");
+#if TARGET_OS_OSX
+		{
+			const unsigned char *data; size_t length;
+			getData(data, length);
+			print("timestamp.%s", CssmOid((unsigned char *)data, length).toOid().c_str());
+		}
+#endif
 	case opCertGeneric:
 		print("certificate"); certSlot(); print("[");
 #if TARGET_OS_OSX
@@ -236,6 +245,12 @@ void Dumper::expr(SyntaxLevel level)
 	case opPlatform:
 		print("platform = %d", get<int32_t>());
 		break;
+	case opNotarized:
+		print("notarized");
+		break;
+	case opLegacyDevID:
+		print("legacy");
+		break;
 	default:
 		if (op & opGenericFalse) {
 			print(" false /* opcode %d */", op & ~opFlagMask);
@@ -271,6 +286,9 @@ void Dumper::match()
 	case matchExists:
 		print(" /* exists */");
 		break;
+	case matchAbsent:
+		print(" absent ");
+		break;
 	case matchEqual:
 		print(" = "); data();
 		break;
@@ -294,6 +312,21 @@ void Dumper::match()
 		break;
 	case matchGreaterThan:
 		print(" > "); data();
+		break;
+	case matchOn:
+		print(" = "); timestamp();
+		break;
+	case matchBefore:
+		print(" < "); timestamp();
+		break;
+	case matchAfter:
+		print(" > "); timestamp();
+		break;
+	case matchOnOrBefore:
+		print(" <= "); timestamp();
+		break;
+	case matchOnOrAfter:
+		print(" >= "); timestamp();
 		break;
 	default:
 		print("MATCH OPCODE %d NOT UNDERSTOOD", op);
@@ -358,6 +391,16 @@ void Dumper::data(PrintMode bestMode /* = isSimple */, bool dotOkay /* = false *
 		printBytes(data, length);
 		break;
 	}
+}
+	
+void Dumper::timestamp()
+{
+	CFAbsoluteTime at = static_cast<CFAbsoluteTime>(get<int64_t>());
+	CFRef<CFDateRef> date = CFDateCreate(NULL, at);
+	
+	CFRef<CFStringRef> str = CFCopyDescription(date);
+	
+	print("<%s>", cfString(str).c_str());
 }
 
 void Dumper::printBytes(const Byte *data, size_t length)

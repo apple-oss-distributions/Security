@@ -51,7 +51,7 @@
 #include "TrustSettingsSchema.h"
 #include <security_cdsa_client/wrapkey.h>
 #include <securityd_client/ssblob.h>
-#include <SecBasePriv.h>
+#include <Security/SecBasePriv.h>
 #include "TokenLogin.h"
 
 //%%% add this to AuthorizationTagsPriv.h later
@@ -414,15 +414,17 @@ StorageManager::tickleKeychain(KeychainImpl *keychainImpl) {
 
     __block CFTypeRef kcHandle = kcImpl->handle(); // calls retain; this keychain object will stay around until our dispatch block fires.
 
-    dispatch_async(release_queue, ^() {
+    // You _must not_ call CFRelease while on this queue, due to the locking order mishmash. CFRelease takes a lock, so remember to do it later.
+    __block bool releaseImmediately = false;
+
+    dispatch_sync(release_queue, ^() {
         if(kcImpl->mCacheTimer) {
             // Update the cache timer to be seconds from now
             dispatch_source_set_timer(kcImpl->mCacheTimer, dispatch_time(DISPATCH_TIME_NOW, seconds * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, NSEC_PER_SEC/2);
             secdebug("keychain", "updating cache on %p %s", kcImpl, kcImpl->name());
 
-            // We've added an extra retain to this keychain right before invoking this block. Release it.
-            CFRelease(kcHandle);
-
+            // We've added an extra retain to this keychain right before invoking this block. Remember to release it.
+            releaseImmediately = true;
         } else {
             // No cache timer; make one.
             kcImpl->mCacheTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, release_queue);
@@ -434,12 +436,21 @@ StorageManager::tickleKeychain(KeychainImpl *keychainImpl) {
                 dispatch_source_cancel(kcImpl->mCacheTimer);
                 dispatch_release(kcImpl->mCacheTimer);
                 kcImpl->mCacheTimer = NULL;
-                CFRelease(kcHandle);
+
+                // Since we're on the timer queue, we can't call CFRelease on the kcHandle (since that takes a lock). Dispatch_async it over to some other queue...
+                // This is better than using dispatch_async on the timer queue initially, since it's less dispatch_asyncs overall, even though it's more confusing.
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND,0), ^{
+                    CFRelease(kcHandle);
+                });
             });
 
             dispatch_resume(kcImpl->mCacheTimer);
         }
     });
+
+    if(releaseImmediately) {
+        CFRelease(kcHandle);
+    }
 }
 
 // Create keychain if it doesn't exist, and optionally add it to the search list.
@@ -1382,7 +1393,7 @@ void StorageManager::login(UInt32 nameLength, const void *name,
         secnotice("KCLogin", "StorageManager::login: invalid argument (NULL uid)");
         MacOSError::throwMe(errSecParam);
     }
-    char *userName = pw->pw_name;
+    std::string userName = pw->pw_name;
 
     // make keychain path strings
     std::string keychainPath = DLDbListCFPref::ExpandTildesInPath(kLoginKeychainPathPrefix);
@@ -1562,7 +1573,9 @@ void StorageManager::login(UInt32 nameLength, const void *name,
 							}
 						}
 					}
-					AuthorizationFreeItemSet(returnedInfo);
+                    if(returnedInfo) {
+                        AuthorizationFreeItemSet(returnedInfo);
+                    }
 				}
 				AuthorizationFree(authRef, 0);
 			}

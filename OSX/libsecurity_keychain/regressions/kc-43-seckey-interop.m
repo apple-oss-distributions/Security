@@ -52,7 +52,7 @@ static void test_generate_nolegacy() {
     NSDictionary *query, *params = @{
         (id)kSecAttrKeyType: (id)kSecAttrKeyTypeRSA,
         (id)kSecAttrKeySizeInBits: @1024,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecAttrIsPermanent: @YES,
         (id)kSecAttrLabel: @"sectests:generate-no-legacy",
     };
@@ -64,7 +64,7 @@ static void test_generate_nolegacy() {
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:generate-no-legacy",
         (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPublic,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecReturnRef: @YES,
     };
     ok_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&key));
@@ -75,7 +75,7 @@ static void test_generate_nolegacy() {
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:generate-no-legacy",
         (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPrivate,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecReturnRef: @YES,
     };
     ok_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&key));
@@ -86,7 +86,7 @@ static void test_generate_nolegacy() {
               (id)kSecClass: (id)kSecClassKey,
               (id)kSecAttrLabel: @"sectests:generate-no-legacy",
               (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPublic,
-              (id)kSecAttrNoLegacy: @YES,
+              (id)kSecUseDataProtectionKeychain: @YES,
               (id)kSecReturnRef: @YES,
               };
     ok_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&key));
@@ -97,7 +97,7 @@ static void test_generate_nolegacy() {
               (id)kSecClass: (id)kSecClassKey,
               (id)kSecAttrLabel: @"sectests:generate-no-legacy",
               (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPrivate,
-              (id)kSecAttrNoLegacy: @YES,
+              (id)kSecUseDataProtectionKeychain: @YES,
               (id)kSecReturnRef: @YES,
               };
     ok_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&key));
@@ -108,7 +108,7 @@ static void test_generate_nolegacy() {
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:generate-no-legacy",
         (id)kSecMatchLimit: (id)kSecMatchLimitAll,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
     };
     ok_status(SecItemDelete((__bridge CFDictionaryRef)query));
     is_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL), errSecItemNotFound);
@@ -117,7 +117,6 @@ static void test_generate_nolegacy() {
     CFReleaseNull(pubKey);
 }
 
-#if !RC_HIDE_J79 && !RC_HIDE_J80
 static const int kTestGenerateAccessControlCount = 4;
 static void test_generate_access_control() {
     SecAccessControlRef ac = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleAlways,
@@ -137,7 +136,7 @@ static void test_generate_access_control() {
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:generate-access-control",
         (id)kSecMatchLimit: (id)kSecMatchLimitAll,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
     };
     ok_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL));
 
@@ -149,16 +148,13 @@ static void test_generate_access_control() {
     CFReleaseSafe(privKey);
     CFReleaseSafe(pubKey);
 }
-#else
-static const int kTestGenerateAccessControlCount = 0;
-#endif
 
 static const int kTestAddIOSKeyCount = 6;
 static void test_add_ios_key() {
     NSDictionary *params = @{
         (id)kSecAttrKeyType: (id)kSecAttrKeyTypeRSA,
         (id)kSecAttrKeySizeInBits: @1024,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecAttrIsPermanent: @NO,
     };
 
@@ -174,7 +170,7 @@ static void test_add_ios_key() {
     NSDictionary *query = @{
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:add-ios-key",
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecReturnRef: @YES,
     };
     SecKeyRef key = NULL;
@@ -186,7 +182,7 @@ static void test_add_ios_key() {
         (id)kSecClass: (id)kSecClassKey,
         (id)kSecAttrLabel: @"sectests:add-ios-key",
         (id)kSecMatchLimit: (id)kSecMatchLimitAll,
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
     };
     ok_status(SecItemDelete((__bridge CFDictionaryRef)query));
     is_status(SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL), errSecItemNotFound);
@@ -248,11 +244,18 @@ static void test_store_cert_to_ios() {
     SecCertificateRef cert = SecCertificateCreateWithData(kCFAllocatorDefault, (CFDataRef)certData);
     ok(cert != NULL, "create certificate from data");
 
+    // Clean up any pre-existing data, but don't fail if nothing is deleted.
+    SecItemDelete((CFDictionaryRef)@{
+                                     (id)kSecClass: (id)kSecClassCertificate,
+                                     (id)kSecAttrLabel: @"sectests:store_cert_to_ios",
+                                     (id)kSecUseDataProtectionKeychain: @YES,
+                                     });
+
     // Store certificate to modern keychain.
     NSDictionary *attrs = @{
         (id)kSecValueRef: (__bridge id)cert,
         (id)kSecAttrLabel: @"sectests:store_cert_to_ios",
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecReturnPersistentRef: @YES,
     };
     id persistentRef;
@@ -296,7 +299,7 @@ static void test_store_identity_to_ios() {
     NSDictionary *attrs = @{
         (id)kSecValueRef: (__bridge id)identity,
         (id)kSecAttrLabel: @"sectests:store_identity_to_ios",
-        (id)kSecAttrNoLegacy: @YES,
+        (id)kSecUseDataProtectionKeychain: @YES,
         (id)kSecReturnPersistentRef: @YES,
     };
     id persistentRef;
@@ -367,7 +370,7 @@ static void test_convert_key_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecAttrKeyType: (id)kSecAttrKeyTypeRSA,
             (id)kSecAttrKeySizeInBits: @1024,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
             (id)kSecAttrIsPermanent: @NO,
         };
         SecKeyRef pubKey = NULL;
@@ -380,7 +383,7 @@ static void test_convert_key_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecAttrLabel: label,
             (id)kSecValueRef: (__bridge id)privKey,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemAdd((CFDictionaryRef)query, NULL));
     }
@@ -392,14 +395,14 @@ static void test_convert_key_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecValueRef: (__bridge id)privKey,
             (id)kSecReturnPersistentRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedPersistentKeyRef));
     }{
         NSDictionary *query = @{
             (id)kSecValuePersistentRef: (__bridge id)queriedPersistentKeyRef,
             (id)kSecReturnRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedKeyRef));
     }{
@@ -447,7 +450,7 @@ static void test_convert_cert_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecAttrLabel: label,
             (id)kSecValueRef: (__bridge id)cert,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemAdd((CFDictionaryRef)query, NULL));
     }
@@ -459,14 +462,14 @@ static void test_convert_cert_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecValueRef: (__bridge id)cert,
             (id)kSecReturnPersistentRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedPersistentCertRef));
     }{
         NSDictionary *query = @{
             (id)kSecValuePersistentRef: (__bridge id)queriedPersistentCertRef,
             (id)kSecReturnRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedCertRef));
     }{
@@ -524,7 +527,7 @@ static void test_convert_identity_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecAttrLabel: label,
             (id)kSecValueRef: (__bridge id)idnt,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemAdd((CFDictionaryRef)query, NULL));
     }
@@ -536,14 +539,14 @@ static void test_convert_identity_to_persistent_ref() {
         NSDictionary *query = @{
             (id)kSecValueRef: (__bridge id)idnt,
             (id)kSecReturnPersistentRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedPersistentIdntRef));
     }{
         NSDictionary *query = @{
             (id)kSecValuePersistentRef: (__bridge id)queriedPersistentIdntRef,
             (id)kSecReturnRef: @YES,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&queriedIdntRef));
     }{
@@ -565,7 +568,7 @@ static void test_convert_identity_to_persistent_ref() {
         NSDictionary *query = @{
             // identities can't be filtered out using 'label', so we will use directly the ValueRef here:
             (id)kSecValueRef: (__bridge id)idnt,
-            (id)kSecAttrNoLegacy: @YES,
+            (id)kSecUseDataProtectionKeychain: @YES,
         };
         ok_status(SecItemDelete((CFDictionaryRef)query));
         is_status(SecItemCopyMatching((CFDictionaryRef)query, NULL), errSecItemNotFound);
@@ -577,7 +580,7 @@ static void test_cssm_from_ios_key_single(CFTypeRef keyType, int keySize) {
     NSDictionary *params = @{
                              (id)kSecAttrKeyType: (__bridge id)keyType,
                              (id)kSecAttrKeySizeInBits: @(keySize),
-                             (id)kSecAttrNoLegacy: @YES,
+                             (id)kSecUseDataProtectionKeychain: @YES,
                              (id)kSecAttrIsPermanent: @NO,
                              (id)kSecAttrLabel: @"sectests:cssm-from-ios-key",
                              };
@@ -624,9 +627,7 @@ int kc_43_seckey_interop(int argc, char *const *argv) {
     plan_tests(kTestCount);
 
     test_generate_nolegacy();
-#if !RC_HIDE_J79 && !RC_HIDE_J80
     test_generate_access_control();
-#endif
     test_add_ios_key();
     test_store_cert_to_ios();
     test_store_identity_to_ios();

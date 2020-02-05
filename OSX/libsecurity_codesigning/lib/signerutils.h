@@ -30,10 +30,21 @@
 #include "CodeSigner.h"
 #include "sigblob.h"
 #include "cdbuilder.h"
+
+#include <Security/SecCmsBase.h>
+
 #include <security_utilities/utilities.h>
 #include <security_utilities/blob.h>
 #include <security_utilities/unix++.h>
 #include <security_utilities/unixchild.h>
+
+#include <sys/cdefs.h>
+
+#if TARGET_OS_OSX
+__BEGIN_DECLS
+#include <AppleFSCompression/AppleFSCompression.h>
+__END_DECLS
+#endif
 
 namespace Security {
 namespace CodeSigning {
@@ -75,7 +86,7 @@ public:
 
 //
 // A multi-architecture editing assistant.
-// ArchEditor collects (Mach-O) architectures in use, and maintains per-archtitecture
+// ArchEditor collects (Mach-O) architectures in use, and maintains per-architecture
 // data structures. It must be subclassed to express a particular way to handle the signing
 // data.
 //
@@ -214,8 +225,14 @@ public:
 	void populate(DiskRep::Writer* writer) const;
 	
 	const CodeDirectory* primary() const;
-	CFArrayRef hashBag() const;
-	
+
+	// Note that the order of the hashList is relevant.
+	// (Which is also why there are separate methods, CFDictionary is not ordered.)
+	CFArrayRef hashList() const;
+	CFDictionaryRef hashDict() const;
+
+	static SECOidTag SECOidTagForAlgorithm(CodeDirectory::HashAlgorithm algorithm);
+
 private:
 	mutable const CodeDirectory* mPrimary;
 };

@@ -37,7 +37,7 @@ extern "C" {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-typedef struct cssm_state_funcs {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_state_funcs {
     CSSM_RETURN (CSSMAPI *cssm_GetAttachFunctions)
         (CSSM_MODULE_HANDLE hAddIn,
          CSSM_SERVICE_MASK AddinType,
@@ -63,7 +63,7 @@ typedef struct cssm_state_funcs {
         (const CSSM_MANAGER_EVENT_NOTIFICATION *EventDescription);
 } CSSM_STATE_FUNCS DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_STATE_FUNCS_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_manager_registration_info {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_manager_registration_info {
     /* loading, unloading, dispatch table, and event notification */
     CSSM_RETURN (CSSMAPI *Initialize)
         (uint32 VerMajor,
@@ -84,13 +84,6 @@ enum {
 	CSSM_HINT_ADDRESS_APP = 	1 << 0,
 	CSSM_HINT_ADDRESS_SP =		1 << 1
 };
-
-CSSM_RETURN CSSMAPI
-ModuleManagerAuthenticate (CSSM_KEY_HIERARCHY KeyHierarchy,
-                           const CSSM_GUID *CssmGuid,
-                           const CSSM_GUID *AppGuid,
-                           CSSM_MANAGER_REGISTRATION_INFO_PTR FunctionTable)
-						DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 #pragma clang diagnostic pop
 

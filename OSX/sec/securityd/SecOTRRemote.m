@@ -31,7 +31,7 @@
 
 #include "SOSAccountPriv.h"
 
-#import "Security/SecureObjectSync/SOSAccountTrustClassic.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic.h"
 
 CFDataRef SecOTRSessionCreateRemote_internal(CFDataRef publicAccountData, CFDataRef publicPeerId, CFDataRef privateAccountData, CFErrorRef *error) {
     SOSDataSourceFactoryRef ds = SecItemDataSourceFactoryGetDefault();
@@ -129,7 +129,9 @@ CFDataRef _SecOTRSessionCreateRemote(CFDataRef publicPeerId, CFErrorRef *error) 
 
 bool _SecOTRSessionProcessPacketRemote(CFDataRef sessionData, CFDataRef inputPacket, CFDataRef* outputSessionData, CFDataRef* outputPacket, bool *readyForMessages, CFErrorRef *error) {
     
+    bool result = false;
     SecOTRSessionRef session = SecOTRSessionCreateFromData(kCFAllocatorDefault, sessionData);
+    require_quiet(session, done);
     
     CFMutableDataRef negotiationResponse = CFDataCreateMutable(kCFAllocatorDefault, 0);
     
@@ -147,7 +149,11 @@ bool _SecOTRSessionProcessPacketRemote(CFDataRef sessionData, CFDataRef inputPac
     *outputPacket = negotiationResponse;
     
     *readyForMessages = SecOTRSGetIsReadyForMessages(session);
+    CFReleaseNull(session);
     
-    return true;
+    result = true;
+
+done:
+    return result;
 }
 

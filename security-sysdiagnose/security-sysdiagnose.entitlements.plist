@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>com.apple.private.securityuploadd</key>
+	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>com.apple.hap.pairing</string>
@@ -11,6 +13,8 @@
 	<key>keychain-cloud-circle</key>
 	<true/>
 	<key>com.apple.private.ckks</key>
+	<true/>
+	<key>com.apple.CloudKeychainProxy.client</key>
 	<true/>
 </dict>
 </plist>

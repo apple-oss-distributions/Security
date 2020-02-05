@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2016-2018 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -27,5 +27,7 @@
 #ifndef _SECURITY_SECTRUSTLOGGINGSERVER_H_
 #define _SECURITY_SECTRUSTLOGGINGSERVER_H_
 
+
+void DisableLocalization(void);
 
 #endif /* _SECURITY_SECTRUSTLOGGINGSERVER_H_ */

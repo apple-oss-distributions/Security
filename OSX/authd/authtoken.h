@@ -20,9 +20,6 @@ extern const CFDictionaryKeyCallBacks kAuthTokenKeyCallBacks;
     
 AUTH_WARN_RESULT AUTH_MALLOC AUTH_NONNULL_ALL AUTH_RETURNS_RETAINED
 auth_token_t auth_token_create(process_t,bool operateAsLeastPrivileged);
-
-AUTH_WARN_RESULT AUTH_MALLOC AUTH_NONNULL_ALL AUTH_RETURNS_RETAINED
-auth_token_t auth_token_create_with_audit_info(const audit_info_s*,bool operateAsLeastPrivileged);
     
 AUTH_NONNULL_ALL
 bool auth_token_get_sandboxed(auth_token_t);
@@ -75,9 +72,6 @@ bool auth_token_credentials_iterate(auth_token_t, credential_iterator_t iter);
 AUTH_NONNULL_ALL
 void auth_token_set_right(auth_token_t,credential_t);
     
-AUTH_NONNULL_ALL
-bool auth_token_rights_iterate(auth_token_t, credential_iterator_t iter);
-
 AUTH_NONNULL_ALL
 CFTypeRef auth_token_copy_entitlement_value(auth_token_t, const char * entitlement);
     

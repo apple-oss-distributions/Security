@@ -31,9 +31,9 @@
 #define _SECURITYD_SECITEMSERVER_H_
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <Security/SecureObjectSync/SOSCircle.h>
-#include <securityd/SecDbQuery.h>
-#include <utilities/SecDb.h>
+#include "keychain/SecureObjectSync/SOSCircle.h"
+#include "securityd/SecDbQuery.h"
+#include "utilities/SecDb.h"
 #include <TargetConditionals.h>
 #include "sec/ipc/securityd_client.h"
 
@@ -49,7 +49,7 @@ bool _SecItemServerDeleteAllWithAccessGroups(CFArrayRef accessGroups, SecurityCl
 
 bool _SecServerRestoreKeychain(CFErrorRef *error);
 bool _SecServerMigrateKeychain(int32_t handle_in, CFDataRef data_in, int32_t *handle_out, CFDataRef *data_out, CFErrorRef *error);
-CFDataRef _SecServerKeychainCreateBackup(SecurityClient *client, CFDataRef keybag, CFDataRef passcode, CFErrorRef *error);
+CFDataRef _SecServerKeychainCreateBackup(SecurityClient *client, CFDataRef keybag, CFDataRef passcode, bool emcs, CFErrorRef *error);
 bool _SecServerKeychainRestore(CFDataRef backup, SecurityClient *client, CFDataRef keybag, CFDataRef passcode, CFErrorRef *error);
 CFStringRef _SecServerBackupCopyUUID(CFDataRef backup, CFErrorRef *error);
 
@@ -59,7 +59,6 @@ bool _SecServerBackupKeybagDelete(CFDictionaryRef attributes, bool deleteAll, CF
 bool _SecItemUpdateTokenItems(CFStringRef tokenID, CFArrayRef items, SecurityClient *client, CFErrorRef *error);
 
 CF_RETURNS_RETAINED CFArrayRef _SecServerKeychainSyncUpdateMessage(CFDictionaryRef updates, CFErrorRef *error);
-bool _SecServerKeychainSyncUpdateIDSMessage(CFDictionaryRef updates, CFErrorRef *error);
 CF_RETURNS_RETAINED CFDictionaryRef _SecServerBackupSyncable(CFDictionaryRef backup, CFDataRef keybag, CFDataRef password, CFErrorRef *error);
 
 int SecServerKeychainTakeOverBackupFD(CFStringRef backupName, CFErrorRef *error);
@@ -84,6 +83,8 @@ SecDbRef SecKeychainDbCreate(CFStringRef path, CFErrorRef* error);
 SecDbRef SecKeychainDbInitialize(SecDbRef db);
 
 bool kc_with_dbt(bool writeAndRead, CFErrorRef *error, bool (^perform)(SecDbConnectionRef dbt));
+bool kc_with_dbt_non_item_tables(bool writeAndRead, CFErrorRef* error, bool (^perform)(SecDbConnectionRef dbt)); // can be used when only tables which don't store 'items' are accessed - avoids invoking SecItemDataSourceFactoryGetDefault()
+bool kc_with_custom_db(bool writeAndRead, bool usesItemTables, SecDbRef db, CFErrorRef *error, bool (^perform)(SecDbConnectionRef dbt));
 
 
 /* For whitebox testing only */
@@ -106,23 +107,18 @@ bool _SecServerRollKeysGlue(bool force, CFErrorRef *error);
 
 
 /* initial sync */
-#define SecServerInitialSyncCredentialFlagTLK           1
-#define SecServerInitialSyncCredentialFlagPCS           2
-#define SecServerInitialSyncCredentialFlagPCSNonCurrent 4
+#define SecServerInitialSyncCredentialFlagTLK                (1 << 0)
+#define SecServerInitialSyncCredentialFlagPCS                (1 << 1)
+#define SecServerInitialSyncCredentialFlagPCSNonCurrent      (1 << 2)
+#define SecServerInitialSyncCredentialFlagBluetoothMigration (1 << 3)
 
 CFArrayRef _SecServerCopyInitialSyncCredentials(uint32_t flags, CFErrorRef *error);
 bool _SecServerImportInitialSyncCredentials(CFArrayRef array, CFErrorRef *error);
 
-struct _SecServerKeyStats {
-    unsigned long items;
-    CFIndex maxDataSize;
-    CFIndex averageSize;
-};
-
-bool _SecServerGetKeyStats(const SecDbClass *qclass, struct _SecServerKeyStats *stats);
-
 CF_RETURNS_RETAINED CFArrayRef _SecItemCopyParentCertificates(CFDataRef normalizedIssuer, CFArrayRef accessGroups, CFErrorRef *error);
 bool _SecItemCertificateExists(CFDataRef normalizedIssuer, CFDataRef serialNumber, CFArrayRef accessGroups, CFErrorRef *error);
+
+bool SecKeychainDbGetVersion(SecDbConnectionRef dbt, int *version, CFErrorRef *error);
 
 
 // Should all be blocks called from SecItemDb
@@ -130,8 +126,6 @@ bool match_item(SecDbConnectionRef dbt, Query *q, CFArrayRef accessGroups, CFDic
 bool accessGroupsAllows(CFArrayRef accessGroups, CFStringRef accessGroup, SecurityClient* client);
 bool itemInAccessGroup(CFDictionaryRef item, CFArrayRef accessGroups);
 void SecKeychainChanged(void);
-
-extern void (*SecTaskDiagnoseEntitlements)(CFArrayRef accessGroups);
 
 __END_DECLS
 

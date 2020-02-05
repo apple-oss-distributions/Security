@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "0900"
-   version = "1.7">
+   LastUpgradeVersion = "1000"
+   version = "1.8">
    <BuildAction
       parallelizeBuildables = "NO"
       buildImplicitDependencies = "NO">
@@ -15,8 +15,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "4C91273D0ADBF46200AF202E"
-               BuildableName = "ios"
-               BlueprintName = "ios"
+               BuildableName = "Security_all_ios"
+               BlueprintName = "Security_all_ios"
                ReferencedContainer = "container:Security.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -40,8 +40,16 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      language = ""
       shouldUseLaunchSchemeArgsEnv = "YES">
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "4C711D5813AFCD0900FE865D"
+            BuildableName = "SecurityDevTests.app"
+            BlueprintName = "SecurityDevTests"
+            ReferencedContainer = "container:Security.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
       <Testables>
          <TestableReference
             skipped = "NO">
@@ -63,24 +71,42 @@
                ReferencedContainer = "container:Security.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "4727FBB61F9918580003AE36"
+               BuildableName = "secdxctests_ios.xctest"
+               BlueprintName = "secdxctests_ios"
+               ReferencedContainer = "container:Security.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6C46056B1F882B9B001421B6"
+               BuildableName = "KeychainAnalyticsTests.xctest"
+               BlueprintName = "KeychainAnalyticsTests"
+               ReferencedContainer = "container:Security.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6C39234421F13E4D00D018AD"
+               BuildableName = "SecDbBackupTests.xctest"
+               BlueprintName = "SecDbBackupTests"
+               ReferencedContainer = "container:Security.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "4C711D5813AFCD0900FE865D"
-            BuildableName = "SecurityDevTests.app"
-            BlueprintName = "SecurityDevTests"
-            ReferencedContainer = "container:Security.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
-      <AdditionalOptions>
-      </AdditionalOptions>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      language = ""
       launchStyle = "0"
       useCustomWorkingDirectory = "NO"
       ignoresPersistentStateOnLaunch = "NO"
@@ -213,31 +239,7 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_15_certificate"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_15_delete_access_group"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_16_ec_certificate"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
             argument = "si_17_item_system_bluetooth"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_18_certificate_parse"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_20_sectrust"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_20_sectrust_policies"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -254,10 +256,6 @@
          </CommandLineArgument>
          <CommandLineArgument
             argument = "si_24_sectrust_itms"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_24_sectrust_nist"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -289,15 +287,7 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_29_sectrust_sha1_deprecation"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_30_keychain_upgrade"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_31_keychain_bad"
+            argument = "si_29_cms_chain_mode"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -310,6 +300,14 @@
          </CommandLineArgument>
          <CommandLineArgument
             argument = "si_33_keychain_backup"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_34_cms_timestamp"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_35_cms_expiration_time"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -349,7 +347,11 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_44_seckey_fv"
+            argument = "si_44_seckey_skv"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "si_44_seckey_proxy"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -429,18 +431,6 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si-81-item-acl-stress"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_82_seccertificate_ct"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_82_sectrust_ct"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
             argument = "si_83_seccertificate_sighashalg"
             isEnabled = "NO">
          </CommandLineArgument>
@@ -449,11 +439,7 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_85_sectrust_ssl_policy"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "si_87_sectrust_name_constraints"
+            argument = "si_88_sectrust_valid"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -469,51 +455,11 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "si_97_sectrust_path_scoring"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
             argument = "sc_20_keynames"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
             argument = "sc_25_soskeygen"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_31_peerinfo"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_40_circle"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_41_cloudcircle"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_45_digestvector"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_50_message"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_51_persistentEC"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_60_peer"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_70_engine"
-            isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "sc_75_circle_engine"
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
@@ -762,8 +708,6 @@
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
-      <AdditionalOptions>
-      </AdditionalOptions>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Debug"

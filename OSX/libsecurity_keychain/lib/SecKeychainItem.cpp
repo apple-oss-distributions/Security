@@ -604,7 +604,7 @@ static OSStatus SecKeychainItemCreatePersistentReferenceFromCertificate(SecCerti
 	}
 
 	CFErrorRef errorRef = NULL;
-	CFDataRef serialData = SecCertificateCopySerialNumber(certItem, &errorRef);
+	CFDataRef serialData = SecCertificateCopySerialNumberData(certItem, &errorRef);
 	if (errorRef) {
 		CFIndex err = CFErrorGetCode(errorRef);
 		CFRelease(errorRef);
@@ -657,7 +657,7 @@ OSStatus SecKeychainItemCreatePersistentReference(SecKeychainItemRef itemRef, CF
     }
     // first, query the iOS keychain
     {
-        const void *keys[] = { kSecValueRef, kSecReturnPersistentRef, kSecAttrNoLegacy };
+        const void *keys[] = { kSecValueRef, kSecReturnPersistentRef, kSecUseDataProtectionKeychain };
         const void *values[] = { itemRef, kCFBooleanTrue, kCFBooleanTrue };
         CFRef<CFDictionaryRef> query = CFDictionaryCreate(kCFAllocatorDefault, keys, values,
                                                           sizeof(keys) / sizeof(*keys),
@@ -705,7 +705,7 @@ OSStatus SecKeychainItemCopyFromPersistentReference(CFDataRef persistentItemRef,
     KCThrowParamErrIf_(!persistentItemRef || !itemRef);
     // first, query the iOS keychain
     {
-        const void *keys[] = { kSecValuePersistentRef, kSecReturnRef, kSecAttrNoLegacy};
+        const void *keys[] = { kSecValuePersistentRef, kSecReturnRef, kSecUseDataProtectionKeychain};
         const void *values[] = { persistentItemRef, kCFBooleanTrue, kCFBooleanTrue };
         CFRef<CFDictionaryRef> query = CFDictionaryCreate(kCFAllocatorDefault, keys, values,
                                                           sizeof(keys) / sizeof(*keys),

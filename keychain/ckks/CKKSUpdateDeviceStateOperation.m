@@ -23,12 +23,14 @@
 
 #if OCTAGON
 
+#include <utilities/SecInternalReleasePriv.h>
 #import "keychain/ckks/CKKSKeychainView.h"
 #import "keychain/ckks/CKKSUpdateDeviceStateOperation.h"
 #import "keychain/ckks/CKKSCurrentKeyPointer.h"
 #import "keychain/ckks/CKKSKey.h"
 #import "keychain/ckks/CKKSLockStateTracker.h"
 #import "keychain/ckks/CKKSSQLDatabaseObject.h"
+#import "keychain/ot/ObjCImprovements.h"
 
 @interface CKKSUpdateDeviceStateOperation ()
 @property CKModifyRecordsOperation* modifyRecordsOperation;
@@ -55,14 +57,14 @@
         return;
     }
 
-    CKKSCKAccountStateTracker* accountTracker = ckks.accountTracker;
+    CKKSAccountStateTracker* accountTracker = ckks.accountTracker;
     if(!accountTracker) {
         ckkserror("ckksdevice", ckks, "no AccountTracker object");
         self.error = [NSError errorWithDomain:@"securityd" code:errSecInternalError userInfo:@{NSLocalizedDescriptionKey: @"no AccountTracker object"}];
         return;
     }
 
-    __weak __typeof(self) weakSelf = self;
+    WEAKIFY(self);
 
     // We must have the ck device ID to run this operation.
     if([accountTracker.ckdeviceIDInitialized wait:200*NSEC_PER_SEC]) {
@@ -71,7 +73,8 @@
         return;
     }
 
-    if(!accountTracker.ckdeviceID) {
+    NSString* ckdeviceID = accountTracker.ckdeviceID;
+    if(!ckdeviceID) {
         ckkserror("ckksdevice", ckks, "CK device ID not initialized, quitting");
         self.error = [NSError errorWithDomain:@"securityd"
                                          code:errSecInternalError
@@ -79,11 +82,16 @@
         return;
     }
 
-    [ckks dispatchSyncWithAccountQueue:^bool {
+    // We'd also really like to know the HSA2-ness of the world
+    if([accountTracker.hsa2iCloudAccountInitialized wait:500*NSEC_PER_MSEC]) {
+        ckkserror("ckksdevice", ckks, "Not quite sure if the account isa HSA2 or not. Probably will quit?");
+    }
+
+    [ckks dispatchSyncWithAccountKeys:^bool {
         NSError* error = nil;
 
         CKKSDeviceStateEntry* cdse = [ckks _onqueueCurrentDeviceStateEntry:&error];
-        if(error) {
+        if(error || !cdse) {
             ckkserror("ckksdevice", ckks, "Error creating device state entry; quitting: %@", error);
             return false;
         }
@@ -91,10 +99,14 @@
         if(self.rateLimit) {
             NSDate* lastUpdate = cdse.storedCKRecord.modificationDate;
 
-            // Only upload this every 3 days
+            // Only upload this every 3 days (1 day for internal installs)
             NSDate* now = [NSDate date];
             NSDateComponents* offset = [[NSDateComponents alloc] init];
-            [offset setHour:-3 * 24];
+            if(SecIsInternalRelease()) {
+                [offset setHour:-23];
+            } else {
+                [offset setHour:-3*24];
+            }
             NSDate* deadline = [[NSCalendar currentCalendar] dateByAddingComponents:offset toDate:now options:0];
 
             if(lastUpdate == nil || [lastUpdate compare: deadline] == NSOrderedAscending) {
@@ -119,14 +131,13 @@
 
         self.modifyRecordsOperation = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:recordsToSave recordIDsToDelete:nil];
         self.modifyRecordsOperation.atomic = TRUE;
-        self.modifyRecordsOperation.timeoutIntervalForRequest = 2;
         self.modifyRecordsOperation.qualityOfService = NSQualityOfServiceUtility;
         self.modifyRecordsOperation.savePolicy = CKRecordSaveAllKeys; // Overwrite anything in CloudKit: this is our state now
         self.modifyRecordsOperation.group = self.group;
 
         self.modifyRecordsOperation.perRecordCompletionBlock = ^(CKRecord *record, NSError * _Nullable error) {
-            __strong __typeof(weakSelf) strongSelf = weakSelf;
-            __strong __typeof(strongSelf.ckks) blockCKKS = strongSelf.ckks;
+            STRONGIFY(self);
+            CKKSKeychainView* blockCKKS = self.ckks;
 
             if(!error) {
                 ckksnotice("ckksdevice", blockCKKS, "Device state record upload successful for %@: %@", record.recordID.recordName, record);
@@ -136,19 +147,19 @@
         };
 
         self.modifyRecordsOperation.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *savedRecords, NSArray<CKRecordID *> *deletedRecordIDs, NSError *ckerror) {
-            __strong __typeof(weakSelf) strongSelf = weakSelf;
-            __strong __typeof(strongSelf.ckks) strongCKKS = strongSelf.ckks;
-            if(!strongSelf || !strongCKKS) {
+            STRONGIFY(self);
+            CKKSKeychainView* strongCKKS = self.ckks;
+            if(!self || !strongCKKS) {
                 ckkserror("ckksdevice", strongCKKS, "received callback for released object");
-                strongSelf.error = [NSError errorWithDomain:@"securityd" code:errSecInternalError userInfo:@{NSLocalizedDescriptionKey: @"no CKKS object"}];
-                [strongSelf runBeforeGroupFinished:modifyComplete];
+                self.error = [NSError errorWithDomain:@"securityd" code:errSecInternalError userInfo:@{NSLocalizedDescriptionKey: @"no CKKS object"}];
+                [self runBeforeGroupFinished:modifyComplete];
                 return;
             }
 
             if(ckerror) {
                 ckkserror("ckksdevice", strongCKKS, "CloudKit returned an error: %@", ckerror);
-                strongSelf.error = ckerror;
-                [strongSelf runBeforeGroupFinished:modifyComplete];
+                self.error = ckerror;
+                [self runBeforeGroupFinished:modifyComplete];
                 return;
             }
 
@@ -168,8 +179,8 @@
                 return true;
             }];
 
-            strongSelf.error = error;
-            [strongSelf runBeforeGroupFinished:modifyComplete];
+            self.error = error;
+            [self runBeforeGroupFinished:modifyComplete];
         };
 
         [self dependOnBeforeGroupFinished: self.modifyRecordsOperation];

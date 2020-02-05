@@ -33,14 +33,14 @@
 
 #include <CoreFoundation/CFDictionary.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
-#include <Security/SecureObjectSync/SOSPeerInfoPriv.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
+#include "keychain/SecureObjectSync/SOSPeerInfoPriv.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Identity.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Identity.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -58,16 +58,16 @@
 
 #include "SecdTestKeychainUtilities.h"
 
-static int kTestTestCount = 56;
-
 static bool SOSAccountResetCircleToNastyOffering(SOSAccount* account, SecKeyRef userPriv, SOSPeerInfoRef pi, CFErrorRef *error) {
     bool result = false;
     SecKeyRef userPub = SecKeyCreatePublicFromPrivate(userPriv);
     SOSAccountTrustClassic *trust = account.trust;
     if(!SOSAccountHasCircle(account, error)){
+        CFReleaseNull(userPub);
         return result;
     }
     if(![account.trust ensureFullPeerAvailable:(__bridge CFDictionaryRef)(account.gestalt) deviceID:(__bridge CFStringRef)(account.deviceID) backupKey:(__bridge CFDataRef)(account.backup_key) err:error]){
+        CFReleaseNull(userPub);
         return result;
     }
     (void) [account.trust resetAllRings:account err:error];
@@ -88,17 +88,22 @@ static bool SOSAccountResetCircleToNastyOffering(SOSAccount* account, SecKeyRef 
         
         [trust setDepartureCode:kSOSNeverLeftCircle];
         result = true;
-        [trust setTrustedCircle:SOSCircleCopyCircle(kCFAllocatorDefault, circle, error)];
+        SOSCircleRef copiedCircle = SOSCircleCopyCircle(kCFAllocatorDefault, circle, error); // I don't think this copy is necessary, but...
+        [trust setTrustedCircle:copiedCircle];
+        CFReleaseNull(copiedCircle);
         SOSAccountPublishCloudParameters(account, NULL);
         trust.fullPeerInfo = nil;
 
     err_out:
-        if (result == false)
-        secerror("error resetting circle (%@) to offering: %@", circle, localError);
+        if (result == false) {
+            secerror("error resetting circle (%@) to offering: %@", circle, localError);
+        }
         if (localError && error && *error == NULL) {
             *error = localError;
             localError = NULL;
         }
+
+        CFReleaseNull(iCloudfpi);
         CFReleaseNull(localError);
         return result;
     }];
@@ -217,7 +222,7 @@ static void tests(void)
 
 int secd_60_account_cloud_exposure(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(41);
     
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     

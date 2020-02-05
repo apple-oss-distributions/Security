@@ -32,13 +32,15 @@
 #include <TargetConditionals.h>
 
 #if USE_KEYSTORE
-#include <libaks.h>
+#include "OSX/utilities/SecAKSWrappers.h"
 
 #include "SecdTestKeychainUtilities.h"
 
 int secd_36_ks_encrypt(int argc, char *const *argv)
 {
-    plan_tests(8);
+    plan_tests(9);
+
+    secd_test_setup_temp_keychain("secd_36_ks_encrypt", NULL);
 
     keybag_handle_t keybag;
     keybag_state_t state;
@@ -53,8 +55,8 @@ int secd_36_ks_encrypt(int argc, char *const *argv)
 
 
     /* Create and lock custom keybag */
-    is(kIOReturnSuccess, aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &keybag), "create keybag");
-    is(kIOReturnSuccess, aks_get_lock_state(keybag, &state), "get keybag state");
+    is(kAKSReturnSuccess, aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &keybag), "create keybag");
+    is(kAKSReturnSuccess, aks_get_lock_state(keybag, &state), "get keybag state");
     is(0, (int)(state&keybag_state_locked), "keybag unlocked");
 
     data = (__bridge CFDictionaryRef)@{
@@ -64,7 +66,7 @@ int secd_36_ks_encrypt(int argc, char *const *argv)
     ok(ac = SecAccessControlCreate(NULL, &error), "SecAccessControlCreate: %@", error);
     ok(SecAccessControlSetProtection(ac, kSecAttrAccessibleWhenUnlocked, &error), "SecAccessControlSetProtection: %@", error);
 
-    ret = ks_encrypt_data(keybag, ac, NULL, data, NULL, &enc, true, &error);
+    ret = ks_encrypt_data(keybag, ac, NULL, data, (__bridge CFDictionaryRef)@{@"persistref" : @"aaa-bbb-ccc"}, NULL, &enc, true, &error);
     is(true, ret);
 
     CFReleaseNull(ac);
@@ -73,10 +75,11 @@ int secd_36_ks_encrypt(int argc, char *const *argv)
         CFMutableDictionaryRef attributes = NULL;
         uint32_t version = 0;
 
-        ret = ks_decrypt_data(keybag, kAKSKeyOpDecrypt, &ac, NULL, enc, NULL, NULL, &attributes, &version, &error);
+        ret = ks_decrypt_data(keybag, kAKSKeyOpDecrypt, &ac, NULL, enc, NULL, NULL, &attributes, &version, true, NULL, &error);
         is(true, ret, "ks_decrypt_data: %@", error);
 
-        ok(CFEqual(SecAccessControlGetProtection(ac), kSecAttrAccessibleWhenUnlocked), "AccessControl protection is: %@", SecAccessControlGetProtection(ac));
+        CFTypeRef aclProtection = ac ? SecAccessControlGetProtection(ac) : NULL;
+        ok(aclProtection && CFEqual(aclProtection, kSecAttrAccessibleWhenUnlocked), "AccessControl protection is: %@", aclProtection);
 
         CFReleaseNull(ac);
     }

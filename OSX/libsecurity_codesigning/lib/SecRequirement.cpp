@@ -167,6 +167,10 @@ OSStatus SecRequirementCopyString(SecRequirementRef requirementRef, SecCSFlags f
 CFStringRef kSecRequirementKeyInfoPlist = CFSTR("requirement:eval:info");
 CFStringRef kSecRequirementKeyEntitlements = CFSTR("requirement:eval:entitlements");
 CFStringRef kSecRequirementKeyIdentifier = CFSTR("requirement:eval:identifier");
+CFStringRef kSecRequirementKeyPackageChecksum = CFSTR("requirement:eval:package_checksum");
+CFStringRef kSecRequirementKeyChecksumAlgorithm = CFSTR("requirement:eval:package_checksum_algorithm");
+CFStringRef kSecRequirementKeySecureTimestamp = CFSTR("requirement:eval:secure_timestamp");
+CFStringRef kSecRequirementKeyTeamIdentifier = CFSTR("requirement:eval:team_identifier");
 
 OSStatus SecRequirementEvaluate(SecRequirementRef requirementRef,
 	CFArrayRef certificateChain, CFDictionaryRef context,
@@ -177,13 +181,32 @@ OSStatus SecRequirementEvaluate(SecRequirementRef requirementRef,
 	const Requirement *req = SecRequirement::required(requirementRef)->requirement();
 	checkFlags(flags);
 	CodeSigning::Required(certificateChain);
-	
+
+	SecCSDigestAlgorithm checksumAlgorithm = kSecCodeSignatureNoHash;
+	if (context) {
+		CFRef<CFNumberRef> num = (CFNumberRef)CFDictionaryGetValue(context, kSecRequirementKeyChecksumAlgorithm);
+		if (num) {
+			checksumAlgorithm = (SecCSDigestAlgorithm)cfNumber<uint32_t>(num);
+		}
+	}
+
+	const char *teamID = NULL;
+	if (context && CFDictionaryGetValue(context, kSecRequirementKeyTeamIdentifier)) {
+		CFStringRef str = (CFStringRef)CFDictionaryGetValue(context, kSecRequirementKeyTeamIdentifier);
+		teamID = CFStringGetCStringPtr(str, kCFStringEncodingUTF8);
+	}
+
 	Requirement::Context ctx(certificateChain,		// mandatory
 		context ? CFDictionaryRef(CFDictionaryGetValue(context, kSecRequirementKeyInfoPlist)) : NULL,
 		context ? CFDictionaryRef(CFDictionaryGetValue(context, kSecRequirementKeyEntitlements)) : NULL,
 		(context && CFDictionaryGetValue(context, kSecRequirementKeyIdentifier)) ?
 			cfString(CFStringRef(CFDictionaryGetValue(context, kSecRequirementKeyIdentifier))) : "",
-		NULL	// can't specify a CodeDirectory here
+		NULL,	// can't specify a CodeDirectory here
+		context ? CFDataRef(CFDictionaryGetValue(context, kSecRequirementKeyPackageChecksum)) : NULL,
+        checksumAlgorithm,
+		false, // can't get forced platform this way
+		context ? CFDateRef(CFDictionaryGetValue(context, kSecRequirementKeySecureTimestamp)) : NULL,
+		teamID
 	);
 	req->validate(ctx);
 	
@@ -204,13 +227,13 @@ OSStatus SecRequirementsCreateFromRequirements(CFDictionaryRef requirements, Sec
 	if (requirements == NULL)
 		return errSecCSObjectRequired;
 	CFIndex count = CFDictionaryGetCount(requirements);
-	CFNumberRef keys[count];
-	SecRequirementRef reqs[count];
-	CFDictionaryGetKeysAndValues(requirements, (const void **)keys, (const void **)reqs);
+	vector<CFNumberRef> keys_vector(count, NULL);
+	vector<SecRequirementRef> reqs_vector(count, NULL);
+	CFDictionaryGetKeysAndValues(requirements, (const void **)keys_vector.data(), (const void **)reqs_vector.data());
 	Requirements::Maker maker;
 	for (CFIndex n = 0; n < count; n++) {
-		const Requirement *req = SecRequirement::required(reqs[n])->requirement();
-		maker.add(cfNumber<Requirements::Type>(keys[n]), req->clone());
+		const Requirement *req = SecRequirement::required(reqs_vector[n])->requirement();
+		maker.add(cfNumber<Requirements::Type>(keys_vector[n]), req->clone());
 	}
 	Requirements *reqset = maker.make();					// malloc'ed
 	CodeSigning::Required(requirementSet) = makeCFDataMalloc(*reqset);	// takes ownership of reqs

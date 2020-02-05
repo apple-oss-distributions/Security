@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2017 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2003-2018 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -34,6 +34,7 @@
 #include <CoreFoundation/CFString.h>
 #include <CoreFoundation/CFData.h>
 #include <CoreFoundation/CFDictionary.h>
+#include <xpc/xpc.h>
 
 __BEGIN_DECLS
 
@@ -54,6 +55,8 @@ extern const CFStringRef kSecPropertyTypeData;
 extern const CFStringRef kSecPropertyTypeString;
 extern const CFStringRef kSecPropertyTypeURL;
 extern const CFStringRef kSecPropertyTypeDate;
+extern const CFStringRef kSecPropertyTypeArray;
+extern const CFStringRef kSecPropertyTypeNumber;
 
 /* Constants used as keys in the dictionary returned by SecTrustCopyInfo. */
 extern const CFStringRef kSecTrustInfoExtendedValidationKey;
@@ -245,21 +248,64 @@ Boolean SecTrustIsExpiredOnly(SecTrustRef trust)
 __nullable CF_RETURNS_RETAINED
 CFStringRef SecTrustCopyFailureDescription(SecTrustRef trust);
 
-OSStatus SecTrustGetOTAPKIAssetVersionNumber(int* versionNumber);
+/*
+ @function SecTrustGetTrustStoreVersionNumber
+ @abstract Ask trustd what trust store version it is using.
+ @param error A returned error if trustd failed to answer.
+ @result The current version of the trust store. 0 upon failure.
+ */
+uint64_t SecTrustGetTrustStoreVersionNumber(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error);
 
-OSStatus SecTrustOTAPKIGetUpdatedAsset(int* didUpdateAsset);
+/*
+ @function SecTrustGetAssetVersionNumber
+ @abstract Ask trustd what asset version it is using.
+ @param error A returned error if trustd failed to answer.
+ @result The current version of the asset. 0 upon failure.
+ */
+uint64_t SecTrustGetAssetVersionNumber(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error);
+
+/*
+ @function SecTrustOTAPKIGetUpdatedAsset
+ @abstract Trigger trustd to fetch a new trust supplementals asset right now.
+ @param error A returned error if trustd failed to update the asset.
+ @result The current version of the update, regardless of the success of the update.
+ @discussion This function blocks up to 1 minute until trustd has finished with the
+ asset download and update. You should use the error parameter to determine whether
+ the update was was successful. The current asset version is always returned.
+ */
+uint64_t SecTrustOTAPKIGetUpdatedAsset(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error);
+
+/*
+ @function SecTrustOTASecExperimentGetUpdatedAsset
+ @abstract Trigger trustd to fetch a new SecExperiment asset right now.
+ @param error A returned error if trustd failed to update the asset.
+ @result The current version of the update, regardless of the success of the update.
+ @discussion This function blocks up to 1 minute until trustd has finished with the
+ asset download and update. You should use the error parameter to determine whether
+ the update was was successful. The current asset version is always returned.
+ */
+uint64_t SecTrustOTASecExperimentGetUpdatedAsset(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error);
+
+/*
+ @function SecTrustOTASecExperimentCopyAsset
+ @abstract Get current asset from trustd
+ @param error A returned error if trustd fails to return asset
+ @result Dictionary of asset
+ @discussion If the error parameter is supplied, and the function returns false,
+ the caller is subsequently responsible for releasing the returned CFErrorRef.
+ */
+CFDictionaryRef SecTrustOTASecExperimentCopyAsset(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error);
 
 /*!
- @function SecTrustSignedCertificateTimestampList
- @abstract Attach SignedCertificateTimestampList data to a trust object.
- @param trust A reference to a trust object.
- @param sctArray is a CFArray of CFData objects each containing a SCT (per RFC 6962).
- @result A result code. See "Security Error Codes" (SecBase.h).
- @discussion Allows the caller to provide SCT data (which may be
- obtained during a TLS/SSL handshake, per RFC 6962) as input to a trust
- evaluation.
+ @function SecTrustFlushResponseCache
+ @abstract Removes all OCSP responses from the per-user response cache.
+ @param error An optional pointer to an error object
+ @result A boolean value indicating whether the operation was successful.
+ @discussion If the error parameter is supplied, and the function returns false,
+ the caller is subsequently responsible for releasing the returned CFErrorRef.
  */
-OSStatus SecTrustSetSignedCertificateTimestamps(SecTrustRef trust, CFArrayRef sctArray);
+Boolean SecTrustFlushResponseCache(CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error)
+    __OSX_AVAILABLE(10.13.4) __IOS_AVAILABLE(11.3) __TVOS_AVAILABLE(11.3) __WATCHOS_AVAILABLE(4.3);
 
 /*!
  @function SecTrustSetTrustedLogs
@@ -387,13 +433,77 @@ OSStatus SecTrustSetPinningPolicyName(SecTrustRef trust, CFStringRef policyName)
 OSStatus SecTrustSetPinningException(SecTrustRef trust)
     __OSX_AVAILABLE(10.13) __IOS_AVAILABLE(11.0) __TVOS_AVAILABLE(11.0) __WATCHOS_AVAILABLE(4.0);
 
+#if TARGET_OS_IPHONE
+/*!
+  @function SecTrustGetExceptionResetCount
+  @abstract Returns the current epoch of trusted exceptions.
+  @param error A pointer to an error.
+  @result An unsigned 64-bit integer representing the current epoch.
+  @discussion Exceptions tagged with an older epoch are not trusted.
+  */
+uint64_t SecTrustGetExceptionResetCount(CFErrorRef *error)
+    API_UNAVAILABLE(macos, iosmac) API_AVAILABLE(ios(12.0), tvos(12.0), watchos(5.0));
+
+/*!
+  @function SecTrustIncrementExceptionResetCount
+  @abstract Increases the current epoch of trusted exceptions by 1.
+  @param error A pointer to an error.
+  @result A result code. See "Security Error Codes" (SecBase.h)
+  @discussion By increasing the current epoch any existing exceptions, tagged with the old epoch, become distrusted.
+  */
+OSStatus SecTrustIncrementExceptionResetCount(CFErrorRef *error)
+    __API_UNAVAILABLE(macos, iosmac) __API_AVAILABLE(ios(12.0), tvos(12.0), watchos(5.0));
+#endif
+
+#ifdef __BLOCKS__
+/*!
+ @function SecTrustEvaluateFastAsync
+ @abstract Evaluates a trust reference asynchronously.
+ @param trust A reference to the trust object to evaluate.
+ @param queue A dispatch queue on which the result callback will be
+ executed. Note that this function MUST be called from that queue.
+ @param result A SecTrustCallback block which will be executed when the
+ trust evaluation is complete. The block is guaranteed to be called exactly once
+ when the result code is errSecSuccess, and not called otherwise. Note that this
+ block may be called synchronously inline if no asynchronous operations are required.
+ @result A result code. See "Security Error Codes" (SecBase.h).
+ */
+OSStatus SecTrustEvaluateFastAsync(SecTrustRef trust, dispatch_queue_t queue, SecTrustCallback result)
+    __API_AVAILABLE(macos(10.14), ios(12.0), tvos(12.0), watchos(5.0));
+#endif
+
+/*!
+ @function SecTrustReportTLSAnalytics
+ @discussion This function MUST NOT be called outside of the TLS stack.
+*/
+bool SecTrustReportTLSAnalytics(CFStringRef eventName, xpc_object_t eventAttributes, CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error)
+    __API_AVAILABLE(macos(10.13.4), ios(11.3), tvos(11.3), watchos(4.3));
+
+/*!
+ @function SecTrustReportNetworkingAnalytics
+ @discussion This function MUST NOT be called outside of the networking stack.
+*/
+bool SecTrustReportNetworkingAnalytics(const char *eventName, xpc_object_t eventAttributes)
+    __API_AVAILABLE(macos(10.15), ios(13), tvos(13), watchos(5));
+
+/*!
+ @function SecTrustSetNeedsEvaluation
+ @abstract Reset the evaluation state of the trust object
+ @param trust Trust object to reset
+ @discussion Calling this will reset the trust object so that the next time SecTrustEvaluate*
+ is called, a new trust evaluation is performed. SecTrustSet* interfaces implicitly call this,
+ so this function is only necessary if you've made system configuration changes (like trust
+ settings) that don't impact the trust object itself.
+ */
+void SecTrustSetNeedsEvaluation(SecTrustRef trust);
+
 CF_IMPLICIT_BRIDGING_DISABLED
 CF_ASSUME_NONNULL_END
 
 /*
  *  Legacy functions (OS X only)
  */
-#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+#if TARGET_OS_OSX
 
 CF_ASSUME_NONNULL_BEGIN
 CF_IMPLICIT_BRIDGING_ENABLED

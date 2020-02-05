@@ -19,9 +19,19 @@
 	<string>com.apple.securityd</string>
 	<key>MachServices</key>
 	<dict>
+		<key>com.apple.security.octagon</key>
+		<true/>
 		<key>com.apple.securityd</key>
 		<true/>
 		<key>com.apple.securityd.aps</key>
+		<true/>
+		<key>com.apple.securityd.ckks</key>
+		<true/>
+		<key>com.apple.securityd.general</key>
+		<true/>
+		<key>com.apple.securityd.sos</key>
+		<true/>
+		<key>com.apple.security.escrow-update</key>
 		<true/>
 	</dict>
 	<key>ProgramArguments</key>
@@ -46,6 +56,16 @@
 				<string>Utility</string>
 				<key>Interval</key>
 				<real>86400</real>
+				<key>GracePeriod</key>
+				<integer>21600</integer>
+				<key>PowerNap</key>
+				<true/>
+				<key>AllowBattery</key>
+				<false/>
+				<key>RequireInexpensiveNetworkConnectivity</key>
+				<true/>
+				<key>NetworkTransferDirection</key>
+				<string>Bidirectional</string>
 			</dict>
 		</dict>
 		<key>com.apple.notifyd.matching</key>
@@ -57,5 +77,7 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>_LimitLoadFromVariant</key>
+	<string>IsRecovery</string>
 </dict>
 </plist>

@@ -2484,7 +2484,8 @@ static void tests(void)
 	CFRelease(anchor_array);
 
     ok_status(SecTrustEvaluate(trust, &result), "evaluate trust");
-    ok(result == kSecTrustResultUnspecified, "private root");
+    // the root of this chain has a MD2 signature; a weak digest algorithm error is now considered fatal.
+    ok(result == kSecTrustResultFatalTrustFailure, "private root");
 
 #if DUMP_CERTS
 // debug code to save a cert chain retrieved from a SecTrustRef (written to /tmp/c[0-9].cer)
@@ -2496,7 +2497,7 @@ static void tests(void)
 			if (d) {
 				char f[12] = { '/', 't', 'm', 'p', '/', 'c', 'n', '.', 'c', 'e', 'r', 0 };
 				f[6] = '0' + (idx % 10);
-				writeFile(f, CFDataGetBytePtr(d), CFDataGetLength(d));
+				writeFile(f, CFDataGetBytePtr(d), (int)CFDataGetLength(d));
 				CFRelease(d);
 			}
 		}
@@ -2523,7 +2524,7 @@ static void tests(void)
     CFReleaseNull(parameters);
 
     CFMutableDictionaryRef subject_alt_names = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(subject_alt_names, CFSTR("rfc822name"), CFSTR("xey@nl"));
+    CFDictionarySetValue(subject_alt_names, kSecSubjectAltNameEmailAddress, CFSTR("xey@nl"));
     int key_usage = kSecKeyUsageDigitalSignature | kSecKeyUsageKeyEncipherment;
     CFNumberRef key_usage_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &key_usage);
     const void *self_key[] = { kSecCertificateKeyUsage, kSecSubjectAltName };
@@ -2798,6 +2799,7 @@ out:
 static void test_smime_attrs(void) {
     testEncKeyPrefs(_thunderbird_ua_content, sizeof(_thunderbird_ua_content), _thunderbird_ua_cms, sizeof(_thunderbird_ua_cms));
     testEncKeyPrefs(_outlook15_ua_content, sizeof(_outlook15_ua_content), _outlook15_ua_cms, sizeof(_outlook15_ua_cms));
+    testEncKeyPrefs(_recipientKeyID_content, sizeof(_recipientKeyID_content), _recipientKeyID_cms, sizeof(_recipientKeyID_cms));
 }
 
 static void test_sign_no_priv(void) {
@@ -2819,7 +2821,7 @@ static void test_sign_no_priv(void) {
     CFReleaseNull(parameters);
 
     CFMutableDictionaryRef subject_alt_names = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(subject_alt_names, CFSTR("rfc822name"), CFSTR("xey@nl"));
+    CFDictionarySetValue(subject_alt_names, kSecSubjectAltNameEmailAddress, CFSTR("xey@nl"));
     int key_usage = kSecKeyUsageDigitalSignature | kSecKeyUsageKeyEncipherment;
     CFNumberRef key_usage_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &key_usage);
     const void *self_key[] = { kSecCertificateKeyUsage, kSecSubjectAltName };
@@ -2840,6 +2842,7 @@ static void test_sign_no_priv(void) {
 #else
     ok(cmsg = SecCmsMessageCreate(NULL), "create message");
 #endif
+    require(cmsg, out);
     ok(sigd = SecCmsSignedDataCreate(cmsg), "create signed message");
     ok(cinfo = SecCmsMessageGetContentInfo(cmsg), "get content info");
 #if TARGET_OS_IPHONE
@@ -2856,6 +2859,7 @@ static void test_sign_no_priv(void) {
     is(SecCmsSignerInfoCreate(cmsg, signer, SEC_OID_SHA1), NULL, "set up signer with no private key");
 #endif
 
+out:
     CFReleaseNull(cert);
     CFReleaseNull(publicKey);
     CFReleaseNull(privateKey);
@@ -2871,7 +2875,7 @@ static void test_sign_no_priv(void) {
 
 int si_66_smime(int argc, char *const *argv)
 {
-	plan_tests(33+2+9);
+	plan_tests(33+3+9);
 
 	tests();
     test_smime_attrs();

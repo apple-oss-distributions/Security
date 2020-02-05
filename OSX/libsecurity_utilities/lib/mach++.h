@@ -276,6 +276,7 @@ public:
 	
     void setBuffer(void *buffer, mach_msg_size_t size); // use buffer with size
     void setBuffer(mach_msg_size_t size);			// allocate buffer with size
+    void clearBuffer(void);
     void release();							// discard buffer (if any)
 
     operator mig_reply_error_t & () const	{ return *mBuffer; }
@@ -291,6 +292,7 @@ public:
     mach_msg_id_t msgId() const				{ return mBuffer->Head.msgh_id; }
     mach_msg_bits_t bits() const			{ return mBuffer->Head.msgh_bits; }
     kern_return_t returnCode() const		{ return mBuffer->RetCode; }
+    mach_msg_audit_trailer_t *auditTrailer();
     
     void localPort(mach_port_t p)			{ mBuffer->Head.msgh_local_port = p; }
     void remotePort(mach_port_t p)			{ mBuffer->Head.msgh_remote_port = p; }

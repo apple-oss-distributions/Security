@@ -33,9 +33,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <Security/SecCertificate.h>
-#include <Security/SecCertificatePath.h>
 
-#include <securityd/policytree.h>
+#include "securityd/policytree.h"
 
 
 typedef struct SecCertificateVC *SecCertificateVCRef;
@@ -57,7 +56,8 @@ SecCertificatePathVCRef SecCertificatePathVCCopyFromParent(SecCertificatePathVCR
 /* Create an array of SecCertificateRefs from a certificate path. */
 CFArrayRef SecCertificatePathVCCopyCertificates(SecCertificatePathVCRef path);
 
-SecCertificatePathRef SecCertificatePathVCCopyCertificatePath(SecCertificatePathVCRef path);
+/* Create an array of CFDataRefs from a certificate path. */
+CFArrayRef SecCertificatePathVCCreateSerialized(SecCertificatePathVCRef path);
 
 /* Record the fact that we found our own root cert as our parent
  certificate. */
@@ -108,6 +108,8 @@ enum {
 
 SecPathVerifyStatus SecCertificatePathVCVerify(SecCertificatePathVCRef certificatePath);
 
+bool SecCertificatePathVCIsCycleInGraph(SecCertificatePathVCRef path);
+
 bool SecCertificatePathVCIsValid(SecCertificatePathVCRef certificatePath, CFAbsoluteTime verifyTime);
 
 bool SecCertificatePathVCHasWeakHash(SecCertificatePathVCRef certificatePath);
@@ -122,6 +124,7 @@ void SecCertificatePathVCSetScore(SecCertificatePathVCRef certificatePath, CFInd
 void SecCertificatePathVCResetScore(SecCertificatePathVCRef certificatePath); // reset score to 0
 
 /* Revocation */
+void SecCertificatePathVCDeleteRVCs(SecCertificatePathVCRef path);
 bool SecCertificatePathVCIsRevocationDone(SecCertificatePathVCRef certificatePath);
 void SecCertificatePathVCAllocateRVCs(SecCertificatePathVCRef certificatePath, CFIndex certCount);
 CFAbsoluteTime SecCertificatePathVCGetEarliestNextUpdate(SecCertificatePathVCRef path);
@@ -130,6 +133,14 @@ bool SecCertificatePathVCIsRevocationRequiredForCertificateAtIndex(SecCertificat
                                                                    CFIndex ix);
 void SecCertificatePathVCSetRevocationRequiredForCertificateAtIndex(SecCertificatePathVCRef certificatePath,
                                                                     CFIndex ix);
+void SecCertificatePathVCSetRevocationReasonForCertificateAtIndex(SecCertificatePathVCRef certificatePath,
+                                                                  CFIndex ix, CFNumberRef revocationReason);
+CFNumberRef SecCertificatePathVCGetRevocationReason(SecCertificatePathVCRef certificatePath); // returns first revocation reason found
+
+bool SecCertificatePathVCCheckedIssuers(SecCertificatePathVCRef certificatePath);
+void SecCertificatePathVCSetCheckedIssuers(SecCertificatePathVCRef certificatePath, bool checked);
+CFIndex SecCertificatePathVCUnknownCAIndex(SecCertificatePathVCRef certificatePath);
+void SecCertificatePathVCSetUnknownCAIndex(SecCertificatePathVCRef certificatePath, CFIndex index);
 
 /* Did we already validate this path (setting EV, CT, RVC, etc.) */
 bool SecCertificatePathVCIsPathValidated(SecCertificatePathVCRef certificatePath);
@@ -141,8 +152,18 @@ void SecCertificatePathVCSetIsEV(SecCertificatePathVCRef certificatePath, bool i
 bool SecCertificatePathVCIsOptionallyEV(SecCertificatePathVCRef certificatePath);
 
 /* CT */
+typedef CFIndex SecPathCTPolicy;
+enum {
+    kSecPathCTNotRequired = 0,
+    kSecPathCTRequiredOverridable = 1,
+    kSecPathCTRequired = 2
+};
 bool SecCertificatePathVCIsCT(SecCertificatePathVCRef certificatePath);
 void SecCertificatePathVCSetIsCT(SecCertificatePathVCRef certificatePath, bool isCT);
+SecPathCTPolicy SecCertificatePathVCRequiresCT(SecCertificatePathVCRef certificatePath);
+void SecCertificatePathVCSetRequiresCT(SecCertificatePathVCRef certificatePath, SecPathCTPolicy requiresCT);
+CFAbsoluteTime SecCertificatePathVCIssuanceTime(SecCertificatePathVCRef certificatePath);
+void SecCertificatePathVCSetIssuanceTime(SecCertificatePathVCRef certificatePath, CFAbsoluteTime issuanceTime);
 
 /* Allowlist */
 bool SecCertificatePathVCIsAllowlisted(SecCertificatePathVCRef certificatePath);

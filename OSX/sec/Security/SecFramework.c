@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2010,2012-2014 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2006-2017 Apple Inc. All Rights Reserved.
  * 
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -45,16 +45,12 @@
 #include <Security/SecBase.h>
 #include <inttypes.h>
 
-#if !(TARGET_IPHONE_SIMULATOR && defined(IPHONE_SIMULATOR_HOST_MIN_VERSION_REQUIRED) && IPHONE_SIMULATOR_HOST_MIN_VERSION_REQUIRED < 1090)
-#include <sys/guarded.h>
-#define USE_GUARDED_OPEN 1
-#else
-#define USE_GUARDED_OPEN 0
-#endif
-
-
 /* Security.framework's bundle id. */
-static CFStringRef kSecFrameworkBundleID = CFSTR("com.apple.Security");
+#if TARGET_OS_IPHONE
+CFStringRef kSecFrameworkBundleID = CFSTR("com.apple.Security");
+#else
+CFStringRef kSecFrameworkBundleID = CFSTR("com.apple.security");
+#endif
 
 CFGiblisGetSingleton(CFBundleRef, SecFrameworkGetBundle, bundle,  ^{
     *bundle = CFRetainSafe(CFBundleGetBundleWithIdentifier(kSecFrameworkBundleID));
@@ -83,31 +79,4 @@ CFURLRef SecFrameworkCopyResourceURL(CFStringRef resourceName,
     }
 
 	return url;
-}
-
-CFDataRef SecFrameworkCopyResourceContents(CFStringRef resourceName,
-	CFStringRef resourceType, CFStringRef subDirName) {
-    CFURLRef url = SecFrameworkCopyResourceURL(resourceName, resourceType,
-        subDirName);
-	CFDataRef data = NULL;
-    if (url) {
-        SInt32 error;
-        if (!CFURLCreateDataAndPropertiesFromResource(kCFAllocatorDefault,
-            url, &data, NULL, NULL, &error)) {
-            secwarning("read: %ld", (long) error);
-        }
-        CFRelease(url);
-    }
-
-	return data;
-}
-
-
-
-const SecRandomRef kSecRandomDefault = NULL;
-
-int SecRandomCopyBytes(SecRandomRef rnd, size_t count, void *bytes) {
-    if (rnd != kSecRandomDefault)
-        return errSecParam;
-    return CCRandomCopyBytes(kCCRandomDefault, bytes, count);
 }

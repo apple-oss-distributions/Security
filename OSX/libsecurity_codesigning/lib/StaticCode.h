@@ -106,7 +106,7 @@ public:
 	static SecStaticCode *requiredStatic(SecStaticCodeRef ref);	// convert SecCodeRef
 	static SecCode *optionalDynamic(SecStaticCodeRef ref); // extract SecCodeRef or NULL if static
 
-	SecStaticCode(DiskRep *rep);
+	SecStaticCode(DiskRep *rep, uint32_t flags = 0);
     virtual ~SecStaticCode() throw();
 
     void initializeFromParent(const SecStaticCode& parent);
@@ -117,11 +117,15 @@ public:
 	void detachedSignature(CFDataRef sig);		// attach an explicitly given detached signature
 	void checkForSystemSignature();				// check for and attach system-supplied detached signature
 
+	typedef std::map<CodeDirectory::HashAlgorithm, CFCopyRef<CFDataRef> > CodeDirectoryMap;
+
 	const CodeDirectory *codeDirectory(bool check = true) const;
+	const CodeDirectoryMap *codeDirectories(bool check = true) const;
 	CodeDirectory::HashAlgorithm hashAlgorithm() const { return codeDirectory()->hashType; }
 	CodeDirectory::HashAlgorithms hashAlgorithms() const { return mHashAlgorithms; }
 	CFDataRef cdHash();
 	CFArrayRef cdHashes();
+	CFDictionaryRef cdHashesFull();
 	CFDataRef signature();
 	CFAbsoluteTime signingTime();
 	CFAbsoluteTime signingTimestamp();
@@ -200,12 +204,15 @@ public:
     bool trustedSigningCertChain() { return mTrustedSigningCertChain; }
 #endif
 
+	void handleOtherArchitectures(void (^handle)(SecStaticCode* other));
+
+	uint8_t cmsDigestHashType() const { return mCMSDigestHashType; };
+	CFDataRef createCmsDigest();
 public:
 	void staticValidate(SecCSFlags flags, const SecRequirement *req);
 	void staticValidateCore(SecCSFlags flags, const SecRequirement *req);
 	
 protected:
-	typedef std::map<CodeDirectory::HashAlgorithm, CFCopyRef<CFDataRef> > CodeDirectoryMap;
 	bool loadCodeDirectories(CodeDirectoryMap& cdMap) const;
 	
 protected:
@@ -220,16 +227,17 @@ protected:
 	static void checkOptionalResource(CFTypeRef key, CFTypeRef value, void *context);
 	bool hasWeakResourceRules(CFDictionaryRef rulesDict, uint32_t version, CFArrayRef allowedOmissions);
 
-	void handleOtherArchitectures(void (^handle)(SecStaticCode* other));
-
 private:
 	void validateOtherVersions(CFURLRef path, SecCSFlags flags, SecRequirementRef req, SecStaticCode *code);
 	bool checkfix30814861(string path, bool addition);
+	bool checkfix41082220(OSStatus result);
 
 	ResourceBuilder *mCheckfix30814861builder1;
 	dispatch_once_t mCheckfix30814861builder1_once;
 	
 private:
+	static const uint8_t mCMSDigestHashType = kSecCodeSignatureHashSHA256;
+										// hash of CMS digest (kSecCodeSignatureHash* constant)
 	RefPointer<DiskRep> mRep;			// on-disk representation
 	mutable CodeDirectoryMap mCodeDirectories; // available CodeDirectory blobs by digest type
 	mutable CFRef<CFDataRef> mBaseDir;	// the primary CodeDirectory blob (whether it's chosen or not)
@@ -281,13 +289,19 @@ private:
 	const Requirement *mDesignatedReq;	// cached designated req if we made one up
 	CFRef<CFDataRef> mCDHash;			// hash of chosen CodeDirectory
 	CFRef<CFArrayRef> mCDHashes;		// hashes of all CodeDirectories (in digest type code order)
-	
+	CFRef<CFDictionaryRef> mCDHashFullDict;	// untruncated hashes of CodeDirectories (as dictionary)
+
 	bool mGotResourceBase;				// asked mRep for resourceBasePath
 	CFRef<CFURLRef> mResourceBase;		// URL form of resource base directory
 
 	SecCodeCallback mMonitor;			// registered monitor callback
 
 	LimitedAsync *mLimitedAsync;		// limited async workers for verification
+
+	uint32_t mFlags;					// flags from creation
+	bool mNotarizationChecked;			// ensure notarization check only performed once
+	bool mStaplingChecked;				// ensure stapling check only performed once
+	double mNotarizationDate;			// the notarization ticket's date, if online check failed
 
 	// signature verification outcome (mTrust == NULL => not done yet)
 	CFRef<SecTrustRef> mTrust;			// outcome of crypto validation (valid or not)

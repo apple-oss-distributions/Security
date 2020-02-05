@@ -27,6 +27,7 @@
 #include <security_utilities/threading.h>
 #include <utilities/SecCFRelease.h>
 #include "SecBridge.h"
+#include <Security/SecFramework.h>
 
 static CFStringRef copyErrorMessageFromBundle(OSStatus status,CFStringRef tableName);
 
@@ -98,7 +99,7 @@ cssmErrorString(CSSM_RETURN error)
 			CFStringRef result = copyErrorMessageFromBundle(error,CFSTR("SecErrorMessages"));
 			if (result == NULL)
 				result = copyErrorMessageFromBundle(error,CFSTR("SecDebugErrorMessages"));
-			err = cfString(result, true);
+			err = cfString(result, errSecErrorStringNotAvailable);
             CFReleaseSafe(result);
 		}
 		
@@ -299,7 +300,7 @@ OSStatus SecKeychainErrFromOSStatus(OSStatus osStatus)
 		case CSSMERR_DL_DATASTORE_ALREADY_EXISTS:
 			return errSecDuplicateKeychain;
 		case CSSMERR_APPLEDL_DISK_FULL:
-			return errSecDskFull;
+			return errSecDiskFull;
 		case CSSMERR_DL_INVALID_OPEN_PARAMETERS: 
 		case CSSMERR_APPLEDL_INVALID_OPEN_PARAMETERS:
 		case CSSMERR_APPLE_DOTMAC_REQ_SERVER_PARAM:

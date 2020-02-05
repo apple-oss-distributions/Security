@@ -58,10 +58,22 @@ See remaining rules for examples.
 		<dict>
 			<key>allow-root</key>
 			<true/>
+			<key>authenticate-user</key>
+			<true/>
 			<key>class</key>
-			<string>user</string>
-			<key>group</key>
-			<string>admin</string>
+			<string>rule</string>
+			<key>k-of-n</key>
+			<integer>1</integer>
+			<key>rule</key>
+			<array>
+				<string>is-root</string>
+				<string>is-admin</string>
+				<string>default</string>
+			</array>
+			<key>shared</key>
+			<false/>
+			<key>version</key>
+			<integer>1</integer>
 		</dict>
 		<key>com.apple.DiskManagement.</key>
 		<dict>
@@ -663,6 +675,17 @@ See remaining rules for examples.
 			<key>comment</key>
 			<string>For burning media.</string>
 		</dict>
+		<key>system.csfde.requestpassword.weak</key>
+		<dict>
+			<key>class</key>
+			<string>rule</string>
+			<key>comment</key>
+			<string>Used by CoreStorage Full Disk Encryption to request the user's password, allowing alternative authentication methods.</string>
+			<key>rule</key>
+			<array>
+				<string>authenticate-admin-or-staff-extract-weak</string>
+			</array>
+		</dict>
 		<key>system.csfde.requestpassword</key>
 		<dict>
 			<key>class</key>
@@ -892,13 +915,13 @@ See remaining rules for examples.
 				<string>loginwindow:login</string>
 				<string>builtin:login-begin</string>
 				<string>builtin:reset-password,privileged</string>
+				<string>loginwindow:FDESupport,privileged</string>
 				<string>builtin:forward-login,privileged</string>
 				<string>builtin:auto-login,privileged</string>
 				<string>builtin:authenticate,privileged</string>
 				<string>PKINITMechanism:auth,privileged</string>
 				<string>builtin:login-success</string>
 				<string>loginwindow:success</string>
-				<string>loginwindow:FDESupport,privileged</string>
 				<string>HomeDirMechanism:login,privileged</string>
 				<string>HomeDirMechanism:status</string>
 				<string>MCXMechanism:login</string>
@@ -906,7 +929,7 @@ See remaining rules for examples.
 				<string>loginwindow:done</string>
 			</array>
 			<key>version</key>
-			<integer>6</integer>
+			<integer>7</integer>
 		</dict>
 		<key>system.login.fus</key>
 		<dict>
@@ -1219,7 +1242,7 @@ See remaining rules for examples.
 			<key>class</key>
 			<string>user</string>
 			<key>comment</key>
-			<string>Used by AuthorizationExecuteWithPrivileges(...).  
+			<string>Used by AuthorizationExecuteWithPrivileges(...).
 		AuthorizationExecuteWithPrivileges() is used by programs requesting
 		to run a tool as root (e.g., some installers).</string>
 			<key>group</key>
@@ -1286,22 +1309,20 @@ See remaining rules for examples.
 		</dict>
 		<key>system.services.directory.configure</key>
 		<dict>
-			<key>allow-root</key>
-			<true/>
-			<key>authenticate-user</key>
-			<true/>
 			<key>class</key>
-			<string>user</string>
+			<string>rule</string>
+			<key>k-of-n</key>
+			<integer>1</integer>
+			<key>rule</key>
+			<array>
+				<string>is-root</string>
+				<string>entitled</string>
+				<string>authenticate-admin-nonshared</string>
+			</array>
 			<key>comment</key>
 			<string>For making Directory Services changes.</string>
-			<key>group</key>
-			<string>admin</string>
-			<key>session-owner</key>
-			<false/>
-			<key>shared</key>
-			<false/>
 			<key>version</key>
-			<integer>2</integer>
+			<integer>3</integer>
 		</dict>
 		<key>system.services.networkextension.filtering</key>
 		<dict>
@@ -1335,18 +1356,23 @@ See remaining rules for examples.
 		</dict>
 		<key>system.services.systemconfiguration.network</key>
 		<dict>
-			<key>allow-root</key>
-			<true/>
 			<key>class</key>
-			<string>user</string>
+			<string>rule</string>
 			<key>comment</key>
 			<string>For making change to network configuration via System Configuration.</string>
+            <key>k-of-n</key>
+            <integer>1</integer>
+			<key>rule</key>
+			<array>
+                <string>is-root</string>
+                <string>entitled</string>
+                <string>_mbsetupuser-nonshared</string>
+                <string>authenticate-admin-nonshared</string>
+			</array>
 			<key>entitled-group</key>
 			<true/>
-			<key>group</key>
-			<string>admin</string>
 			<key>version</key>
-			<integer>1</integer>
+			<integer>2</integer>
 			<key>vpn-entitled-group</key>
 			<true/>
 		</dict>
@@ -1500,13 +1526,28 @@ See remaining rules for examples.
 				<string>authenticate-admin-30</string>
 			</array>
 		</dict>
+		<key>com.apple.installassistant.macos</key>
+		<dict>
+			<key>allow-root</key>
+			<true/>
+			<key>class</key>
+			<string>user</string>
+			<key>comment</key>
+			<string>Used by Install Assistant</string>
+			<key>group</key>
+			<string>admin</string>
+			<key>shared</key>
+			<false/>
+			<key>timeout</key>
+			<integer>300</integer>
+		</dict>
 		<key>com.apple.security.syntheticinput</key>
 		<dict>
 		    <key>class</key>
 		    <string>rule</string>
 		    <key>rule</key>
 		    <string>authenticate-session-owner</string>
-		</dict>		
+		</dict>
 		<key>com.apple.security.sudo</key>
 		<dict>
 			<key>class</key>
@@ -1518,7 +1559,7 @@ See remaining rules for examples.
 				<string>entitled</string>
 				<string>authenticate-session-owner</string>
 			</array>
-		</dict>		
+		</dict>
 		<key>system.preferences.continuity</key>
 		<dict>
 			<key>class</key>
@@ -1541,6 +1582,23 @@ See remaining rules for examples.
 				<string>authenticate-session-owner-or-admin</string>
 			</array>
 		</dict>
+		<key>com.apple.configurationprofiles.userenrollment.install</key>
+		<dict>
+			<key>class</key>
+			<string>user</string>
+			<key>comment</key>
+			<string>This right is used by UserManagement to ask user to acquire password from users.</string>
+			<key>session-owner</key>
+			<true/>
+			<key>extract-password</key>
+			<true/>
+			<key>password-only</key>
+			<true/>
+			<key>shared</key>
+			<false/>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
 		<key>com.apple.safaridriver.allow</key>
 		<dict>
 			<key>comment</key>
@@ -1557,6 +1615,69 @@ See remaining rules for examples.
 			</array>
 			<key>version</key>
 			<integer>1</integer>
+		</dict>
+		<key>com.apple.app-sandbox.create-symlink</key>
+		<dict>
+			<key>comment</key>
+			<string>Authorize an app-sandboxed application to install a symlink into /usr/local/bin.</string>
+			<key>class</key>
+			<string>rule</string>
+			<key>rule</key>
+			<string>authenticate-admin-nonshared</string>
+			<key>shared</key>
+			<false/>
+			<key>timeout</key>
+			<integer>60</integer>
+		</dict>
+		<key>com.apple.app-sandbox.set-attributes</key>
+		<dict>
+			<key>comment</key>
+			<string>Authorize an app-sandboxed application to change permissions on a privileged file.</string>
+			<key>class</key>
+			<string>rule</string>
+			<key>rule</key>
+			<string>authenticate-admin-nonshared</string>
+			<key>shared</key>
+			<false/>
+			<key>timeout</key>
+			<integer>60</integer>
+		</dict>
+		<key>com.apple.app-sandbox.replace-file</key>
+		<dict>
+			<key>comment</key>
+			<string>Authorize an app-sandboxed application to save (overwrite) a file in a privileged location.</string>
+			<key>class</key>
+			<string>rule</string>
+			<key>rule</key>
+			<string>authenticate-admin-nonshared</string>
+			<key>shared</key>
+			<false/>
+			<key>timeout</key>
+			<integer>60</integer>
+		</dict>
+		<key>com.apple.applepay.reset</key>
+		<dict>
+			<key>class</key>
+			<string>user</string>
+			<key>comment</key>
+			<string>Used by nfcd.</string>
+			<key>group</key>
+			<string>admin</string>
+			<key>shared</key>
+			<false/>
+			<key>timeout</key>
+			<integer>300</integer>
+		</dict>
+		<key>com.apple.system-extensions.admin</key>
+		<dict>
+			<key>comment</key>
+			<string>Authorize a 3rd party application which wants to manipulate system extensions.</string>
+			<key>class</key>
+			<string>rule</string>
+			<key>rule</key>
+			<string>authenticate-admin-nonshared</string>
+			<key>shared</key>
+			<false/>
 		</dict>
 	</dict>
 	<key>rules</key>
@@ -1623,7 +1744,7 @@ See remaining rules for examples.
 			</array>
 			<key>version</key>
 			<integer>1</integer>
-		</dict>		    
+		</dict>
 		<key>authenticate-admin</key>
 		<dict>
 			<key>class</key>
@@ -1650,13 +1771,26 @@ See remaining rules for examples.
 			<key>version</key>
 			<integer>1</integer>
 		</dict>
+        <key>_mbsetupuser-nonshared</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>authenticate-user</key>
+            <false/>
+            <key>comment</key>
+            <string>Succeeds if user is from _mbsetupuser group.</string>
+            <key>group</key>
+            <string>_mbsetupuser</string>
+            <key>timeout</key>
+            <integer>30</integer>
+        </dict>
 		<key>authenticate-admin-30</key>
 		<dict>
 			<key>class</key>
 			<string>user</string>
 			<key>comment</key>
-			<string>Like the default rule, but 
-            credentials remain valid for only 30 seconds after they've 
+			<string>Like the default rule, but
+            credentials remain valid for only 30 seconds after they've
             been obtained.  An acquired credential is shared by all clients.
 			</string>
 			<key>group</key>
@@ -1665,6 +1799,36 @@ See remaining rules for examples.
 			<true/>
 			<key>timeout</key>
 			<integer>30</integer>
+		</dict>
+		<key>authenticate-admin-extract-weak</key>
+		<dict>
+			<key>class</key>
+			<string>user</string>
+			<key>comment</key>
+			<string>Authenticate as an administrator + allow password extraction.</string>
+			<key>extract-password</key>
+			<true/>
+			<key>group</key>
+			<string>admin</string>
+			<key>require-apple-signed</key>
+			<true/>
+			<key>timeout</key>
+			<integer>0</integer>
+		</dict>
+		<key>authenticate-staff-extract-weak</key>
+		<dict>
+			<key>class</key>
+			<string>user</string>
+			<key>comment</key>
+			<string>Authenticate as group staff + allow password to be extracted.</string>
+			<key>extract-password</key>
+			<true/>
+			<key>group</key>
+			<string>staff</string>
+			<key>require-apple-signed</key>
+			<true/>
+			<key>timeout</key>
+			<integer>0</integer>
 		</dict>
 		<key>authenticate-admin-extract</key>
 		<dict>
@@ -1714,6 +1878,18 @@ See remaining rules for examples.
 			<array>
 				<string>authenticate-staff-extract</string>
 				<string>localauthentication-context</string>
+			</array>
+		</dict>
+		<key>authenticate-admin-or-staff-extract-weak</key>
+		<dict>
+			<key>class</key>
+			<string>rule</string>
+			<key>k-of-n</key>
+			<integer>1</integer>
+			<key>rule</key>
+			<array>
+				<string>authenticate-admin-extract-weak</string>
+				<string>authenticate-staff-extract-weak</string>
 			</array>
 		</dict>
 		<key>authenticate-admin-or-staff-extract</key>
@@ -1790,8 +1966,8 @@ See remaining rules for examples.
 			<key>class</key>
 			<string>user</string>
 			<key>comment</key>
-			<string>Default rule.	
-            Credentials remain valid for 5 minutes after they've been obtained. 
+			<string>Default rule.
+            Credentials remain valid for 5 minutes after they've been obtained.
             An acquired credential is shared by all clients.
 			</string>
 			<key>group</key>
@@ -2131,7 +2307,7 @@ See remaining rules for examples.
 			<true/>
 			<key>timeout</key>
 			<integer>36000</integer>
-		</dict>		
+		</dict>
 	</dict>
 </dict>
 </plist>

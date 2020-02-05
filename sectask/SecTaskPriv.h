@@ -26,6 +26,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecTask.h>
+#include <xpc/xpc.h>
 
 __BEGIN_DECLS
 
@@ -39,17 +40,19 @@ __BEGIN_DECLS
     task satisfies the requirement.
 */
 
-OSStatus SecTaskValidateForRequirement(SecTaskRef task, CFStringRef requirement);
+OSStatus SecTaskValidateForRequirement(SecTaskRef _Nonnull task, CFStringRef _Nonnull requirement);
+
+#endif /* SEC_OS_OSX */
 
 /*!
-  @function SecTaskGetCodeSignStatus
-  @abstract Get code signing flags
-  @param task A previously created SecTask object
-*/
+ @function SecTaskCreateWithXPCMessage
+ @abstract Get SecTask instance from the remote peer of the xpc connection
+ @param message message from peer in the xpc connection event handler, you can't use
+                connection since it cached and uses the most recent sender to this connection.
+ */
 
-uint32_t
-SecTaskGetCodeSignStatus(SecTaskRef task);
-#endif /* SEC_OS_OSX */
+_Nullable SecTaskRef
+SecTaskCreateWithXPCMessage(xpc_object_t _Nonnull message);
 
 /*!
  @function SecTaskEntitlementsValidated
@@ -57,9 +60,18 @@ SecTaskGetCodeSignStatus(SecTaskRef task);
  false the tasks entitlements must not be used for anything security sensetive.
  @param task A previously created SecTask object
  */
-Boolean SecTaskEntitlementsValidated(SecTaskRef task);
+Boolean SecTaskEntitlementsValidated(SecTaskRef _Nonnull task);
 
-
+/*!
+ @function SecTaskCopyTeamIdentifier
+ @abstract Return the value of the team identifier.
+ @param task A previously created SecTask object
+ @param error On a NULL return, this will contain a CFError describing
+ the problem.  This argument may be NULL if the caller is not interested in
+ detailed errors. The caller must CFRelease the returned value
+ */
+__nullable
+CFStringRef SecTaskCopyTeamIdentifier(SecTaskRef _Nonnull task, CFErrorRef _Nullable * _Nullable error);
 
 __END_DECLS
 

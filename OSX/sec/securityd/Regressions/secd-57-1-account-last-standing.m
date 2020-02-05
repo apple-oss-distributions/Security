@@ -33,12 +33,12 @@
 
 #include <CoreFoundation/CFDictionary.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
-#include <Security/SecureObjectSync/SOSTransport.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
+#include "keychain/SecureObjectSync/SOSTransport.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -55,9 +55,6 @@
 #include "SOSAccountTesting.h"
 
 #include "SecdTestKeychainUtilities.h"
-
-
-static int kTestTestCount = 61;
 
 
 static bool acceptApplicants(SOSAccount* account, CFIndex count) {
@@ -107,7 +104,7 @@ static void tests(void)
     
     is(ProcessChangesUntilNoChange(changes, alice_account, NULL), 1, "updates");
     
-    ok([alice_account.trust isInCircle:&error], "Alice is back in the circle (%@)", error);
+    ok([alice_account isInCircle:&error], "Alice is back in the circle (%@)", error);
     CFReleaseNull(error);
 
     is(countActivePeers(alice_account), 2, "Alice sees 2 active peers");
@@ -154,7 +151,7 @@ static void tests(void)
 
 int secd_57_1_account_last_standing(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(45);
     
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     

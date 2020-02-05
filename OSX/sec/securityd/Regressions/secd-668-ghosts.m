@@ -29,14 +29,12 @@
 #include <CoreFoundation/CFDictionary.h>
 #include <utilities/SecCFWrappers.h>
 
-#include <Security/SecureObjectSync/SOSAccount.h>
-#include <Security/SecureObjectSync/SOSAccountTrustClassic+Circle.h>
+#include "keychain/SecureObjectSync/SOSAccount.h"
+#include "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
 
 #include "secd_regressions.h"
 #include "SOSAccountTesting.h"
 #include "SecdTestKeychainUtilities.h"
-
-static int kTestTestCount = 530;
 
 /*
  Make a circle with two peers - alice and bob(bob is iOS and serial#"abababababab")
@@ -47,6 +45,7 @@ static int kTestTestCount = 530;
  For phase 1 we expect the ghostfix to work with iOS devices, but not with MacOSX devices.
  */
 
+#if 0
 static void hauntedCircle(SOSPeerInfoDeviceClass devClass, bool expectGhostBusted)
 {
     CFErrorRef error = NULL;
@@ -75,15 +74,17 @@ static void hauntedCircle(SOSPeerInfoDeviceClass devClass, bool expectGhostBuste
     // Make new bob - same as the old bob except peerID
 
     SOSAccount* bobFinal = SOSTestCreateAccountAsSerialClone(CFSTR("BobFinal"), devClass, ghostSerialID, ghostIdsID);
+    is(ProcessChangesUntilNoChange(changes, bobFinal, NULL), 1, "updates");
+
     ok(SOSTestJoinWith(cfpassword, cfaccount, changes, bobFinal), "Application Made");
     CFReleaseNull(cfpassword);
 
     // Did ghostbuster work?
     is(ProcessChangesUntilNoChange(changes, bobFinal, NULL), 2, "updates");
     if(expectGhostBusted) { // ghostbusting is currently disabled for MacOSX Peers
-        ok([bobFinal.trust isInCircle:NULL], "Bob is in");
+        ok([bobFinal isInCircle:NULL], "Bob is in");
     } else {
-        ok(![bobFinal.trust isInCircle:NULL], "Bob is not in");
+        ok(![bobFinal isInCircle:NULL], "Bob is not in");
     }
 
     is(countPeers(bobFinal), 1, "There should only be 1 valid peer");
@@ -96,7 +97,7 @@ static void hauntedCircle(SOSPeerInfoDeviceClass devClass, bool expectGhostBuste
     SOSTestCleanup();
 }
 
-static void multiBob(SOSPeerInfoDeviceClass devClass, bool expectGhostBusted, bool delayedPrivKey) {
+static void multiBob(SOSPeerInfoDeviceClass devClass, bool expectGhostBusted, bool delayedPrivKey, bool pairJoin) {
     CFErrorRef error = NULL;
     CFDataRef cfpassword = CFDataCreate(NULL, (uint8_t *) "FooFooFoo", 10);
     CFStringRef cfaccount = CFSTR("test@test.org");
@@ -121,16 +122,27 @@ static void multiBob(SOSPeerInfoDeviceClass devClass, bool expectGhostBusted, bo
     SOSTestMakeGhostInCircle(CFSTR("Bob4"), devClass, ghostSerialID, ghostIdsID, cfpassword, cfaccount, changes, alice_account, 5);
     
     SOSAccount* bobFinal_account = SOSTestCreateAccountAsSerialClone(CFSTR("BobFinal"), devClass, ghostSerialID, ghostIdsID);
-    if(delayedPrivKey) {
+    
+    if(pairJoin) {
+        SOSTestJoinThroughPiggyBack(cfpassword, cfaccount, changes, alice_account, bobFinal_account, KEEP_USERKEY, 6, true);
+        is(countPeers(bobFinal_account), 6, "Expect ghosts still in circle");
+    } else if(delayedPrivKey) {
         SOSTestJoinWithApproval(cfpassword, cfaccount, changes, alice_account, bobFinal_account, DROP_USERKEY, 6, true);
         is(countPeers(bobFinal_account), 6, "Expect ghosts still in circle");
-        SOSAccountTryUserCredentials(bobFinal_account, cfaccount, cfpassword, &error);
-        ok(SOSTestChangeAccountDeviceName(bobFinal_account, CFSTR("ThereCanBeOnlyOneBob")), "force an unrelated circle change");
-        is(ProcessChangesUntilNoChange(changes, alice_account, bobFinal_account, NULL), 3, "updates");
     } else {
         SOSTestJoinWithApproval(cfpassword, cfaccount, changes, alice_account, bobFinal_account, KEEP_USERKEY, 2, true);
     }
+    
+    if(pairJoin || delayedPrivKey) { // this allows the ghostbusting to be done in a delayed fashion for the instances where that is proper
+        SOSAccountTryUserCredentials(bobFinal_account, cfaccount, cfpassword, &error);
+        ok(SOSTestChangeAccountDeviceName(bobFinal_account, CFSTR("ThereCanBeOnlyOneBob")), "force an unrelated circle change");
+        is(ProcessChangesUntilNoChange(changes, alice_account, bobFinal_account, NULL), 3, "updates");
+    }
+
     CFReleaseNull(cfpassword);
+
+    
+    ok([bobFinal_account isInCircle:NULL], "bobFinal_account is in");
 
     is(countPeers(bobFinal_account), 2, "Expect ghostBobs to be gone");
     is(countPeers(alice_account), 2, "Expect ghostBobs to be gone");
@@ -184,19 +196,23 @@ static void iosICloudIdentity() {
     alice_account = nil;
     SOSTestCleanup();
 }
+#endif // 0
 
 int secd_68_ghosts(int argc, char *const *argv)
 {
-    plan_tests(kTestTestCount);
+    plan_tests(1);
     
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
-    
+
+#if 0
+    // changing ghostbusting.  handleUpdateCircle version is going away.
     hauntedCircle(SOSPeerInfo_iOS, true);
     hauntedCircle(SOSPeerInfo_macOS, false);
-    multiBob(SOSPeerInfo_iOS, true, false);
-    multiBob(SOSPeerInfo_iOS, false, true);
-    
+    multiBob(SOSPeerInfo_iOS, true, false, false);
+    multiBob(SOSPeerInfo_iOS, false, true, false);
+    multiBob(SOSPeerInfo_iOS, false, false, true); // piggyback join case
+
     iosICloudIdentity();
-    
+#endif
     return 0;
 }

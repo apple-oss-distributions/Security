@@ -59,7 +59,8 @@ static void tests(void)
     ok_status(SecItemCopyMatching(query2, &results), "find internet password, return attributes");
     CFReleaseNull(query2);
     query2 = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, results);
-    CFDictionaryRemoveValue(query2, kSecAttrSHA1),
+    CFReleaseNull(results);
+    CFDictionaryRemoveValue(query2, kSecAttrSHA1);
     CFDictionarySetValue(query2, kSecClass, kSecClassInternetPassword);
     CFDictionarySetValue(query2, kSecReturnData, kCFBooleanTrue);
     ok_status(SecItemCopyMatching(query2, &results), "find internet password using returned attributes");

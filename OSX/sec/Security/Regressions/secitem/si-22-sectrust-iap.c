@@ -1,7 +1,8 @@
 /*
- * Copyright (c) 2006-2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2006-2017 Apple Inc. All Rights Reserved.
  */
 
+#include <AssertMacros.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecCertificate.h>
 #include <Security/SecCertificatePriv.h>
@@ -16,7 +17,7 @@
 
 #include "si-22-sectrust-iap.h"
 
-static void tests(void)
+static void test_v1(void)
 {
     SecTrustRef trust;
 	SecCertificateRef iAP1CA, iAP2CA, leaf0, leaf1;
@@ -79,7 +80,7 @@ static void tests(void)
 static void test_v3(void) {
     SecCertificateRef v3CA = NULL, v3leaf = NULL;
     isnt(v3CA = SecCertificateCreateWithBytes(NULL, _v3ca, sizeof(_v3ca)),
-         NULL, "create v3leaf");
+         NULL, "create v3 CA");
     isnt(v3leaf = SecCertificateCreateWithBytes(NULL, _v3leaf, sizeof(_v3leaf)),
          NULL, "create v3leaf");
 
@@ -101,6 +102,16 @@ static void test_v3(void) {
     ok_status(SecTrustEvaluate(trust, &trustResult), "evaluate");
     is_status(trustResult, kSecTrustResultUnspecified, "trust is kSecTrustResultUnspecified");
 
+    /* Test v3 certs fail iAP SW Auth policy */
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    policy = SecPolicyCreateiAPSWAuth();
+    require_noerr(SecTrustCreateWithCertificates(certs, policy, &trust), trustFail);
+    require_noerr(SecTrustSetAnchorCertificates(trust, anchors), trustFail);
+    require_noerr(SecTrustSetVerifyDate(trust, date), trustFail);
+    require_noerr(SecTrustEvaluate(trust, &trustResult), trustFail);
+    is_status(trustResult, kSecTrustResultRecoverableTrustFailure, "trust is kSecTrustResultRecoverableTrustFailure");
+
 trustFail:
     CFReleaseSafe(policy);
     CFReleaseSafe(trust);
@@ -108,7 +119,6 @@ trustFail:
     CFReleaseSafe(anchors);
     CFReleaseSafe(date);
 
-#if TARGET_OS_IPHONE
     /* Test interface for determining iAuth version */
     SecCertificateRef leaf0 = NULL, leaf1 = NULL;
     isnt(leaf0 = SecCertificateCreateWithBytes(NULL, _leaf0, sizeof(_leaf0)),
@@ -151,21 +161,178 @@ trustFail:
        "compare expected output");
     CFReleaseNull(extensionData);
     CFReleaseNull(malformedV3leaf);
-#endif
     CFReleaseSafe(v3leaf);
     CFReleaseSafe(v3CA);
 }
 
+static void test_sw_auth_trust(void) {
+    SecCertificateRef sw_auth_test_CA = NULL, sw_auth_test_leaf = NULL;
+    isnt(sw_auth_test_CA = SecCertificateCreateWithBytes(NULL, _iAPSWAuthTestRoot, sizeof(_iAPSWAuthTestRoot)),
+         NULL, "create sw auth test ca");
+    isnt(sw_auth_test_leaf = SecCertificateCreateWithBytes(NULL, _iAPSWAuth_leaf, sizeof(_iAPSWAuth_leaf)),
+         NULL, "create sw auth leaf");
+
+    /* Test SW Auth certs meet iAP SW Auth policy */
+    SecPolicyRef policy = NULL;
+    SecTrustRef trust = NULL;
+    CFArrayRef certs = NULL, anchors = NULL;
+    CFDateRef date = NULL;
+    SecTrustResultType trustResult;
+
+    certs = CFArrayCreate(NULL, (const void **)&sw_auth_test_leaf, 1, &kCFTypeArrayCallBacks);
+    anchors = CFArrayCreate(NULL, (const void **)&sw_auth_test_CA, 1, &kCFTypeArrayCallBacks);
+    policy = SecPolicyCreateiAPSWAuth();
+    require_noerr(SecTrustCreateWithCertificates(certs, policy, &trust), trustFail);
+    require_noerr(SecTrustSetAnchorCertificates(trust, anchors), trustFail);
+    require(date = CFDateCreate(NULL, 530000000.0), trustFail);  /* 17 Oct 2017, BEFORE issuance */
+    require_noerr(SecTrustSetVerifyDate(trust, date), trustFail);
+    require_noerr(SecTrustEvaluate(trust, &trustResult), trustFail);
+    is_status(trustResult, kSecTrustResultUnspecified, "trust is kSecTrustResultUnspecified");
+
+    /* Test SW Auth certs fail iAP policy */
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    policy = SecPolicyCreateiAP();
+    require_noerr(SecTrustCreateWithCertificates(certs, policy, &trust), trustFail);
+    require_noerr(SecTrustSetAnchorCertificates(trust, anchors), trustFail);
+    require_noerr(SecTrustSetVerifyDate(trust, date), trustFail);
+    require_noerr(SecTrustEvaluate(trust, &trustResult), trustFail);
+    is_status(trustResult, kSecTrustResultRecoverableTrustFailure, "trust is kSecTrustResultRecoverableTrustFailure");
+
+    /* Test SW Auth certs fail when not-yet-valid with expiration check */
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    policy = SecPolicyCreateiAPSWAuthWithExpiration(true);
+    require_noerr(SecTrustCreateWithCertificates(certs, policy, &trust), trustFail);
+    require_noerr(SecTrustSetAnchorCertificates(trust, anchors), trustFail);
+    require_noerr(SecTrustSetVerifyDate(trust, date), trustFail);
+    require_noerr(SecTrustEvaluate(trust, &trustResult), trustFail);
+    is_status(trustResult, kSecTrustResultRecoverableTrustFailure, "trust is kSecTrustResultRecoverableTrustFailure");
+
+trustFail:
+    CFReleaseSafe(policy);
+    CFReleaseSafe(trust);
+    CFReleaseSafe(certs);
+    CFReleaseSafe(anchors);
+    CFReleaseSafe(date);
+    CFReleaseSafe(sw_auth_test_CA);
+    CFReleaseSafe(sw_auth_test_leaf);
+}
+
+static void test_sw_auth_cert(void) {
+    SecCertificateRef good_leaf = NULL, bad_leaf = NULL;
+    isnt(good_leaf = SecCertificateCreateWithBytes(NULL, _iAPSWAuth_leaf, sizeof(_iAPSWAuth_leaf)),
+         NULL, "create good iAP SW Auth cert");
+    isnt(bad_leaf = SecCertificateCreateWithBytes(NULL, _malformed_iAPSWAuth_leaf, sizeof(_malformed_iAPSWAuth_leaf)),
+         NULL, "create bad iAP SW Auth cert");
+
+    /* Test Auth version interface */
+    ok(SecCertificateGetiAuthVersion(good_leaf) == kSeciAuthVersionSW, "Get version of well-formed SW Auth cert");
+    ok(SecCertificateGetiAuthVersion(bad_leaf) == kSeciAuthVersionSW, "Get version of malformed SW Auth cert");
+
+    /* Test extension copying with malformed extensions */
+    is(SecCertificateCopyiAPSWAuthCapabilities(bad_leaf, kSeciAPSWAuthGeneralCapabilities), NULL,
+       "Fail to get capabilities of malformed SW auth cert");
+    is(SecCertificateCopyiAPSWAuthCapabilities(bad_leaf, kSeciAPSWAuthAirPlayCapabilities), NULL,
+       "Fail to get AirPlay capabilities of malformed SW auth cert");
+    is(SecCertificateCopyiAPSWAuthCapabilities(bad_leaf, kSeciAPSWAuthHomeKitCapabilities), NULL,
+       "Fail to get HomeKit capabilities of malformed SW auth cert");
+
+    uint8_t byte0 = 0x00;
+    uint8_t byte1 = 0x01;
+    CFDataRef data0 = CFDataCreate(NULL, &byte0, 1);
+    CFDataRef data1 = CFDataCreate(NULL, &byte1, 1);
+
+    /* Test extension copying with well-formed extensions */
+    CFDataRef extensionValue = NULL;
+    isnt(extensionValue = SecCertificateCopyiAPSWAuthCapabilities(good_leaf, kSeciAPSWAuthGeneralCapabilities), NULL,
+         "Get capabilities of well-formed SW auth cert");
+    ok(CFEqual(extensionValue, data1), "Got correct general extension value");
+    CFReleaseNull(extensionValue);
+
+    isnt(extensionValue = SecCertificateCopyiAPSWAuthCapabilities(good_leaf, kSeciAPSWAuthAirPlayCapabilities), NULL,
+         "Get AirPlay capabilities of well-formed SW auth cert");
+    ok(CFEqual(extensionValue, data0), "Got correct AirPlay extension value");
+    CFReleaseNull(extensionValue);
+
+    isnt(extensionValue = SecCertificateCopyiAPSWAuthCapabilities(good_leaf, kSeciAPSWAuthHomeKitCapabilities), NULL,
+         "Get capabilities of well-formed SW auth cert");
+    ok(CFEqual(extensionValue, data1), "Got correct HomeKit extension value");
+    CFReleaseNull(extensionValue);
+
+    CFReleaseNull(good_leaf);
+    CFReleaseNull(bad_leaf);
+    CFReleaseNull(data0);
+    CFReleaseNull(data1);
+}
+
+static void test_component_type_cert(void) {
+    SecCertificateRef batteryCA = NULL, nonComponent = NULL;
+    isnt(batteryCA = SecCertificateCreateWithBytes(NULL, _componentCABattery, sizeof(_componentCABattery)),
+         NULL, "create battery component CA cert");
+    isnt(nonComponent = SecCertificateCreateWithBytes(NULL, _iAP2CA, sizeof(_iAP2CA)),
+         NULL, "create non-component cert");
+
+    CFStringRef componentType = NULL;
+    isnt(componentType = SecCertificateCopyComponentType(batteryCA), NULL, "Get component type");
+    ok(CFEqual(componentType, CFSTR("Battery")), "Got correct component type");
+    CFReleaseNull(componentType);
+
+    is(componentType = SecCertificateCopyComponentType(nonComponent), NULL, "Get component type");
+
+    CFReleaseNull(batteryCA);
+    CFReleaseNull(nonComponent);
+}
+
+static void test_component_type_trust(void) {
+    SecCertificateRef leaf = NULL, subCA = NULL, root = NULL;
+    SecPolicyRef policy = NULL;
+    SecTrustRef trust = NULL;
+    CFMutableArrayRef certs = NULL;
+    CFArrayRef anchors = NULL;
+    CFDateRef date = NULL;
+    SecTrustResultType trustResult;
+
+    isnt(leaf = SecCertificateCreateWithBytes(NULL, _batteryLeaf, sizeof(_batteryLeaf)),
+         NULL, "create battery leaf");
+    isnt(subCA = SecCertificateCreateWithBytes(NULL, _componentCABattery, sizeof(_componentCABattery)),
+         NULL, "create battery subCA");
+    isnt(root = SecCertificateCreateWithBytes(NULL, _componentRoot, sizeof(_componentRoot)),
+         NULL, "create component root");
+
+    /* Test Battery component certs meet component policy */
+    certs = CFArrayCreateMutable(NULL, 2, &kCFTypeArrayCallBacks);
+    CFArrayAppendValue(certs, leaf);
+    CFArrayAppendValue(certs, subCA);
+    anchors = CFArrayCreate(NULL, (const void **)&root, 1, &kCFTypeArrayCallBacks);
+    policy = SecPolicyCreateAppleComponentCertificate(NULL);
+    require_noerr(SecTrustCreateWithCertificates(certs, policy, &trust), trustFail);
+    require_noerr(SecTrustSetAnchorCertificates(trust, anchors), trustFail);
+    require(date = CFDateCreate(NULL, 576000000.0), trustFail);  /* April 3, 2019 at 9:00:00 AM PDT */
+    require_noerr(SecTrustSetVerifyDate(trust, date), trustFail);
+    require_noerr(SecTrustEvaluate(trust, &trustResult), trustFail);
+    is_status(trustResult, kSecTrustResultUnspecified, "trust is kSecTrustResultUnspecified");
+
+trustFail:
+    CFReleaseNull(leaf);
+    CFReleaseNull(subCA);
+    CFReleaseNull(root);
+    CFReleaseNull(date);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+}
+
+
 int si_22_sectrust_iap(int argc, char *const *argv)
 {
-#if TARGET_OS_IPHONE
-	plan_tests(14+20);
-#else
-    plan_tests(14+8);
-#endif
+	plan_tests(14+21+5+13+5+4);
 
-	tests();
+	test_v1();
     test_v3();
+    test_sw_auth_trust();
+    test_sw_auth_cert();
+    test_component_type_cert();
+    test_component_type_trust();
 
 	return 0;
 }

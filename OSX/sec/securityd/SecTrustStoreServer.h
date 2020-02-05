@@ -29,7 +29,7 @@
 #ifndef _SECURITY_SECTRUSTSTORESERVER_H_
 #define _SECURITY_SECTRUSTSTORESERVER_H_
 
-#include <Security/SecTrustStore.h>
+#include "Security/SecTrustStore.h"
 #include <CoreFoundation/CFArray.h>
 #include <CoreFoundation/CFError.h>
 
@@ -53,6 +53,9 @@ bool SecTrustStoreContainsCertificateWithDigest(SecTrustStoreRef source, CFDataR
 bool _SecTrustStoreCopyUsageConstraints(SecTrustStoreRef ts, CFDataRef digest, CFArrayRef *usageConstraints, CFErrorRef *error);
 
 bool _SecTrustStoreCopyAll(SecTrustStoreRef ts, CFArrayRef *trustStoreContents, CFErrorRef *error);
+
+bool _SecTrustStoreSetCTExceptions(CFStringRef appID, CFDictionaryRef exceptions, CFErrorRef *error);
+CF_RETURNS_RETAINED CFDictionaryRef _SecTrustStoreCopyCTExceptions(CFStringRef appID, CFErrorRef *error);
 
 __END_DECLS
 

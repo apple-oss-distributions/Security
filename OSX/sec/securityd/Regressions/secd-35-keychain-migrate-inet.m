@@ -38,14 +38,14 @@
 #include <AssertMacros.h>
 
 #if TARGET_OS_IPHONE && USE_KEYSTORE
-#include <libaks.h>
+#include "OSX/utilities/SecAKSWrappers.h"
 
 #include "SecdTestKeychainUtilities.h"
 
 #include "ios8-inet-keychain-2.h"
 
 void SecAccessGroupsSetCurrent(CFArrayRef accessGroups);
-CFArrayRef SecAccessGroupsGetCurrent();
+CFArrayRef SecAccessGroupsGetCurrent(void);
 
 int secd_35_keychain_migrate_inet(int argc, char *const *argv)
 {
@@ -67,21 +67,21 @@ int secd_35_keychain_migrate_inet(int argc, char *const *argv)
             SecItemServerSetKeychainChangedNotification("com.apple.secdtests.keychainchanged");
 
             /* Create and lock custom keybag */
-            ok(kIOReturnSuccess==aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &keybag), "create keybag");
-            ok(kIOReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
+            ok(kAKSReturnSuccess==aks_create_bag(passcode, passcode_len, kAppleKeyStoreDeviceBag, &keybag), "create keybag");
+            ok(kAKSReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
             ok(!(state&keybag_state_locked), "keybag unlocked");
             SecItemServerSetKeychainKeybag(keybag);
 
             /* lock */
-            ok(kIOReturnSuccess==aks_lock_bag(keybag), "lock keybag");
-            ok(kIOReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
+            ok(kAKSReturnSuccess==aks_lock_bag(keybag), "lock keybag");
+            ok(kAKSReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
             ok(state&keybag_state_locked, "keybag locked");
         });
 
         CFReleaseSafe(keychain_path_cf);
     });
 
-    CFArrayRef old_ag = SecAccessGroupsGetCurrent();
+    CFArrayRef old_ag = CFRetainSafe(SecAccessGroupsGetCurrent());
     CFMutableArrayRef test_ag = CFArrayCreateMutableCopy(NULL, 0, old_ag);
     CFArrayAppendValue(test_ag, CFSTR("com.apple.cfnetwork"));
     SecAccessGroupsSetCurrent(test_ag);
@@ -106,8 +106,8 @@ int secd_35_keychain_migrate_inet(int argc, char *const *argv)
     CFTypeRef results = NULL;
     is_status(SecItemCopyMatching(query, &results), errSecInteractionNotAllowed);
 
-    ok(kIOReturnSuccess==aks_unlock_bag(keybag, passcode, passcode_len), "lock keybag");
-    ok(kIOReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
+    ok(kAKSReturnSuccess==aks_unlock_bag(keybag, passcode, passcode_len), "lock keybag");
+    ok(kAKSReturnSuccess==aks_get_lock_state(keybag, &state), "get keybag state");
     ok(!(state&keybag_state_locked), "keybag unlocked");
 
     // We should be able to query 2 inet items from the DB here.  But the database is encrypted
@@ -121,6 +121,7 @@ int secd_35_keychain_migrate_inet(int argc, char *const *argv)
 
     // Reset server accessgroups.
     SecAccessGroupsSetCurrent(old_ag);
+    CFReleaseNull(old_ag);
     CFReleaseSafe(test_ag);
 
     CFReleaseSafe(results);

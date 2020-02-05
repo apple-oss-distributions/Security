@@ -38,6 +38,7 @@
 
 #include <Security/SecIdentityPriv.h>
 #include <Security/SecCertificatePriv.h>
+#include <utilities/SecCFRelease.h>
 
 #include "test-certs/eckey.h"
 #include "test-certs/eccert.h"
@@ -90,9 +91,9 @@ CFArrayRef CF_RETURNS_RETAINED chain_from_der(bool ecdsa, const unsigned char *p
     require(items = CFArrayCreate(kCFAllocatorDefault, (const void **)&ident, 1, &kCFTypeArrayCallBacks), errOut);
 
 errOut:
-    CFReleaseSafe(pkey);
-    CFReleaseSafe(cert);
-    CFReleaseSafe(ident);
+    CFReleaseNull(pkey);
+    CFReleaseNull(cert);
+    CFReleaseNull(ident);
     return items;
 }
 
@@ -110,7 +111,7 @@ CFArrayRef trusted_roots(void)
     require(roots = CFArrayCreate(kCFAllocatorDefault, (const void **)&cert, 1, &kCFTypeArrayCallBacks), errOut);
 
 errOut:
-    CFReleaseSafe(cert);
+    CFReleaseNull(cert);
     return roots;
 }
 
@@ -151,8 +152,6 @@ const char *ciphersuite_name(SSLCipherSuite cs)
             /* Server provided RSA certificate for key exchange. */
             C(TLS_RSA_WITH_NULL_MD5)
             C(TLS_RSA_WITH_NULL_SHA)
-            C(TLS_RSA_WITH_RC4_128_MD5)
-            C(TLS_RSA_WITH_RC4_128_SHA)
             C(TLS_RSA_WITH_3DES_EDE_CBC_SHA)
             C(TLS_RSA_WITH_AES_128_CBC_SHA)
             C(TLS_RSA_WITH_AES_256_CBC_SHA)
@@ -183,7 +182,6 @@ const char *ciphersuite_name(SSLCipherSuite cs)
             C(TLS_DHE_RSA_WITH_AES_256_CBC_SHA256)
 
             /* Completely anonymous Diffie-Hellman */
-            C(TLS_DH_anon_WITH_RC4_128_MD5)
             C(TLS_DH_anon_WITH_3DES_EDE_CBC_SHA)
             C(TLS_DH_anon_WITH_AES_128_CBC_SHA)
             C(TLS_DH_anon_WITH_AES_256_CBC_SHA)
@@ -207,27 +205,22 @@ const char *ciphersuite_name(SSLCipherSuite cs)
 
             /* ECDSA addenda, RFC 4492 */
             C(TLS_ECDH_ECDSA_WITH_NULL_SHA)
-            C(TLS_ECDH_ECDSA_WITH_RC4_128_SHA)
             C(TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA)
             C(TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA)
             C(TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA)
             C(TLS_ECDHE_ECDSA_WITH_NULL_SHA)
-            C(TLS_ECDHE_ECDSA_WITH_RC4_128_SHA)
             C(TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA)
             C(TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA)
             C(TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA)
             C(TLS_ECDH_RSA_WITH_NULL_SHA)
-            C(TLS_ECDH_RSA_WITH_RC4_128_SHA)
             C(TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA)
             C(TLS_ECDH_RSA_WITH_AES_128_CBC_SHA)
             C(TLS_ECDH_RSA_WITH_AES_256_CBC_SHA)
             C(TLS_ECDHE_RSA_WITH_NULL_SHA)
-            C(TLS_ECDHE_RSA_WITH_RC4_128_SHA)
             C(TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA)
             C(TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA)
             C(TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA)
             C(TLS_ECDH_anon_WITH_NULL_SHA)
-            C(TLS_ECDH_anon_WITH_RC4_128_SHA)
             C(TLS_ECDH_anon_WITH_3DES_EDE_CBC_SHA)
             C(TLS_ECDH_anon_WITH_AES_128_CBC_SHA)
             C(TLS_ECDH_anon_WITH_AES_256_CBC_SHA)
@@ -267,7 +260,6 @@ const char *ciphersuite_name(SSLCipherSuite cs)
             C(SSL_RSA_WITH_3DES_EDE_CBC_MD5)
             C(SSL_NO_SUCH_CIPHERSUITE)
 
-            C(SSL_RSA_EXPORT_WITH_RC4_40_MD5)
             C(SSL_RSA_EXPORT_WITH_RC2_CBC_40_MD5)
             C(SSL_RSA_WITH_IDEA_CBC_SHA)
             C(SSL_RSA_EXPORT_WITH_DES40_CBC_SHA)
@@ -280,7 +272,6 @@ const char *ciphersuite_name(SSLCipherSuite cs)
             C(SSL_DHE_DSS_WITH_DES_CBC_SHA)
             C(SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA)
             C(SSL_DHE_RSA_WITH_DES_CBC_SHA)
-            C(SSL_DH_anon_EXPORT_WITH_RC4_40_MD5)
             C(SSL_DH_anon_EXPORT_WITH_DES40_CBC_SHA)
             C(SSL_DH_anon_WITH_DES_CBC_SHA)
             C(SSL_FORTEZZA_DMS_WITH_NULL_SHA)
@@ -291,7 +282,6 @@ const char *ciphersuite_name(SSLCipherSuite cs)
             C(TLS_PSK_WITH_AES_128_CBC_SHA256)
             C(TLS_PSK_WITH_AES_256_CBC_SHA)
             C(TLS_PSK_WITH_AES_128_CBC_SHA)
-            C(TLS_PSK_WITH_RC4_128_SHA)
             C(TLS_PSK_WITH_3DES_EDE_CBC_SHA)
             C(TLS_PSK_WITH_NULL_SHA384)
             C(TLS_PSK_WITH_NULL_SHA256)

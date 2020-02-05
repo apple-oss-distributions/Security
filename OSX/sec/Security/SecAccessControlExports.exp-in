@@ -2,11 +2,14 @@
 //  sec
 //
 
+_SecAccessConstraintCreateBiometryAny
+_SecAccessConstraintCreateBiometryCurrentSet
 _SecAccessConstraintCreateKofN
 _SecAccessConstraintCreatePasscode
 _SecAccessConstraintCreatePolicy
 _SecAccessConstraintCreateTouchIDAny
 _SecAccessConstraintCreateTouchIDCurrentSet
+_SecAccessConstraintCreateWatch
 _SecAccessControlAddConstraintForOperation
 _SecAccessControlCopyData
 _SecAccessControlCreate

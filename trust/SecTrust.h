@@ -33,6 +33,7 @@
 #include <Security/SecBase.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <AvailabilityMacros.h>
+#include <Availability.h>
 
 __BEGIN_DECLS
 
@@ -43,7 +44,7 @@ CF_IMPLICIT_BRIDGING_ENABLED
     @typedef SecTrustResultType
     @abstract Specifies the trust result type.
     @discussion SecTrustResultType results have two dimensions.  They specify
-    both whether evaluation suceeded and whether this is because of a user
+    both whether evaluation succeeded and whether this is because of a user
     decision.  The commonly expected result is kSecTrustResultUnspecified,
     which indicates a positive result that wasn't decided by the user.  The
     common failure is kSecTrustResultRecoverableTrustFailure, which means a
@@ -268,13 +269,14 @@ OSStatus SecTrustGetNetworkFetchAllowed(SecTrustRef trust,
     @abstract Sets the anchor certificates for a given trust.
     @param trust A reference to a trust object.
     @param anchorCertificates An array of anchor certificates.
+    Pass NULL to restore the default set of anchor certificates.
     @result A result code.  See "Security Error Codes" (SecBase.h).
     @discussion Calling this function without also calling
     SecTrustSetAnchorCertificatesOnly() will disable trusting any
     anchors other than the ones in anchorCertificates.
  */
 OSStatus SecTrustSetAnchorCertificates(SecTrustRef trust,
-    CFArrayRef anchorCertificates)
+    CFArrayRef __nullable anchorCertificates)
     __OSX_AVAILABLE_STARTING(__MAC_10_3, __IPHONE_2_0);
 
 /*!
@@ -348,8 +350,12 @@ CFAbsoluteTime SecTrustGetVerifyTime(SecTrustRef trust)
     dispatch queue, or in a separate thread from your application's main
     run loop. Alternatively, you can use the SecTrustEvaluateAsync function.
  */
-OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType * __nullable result)
-    __OSX_AVAILABLE_STARTING(__MAC_10_3, __IPHONE_2_0);
+OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result)
+    API_DEPRECATED_WITH_REPLACEMENT("SecTrustEvaluateWithError",
+                                    macos(10.3, 10.15),
+                                    ios(2.0, 13.0),
+                                    watchos(1.0, 6.0),
+                                    tvos(2.0, 13.0));
 
 #ifdef __BLOCKS__
 /*!
@@ -364,8 +370,72 @@ OSStatus SecTrustEvaluate(SecTrustRef trust, SecTrustResultType * __nullable res
  */
 OSStatus SecTrustEvaluateAsync(SecTrustRef trust,
     dispatch_queue_t __nullable queue, SecTrustCallback result)
-    __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_7_0);
+    API_DEPRECATED_WITH_REPLACEMENT("SecTrustEvaluateAsyncWithError",
+                                macos(10.7, 10.15),
+                                ios(7.0, 13.0),
+                                watchos(1.0, 6.0),
+                                tvos(7.0, 13.0));
 #endif
+
+/*!
+     @function SecTrustEvaluateWithError
+     @abstract Evaluates a trust reference synchronously.
+     @param trust A reference to the trust object to evaluate.
+     @param error A pointer to an error object
+     @result A boolean value indicating whether the certificate is trusted
+     @discussion This function will completely evaluate trust before returning,
+     possibly including network access to fetch intermediate certificates or to
+     perform revocation checking. Since this function can block during those
+     operations, you should call it from within a function that is placed on a
+     dispatch queue, or in a separate thread from your application's main
+     run loop.
+     If the certificate is trusted and the result is true, the error will be set to NULL.
+     If the certificate is not trusted or the evaluation was unable to complete, the result
+     will be false and the error will be set with a description of the failure.
+     The error contains a code for the most serious error encountered (if multiple trust
+     failures occurred). The localized description indicates the certificate with the most
+     serious problem and the type of error. The underlying error contains a localized
+     description of each certificate in the chain that had an error and all errors found
+     with that certificate.
+ */
+__attribute__((warn_unused_result)) bool
+SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef _Nullable * _Nullable CF_RETURNS_RETAINED error)
+    API_AVAILABLE(macos(10.14), ios(12.0), tvos(12.0), watchos(5.0));
+
+#ifdef __BLOCKS__
+/*!
+     @typedef SecTrustWithErrorCallback
+     @abstract Delivers the result from an asynchronous trust evaluation.
+     @param trustRef A reference to the trust object which has been evaluated.
+     @param result A boolean value indicating whether the certificate is trusted.
+     @param error An error if the trust evaluation failed.
+ */
+typedef void (^SecTrustWithErrorCallback)(SecTrustRef trustRef, bool result, CFErrorRef _Nullable error);
+
+/*!
+    @function SecTrustEvaluateAsyncWithError
+    @abstract Evaluates a trust reference asynchronously.
+    @param trust A reference to the trust object to evaluate.
+    @param queue A dispatch queue on which the result callback will be executed. Note that this
+    function MUST be called from that queue.
+    @param result A SecTrustWithErrorCallback block which will be executed when the trust evaluation
+    is complete.
+    The block is guaranteed to be called exactly once when the result code is errSecSuccess, and not
+    called otherwise. Note that this block may be called synchronously inline if no asynchronous
+    operations are required.
+    @result A result code. See "Security Error Codes" (SecBase.h).
+    @discussion If the certificate is trusted, the callback will return a result parameter of true
+    and the error will be set to NULL.
+    If the certificate is not trusted or the evaluation was unable to complete, the result parameter
+    will be false and the error will be set with a description of the failure. The error contains a
+    code for the most serious error encountered (if multiple trust failures occurred). The localized
+    description indicates the certificate with the most serious problem and the type of error. The
+    underlying error contains a localized description of each certificate in the chain that had an
+    error and all errors found with that certificate.
+ */
+OSStatus SecTrustEvaluateAsyncWithError(SecTrustRef trust, dispatch_queue_t queue, SecTrustWithErrorCallback result)
+    API_AVAILABLE(macos(10.15), ios(13.0), tvos(13.0), watchos(6.0));
+#endif /* __BLOCKS__ */
 
 /*!
     @function SecTrustGetTrustResult
@@ -516,13 +586,26 @@ CFDictionaryRef SecTrustCopyResult(SecTrustRef trust)
 OSStatus SecTrustSetOCSPResponse(SecTrustRef trust, CFTypeRef __nullable responseData)
     __OSX_AVAILABLE_STARTING(__MAC_10_9, __IPHONE_7_0);
 
+/*!
+     @function SecTrustSignedCertificateTimestamps
+     @abstract Attach SignedCertificateTimestamp data to a trust object.
+     @param trust A reference to a trust object.
+     @param sctArray is a CFArray of CFData objects each containing a SCT (per RFC 6962).
+     @result A result code. See "Security Error Codes" (SecBase.h).
+     @discussion Allows the caller to provide SCT data (which may be
+     obtained during a TLS/SSL handshake, per RFC 6962) as input to a trust
+     evaluation.
+ */
+OSStatus SecTrustSetSignedCertificateTimestamps(SecTrustRef trust, CFArrayRef __nullable sctArray)
+    API_AVAILABLE(macos(10.14.2), ios(12.1.1), tvos(12.1.1), watchos(5.1.1));
+
 CF_IMPLICIT_BRIDGING_DISABLED
 CF_ASSUME_NONNULL_END
 
 /*
  *  Legacy functions (OS X only)
  */
-#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+#if TARGET_OS_OSX
 #include <Security/cssmtype.h>
 #include <Security/cssmapple.h>
 

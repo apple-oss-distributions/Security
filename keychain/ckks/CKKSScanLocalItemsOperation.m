@@ -23,23 +23,32 @@
 
 #if OCTAGON
 
+#import "keychain/ckks/CKKSAnalytics.h"
 #import "keychain/ckks/CKKSKeychainView.h"
 #import "keychain/ckks/CKKSNearFutureScheduler.h"
 #import "keychain/ckks/CKKSScanLocalItemsOperation.h"
 #import "keychain/ckks/CKKSMirrorEntry.h"
+#import "keychain/ckks/CKKSIncomingQueueEntry.h"
 #import "keychain/ckks/CKKSOutgoingQueueEntry.h"
 #import "keychain/ckks/CKKSGroupOperation.h"
 #import "keychain/ckks/CKKSKey.h"
 #import "keychain/ckks/CKKSViewManager.h"
 #import "keychain/ckks/CKKSManifest.h"
+#import "keychain/ckks/CKKSItemEncrypter.h"
+
+#import "CKKSPowerCollection.h"
 
 #include <securityd/SecItemSchema.h>
 #include <securityd/SecItemServer.h>
 #include <securityd/SecItemDb.h>
 #include <Security/SecItemPriv.h>
+#include <utilities/SecInternalReleasePriv.h>
+#import <IMCore/IMCore_Private.h>
+#import <IMCore/IMCloudKitHooks.h>
 
 @interface CKKSScanLocalItemsOperation ()
 @property CKOperationGroup* ckoperationGroup;
+@property (assign) NSUInteger processedItems;
 @end
 
 @implementation CKKSScanLocalItemsOperation
@@ -65,7 +74,9 @@
         return;
     }
 
-    [ckks dispatchSyncWithAccountQueue: ^bool{
+    [ckks.launch addEvent:@"scan-local-items"];
+
+    [ckks dispatchSyncWithAccountKeys: ^bool{
         if(self.cancelled) {
             ckksnotice("ckksscan", ckks, "CKKSScanLocalItemsOperation cancelled, quitting");
             return false;
@@ -78,7 +89,10 @@
         __block CFErrorRef cferror = NULL;
         __block NSError* error = nil;
         __block bool newEntries = false;
-        
+
+        // We want this set to be empty after scanning, or else the keychain (silently) dropped something on the floor
+        NSMutableSet<NSString*>* mirrorUUIDs = [NSMutableSet setWithArray:[CKKSMirrorEntry allUUIDs:ckks.zoneID error:&error]];
+
         // Must query per-class, so:
         const SecDbSchema *newSchema = current_schema();
         for (const SecDbClass *const *class = newSchema->classes; *class != NULL; class++) {
@@ -112,6 +126,8 @@
             ok = kc_with_dbt(true, &cferror, ^(SecDbConnectionRef dbt) {
                 return SecDbItemQuery(q, NULL, dbt, &cferror, ^(SecDbItemRef item, bool *stop) {
                     ckksnotice("ckksscan", ckks, "scanning item: %@", item);
+
+                    self.processedItems += 1;
 
                     SecDbItemRef itemToSave = NULL;
 
@@ -174,14 +190,21 @@
                             if ([CKKSManifest shouldSyncManifests]) {
                                 [itemsForManifest addObject:ckme.item];
                             }
+                            [mirrorUUIDs removeObject:uuid];
                             ckksinfo("ckksscan", ckks, "Existing mirror entry with UUID %@", uuid);
-                            return;
+
+                            if([self areEquivalent:item ckksItem:ckme.item]) {
+                                // Fair enough.
+                                return;
+                            } else {
+                                ckksnotice("ckksscan", ckks, "Existing mirror entry with UUID %@ does not match local item", uuid);
+                            }
                         }
 
                         // We don't care about the oqe state here, just that one exists
                         CKKSOutgoingQueueEntry* oqe = [CKKSOutgoingQueueEntry tryFromDatabase: uuid zoneID:ckks.zoneID error: &error];
                         if(oqe != nil) {
-                            ckksinfo("ckksscan", ckks, "Existing outgoing queue entry with UUID %@", uuid);
+                            ckksnotice("ckksscan", ckks, "Existing outgoing queue entry with UUID %@", uuid);
                             // If its state is 'new', mark down that we've seen new entries that need processing
                             newEntries |= !![oqe.state isEqualToString: SecCKKSStateNew];
                             return;
@@ -202,12 +225,12 @@
                         return;
                     }
 
-                    ckksnotice("ckksscan", ckks, "Syncing new item: %@ %@", oqe, itemToSave);
+                    ckksnotice("ckksscan", ckks, "Syncing new item: %@", oqe);
                     CFReleaseNull(itemToSave);
 
                     [oqe saveToDatabase: &error];
                     if(error) {
-                        ckkserror("ckksscan", ckks, "Need to upload %@ %@, but can't save to database: %@", item, oqe, error);
+                        ckkserror("ckksscan", ckks, "Need to upload %@, but can't save to database: %@", oqe, error);
                         self.error = error;
                         return;
                     }
@@ -237,7 +260,47 @@
                 continue;
             }
         }
-        
+
+        // We're done checking local keychain for extra items, now let's make sure the mirror doesn't have extra items, either
+        if (mirrorUUIDs.count > 0) {
+            ckksnotice("ckksscan", ckks, "keychain missing %lu items from mirror, proceeding with queue scanning", (unsigned long)mirrorUUIDs.count);
+            [mirrorUUIDs minusSet:[NSSet setWithArray:[CKKSIncomingQueueEntry allUUIDs:ckks.zoneID error:&error]]];
+            if (error) {
+                ckkserror("ckksscan", ckks, "unable to inspect incoming queue: %@", error);
+                self.error = error;
+                return false;
+            }
+
+            [mirrorUUIDs minusSet:[NSSet setWithArray:[CKKSOutgoingQueueEntry allUUIDs:ckks.zoneID error:&error]]];
+            if (error) {
+                ckkserror("ckksscan", ckks, "unable to inspect outgoing queue: %@", error);
+                self.error = error;
+                return false;
+            }
+
+            if (mirrorUUIDs.count > 0) {
+                ckkserror("ckksscan", ckks, "BUG: keychain missing %lu items from mirror and/or queues: %@", (unsigned long)mirrorUUIDs.count, mirrorUUIDs);
+                self.missingLocalItemsFound = mirrorUUIDs.count;
+
+                [[CKKSAnalytics logger] logMetric:[NSNumber numberWithUnsignedInteger:mirrorUUIDs.count] withName:CKKSEventMissingLocalItemsFound];
+
+                for (NSString* uuid in mirrorUUIDs) {
+                    CKKSMirrorEntry* ckme = [CKKSMirrorEntry tryFromDatabase:uuid zoneID:ckks.zoneID error:&error];
+                    [ckks _onqueueCKRecordChanged:ckme.item.storedCKRecord resync:true];
+                }
+
+                // And, if you're not in the tests, try to collect a sysdiagnose I guess?
+                // <rdar://problem/36166435> Re-enable IMCore autosysdiagnose capture to securityd
+                //if(SecIsInternalRelease() && !SecCKKSTestsEnabled()) {
+                //    [[IMCloudKitHooks sharedInstance] tryToAutoCollectLogsWithErrorString:@"35810558" sendLogsTo:@"rowdy_bot@icloud.com"];
+                //}
+            } else {
+                ckksnotice("ckksscan", ckks, "No missing local items found");
+            }
+        }
+
+        [CKKSPowerCollection CKKSPowerEvent:kCKKSPowerEventScanLocalItems  zone:ckks.zoneName count:self.processedItems];
+
         if ([CKKSManifest shouldSyncManifests]) {
             // TODO: this manifest needs to incorporate peer manifests
             CKKSEgoManifest* manifest = [CKKSEgoManifest newManifestForZone:ckks.zoneName withItems:itemsForManifest peerManifestIDs:@[] currentItems:@{} error:&error];
@@ -265,8 +328,57 @@
             [ckks processOutgoingQueue:self.ckoperationGroup];
         }
 
+        if(self.missingLocalItemsFound > 0) {
+            [ckks processIncomingQueue:false];
+        }
+
+        ckksnotice("ckksscan", ckks, "Completed scan");
+        ckks.droppedItems = false;
         return true;
     }];
+}
+
+- (BOOL)areEquivalent:(SecDbItemRef)item ckksItem:(CKKSItem*)ckksItem
+{
+    CKKSKeychainView* ckks = self.ckks;
+
+    NSError* localerror = nil;
+    NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:ckksItem error:&localerror];
+    if(!attributes || localerror) {
+        ckksnotice("ckksscan", ckks, "Could not decrypt item for comparison: %@", localerror);
+        return YES;
+    }
+
+    CFErrorRef cferror = NULL;
+    NSDictionary* objdict = (NSMutableDictionary*)CFBridgingRelease(SecDbItemCopyPListWithMask(item, kSecDbSyncFlag, &cferror));
+    localerror = (NSError*)CFBridgingRelease(cferror);
+
+    if(!objdict || localerror) {
+        ckksnotice("ckksscan", ckks, "Could not get item contents for comparison: %@", localerror);
+
+        // Fail open: assert that this item doesn't match
+        return NO;
+    }
+
+    for(id key in objdict) {
+        // Okay, but seriously storing dates as floats was a mistake.
+        // Don't compare cdat and mdat, as they'll usually be different.
+        // Also don't compare the sha1, as it hashes that double.
+        if([key isEqual:(__bridge id)kSecAttrCreationDate] ||
+           [key isEqual:(__bridge id)kSecAttrModificationDate] ||
+           [key isEqual:(__bridge id)kSecAttrSHA1]) {
+            continue;
+        }
+
+        id value = objdict[key];
+        id attributesValue = attributes[key];
+
+        if(![value isEqual:attributesValue]) {
+            return NO;
+        }
+    }
+
+    return YES;
 }
 
 @end;

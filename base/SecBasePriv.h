@@ -94,11 +94,16 @@ enum
 
     errSecAuthNeeded             = -25330,  /* Auth is needed before the requested action can be performed.  An array of
                                                constraints to be fulfilled is passed inside error.userInfo's 'cons' key. */
+
+    errSecPeersNotAvailable      = -25336,  /* No peers in the circle are available/online. */
+    errSecErrorStringNotAvailable= -25337,  /* Unable to load error string for error */
+
+    /* UNUSED enums */
     errSecDeviceIDNeeded         = -25332,  /* Cannot send IDS messages without having our own IDS ID. */
     errSecIDSNotRegistered       = -25333,  /* IDS is not set up or devices are not registered/available within an IDS account. */
     errSecFailedToSendIDSMessage = -25334,  /* Failed to send IDS message. */
     errSecDeviceIDNoMatch        = -25335,  /* The provided device ID does not match any device IDs in the ids account. */
-    errSecPeersNotAvailable      = -25336,  /* No peers in the circle are available/online. */
+    errSecTimedOut               = -25336,  /* Timed out waiting for task */
 };
 
 // Guard for CFNetwork
@@ -110,7 +115,19 @@ const char *cssmErrorString(CSSM_RETURN error)
 #endif
 
 OSStatus SecKeychainErrFromOSStatus(OSStatus osStatus)
-    __OSX_AVAILABLE_STARTING(__MAC_10_4, __IPHONE_NA);
+    API_AVAILABLE(macos(10.4), ios(NA), bridgeos(NA));
+
+/*
+ * For used when running in root session as a agent/daemon and want to redirect to
+ * a background user session. This call must be called before any Sec calls are done,
+ * so very early in main().
+ *
+ * This only apply to MacOS where background session exists.
+ */
+void _SecSetSecuritydTargetUID(uid_t uid)
+    API_AVAILABLE(macos(10.13.5)) API_UNAVAILABLE(ios, iosmac, watchos, tvos, bridgeos);
+
+
 
 __END_DECLS
 

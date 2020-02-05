@@ -34,10 +34,9 @@
 #include <Security/SecRandom.h>
 #include <Security/SecImportExport.h>
 #include <Security/SecTrust.h>
-
-#if SEC_OS_IPHONE_INCLUDES
 #include <Security/SecSharedCredential.h>
-#endif
+#include <Security/SecProtocolOptions.h>
+#include <Security/SecProtocolMetadata.h>
 
 #if SEC_OS_OSX_INCLUDES
 #include <Security/AuthSession.h>
@@ -86,7 +85,6 @@
 /* Code Signing */
 #include <Security/SecStaticCode.h>
 #include <Security/SecCode.h>
-#include <Security/SecCodeHost.h>
 #include <Security/SecRequirement.h>
 #include <Security/SecTask.h>
 

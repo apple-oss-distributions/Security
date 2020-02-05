@@ -45,15 +45,19 @@ ClientIdentification::ClientIdentification()
 // Initialize the ClientIdentification.
 // This creates a process-level code object for the client.
 //
-void ClientIdentification::setup(pid_t pid)
+void ClientIdentification::setup(Security::CommonCriteria::AuditToken const &audit)
 {
-	StLock<Mutex> _(mLock);
-	StLock<Mutex> __(mValidityCheckLock);
-    OSStatus rc = SecCodeCreateWithPID(pid, kSecCSDefaultFlags, &mClientProcess.aref());
-	if (rc)
-		secinfo("clientid", "could not get code for process %d: OSStatus=%d",
-			pid, int32_t(rc));
-	mGuests.erase(mGuests.begin(), mGuests.end());
+    StLock<Mutex> _(mLock);
+    StLock<Mutex> __(mValidityCheckLock);
+    
+    audit_token_t const token = audit.auditToken();
+    OSStatus rc = SecCodeCreateWithAuditToken(&token, kSecCSDefaultFlags, &mClientProcess.aref());
+    
+    if (rc) {
+        secerror("could not get code for process %d: OSStatus=%d",
+                audit.pid(), int32_t(rc));
+    }
+    mGuests.erase(mGuests.begin(), mGuests.end());
 }
 
 
@@ -165,9 +169,11 @@ std::string ClientIdentification::partitionIdForProcess(SecStaticCodeRef code)
 {
 	static CFStringRef const appleReq = CFSTR("anchor apple");
 	static CFStringRef const masReq = CFSTR("anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.9]");
-	static CFStringRef const developmentOrDevIDReq = CFSTR("anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13]"
-														   " or "
-														   "anchor apple generic and certificate leaf[subject.CN] = \"Mac Developer:\"* and certificate 1[field.1.2.840.113635.100.6.2.1]");
+    static CFStringRef const developmentOrDevIDReq = CFSTR("anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13]" // Developer ID CA and Leaf
+                                                           " or "
+                                                           "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.1] and certificate leaf[field.1.2.840.113635.100.6.1.12]" // WWDR CA and Mac Development Leaf
+                                                           " or "
+                                                           "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.1] and certificate leaf[field.1.2.840.113635.100.6.1.7]"); // WWDR CA and  Mac Distribution Leaf
 	static SecRequirementRef apple;
 	static SecRequirementRef mas;
 	static SecRequirementRef developmentOrDevID;

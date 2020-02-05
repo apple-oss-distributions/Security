@@ -330,7 +330,6 @@ void finalize_connection(void *not_used)
 static bool operation_put_dictionary(xpc_object_t event)
 {
     // PUT a set of objects into the KVS store. Return false if error
-    describeXPCObject("operation_put_dictionary event: ", event);
     xpc_object_t xvalue = xpc_dictionary_get_value(event, kMessageKeyValue);
     if (!xvalue) {
         return false;
@@ -349,9 +348,7 @@ static bool operation_put_dictionary(xpc_object_t event)
 
 static bool operation_get_v2(xpc_connection_t peer, xpc_object_t event)
 {
-    // GET a set of objects from the KVS store. Return false if error    
-    describeXPCObject("operation_get_v2 event: ", event);
-
+    // GET a set of objects from the KVS store. Return false if error
     xpc_object_t replyMessage = xpc_dictionary_create_reply(event);
     if (!replyMessage)
     {
@@ -393,7 +390,6 @@ static bool operation_get_v2(xpc_connection_t peer, xpc_object_t event)
             secdebug(PROXYXPCSCOPE, "get: key: %@, object: %@", key, object);
             xpc_object_t xobject = object ? _CFXPCCreateXPCObjectFromCFObject((__bridge CFTypeRef)object) : xpc_null_create();
             xpc_dictionary_set_value(returnedValues, [key UTF8String], xobject);
-            describeXPCObject("operation_get_v2: value from kvs: ", xobject);
         }];
     }
     else    // get all values from kvs
@@ -422,11 +418,16 @@ static void cloudkeychainproxy_event_handler(xpc_connection_t peer)
         return;
     }
 
+    xpc_object_t ent = xpc_connection_copy_entitlement_value(peer, "com.apple.CloudKeychainProxy.client");
+    if (ent == NULL || xpc_get_type(ent) != XPC_TYPE_BOOL || xpc_bool_get_value(ent) != true) {
+        secnotice(PROXYXPCSCOPE, "cloudkeychainproxy_event_handler: rejected client %d", xpc_connection_get_pid(peer));
+        xpc_connection_cancel(peer);
+        return;
+    }
+
     xpc_connection_set_target_queue(peer, [SharedProxy() ckdkvsproxy_queue]);
     xpc_connection_set_event_handler(peer, ^(xpc_object_t event)
     {
-        describeXPCObject("peer: ", peer); // Only describes under debug
-
         // We could handle other peer events (e.g.) disconnects,
         // but we don't keep per-client state so there is no need.
         if (xpc_get_type(event) == XPC_TYPE_DICTIONARY) {
@@ -468,7 +469,7 @@ int ckdproxymain(int argc, const char *argv[])
     UbiqitousKVSProxy* proxyID = SharedProxy();
 
     if (proxyID) {  // nothing bad happened when initializing
-        xpc_connection_t listener = xpc_connection_create_mach_service(xpcServiceName, NULL, XPC_CONNECTION_MACH_SERVICE_LISTENER);
+        xpc_connection_t listener = xpc_connection_create_mach_service(kCKPServiceName, NULL, XPC_CONNECTION_MACH_SERVICE_LISTENER);
         xpc_connection_set_event_handler(listener, ^(xpc_object_t object){ cloudkeychainproxy_event_handler(object); });
 
         // It looks to me like there is insufficient locking to allow a request to come in on the XPC connection while doing the initial all items.

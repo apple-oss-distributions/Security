@@ -204,7 +204,7 @@ bool Listener::testPredicate(const std::function<bool(const Listener& listener)>
 SharedMemoryListener::SharedMemoryListener(const char* segmentName, SegmentOffsetType segmentSize, uid_t uid, gid_t gid) :
 	Listener (kNotificationDomainAll, kNotificationAllEvents),
 	SharedMemoryServer (segmentName, segmentSize, uid, gid),
-	mActive (false)
+	mActive (false), mMutex()
 {
 }
 
@@ -299,10 +299,10 @@ bool SharedMemoryListener::needsPrivacyFilter(Notification *notification) {
     case kSecUnlockEvent:           // kNotificationEventUnlocked
     case kSecPasswordChangedEvent:  // kNotificationEventPassphraseChanged
     case kSecDefaultChangedEvent:
-    case kSecDataAccessEvent:
     case kSecKeychainListChangedEvent:
     case kSecTrustSettingsChangedEvent:
         return false;
+    case kSecDataAccessEvent:
     case kSecAddEvent:
     case kSecDeleteEvent:
     case kSecUpdateEvent:
@@ -367,6 +367,7 @@ void SharedMemoryListener::notifyMe(Notification* notification)
 
     WriteMessage (notification->domain, notification->event, data, int_cast<size_t, UInt32>(length));
 
+    StLock<Mutex> lock(mMutex);
     if (!mActive)
     {
         Server::active().setTimer (this, Time::Interval(kServerWait));
@@ -376,9 +377,10 @@ void SharedMemoryListener::notifyMe(Notification* notification)
 
 void SharedMemoryListener::action ()
 {
+    StLock<Mutex> lock(mMutex);
+    notify_post (mSegmentName.c_str ());
 	secinfo("notify", "Posted notification to clients.");
     secdebug("MDSPRIVACY","[%03d] Posted notification to clients", mUID);
-	notify_post (mSegmentName.c_str ());
 	mActive = false;
 }
 

@@ -41,7 +41,7 @@ typedef CSSM_RETURN (CSSMAPI *CSSM_SPI_ModuleEventHandler)
      void *CssmNotifyCallbackCtx,
      uint32 SubserviceId,
      CSSM_SERVICE_TYPE ServiceType,
-     CSSM_MODULE_EVENT EventType);
+     CSSM_MODULE_EVENT EventType) DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 typedef uint32 CSSM_CONTEXT_EVENT;
 enum {
@@ -50,7 +50,7 @@ enum {
     CSSM_CONTEXT_EVENT_UPDATE = 3
 };
 
-typedef struct cssm_module_funcs {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_module_funcs {
     CSSM_SERVICE_TYPE ServiceType;
     uint32 NumberOfServiceFuncs;
     const CSSM_PROC_ADDR *ServiceFuncs;
@@ -74,7 +74,7 @@ typedef void *(CSSMAPI *CSSM_UPCALLS_CALLOC)
      size_t num,
      size_t size) DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
-typedef struct cssm_upcalls {
+typedef struct DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER cssm_upcalls {
     CSSM_UPCALLS_MALLOC malloc_func;
     CSSM_UPCALLS_FREE free_func;
     CSSM_UPCALLS_REALLOC realloc_func;
@@ -94,39 +94,6 @@ typedef struct cssm_upcalls {
          CSSM_FUNC_NAME_ADDR_PTR FunctionTable,
          uint32 NumFunctions);
 } CSSM_UPCALLS DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER, *CSSM_UPCALLS_PTR DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMSPI
-CSSM_SPI_ModuleLoad (const CSSM_GUID *CssmGuid,
-                     const CSSM_GUID *ModuleGuid,
-                     CSSM_SPI_ModuleEventHandler CssmNotifyCallback,
-                     void *CssmNotifyCallbackCtx)
-					DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMSPI
-CSSM_SPI_ModuleUnload (const CSSM_GUID *CssmGuid,
-                       const CSSM_GUID *ModuleGuid,
-                       CSSM_SPI_ModuleEventHandler CssmNotifyCallback,
-                       void *CssmNotifyCallbackCtx)
-					DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMSPI
-CSSM_SPI_ModuleAttach (const CSSM_GUID *ModuleGuid,
-                       const CSSM_VERSION *Version,
-                       uint32 SubserviceID,
-                       CSSM_SERVICE_TYPE SubServiceType,
-                       CSSM_ATTACH_FLAGS AttachFlags,
-                       CSSM_MODULE_HANDLE ModuleHandle,
-                       CSSM_KEY_HIERARCHY KeyHierarchy,
-                       const CSSM_GUID *CssmGuid,
-                       const CSSM_GUID *ModuleManagerGuid,
-                       const CSSM_GUID *CallerGuid,
-                       const CSSM_UPCALLS *Upcalls,
-                       CSSM_MODULE_FUNCS_PTR *FuncTbl)
-					DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
-
-CSSM_RETURN CSSMSPI
-CSSM_SPI_ModuleDetach (CSSM_MODULE_HANDLE ModuleHandle)
-	DEPRECATED_IN_MAC_OS_X_VERSION_10_7_AND_LATER;
 
 #pragma clang diagnostic pop
 

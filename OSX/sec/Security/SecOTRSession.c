@@ -46,10 +46,10 @@
 #include <Security/SecKeyPriv.h>
 
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
-#include <Security/SecureObjectSync/SOSCircle.h>
+#include "keychain/SecureObjectSync/SOSCircle.h"
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
-#include <Security/SecureObjectSync/SOSInternal.h>
-#include <Security/SecureObjectSync/SOSUserKeygen.h>
+#include "keychain/SecureObjectSync/SOSInternal.h"
+#include "keychain/SecureObjectSync/SOSUserKeygen.h"
 
 #include <AssertMacros.h>
 
@@ -122,7 +122,7 @@ static void SecOTRSExpireCachedKeysForPublicKey(SecOTRSessionRef session, SecOTR
     }
 }
 
-static void SecOTRGenerateNewProposedKey(SecOTRSessionRef session)
+static OSStatus SecOTRGenerateNewProposedKey(SecOTRSessionRef session)
 {
     SecOTRSExpireCachedKeysForFullKey(session, session->_myKey);
     
@@ -134,9 +134,11 @@ static void SecOTRGenerateNewProposedKey(SecOTRSessionRef session)
     }
     
     // Derive a new next key by regenerating over the old key.
-    SecFDHKNewKey(session->_myNextKey);
+    OSStatus ret = SecFDHKNewKey(session->_myNextKey);
     
     session->_keyID += 1;
+
+    return ret;
 }
 
 
@@ -484,6 +486,7 @@ static void SecOTRSFindKeysForMessage(SecOTRSessionRef session,
             emptyKeys = &session->_keyCache[0];
 
         }
+        assert(emptyKeys);
 
         // Fill in the entry.
         memcpy(emptyKeys->_fullKeyHash, SecFDHKGetHash(myKey), CCSHA1_OUTPUT_SIZE);
@@ -1026,7 +1029,7 @@ static void SecOTRAcceptNewRemoteKey(SecOTRSessionRef session, SecOTRPublicDHKey
     SecOTRSEnableTimeToRoll(session);
 }
 
-OSStatus SecOTRSetupInitialRemoteKey(SecOTRSessionRef session, SecOTRPublicDHKeyRef initialKey) {
+OSStatus SecOTRSetupInitialRemoteKey(SecOTRSessionRef session, SecOTRPublicDHKeyRef CF_CONSUMED initialKey) {
    
     bzero(session->_keyCache, sizeof(session->_keyCache));
     

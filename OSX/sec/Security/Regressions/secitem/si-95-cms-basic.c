@@ -49,7 +49,7 @@
 #include <security_asn1/seccomon.h>
 
 /* These tests are essentially the same as cms_01_basic in the OS X
- * libsecurity_smime_regressions. They are not unified into a single
+ * libsecurity_cms_regressions. They are not unified into a single
  * test because libsecurity_smime diverges so much between the platforms
  * that unifying the tests makes every third line a TARGET macro.
  */
@@ -345,7 +345,6 @@ static OSStatus decrypt_please(const uint8_t *data_to_decrypt, size_t length) {
                           status = errSecDecode, "Unable to get message contents");
 
     /* verify the output matches expected results */
-
     require_action_string(sizeof(encrypted_string) == content->Length, out,
                           status = -1, "Output size differs from expected");
     require_noerr_action_string(memcmp(encrypted_string, content->Data, content->Length), out,
@@ -392,7 +391,7 @@ static void sign_tests(SecIdentityRef identity, bool isRSA) {
 
 /* Verifying with attributes goes through a different code path than verifying without,
  * so we need to test both. */
-#define kNumberVerifyTests 12
+#define kNumberVerifyTests 13
 static void verify_tests(SecKeychainRef kc, bool isRsa) {
     /* no attributes */
     is(verify_please(kc, (isRsa) ? rsa_md5 : ec_md5,
@@ -419,6 +418,9 @@ static void verify_tests(SecKeychainRef kc, bool isRsa) {
     /***** Once more, with validation errors *****/
 
     /* no attributes */
+    is(verify_please(kc, (isRsa) ? rsa_sinfo_unknown_digest : ec_sinfo_unknown_digest,
+                     (isRsa) ? sizeof(rsa_sinfo_unknown_digest) : sizeof(ec_sinfo_unknown_digest)),
+       errSecInvalidDigestAlgorithm, "Verify unknown digest OID in signer info");
     is(invalidate_and_verify(kc, (isRsa) ? rsa_md5 : ec_md5,
                              (isRsa) ? sizeof(rsa_md5) : sizeof(ec_md5)),
        SECFailure, "Verify invalid MD5, no attributes");
@@ -446,7 +448,7 @@ static void encrypt_tests(SecCertificateRef certificate) {
     is(encrypt_please(certificate, SEC_OID_DES_EDE3_CBC, 192),
        errSecSuccess, "Encrypt with 3DES");
     is(encrypt_please(certificate, SEC_OID_RC2_CBC, 128),
-       SEC_ERROR_INVALID_ALGORITHM, "Encrypt with 128-bit RC2");
+       errSecDecode, "Encrypt with 128-bit RC2");
     is(encrypt_please(certificate, SEC_OID_AES_128_CBC, 128),
        errSecSuccess, "Encrypt with 128-bit AES");
     is(encrypt_please(certificate, SEC_OID_AES_192_CBC, 192),
@@ -462,7 +464,7 @@ static void decrypt_tests(bool isRsa) {
        errSecSuccess, "Decrypt 3DES");
     is(decrypt_please((isRsa) ? rsa_RC2 : ec_RC2,
                       (isRsa) ? sizeof(rsa_RC2) : sizeof(ec_RC2)),
-       SEC_ERROR_INVALID_ALGORITHM, "Decrypt 128-bit RC2");
+       errSecDecode, "Decrypt 128-bit RC2");
     is(decrypt_please((isRsa) ? rsa_AES_128 : ec_AES_128,
                       (isRsa) ? sizeof(rsa_AES_128) : sizeof(ec_AES_128)),
        errSecSuccess, "Decrypt 128-bit AES");

@@ -242,7 +242,7 @@ PublicKeyHash, kSecPublicKeyHashItemAttr, "PublicKeyHash", 0, NULL, BLOB)
 endNewClass()
 */
 
-CFArrayRef CERT_CertChainFromCert(SecCertificateRef cert, SECCertUsage usage, Boolean includeRoot)
+CFArrayRef CERT_CertChainFromCert(SecCertificateRef cert, SECCertUsage usage, Boolean includeRoot, Boolean mustIncludeRoot)
 {
     SecPolicyRef policy = NULL;
     CFArrayRef wrappedCert = NULL;
@@ -250,23 +250,28 @@ CFArrayRef CERT_CertChainFromCert(SecCertificateRef cert, SECCertUsage usage, Bo
     CFMutableArrayRef certs = NULL;
     OSStatus status = 0;
 
-    if (!cert)
-	goto loser;
+    if (!cert) {
+        goto loser;
+    }
 
     policy = SecPolicyCreateBasicX509();
-    if (!policy)
+    if (!policy) {
         goto loser;
+    }
 
     wrappedCert = CERT_CertListFromCert(cert);
     status = SecTrustCreateWithCertificates(wrappedCert, policy, &trust);
-    if (status)
-	goto loser;
+    if (status) {
+        goto loser;
+    }
 
     /* SecTrustEvaluate will build us the best chain available using its heuristics.
      * We'll ignore the trust result. */
-    status = SecTrustEvaluate(trust, NULL);
-    if (status)
-	goto loser;
+    SecTrustResultType result;
+    status = SecTrustEvaluate(trust, &result);
+    if (status) {
+        goto loser;
+    }
     CFIndex idx, count = SecTrustGetCertificateCount(trust);
 
     /* If we weren't able to build a chain to a self-signed cert, warn. */
@@ -275,29 +280,33 @@ CFArrayRef CERT_CertChainFromCert(SecCertificateRef cert, SECCertUsage usage, Bo
     if (lastCert && (0 == SecCertificateIsSelfSigned(lastCert, &isSelfSigned)) && !isSelfSigned) {
         CFStringRef commonName = NULL;
         (void)SecCertificateCopyCommonName(cert, &commonName);
-        fprintf(stderr, "Warning: unable to build chain to self-signed root for signer \"%s\"",
+        fprintf(stderr, "Warning: unable to build chain to self-signed root for signer \"%s\"\n",
                 commonName ? CFStringGetCStringPtr(commonName, kCFStringEncodingUTF8) : "");
         if (commonName) { CFRelease(commonName); }
+
+        // we don't have a root, so if the caller required one, fail
+        if (mustIncludeRoot) {
+            status = errSecCreateChainFailed;
+        }
     }
 
     /* We don't drop the root if there is only 1 certificate in the chain. */
-    if (!includeRoot && count > 1) { count--; }
+    if (isSelfSigned && !includeRoot && count > 1) {
+        count--;
+    }
 
     certs = CFArrayCreateMutable(kCFAllocatorDefault, count, &kCFTypeArrayCallBacks);
-    for(idx = 0; idx < count; idx++)
+    for(idx = 0; idx < count; idx++) {
         CFArrayAppendValue(certs, SecTrustGetCertificateAtIndex(trust, idx));
+    }
 
 loser:
-    if (policy)
-	CFRelease(policy);
-    if (wrappedCert)
-	CFRelease(wrappedCert);
-    if (trust)
-	CFRelease(trust);
-    if (certs && status)
-    {
-	CFRelease(certs);
-	certs = NULL;
+    if (policy) { CFRelease(policy); }
+    if (wrappedCert) { CFRelease(wrappedCert); }
+    if (trust) { CFRelease(trust); }
+    if (certs && status) {
+        CFRelease(certs);
+        certs = NULL;
     }
 
     return certs;
@@ -318,9 +327,7 @@ CFArrayRef CERT_DupCertList(CFArrayRef oldList)
 // Extract a public key object from a SubjectPublicKeyInfo
 SecPublicKeyRef CERT_ExtractPublicKey(SecCertificateRef cert)
 {
-    SecPublicKeyRef keyRef = NULL;
-    SecCertificateCopyPublicKey(cert,&keyRef);
-    return keyRef;
+    return SecCertificateCopyKey(cert);
 }
 
 SECStatus CERT_CheckCertUsage (SecCertificateRef cert,unsigned char usage)
@@ -357,9 +364,7 @@ SecCertificateRef CERT_FindCertByDERCert(SecKeychainRef keychainOrArray, const S
     return cert;
 }
 
-static int compareCssmData(
-    const CSSM_DATA *d1,
-    const CSSM_DATA *d2)
+int CERT_CompareCssmData(const CSSM_DATA *d1, const CSSM_DATA *d2)
 {
     if((d1 == NULL) || (d2 == NULL)) {
 	return 0;
@@ -398,11 +403,11 @@ SecCertificateRef CERT_FindCertByIssuerAndSN (CFTypeRef keychainOrArray,
 	    CFRelease(certificate);
 	    continue;
 	}
-	if(!compareCssmData(&isn->derIssuer, &issuerAndSN->derIssuer)) {
+	if(!CERT_CompareCssmData(&isn->derIssuer, &issuerAndSN->derIssuer)) {
 	    CFRelease(certificate);
 	    continue;
 	}
-	if(!compareCssmData(&isn->serialNumber, &issuerAndSN->serialNumber)) {
+	if(!CERT_CompareCssmData(&isn->serialNumber, &issuerAndSN->serialNumber)) {
 	    CFRelease(certificate);
 	    continue;
 	}
@@ -420,10 +425,10 @@ SecCertificateRef CERT_FindCertByIssuerAndSN (CFTypeRef keychainOrArray,
             if(isn == NULL) {
                 continue;
             }
-            if(!compareCssmData(&isn->derIssuer, &issuerAndSN->derIssuer)) {
+            if(!CERT_CompareCssmData(&isn->derIssuer, &issuerAndSN->derIssuer)) {
                 continue;
             }
-            if(!compareCssmData(&isn->serialNumber, &issuerAndSN->serialNumber)) {
+            if(!CERT_CompareCssmData(&isn->serialNumber, &issuerAndSN->serialNumber)) {
                 continue;
             }
             certificate = cert;
@@ -447,7 +452,7 @@ SecCertificateRef CERT_FindCertByIssuerAndSN (CFTypeRef keychainOrArray,
 SecCertificateRef CERT_FindCertBySubjectKeyID (CFTypeRef keychainOrArray, 
     CSSM_DATA_PTR *rawCerts, CFArrayRef certList, const SECItem *subjKeyID)
 {
-    SecCertificateRef certificate;
+    SecCertificateRef certificate = NULL;
     int numRawCerts = SecCmsArrayCount((void **)rawCerts);
     int dex;
     OSStatus ortn;
@@ -469,7 +474,7 @@ SecCertificateRef CERT_FindCertBySubjectKeyID (CFTypeRef keychainOrArray,
 	    /* not present */
 	    continue;
 	}
-	match = compareCssmData(subjKeyID, &skid);
+	match = CERT_CompareCssmData(subjKeyID, &skid);
 	SECITEM_FreeItem(&skid, PR_FALSE);
 	if(match) {
 	    /* got it */
@@ -578,7 +583,7 @@ SecCmsIssuerAndSN *CERT_GetCertIssuerAndSN(PRArenaPool *pl, SecCertificateRef ce
     SecCmsIssuerAndSN *certIssuerAndSN;
     SecCertificateRef certRef;
     SecCertificateRef itemImplRef = NULL;
-    CSSM_CL_HANDLE clHandle;
+    CSSM_CL_HANDLE clHandle = 0;
     CSSM_DATA_PTR serialNumber = 0;
     CSSM_DATA_PTR issuer = 0;
     CSSM_DATA certData = {};
@@ -591,9 +596,9 @@ SecCmsIssuerAndSN *CERT_GetCertIssuerAndSN(PRArenaPool *pl, SecCertificateRef ce
 
     /* Retain input cert and get pointer to its data */
     certRef = (SecCertificateRef)((cert) ? CFRetain(cert) : NULL);
-    status = SecCertificateGetData(certRef, &certData);
-    if (status)
+    if (!certRef || SecCertificateGetData(certRef, &certData)) {
         goto loser;
+    }
 #if 1
     // Convert unified input certRef to itemImpl instance.
     // note: must not release this instance while we're using its CL handle!

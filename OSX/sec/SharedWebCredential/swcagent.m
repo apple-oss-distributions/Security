@@ -47,7 +47,7 @@
 #include <MobileCoreServices/LSApplicationProxy.h>
 #endif
 
-#if TARGET_OS_IPHONE && !TARGET_OS_NANO
+#if TARGET_OS_IPHONE && !TARGET_OS_WATCH
 #include <dlfcn.h>
 #include <WebUI/WBUAutoFillData.h>
 
@@ -81,7 +81,12 @@ typedef WBSAutoFillDataClasses (*WBUAutoFillGetEnabledDataClasses_f)(void);
 #include <xpc/connection_private.h>
 #include <AssertMacros.h>
 
+#if TARGET_OS_IOS
 #import <LocalAuthentication/LocalAuthentication.h>
+#import <LocalAuthentication/LAContext+Private.h>
+#import <MobileGestalt.h>
+#import <ManagedConfiguration/MCProfileConnection.h>
+#endif
 
 static NSString *swca_string_table = @"SharedWebCredentials";
 
@@ -265,7 +270,7 @@ static CFStringRef SWCAGetOperationDescription(enum SWCAXPCOperation op)
     }
 }
 
-#if !TARGET_IPHONE_SIMULATOR && TARGET_OS_IPHONE && !TARGET_OS_NANO
+#if !TARGET_OS_SIMULATOR && TARGET_OS_IPHONE && !TARGET_OS_WATCH
 static dispatch_once_t                      sWBUInitializeOnce	= 0;
 static void *                               sWBULibrary			= NULL;
 static WBUAutoFillGetEnabledDataClasses_f	sWBUAutoFillGetEnabledDataClasses_f	= NULL;
@@ -293,10 +298,10 @@ static OSStatus _SecWBUEnsuredInitialized(void)
 
 static bool SWCAIsAutofillEnabled(void)
 {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
     // Assume the setting's on in the simulator: <rdar://problem/17057358> WBUAutoFillGetEnabledDataClasses call failing in the Simulator
     return true;
-#elif TARGET_OS_IPHONE && !TARGET_OS_NANO
+#elif TARGET_OS_IPHONE && !TARGET_OS_WATCH
     OSStatus status = _SecWBUEnsuredInitialized();
     if (status) { return false; }
     WBSAutoFillDataClasses autofill = sWBUAutoFillGetEnabledDataClasses_f();
@@ -313,7 +318,7 @@ static NSBundle* swca_get_security_bundle()
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSString *security_path = @"/System/Library/Frameworks/Security.framework";
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
         security_path = [NSString stringWithFormat:@"%s%@", getenv("IPHONE_SIMULATOR_ROOT"), security_path];
 #endif
         security_bundle = [NSBundle bundleWithPath:security_path];
@@ -703,15 +708,25 @@ static void swca_xpc_dictionary_handler(const xpc_connection_t connection, xpc_o
                     CFTypeRef result = NULL;
                     // select a dictionary from an input array of dictionaries
                     if (swca_select_item(items, client, accessGroups, &result, &error) && result) {
+#if TARGET_OS_IOS
                         LAContext *ctx = [LAContext new];
-                        NSString *subTitle = NSLocalizedStringFromTableInBundle(@"SWC_FILLPWD", swca_string_table, swca_get_security_bundle(), nil);
-                        dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-                        [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthentication localizedReason:subTitle reply:^(BOOL success, NSError * _Nullable laError) {
-                            if (success || ([laError.domain isEqual:LAErrorDomain] && laError.code == LAErrorPasscodeNotSet))
-                                SecXPCDictionarySetPList(replyMessage, kSecXPCKeyResult, result, &error);
-                            dispatch_semaphore_signal(sema);
-                        }];
-                        dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+                        if ([ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:nil] &&
+                            [[MCProfileConnection sharedConnection] isAuthenticationBeforeAutoFillRequired]) {
+                            NSString *subTitle = NSLocalizedStringFromTableInBundle(@"SWC_FILLPWD", swca_string_table, swca_get_security_bundle(), nil);
+                            dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+                            [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthentication localizedReason:subTitle reply:^(BOOL success, NSError * _Nullable laError) {
+                                if (success || ([laError.domain isEqual:LAErrorDomain] && laError.code == LAErrorPasscodeNotSet)) {
+                                    SecXPCDictionarySetPList(replyMessage, kSecXPCKeyResult, result, &error);
+                                }
+                                dispatch_semaphore_signal(sema);
+                            }];
+                            dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+                        } else {
+#endif
+                            SecXPCDictionarySetPList(replyMessage, kSecXPCKeyResult, result, &error);
+#if TARGET_OS_IOS
+                        }
+#endif
                         CFRelease(result);
                     }
                     CFRelease(items);

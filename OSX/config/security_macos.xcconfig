@@ -1,20 +1,18 @@
 #include "OSX/config/base.xcconfig"
+#include "xcconfig/Version.xcconfig"
 
 GCC_PRECOMPILE_PREFIX_HEADER = YES
 
 ALWAYS_SEARCH_USER_PATHS = NO
 
-HEADER_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)/include $(PROJECT_DIR)/sec/ProjectHeaders $(PROJECT_DIR)/utilities
+HEADER_SEARCH_PATHS = $(inherited) $(PROJECT_DIR)/include $(PROJECT_DIR)/utilities
 LIBRARY_SEARCH_PATHS = $(inherited) /usr/lib/system
 
 STRIP_INSTALLED_PRODUCT = YES
 DEPLOYMENT_POSTPROCESSING = NO
 
 GCC_C_LANGUAGE_STANDARD = gnu99
-SUPPORTED_PLATFORMS = macOS
-
-// Don't use the inherited cflags; they set SEC_IOS_ON_OSX
-GCC_PREPROCESSOR_DEFINITIONS =
+SUPPORTED_PLATFORMS = macosx
 
 GCC_TREAT_WARNINGS_AS_ERRORS = YES
 GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO

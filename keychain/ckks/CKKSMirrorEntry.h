@@ -21,17 +21,19 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#import "CKKSSQLDatabaseObject.h"
-#import "CKKSItem.h"
-#include <utilities/SecDb.h>
+#if OCTAGON
+
 #include <securityd/SecDbItem.h>
+#include <utilities/SecDb.h>
+#import "CKKSItem.h"
+#import "CKKSSQLDatabaseObject.h"
 
 #ifndef CKKSMirrorEntry_h
 #define CKKSMirrorEntry_h
 
-#if OCTAGON
-
 #import <CloudKit/CloudKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
 
 @class CKKSWrappedAESSIVKey;
 
@@ -42,17 +44,19 @@
 
 @property uint64_t wasCurrent;
 
--(instancetype)initWithCKKSItem:(CKKSItem*)item;
--(instancetype)initWithCKRecord:(CKRecord*)record;
--(void)setFromCKRecord: (CKRecord*) record;
-- (bool)matchesCKRecord: (CKRecord*) record;
+- (instancetype)initWithCKKSItem:(CKKSItem*)item;
+- (instancetype)initWithCKRecord:(CKRecord*)record;
+- (void)setFromCKRecord:(CKRecord*)record;
+- (bool)matchesCKRecord:(CKRecord*)record;
 
-+ (instancetype) fromDatabase: (NSString*) uuid zoneID:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error;
-+ (instancetype) tryFromDatabase: (NSString*) uuid zoneID:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error;
++ (instancetype)fromDatabase:(NSString*)uuid zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (instancetype)tryFromDatabase:(NSString*)uuid zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
 
-+ (NSDictionary<NSString*,NSNumber*>*)countsByParentKey:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error;
++ (NSDictionary<NSString*, NSNumber*>*)countsByParentKey:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (NSNumber*)counts:(CKRecordZoneID*)zoneID error: (NSError * __autoreleasing *) error;
 
 @end
 
+NS_ASSUME_NONNULL_END
 #endif
 #endif /* CKKSOutgoingQueueEntry_h */

@@ -10,8 +10,7 @@
 #import <err.h>
 
 #import "keychain/ckks/CKKS.h"
-#import "keychain/ckks/CKKSControlProtocol.h"
-#import "ckksctl.h"
+#import "keychain/ckks/CKKSControl.h"
 
 #include "lib/SecArgParse.h"
 
@@ -34,13 +33,65 @@ static void nsprintf(NSString *fmt, ...)
 #endif
 }
 
+// Mutual recursion to set up an object for jsonification
+static NSDictionary* cleanDictionaryForJSON(NSDictionary* dict);
+
+static id cleanObjectForJSON(id obj) {
+    if(!obj) {
+        return nil;
+    }
+    if([obj isKindOfClass:[NSError class]]) {
+        NSError* obje = (NSError*) obj;
+        NSMutableDictionary* newErrorDict = [@{@"code": @(obje.code), @"domain": obje.domain} mutableCopy];
+        newErrorDict[@"userInfo"] = cleanDictionaryForJSON(obje.userInfo);
+        return newErrorDict;
+    } else if([NSJSONSerialization isValidJSONObject:obj]) {
+        return obj;
+
+    } else if ([obj isKindOfClass: [NSNumber class]]) {
+        return obj;
+
+    } else if([obj isKindOfClass: [NSData class]]) {
+        NSData* dataObj = (NSData*)obj;
+        return [dataObj base64EncodedStringWithOptions:0];
+
+    } else if ([obj isKindOfClass: [NSDictionary class]]) {
+        return cleanDictionaryForJSON((NSDictionary*) obj);
+
+    } else if ([obj isKindOfClass: [NSArray class]]) {
+        NSArray* arrayObj = (NSArray*)obj;
+        NSMutableArray* cleanArray = [NSMutableArray arrayWithCapacity:arrayObj.count];
+
+        for(id x in arrayObj) {
+            [cleanArray addObject: cleanObjectForJSON(x)];
+        }
+        return cleanArray;
+
+    } else {
+        return [obj description];
+    }
+}
+
+static NSDictionary* cleanDictionaryForJSON(NSDictionary* dict) {
+    if(!dict) {
+        return nil;
+    }
+    NSMutableDictionary* mutDict = [dict mutableCopy];
+    for(id key in mutDict.allKeys) {
+        id obj = mutDict[key];
+        mutDict[key] = cleanObjectForJSON(obj);
+    }
+    return mutDict;
+}
+
 static void print_result(NSDictionary *dict, bool json_flag)
 {
     if (json_flag) {
         NSError *err;
-        NSData *json = [NSJSONSerialization dataWithJSONObject:dict
-                options:(NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys)
-                error:&err];
+
+        NSData *json = [NSJSONSerialization dataWithJSONObject:cleanDictionaryForJSON(dict)
+                                                       options:(NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys)
+                                                         error:&err];
         if (!json) {
             NSLog(@"error: %@", err.localizedDescription);
         } else {
@@ -89,48 +140,35 @@ static void print_entry(id k, id v, int ind)
     }
 }
 
-@interface CKKSControl ()
-@property NSXPCConnection *connection;
+@interface CKKSControlCLI : NSObject
+@property CKKSControl* control;
 @end
 
-@implementation CKKSControl
+@implementation CKKSControlCLI
 
-- (instancetype) initWithEndpoint:(xpc_endpoint_t)endpoint
-{
-    if ((self = [super init]) == NULL)
-        return NULL;
-
-    NSXPCInterface *interface = CKKSSetupControlProtocol([NSXPCInterface interfaceWithProtocol:@protocol(CKKSControlProtocol)]);
-    NSXPCListenerEndpoint *listenerEndpoint = [[NSXPCListenerEndpoint alloc] init];
-
-    [listenerEndpoint _setEndpoint:endpoint];
-
-    self.connection = [[NSXPCConnection alloc] initWithListenerEndpoint:listenerEndpoint];
-    if (self.connection == NULL)
-        return NULL;
-
-    self.connection.remoteObjectInterface = interface;
-
-    [self.connection resume];
-
+- (instancetype) initWithCKKSControl:(CKKSControl*)control {
+    if ((self = [super init])) {
+        _control = control;
+    }
 
     return self;
 }
 
-- (NSDictionary<NSString *, id> *)printPerformanceCounters
+- (NSDictionary<NSString *, id> *)fetchPerformanceCounters
 {
     NSMutableDictionary *perfDict = [[NSMutableDictionary alloc] init];
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        perfDict[@"error"] = [error description];
-        dispatch_semaphore_signal(sema);
+    [self.control rpcPerformanceCounters:^(NSDictionary<NSString *,NSNumber *> * counters, NSError * error) {
+        if(error) {
+            perfDict[@"error"] = [error description];
+        }
 
-    }] performanceCounters:^(NSDictionary <NSString *, NSNumber *> *counters){
         [counters enumerateKeysAndObjectsUsingBlock:^(NSString * key, NSNumber * obj, BOOL *stop) {
             perfDict[key] = obj;
         }];
+
         dispatch_semaphore_signal(sema);
     }];
 
@@ -142,165 +180,93 @@ static void print_entry(id k, id v, int ind)
     return perfDict;
 }
 
-- (void)resetLocal: (NSString*)view {
+- (long)resetLocal:(NSString*)view {
+    __block long ret = 0;
 #if OCTAGON
     printf("Beginning local reset for %s...\n", view ? [[view description] UTF8String] : "all zones");
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
+    [self.control rpcResetLocal:view
+                          reply:^(NSError *error) {
+                              if(error == NULL) {
+                                  printf("reset complete.\n");
+                                  ret = 0;
+                              } else {
+                                  nsprintf(@"reset error: %@\n", error);
+                                  ret = error.code;
+                              }
+                              dispatch_semaphore_signal(sema);
+                          }];
 
-    }]  rpcResetLocal:view reply:^(NSError* result){
-        if(result == NULL) {
-            printf("reset complete.\n");
-        } else {
-            printf("reset error: %s\n", [[result description] UTF8String]);
-        }
-        dispatch_semaphore_signal(sema);
-    }];
-
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60 * 2)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
+        return -1;
     }
 #endif // OCTAGON
+    return ret;
 }
 
-- (void)resetCloudKit: (NSString*)view {
+- (long)resetCloudKit:(NSString*)view {
+    __block long ret = 0;
 #if OCTAGON
     printf("Beginning CloudKit reset for %s...\n", view ? [[view description] UTF8String] : "all zones");
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-
-    }]  rpcResetCloudKit:view reply:^(NSError* result){
-        if(result == NULL) {
+    [self.control rpcResetCloudKit:view reason:@"ckksctl" reply:^(NSError* error){
+        if(error == NULL) {
             printf("CloudKit Reset complete.\n");
+            ret = 0;
         } else {
-            printf("Reset error: %s\n", [[result description] UTF8String]);
+            nsprintf(@"Reset error: %@\n", error);
+            ret = error.code;
         }
         dispatch_semaphore_signal(sema);
     }];
 
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60 * 5)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
+        return -1;
     }
 #endif // OCTAON
+    return ret;
 }
 
-- (void)resync: (NSString*)view {
+- (long)resync:(NSString*)view {
+    __block long ret = 0;
 #if OCTAGON
     printf("Beginning resync for %s...\n", view ? [[view description] UTF8String] : "all zones");
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-
-    }]  rpcResync:view reply:^(NSError* result){
-        if(result == NULL) {
+    [self.control rpcResync:view reply:^(NSError* error){
+        if(error == NULL) {
             printf("resync success.\n");
+            ret = 0;
         } else {
-            printf("resync errored: %s\n", [[result description] UTF8String]);
+            nsprintf(@"resync errored: %@\n", error);
+            ret = error.code;
         }
         dispatch_semaphore_signal(sema);
     }];
 
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60 * 2)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
+        return -1;
     }
 #endif // OCTAGON
+    return ret;
 }
 
-- (void)getAnalyticsSysdiagnose
-{
-    printf("Getting analytics sysdiagnose....\n");
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-
-    [[self.connection remoteObjectProxyWithErrorHandler:^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-    }] rpcGetAnalyticsSysdiagnoseWithReply:^(NSString* sysdiagnose, NSError* error) {
-        if (sysdiagnose && !error) {
-            nsprintf(@"Analytics sysdiagnose:\n\n%@", sysdiagnose);
-        }
-        else {
-            nsprintf(@"error retrieving sysdiagnose: %@", error);
-        }
-
-        dispatch_semaphore_signal(sema);
-    }];
-
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
-        printf("\n\nError: timed out waiting for response\n");
-    }
-}
-
-- (void)getAnalyticsJSON
-{
-    printf("Getting analytics json....\n");
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    
-    [[self.connection remoteObjectProxyWithErrorHandler:^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-    }] rpcGetAnalyticsJSONWithReply:^(NSData* json, NSError* error) {
-        if (json && !error) {
-            nsprintf(@"Analytics JSON:\n\n%@", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
-        }
-        else {
-            nsprintf(@"error retrieving JSON: %@", error);
-        }
-        
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
-        printf("\n\nError: timed out waiting for response\n");
-    }
-}
-
-- (void)forceAnalyticsUpload
-{
-    printf("Uploading....\n");
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    
-    [[self.connection remoteObjectProxyWithErrorHandler:^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-    }] rpcForceUploadAnalyticsWithReply:^(BOOL success, NSError* error) {
-        if (success) {
-            nsprintf(@"successfully uploaded analytics data");
-        }
-        else {
-            nsprintf(@"error uploading analytics: %@", error);
-        }
-        
-        dispatch_semaphore_signal(sema);
-    }];
-    
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
-        printf("\n\nError: timed out waiting for response\n");
-    }
-}
-
-- (NSDictionary<NSString *, id> *)status: (NSString*) view {
+- (NSDictionary<NSString *, id> *)fetchStatus: (NSString*) view {
     NSMutableDictionary *status = [[NSMutableDictionary alloc] init];
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        status[@"error"] = [error description];
-        dispatch_semaphore_signal(sema);
-
-    }]  rpcStatus: view reply: ^(NSArray<NSDictionary*>* result, NSError* error) {
+    [self.control rpcStatus: view reply: ^(NSArray<NSDictionary*>* result, NSError* error) {
         if(error) {
             status[@"error"] = [error description];
         }
 
-        if(result.count == 0u) {
+        if(result.count <= 1u) {
             printf("No CKKS views are active.\n");
         }
 
@@ -311,82 +277,102 @@ static void print_entry(id k, id v, int ind)
         dispatch_semaphore_signal(sema);
     }];
 
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 5)) != 0) {
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 30)) != 0) {
         status[@"error"] = @"timed out";
     }
 #endif // OCTAGON
     return status;
 }
 
-- (void)status_custom: (NSString*) view {
+- (void)printHumanReadableStatus: (NSString*) view {
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-
-    }]  rpcStatus: view reply: ^(NSArray<NSDictionary*>* result, NSError* error) {
+    [self.control rpcStatus: view reply: ^(NSArray<NSDictionary*>* result, NSError* error) {
         if(error) {
             printf("ERROR FETCHING STATUS: %s\n", [[error description] UTF8String]);
         }
 
-        if(result.count == 0u) {
+#define pop(d, key, cls) ({ id x = d[key]; d[key] = nil; [x isKindOfClass: [cls class]] ? x : nil; })
+
+        // First result is always global state
+        // Ideally, this would come in another parameter, but we can't change the protocol until
+        // <rdar://problem/33583242> CKKS: remove PCS's use of CKKSControlProtocol
+        NSMutableDictionary* global = [result[0] mutableCopy];
+        if(global) {
+            NSString* reachability = pop(global, @"reachability", NSString);
+            NSString* ckdeviceID = pop(global, @"ckdeviceID", NSString);
+            NSString* ckdeviceIDError = pop(global, @"ckdeviceIDError", NSString);
+            NSString* lockStateTracker = pop(global,@"lockstatetracker", NSString);
+            NSString* retry = pop(global,@"cloudkitRetryAfter", NSString);
+
+            printf("================================================================================\n\n");
+            printf("Global state:\n\n");
+            printf("Reachability:         %s\n", [[reachability description] UTF8String]);
+            printf("Retry:                %s\n", [[retry description] UTF8String]);
+            printf("CK DeviceID:          %s\n", [[ckdeviceID description] UTF8String]);
+            printf("CK DeviceID Error:    %s\n", [[ckdeviceIDError description] UTF8String]);
+            printf("Lock state:           %s\n", [[lockStateTracker description] UTF8String]);
+
+            printf("\n");
+        }
+
+        NSArray* remainingViews = result.count > 1 ? [result subarrayWithRange:NSMakeRange(1, result.count-1)] : @[];
+
+        if(remainingViews.count == 0u) {
             printf("No CKKS views are active.\n");
         }
 
-        for(NSDictionary* viewStatus in result) {
+        for(NSDictionary* viewStatus in remainingViews) {
             NSMutableDictionary* status = [viewStatus mutableCopy];
 
-    #define pop(d, key) ({ id x = d[key]; d[key] = nil; x; })
+            NSString* viewName = pop(status,@"view", NSString);
+            NSString* accountStatus = pop(status,@"ckaccountstatus", NSString);
+            NSString* accountTracker = pop(status,@"accounttracker", NSString);
+            NSString* fetcher = pop(status,@"fetcher", NSString);
+            NSString* zoneCreated = pop(status,@"zoneCreated", NSString);
+            NSString* zoneCreatedError = pop(status,@"zoneCreatedError", NSString);
+            NSString* zoneSubscribed = pop(status,@"zoneSubscribed", NSString);
+            NSString* zoneSubscribedError = pop(status,@"zoneSubscribedError", NSString);
+            NSString* zoneInitializeScheduler = pop(status,@"zoneInitializeScheduler", NSString);
+            NSString* keystate = pop(status,@"keystate", NSString);
+            NSString* keyStateError = pop(status,@"keyStateError", NSString);
+            NSString* statusError = pop(status,@"statusError", NSString);
+            NSString* currentTLK =    pop(status,@"currentTLK", NSString);
+            NSString* currentClassA = pop(status,@"currentClassA", NSString);
+            NSString* currentClassC = pop(status,@"currentClassC", NSString);
+            NSString* currentTLKPtr =    pop(status,@"currentTLKPtr", NSString);
+            NSString* currentClassAPtr = pop(status,@"currentClassAPtr", NSString);
+            NSString* currentClassCPtr = pop(status,@"currentClassCPtr", NSString);
+            NSString* currentManifestGeneration = pop(status,@"currentManifestGen", NSString);
+            NSArray* launchSequence = pop(status, @"launchSequence", NSArray);
 
-            NSString* viewName = pop(status,@"view");
-            NSString* accountStatus = pop(status,@"ckaccountstatus");
-            NSString* lockStateTracker = pop(status,@"lockstatetracker");
-            NSString* accountTracker = pop(status,@"accounttracker");
-            NSString* fetcher = pop(status,@"fetcher");
-            NSString* setup = pop(status,@"setup");
-            NSString* zoneCreated = pop(status,@"zoneCreated");
-            NSString* zoneCreatedError = pop(status,@"zoneCreatedError");
-            NSString* zoneSubscribed = pop(status,@"zoneSubscribed");
-            NSString* zoneSubscribedError = pop(status,@"zoneSubscribedError");
-            NSString* zoneInitializeScheduler = pop(status,@"zoneInitializeScheduler");
-            NSString* keystate = pop(status,@"keystate");
-            NSString* keyStateError = pop(status,@"keyStateError");
-            NSString* statusError = pop(status,@"statusError");
-            NSString* currentTLK =    pop(status,@"currentTLK");
-            NSString* currentClassA = pop(status,@"currentClassA");
-            NSString* currentClassC = pop(status,@"currentClassC");
-            NSString* currentManifestGeneration = pop(status,@"currentManifestGen");
+            NSDictionary* oqe = pop(status,@"oqe", NSDictionary);
+            NSDictionary* iqe = pop(status,@"iqe", NSDictionary);
+            NSDictionary* keys = pop(status,@"keys", NSDictionary);
+            NSDictionary* ckmirror = pop(status,@"ckmirror", NSDictionary);
+            NSArray* devicestates = pop(status, @"devicestates", NSArray);
+            NSArray* tlkshares = pop(status, @"tlkshares", NSArray);
 
-            NSDictionary* oqe = pop(status,@"oqe");
-            NSDictionary* iqe = pop(status,@"iqe");
-            NSDictionary* keys = pop(status,@"keys");
-            NSDictionary* ckmirror = pop(status,@"ckmirror");
-            NSArray* devicestates = pop(status, @"devicestates");
-
-            NSString* zoneSetupOperation                  = pop(status,@"zoneSetupOperation");
-            NSString* viewSetupOperation                  = pop(status,@"viewSetupOperation");
-            NSString* keyStateOperation                   = pop(status,@"keyStateOperation");
-            NSString* lastIncomingQueueOperation          = pop(status,@"lastIncomingQueueOperation");
-            NSString* lastNewTLKOperation                 = pop(status,@"lastNewTLKOperation");
-            NSString* lastOutgoingQueueOperation          = pop(status,@"lastOutgoingQueueOperation");
-            NSString* lastRecordZoneChangesOperation      = pop(status,@"lastRecordZoneChangesOperation");
-            NSString* lastProcessReceivedKeysOperation    = pop(status,@"lastProcessReceivedKeysOperation");
-            NSString* lastReencryptOutgoingItemsOperation = pop(status,@"lastReencryptOutgoingItemsOperation");
-            NSString* lastScanLocalItemsOperation         = pop(status,@"lastScanLocalItemsOperation");
+            NSString* zoneSetupOperation                  = pop(status,@"zoneSetupOperation", NSString);
+            NSString* keyStateOperation                   = pop(status,@"keyStateOperation", NSString);
+            NSString* lastIncomingQueueOperation          = pop(status,@"lastIncomingQueueOperation", NSString);
+            NSString* lastNewTLKOperation                 = pop(status,@"lastNewTLKOperation", NSString);
+            NSString* lastOutgoingQueueOperation          = pop(status,@"lastOutgoingQueueOperation", NSString);
+            NSString* lastProcessReceivedKeysOperation    = pop(status,@"lastProcessReceivedKeysOperation", NSString);
+            NSString* lastReencryptOutgoingItemsOperation = pop(status,@"lastReencryptOutgoingItemsOperation", NSString);
+            NSString* lastScanLocalItemsOperation         = pop(status,@"lastScanLocalItemsOperation", NSString);
 
             printf("================================================================================\n\n");
 
             printf("View: %s\n\n", [viewName UTF8String]);
 
-            if(![statusError isEqual: [NSNull null]]) {
+            if(statusError != nil) {
                 printf("ERROR FETCHING STATUS: %s\n\n", [statusError UTF8String]);
             }
 
             printf("CloudKit account:     %s\n", [accountStatus UTF8String]);
             printf("Account tracker:      %s\n", [accountTracker UTF8String]);
-            printf("Ran setup operation:  %s\n", [setup UTF8String]);
 
             if(!([zoneCreated isEqualToString:@"yes"] && [zoneSubscribed isEqualToString:@"yes"])) {
                 printf("CK Zone Created:            %s\n", [[zoneCreated description] UTF8String]);
@@ -399,34 +385,43 @@ static void print_entry(id k, id v, int ind)
             }
 
             printf("Key state:            %s\n", [keystate UTF8String]);
-            if(![keyStateError isEqual: [NSNull null]]) {
+            if(keyStateError != nil) {
                 printf("Key State Error: %s\n", [keyStateError UTF8String]);
             }
-            printf("Lock state:           %s\n", [lockStateTracker UTF8String]);
+            printf("Current TLK:          %s\n", currentTLK != nil
+                   ? [currentTLK    UTF8String]
+                   : [[NSString stringWithFormat:@"missing; pointer is %@", currentTLKPtr] UTF8String]);
+            printf("Current ClassA:       %s\n", currentClassA != nil
+                   ? [currentClassA UTF8String]
+                   : [[NSString stringWithFormat:@"missing; pointer is %@", currentClassAPtr] UTF8String]);
+            printf("Current ClassC:       %s\n", currentClassC != nil
+                   ? [currentClassC UTF8String]
+                   : [[NSString stringWithFormat:@"missing; pointer is %@", currentClassCPtr] UTF8String]);
 
-            printf("Current TLK:          %s\n", [currentTLK    isEqual: [NSNull null]] ? "null" : [currentTLK    UTF8String]);
-            printf("Current ClassA:       %s\n", [currentClassA isEqual: [NSNull null]] ? "null" : [currentClassA UTF8String]);
-            printf("Current ClassC:       %s\n", [currentClassC isEqual: [NSNull null]] ? "null" : [currentClassC UTF8String]);
+            printf("TLK shares:           %s\n", [[tlkshares description] UTF8String]);
 
             printf("Outgoing Queue counts: %s\n", [[oqe description] UTF8String]);
             printf("Incoming Queue counts: %s\n", [[iqe description] UTF8String]);
             printf("Key counts: %s\n", [[keys description] UTF8String]);
-            printf("latest manifest generation: %s\n", [currentManifestGeneration isEqual:[NSNull null]] ? "null" : currentManifestGeneration.UTF8String);
+            printf("latest manifest generation: %s\n", currentManifestGeneration == nil ? "null" : currentManifestGeneration.UTF8String);
 
             printf("Item counts (by key):  %s\n", [[ckmirror description] UTF8String]);
             printf("Peer states:           %s\n", [[devicestates description] UTF8String]);
 
             printf("zone change fetcher:                 %s\n", [[fetcher description] UTF8String]);
-            printf("zoneSetupOperation:                  %s\n", [zoneSetupOperation                  isEqual: [NSNull null]] ? "never" : [zoneSetupOperation                  UTF8String]);
-            printf("viewSetupOperation:                  %s\n", [viewSetupOperation                  isEqual: [NSNull null]] ? "never" : [viewSetupOperation                  UTF8String]);
-            printf("keyStateOperation:                   %s\n", [keyStateOperation                   isEqual: [NSNull null]] ? "never" : [keyStateOperation                   UTF8String]);
-            printf("lastIncomingQueueOperation:          %s\n", [lastIncomingQueueOperation          isEqual: [NSNull null]] ? "never" : [lastIncomingQueueOperation          UTF8String]);
-            printf("lastNewTLKOperation:                 %s\n", [lastNewTLKOperation                 isEqual: [NSNull null]] ? "never" : [lastNewTLKOperation                 UTF8String]);
-            printf("lastOutgoingQueueOperation:          %s\n", [lastOutgoingQueueOperation          isEqual: [NSNull null]] ? "never" : [lastOutgoingQueueOperation          UTF8String]);
-            printf("lastRecordZoneChangesOperation:      %s\n", [lastRecordZoneChangesOperation      isEqual: [NSNull null]] ? "never" : [lastRecordZoneChangesOperation      UTF8String]);
-            printf("lastProcessReceivedKeysOperation:    %s\n", [lastProcessReceivedKeysOperation    isEqual: [NSNull null]] ? "never" : [lastProcessReceivedKeysOperation    UTF8String]);
-            printf("lastReencryptOutgoingItemsOperation: %s\n", [lastReencryptOutgoingItemsOperation isEqual: [NSNull null]] ? "never" : [lastReencryptOutgoingItemsOperation UTF8String]);
-            printf("lastScanLocalItemsOperation:         %s\n", [lastScanLocalItemsOperation         isEqual: [NSNull null]] ? "never" : [lastScanLocalItemsOperation         UTF8String]);
+            printf("zoneSetupOperation:                  %s\n", zoneSetupOperation                  == nil ? "never" : [zoneSetupOperation                  UTF8String]);
+            printf("keyStateOperation:                   %s\n", keyStateOperation                   == nil ? "never" : [keyStateOperation                   UTF8String]);
+            printf("lastIncomingQueueOperation:          %s\n", lastIncomingQueueOperation          == nil ? "never" : [lastIncomingQueueOperation          UTF8String]);
+            printf("lastNewTLKOperation:                 %s\n", lastNewTLKOperation                 == nil ? "never" : [lastNewTLKOperation                 UTF8String]);
+            printf("lastOutgoingQueueOperation:          %s\n", lastOutgoingQueueOperation          == nil ? "never" : [lastOutgoingQueueOperation          UTF8String]);
+            printf("lastProcessReceivedKeysOperation:    %s\n", lastProcessReceivedKeysOperation    == nil ? "never" : [lastProcessReceivedKeysOperation    UTF8String]);
+            printf("lastReencryptOutgoingItemsOperation: %s\n", lastReencryptOutgoingItemsOperation == nil ? "never" : [lastReencryptOutgoingItemsOperation UTF8String]);
+            printf("lastScanLocalItemsOperation:         %s\n", lastScanLocalItemsOperation         == nil ? "never" : [lastScanLocalItemsOperation         UTF8String]);
+
+            printf("Launch sequence:\n");
+            for (NSString *event in launchSequence) {
+                printf("\t%s\n", [[event description] UTF8String]);
+            }
 
             if(status.allKeys.count > 0u) {
                 printf("\nExtra information: %s\n", [[status description] UTF8String]);
@@ -436,25 +431,24 @@ static void print_entry(id k, id v, int ind)
         dispatch_semaphore_signal(sema);
     }];
 
-    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 5)) != 0) {
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 30)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
     }
 #endif // OCTAGON
 }
 
-- (void)fetch: (NSString*) view {
+- (long)fetch:(NSString*)view {
+    __block long ret = 0;
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-
-    }] rpcFetchAndProcessChanges:view reply:^(NSError* error) {
+    [self.control rpcFetchAndProcessChanges:view reply:^(NSError* error) {
         if(error) {
             printf("Error fetching: %s\n", [[error description] UTF8String]);
+            ret = (error.code == 0 ? -1 : error.code);
         } else {
             printf("Complete.\n");
+            ret = 0;
         }
 
         dispatch_semaphore_signal(sema);
@@ -462,32 +456,60 @@ static void print_entry(id k, id v, int ind)
 
     if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 65)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
+        return -1;
     }
 #endif // OCTAGON
+    return ret;
 }
 
-- (void)push: (NSString*) view {
+- (long)push:(NSString*)view {
+    __block long ret = 0;
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [[self.connection remoteObjectProxyWithErrorHandler: ^(NSError* error) {
-        printf("\n\nError talking with daemon: %s\n", [[error description] UTF8String]);
-        dispatch_semaphore_signal(sema);
-
-    }] rpcPushOutgoingChanges:view reply:^(NSError* error) {
+    [self.control rpcPushOutgoingChanges:view reply:^(NSError* error) {
         if(error) {
             printf("Error pushing: %s\n", [[error description] UTF8String]);
+            ret = (error.code == 0 ? -1 : error.code);
         } else {
             printf("Complete.\n");
+            ret = 0;
         }
-
         dispatch_semaphore_signal(sema);
     }];
 
     if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 65)) != 0) {
         printf("\n\nError: timed out waiting for response\n");
+        return -1;
+    }
+
+#endif // OCTAGON
+    return ret;
+}
+
+- (long)ckmetric {
+    __block long ret = 0;
+#if OCTAGON
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+    [self.control rpcCKMetric:@"testMetric" attributes:@{ @"testAttribute" : @"value" } reply:^(NSError* error) {
+        if(error) {
+            printf("Error sending metric: %s\n", [[error description] UTF8String]);
+            ret = (error.code == 0 ? -1 : error.code);
+        } else {
+            printf("Complete.\n");
+            ret = 0;
+        }
+        dispatch_semaphore_signal(sema);
+    }];
+
+    if(dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 65)) != 0) {
+        printf("\n\nError: timed out waiting for response\n");
+        return -1;
     }
 #endif // OCTAGON
+    return ret;
+
 }
 
 @end
@@ -501,9 +523,7 @@ static int resetCloudKit = false;
 static int fetch = false;
 static int push = false;
 static int json = false;
-static int getAnalyticsSysdiagnose = false;
-static int getAnalyticsJSON = false;
-static int uploadAnalytics = false;
+static int ckmetric = false;
 
 static char* viewArg = NULL;
 
@@ -520,9 +540,7 @@ int main(int argc, char **argv)
         { .command="resync", .flag=&resync, .flagval=true, .description="Resync all data with what's in CloudKit"},
         { .command="reset", .flag=&reset, .flagval=true, .description="All local data will be wiped, and data refetched from CloudKit"},
         { .command="reset-cloudkit", .flag=&resetCloudKit, .flagval=true, .description="All data in CloudKit will be removed and replaced with what's local"},
-        { .command="get-analytics-sysdiagnose", .flag=&getAnalyticsSysdiagnose, .flagval=true, .description="Retrieve the current sysdiagnose dump for CKKS analytics"},
-        { .command="get-analytics", .flag=&getAnalyticsJSON, .flagval=true, .description="Retrieve the current JSON blob that would be uploaded to the logging server if an upload occurred now"},
-        { .command="upload-analytics", .flag=&uploadAnalytics, .flagval=true, .description="Force an upload of analytics data to cloud server"},
+        { .command="ckmetric", .flag=&ckmetric, .flagval=true, .description="Push CloudKit metric"},
         {}
     };
 
@@ -539,57 +557,52 @@ int main(int argc, char **argv)
     }
 
     @autoreleasepool {
-        xpc_endpoint_t endpoint = NULL;
+        NSError* error = nil;
 
-        CFErrorRef cferror = NULL;
-        endpoint = _SecSecuritydCopyCKKSEndpoint(&cferror);
-        if (endpoint == NULL) {
-            CFStringRef errorstr = NULL;
-
-            if(cferror) {
-                errorstr = CFErrorCopyDescription(cferror);
-            }
-
-            errx(1, "no CKKSControl endpoint available: %s", errorstr ? CFStringGetCStringPtr(errorstr, kCFStringEncodingUTF8) : "unknown error");
+        CKKSControl* rpc = [CKKSControl CKKSControlObject:false error:&error];
+        if(error || !rpc) {
+            errx(1, "no CKKSControl failed: %s", [[error description] UTF8String]);
         }
 
-        CKKSControl *ctl = [[CKKSControl alloc] initWithEndpoint:endpoint];
-        if (ctl == NULL) {
-            errx(1, "failed to create CKKSControl object");
-        }
+        CKKSControlCLI* ctl = [[CKKSControlCLI alloc] initWithCKKSControl:rpc];
 
         NSString* view = viewArg ? [NSString stringWithCString: viewArg encoding: NSUTF8StringEncoding] : nil;
 
-        if(status || perfCounters) {
+        if(status) {
+            // Complicated logic, but you can choose any combination of (json, perfcounters) that you like.
             NSMutableDictionary *statusDict = [[NSMutableDictionary alloc] init];
-            statusDict[@"performance"] = [ctl printPerformanceCounters];
-            if (!json) {
-                print_result(statusDict, false);
-                if (status) {
-                    [ctl status_custom:view];
-                }
-            } else {
-                if (status) {
-                    statusDict[@"status"] = [ctl status:view];
-                }
-                print_result(statusDict, true);
+            if(perfCounters) {
+                statusDict[@"performance"] = [ctl fetchPerformanceCounters];
             }
+            if (json) {
+                statusDict[@"status"] = [ctl fetchStatus:view];
+            }
+            if(json || perfCounters) {
+               print_result(statusDict, true);
+                printf("\n");
+            }
+
+            if(!json) {
+                [ctl printHumanReadableStatus:view];
+            }
+            return 0;
+        } else if(perfCounters) {
+            NSMutableDictionary *statusDict = [[NSMutableDictionary alloc] init];
+            statusDict[@"performance"] = [ctl fetchPerformanceCounters];
+            print_result(statusDict, false);
+
         } else if(fetch) {
-            [ctl fetch:view];
+            return (int)[ctl fetch:view];
         } else if(push) {
-            [ctl push:view];
+            return (int)[ctl push:view];
         } else if(reset) {
-            [ctl resetLocal:view];
+            return (int)[ctl resetLocal:view];
         } else if(resetCloudKit) {
-            [ctl resetCloudKit:view];
+            return (int)[ctl resetCloudKit:view];
         } else if(resync) {
-            [ctl resync:view];
-        } else if(getAnalyticsSysdiagnose) {
-            [ctl getAnalyticsSysdiagnose];
-        } else if(getAnalyticsJSON) {
-            [ctl getAnalyticsJSON];
-        } else if(uploadAnalytics) {
-            [ctl forceAnalyticsUpload];
+            return (int)[ctl resync:view];
+        } else if(ckmetric) {
+            return (int)[ctl ckmetric];
         } else {
             print_usage(&args);
             return -1;
