@@ -22,8 +22,8 @@
  */
 
 #import <XCTest/XCTest.h>
-#import "keychain/Signin Metrics/SFSignInAnalytics.h"
-#import "keychain/Signin Metrics/SFSignInAnalytics+Internal.h"
+#import "keychain/SigninMetrics/SFSignInAnalytics.h"
+#import "keychain/SigninMetrics/SFSignInAnalytics+Internal.h"
 #import "keychain/ot/OTDefines.h"
 #import "SFAnalytics+Signin.h"
 #import <Security/SecureObjectSync/SOSCloudCircle.h>
