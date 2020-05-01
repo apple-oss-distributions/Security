@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2019 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -21,29 +21,23 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-//
-//  SOSBackupInformation.h
-//  Security
-//
+#if OCTAGON
 
-#ifndef SOSBackupInformation_h
-#define SOSBackupInformation_h
+#import <Foundation/Foundation.h>
+#import "keychain/ckks/CKKSGroupOperation.h"
+#import "keychain/ot/OctagonStateMachineHelpers.h"
+#import "keychain/ot/OTOperationDependencies.h"
 
-#include <CoreFoundation/CoreFoundation.h>
-#import "keychain/SecureObjectSync/SOSAccountTransaction.h"
+NS_ASSUME_NONNULL_BEGIN
 
-enum {
-    noError = 0,
-    noTxnorAcct,
-    noAlloc,
-    noTrustedPubKey,
-    noBSKBs,
-};
+@interface OTSetCDPBitOperation : CKKSGroupOperation <OctagonStateTransitionOperationProtocol>
 
-extern const CFStringRef kSOSBkpInfoStatus;
-extern const CFStringRef kSOSBkpInfoBSKB;
-extern const CFStringRef kSOSBkpInfoRKBG;
+- (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
+                       intendedState:(OctagonState*)intendedState
+                          errorState:(OctagonState*)errorState;
 
-CFDictionaryRef SOSBackupInformation(SOSAccountTransaction* txn, CFErrorRef *error);
+@end
 
-#endif /* SOSBackupInformation_h */
+NS_ASSUME_NONNULL_END
+
+#endif // OCTAGON

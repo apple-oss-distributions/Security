@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2019 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -21,21 +21,23 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-//
-//  syncbackup.h
-//  sec
-//
-//
-//
+#if OCTAGON
 
+#import <Foundation/Foundation.h>
+#import "keychain/ckks/CKKSGroupOperation.h"
+#import "keychain/ot/OctagonStateMachineHelpers.h"
+#import "keychain/ot/OTOperationDependencies.h"
 
-#include "SecurityTool/sharedTool/security_tool_commands.h"
+NS_ASSUME_NONNULL_BEGIN
 
-SECURITY_COMMAND(
-                 "syncbackup", syncbackup,
-                 "[options]\n"
-                 "    -i     info (current status)\n"
-                 "    -l     list backup slice keybag membership and recovery status"
-                 "\n",
-                 "iCloud Circle Backup Information")
+@interface OTDetermineCDPBitStatusOperation : CKKSGroupOperation <OctagonStateTransitionOperationProtocol>
 
+- (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
+                       intendedState:(OctagonState*)intendedState
+                          errorState:(OctagonState*)errorState;
+
+@end
+
+NS_ASSUME_NONNULL_END
+
+#endif // OCTAGON
