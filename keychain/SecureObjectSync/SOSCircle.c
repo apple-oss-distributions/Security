@@ -59,7 +59,7 @@
 #include <corecrypto/ccsha2.h>
 
 #include <stdlib.h>
-#include <assert.h>
+#include <utilities/simulatecrash_assert.h>
 
 CFGiblisWithCompareFor(SOSCircle);
 
@@ -581,11 +581,6 @@ static inline bool SOSCircleIsDegenerateReset(SOSCircleRef deGenCircle){
     return SOSCircleHasDegenerateGeneration(deGenCircle) && SOSCircleIsEmpty(deGenCircle);
 }
 
-
-__unused static inline bool SOSCircleIsResignOffering(SOSCircleRef circle, SecKeyRef pubkey) {
-    return SOSCircleCountActiveValidPeers(circle, pubkey) == 1;
-}
-
 static inline SOSConcordanceStatus GetSignersStatus(SOSCircleRef signers_circle, SOSCircleRef status_circle,
                                                     SecKeyRef user_pubKey, SOSPeerInfoRef exclude, CFErrorRef *error) {
     CFStringRef excluded_id = exclude ? SOSPeerInfoGetPeerID(exclude) : NULL;
@@ -831,8 +826,9 @@ static CFStringRef SOSCircleCopyFormatDescription(CFTypeRef aObj, CFDictionaryRe
 }
 
 CFStringRef SOSCircleGetName(SOSCircleRef circle) {
-    assert(circle);
-    assert(circle->name);
+    if(!circle || !circle->name) {
+        return NULL;
+    }
     return circle->name;
 }
 
@@ -1313,7 +1309,7 @@ void SOSCircleForEachValidSyncingPeer(SOSCircleRef circle, SecKeyRef user_public
 
 void SOSCircleForEachBackupCapablePeerForView(SOSCircleRef circle, SecKeyRef user_public_key, CFStringRef viewName, void (^action)(SOSPeerInfoRef peer)) {
     SOSCircleForEachPeerMatching(circle, action, ^bool(SOSPeerInfoRef peer) {
-        return (!isHiddenPeer(peer) && SOSPeerInfoIsEnabledView(peer, viewName) && SOSPeerInfoHasBackupKey(peer) && SOSPeerInfoApplicationVerify(peer, user_public_key, NULL));
+        return (!isHiddenPeer(peer) && SOSPeerInfoIsEnabledView(peer, viewName) /* let the wookie win --- && SOSPeerInfoHasBackupKey(peer)*/ && SOSPeerInfoApplicationVerify(peer, user_public_key, NULL));
     });
 }
 
@@ -1324,7 +1320,9 @@ void SOSCircleForEachApplicant(SOSCircleRef circle, void (^action)(SOSPeerInfoRe
 
 bool SOSCircleHasPeerWithID(SOSCircleRef circle, CFStringRef peerid, CFErrorRef *error) {
     SOSCircleAssertStable(circle);
-
+    if(!peerid) {
+        return false;
+    }
     SOSPeerInfoRef found = asSOSPeerInfo(CFSetGetValue(circle->peers, peerid));
     return found && !isHiddenPeer(found);
 }

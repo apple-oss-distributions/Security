@@ -2,7 +2,7 @@
 #include "keychain/SecureObjectSync/SOSTransport.h"
 #include "keychain/SecureObjectSync/SOSTransportKeyParameter.h"
 #include "keychain/SecureObjectSync/SOSKVSKeys.h"
-#include <securityd/SOSCloudCircleServer.h>
+#include "keychain/securityd/SOSCloudCircleServer.h"
 #include <utilities/SecCFWrappers.h>
 #include "keychain/SecureObjectSync/SOSAccountPriv.h"
 #include "keychain/SecureObjectSync/CKBridge/SOSCloudKeychainClient.h"
@@ -35,8 +35,7 @@
 
 -(id) initWithAccount:(SOSAccount*) acct
 {
-    self  = [super init];
-    if(self){
+    if ((self = [super init])) {
         self.account = acct;
         SOSRegisterTransportKeyParameter(self);
     }
@@ -57,7 +56,7 @@ static bool SOSTransportKeyParameterKVSUpdateKVS(CFDictionaryRef changes, CFErro
         }
     };
 
-    SOSCloudKeychainPutObjectsInCloud(changes, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), log_error);
+    SOSCloudKeychainPutObjectsInCloud(changes, dispatch_get_global_queue(SOS_TRANSPORT_PRIORITY, 0), log_error);
     return true;
 }
 

@@ -144,9 +144,8 @@
 
     // Inject a message at the APS layer
     // Because we can only make APS receivers once iCloud tells us the push environment after sign-in, we can't use our normal injection strategy, and fell back on global state.
-    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForEnvironment:self.apsEnvironment
-                                                         namedDelegatePort:SecCKKSAPSNamedPort
-                                                        apsConnectionClass:[FakeAPSConnection class]];
+    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForNamedDelegatePort:SecCKKSAPSNamedPort
+                                                                    apsConnectionClass:[FakeAPSConnection class]];
     XCTAssertNotNil(apsReceiver, "Should have gotten an APS receiver");
 
     // Also, CKKS should handle this in one single fetch
@@ -209,9 +208,8 @@
 
     // Inject a message at the APS layer
     // Because we can only make APS receivers once iCloud tells us the push environment after sign-in, we can't use our normal injection strategy, and fell back on global state.
-    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForEnvironment:self.apsEnvironment
-                                                         namedDelegatePort:SecCKKSAPSNamedPort
-                                                        apsConnectionClass:[FakeAPSConnection class]];
+    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForNamedDelegatePort:SecCKKSAPSNamedPort
+                                                                    apsConnectionClass:[FakeAPSConnection class]];
     XCTAssertNotNil(apsReceiver, "Should have gotten an APS receiver");
 
     // Also, CKKS should handle this in one single fetch
@@ -224,6 +222,7 @@
     // Launch!
     [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage];
     OCMVerifyAllWithDelay(self.mockContainerExpectations, 16);
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
 
     // Now, wait for both views to run their processing
     [keychainProcessTimeoutOp waitUntilFinished];
@@ -258,13 +257,9 @@
 
     // Inject a message at the APS layer
     // Because we can only make APS receivers once iCloud tells us the push environment after sign-in, we can't use our normal injection strategy, and fell back on global state.
-    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForEnvironment:self.apsEnvironment
-                                                               namedDelegatePort:SecCKKSAPSNamedPort
-                                                              apsConnectionClass:[FakeAPSConnection class]];
+    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForNamedDelegatePort:SecCKKSAPSNamedPort
+                                                                    apsConnectionClass:[FakeAPSConnection class]];
     XCTAssertNotNil(apsReceiver, "Should have gotten an APS receiver");
-
-    [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage];
-    [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage2];
 
     // Expect four metric pushes, two per push: one from receiving the push and one from after we finish the fetch
     // AFAICT there's no way to introspect a metric object to ensure we did it right
@@ -272,6 +267,9 @@
     OCMExpect([self.mockContainerExpectations submitEventMetric:[OCMArg any]]);
     OCMExpect([self.mockContainerExpectations submitEventMetric:[OCMArg any]]);
     OCMExpect([self.mockContainerExpectations submitEventMetric:[OCMArg any]]);
+
+    [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage];
+    [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage2];
 
     // Launch!
     CKKSKeychainView* pushTestView = [self.injectedManager findOrCreateView:pushTestZone.zoneName];
@@ -285,35 +283,23 @@
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
 }
 
-- (int64_t)stalePushTimeoutShort
-{
-    return 10 * NSEC_PER_SEC;
-}
-
 - (void)testDropStalePushes {
     CKRecordZoneID* pushTestZone = [[CKRecordZoneID alloc] initWithZoneName:@"PushTestZone" ownerName:CKCurrentUserDefaultName];
 
-    id nearFutureSchduler = OCMClassMock([OctagonAPSReceiver class]);
-    OCMStub([nearFutureSchduler stalePushTimeout]).andCall(self, @selector(stalePushTimeoutShort));
-
     APSIncomingMessage* apsMessage = [CKKSAPSHandlingTests messageWithTracingEnabledForZoneID:pushTestZone];
 
-    OctagonAPSReceiver* apsReceiver = [OctagonAPSReceiver receiverForEnvironment:self.apsEnvironment
-                                                               namedDelegatePort:SecCKKSAPSNamedPort
-                                                              apsConnectionClass:[FakeAPSConnection class]];
+    // Don't use the global map here, because we need to ensure we create a new object (to use the stalePushTimeout we injected above)
+    OctagonAPSReceiver* apsReceiver = OCMPartialMock([[OctagonAPSReceiver alloc] initWithNamedDelegatePort:SecCKKSAPSNamedPort
+                                                                                      apsConnectionClass:[FakeAPSConnection class]
+                                                                                        stalePushTimeout:4 * NSEC_PER_SEC]);
     XCTAssertNotNil(apsReceiver, "Should have gotten an APS receiver");
 
+    OCMExpect([apsReceiver reportDroppedPushes:[OCMArg any]]);
     [apsReceiver connection:nil didReceiveIncomingMessage:apsMessage];
 
     XCTAssertEqual(apsReceiver.haveStalePushes, YES, "should have stale pushes");
-
-    XCTestExpectation *expection = [self expectationWithDescription:@"no push"];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, [self stalePushTimeoutShort] + 2), dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-        XCTAssertEqual(apsReceiver.haveStalePushes, NO, "should have cleared out stale pushes");
-        [expection fulfill];
-    });
-
-    [self waitForExpectations: @[expection] timeout:([self stalePushTimeoutShort] * 4)/NSEC_PER_SEC];
+    OCMVerifyAllWithDelay((id)apsReceiver, 20);
+    XCTAssertEqual(apsReceiver.haveStalePushes, NO, "should no longer have stale pushes");
 }
 
 

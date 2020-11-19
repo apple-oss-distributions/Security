@@ -12,13 +12,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface SecXPCHelper : NSObject
 + (NSSet<Class> *)safeErrorClasses;
-+ (NSError *)cleanseErrorForXPC:(NSError * _Nullable)error;
++ (NSError * _Nullable)cleanseErrorForXPC:(NSError * _Nullable)error;
 
 /*
  * Some NSError objects contain non-NSSecureCoding-compliant userInfo.
  * When in doubt, use cleanseErrorForXPC: before encodedDataFromError:
  */
-+ (NSError *)errorFromEncodedData:(NSData *)data;
++ (NSError * _Nullable)errorFromEncodedData:(NSData *)data;
 + (NSData *)encodedDataFromError:(NSError *)error;
 @end
 

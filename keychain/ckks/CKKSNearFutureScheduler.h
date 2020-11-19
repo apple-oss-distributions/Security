@@ -62,6 +62,14 @@ NS_ASSUME_NONNULL_BEGIN
    dependencyDescriptionCode:(NSInteger)code
                        block:(void (^_Nonnull)(void))futureBlock;
 
+- (instancetype)initWithName:(NSString*)name
+                initialDelay:(dispatch_time_t)initialDelay
+            expontialBackoff:(double)backoff
+                maximumDelay:(dispatch_time_t)maximumDelay
+            keepProcessAlive:(bool)keepProcessAlive
+   dependencyDescriptionCode:(NSInteger)code
+                       block:(void (^_Nonnull)(void))futureBlock;
+
 - (void)trigger;
 
 - (void)cancel;
@@ -73,6 +81,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)triggerAt:(uint64_t)delay;
 
 - (void)changeDelays:(dispatch_time_t)initialDelay continuingDelay:(dispatch_time_t)continuingDelay;
+
+// tests
+@property CKKSCondition* liveRequestReceived;
 
 @end
 

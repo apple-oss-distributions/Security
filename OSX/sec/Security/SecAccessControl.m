@@ -52,11 +52,23 @@ static void dumpValue(id value, NSMutableString *target, NSString *separator) {
     if (value == nil) {
         // Do nothing.
     } else if (CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
-        [target appendString:[value boolValue] ? @"true" : @"false"];
+        NSNumber *boolValue = value;
+        [target appendString:boolValue.boolValue ? @"true" : @"false"];
     } else if ([value isKindOfClass:NSNumber.class]) {
-        [target appendString:[value string]];
+        NSNumber *numberValue = value;
+        [target appendString:numberValue.stringValue];
     } else if ([value isKindOfClass:NSString.class]) {
         [target appendString:value];
+    } else if ([value isKindOfClass:NSData.class]) {
+        NSData *dataValue = value;
+        const uint8_t *dataBuffer  = dataValue.bytes;
+        NSUInteger dumpLength = dataValue.length > 64 ? 64 : dataValue.length;
+        for (NSUInteger i = 0; i < dumpLength; i++) {
+            [target appendFormat:@"%02X", (unsigned)dataBuffer[i]];
+        }
+        if (dumpLength < dataValue.length) {
+            [target appendFormat:@"...(%db)", (int)dataValue.length];
+        }
     } else if ([value isKindOfClass:NSDictionary.class]) {
         [value enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
             [target appendString:separator];
@@ -466,7 +478,7 @@ SecAccessControlRef SecAccessControlCreateFromData(CFAllocatorRef allocator, CFD
     CFPropertyListRef plist;
     const uint8_t *der = CFDataGetBytePtr(data);
     const uint8_t *der_end = der + CFDataGetLength(data);
-    require_quiet(der = der_decode_plist(0, kCFPropertyListMutableContainers, &plist, error, der, der_end), errOut);
+    require_quiet(der = der_decode_plist(0, &plist, error, der, der_end), errOut);
     if (der != der_end) {
         SecError(errSecDecode, error, CFSTR("trailing garbage at end of SecAccessControl data"));
         goto errOut;

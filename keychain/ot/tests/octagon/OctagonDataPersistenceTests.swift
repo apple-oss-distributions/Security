@@ -3,7 +3,6 @@ import XCTest
 #if OCTAGON
 
 class OctagonAccountMetadataClassCPersistenceTests: CloudKitKeychainSyncingMockXCTest {
-
     override static func setUp() {
         super.setUp()
 
@@ -19,6 +18,7 @@ class OctagonAccountMetadataClassCPersistenceTests: CloudKitKeychainSyncingMockX
         state.peerID = "asdf"
         state.icloudAccountState = .ACCOUNT_AVAILABLE
         state.trustState = .TRUSTED
+        state.cdpState = .ENABLED
 
         XCTAssertNoThrow(try state.saveToKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext), "saving to the keychain should work")
 
@@ -28,6 +28,7 @@ class OctagonAccountMetadataClassCPersistenceTests: CloudKitKeychainSyncingMockX
             XCTAssertEqual(state2.peerID, state.peerID, "peer ID persists through keychain")
             XCTAssertEqual(state2.icloudAccountState, state.icloudAccountState, "account state persists through keychain")
             XCTAssertEqual(state2.trustState, state.trustState, "trust state persists through keychain")
+            XCTAssertEqual(state2.cdpState, state.cdpState, "cdp state persists through keychain")
         } catch {
             XCTFail("error loading from keychain: \(error)")
         }
@@ -145,7 +146,7 @@ class OctagonAccountMetadataClassCPersistenceTests: CloudKitKeychainSyncingMockX
         do {
             let state2 = try OTAccountMetadataClassC.loadFromKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext)
             XCTAssertNotNil(state2)
-            XCTAssertEqual(state2.peerID, nil, "peerID should be nil")
+            XCTAssertNil(state2.peerID, "peerID should be nil")
             XCTAssertEqual(state2.icloudAccountState, OTAccountMetadataClassC_AccountState.UNKNOWN, "account state should be OTAccountMetadataClassC_AccountState_UNKNOWN")
             XCTAssertEqual(state2.trustState, OTAccountMetadataClassC_TrustState.UNKNOWN, "trust state should be OTAccountMetadataClassC_TrustState_UNKNOWN")
         } catch {
@@ -160,7 +161,7 @@ class OctagonAccountMetadataClassCPersistenceTests: CloudKitKeychainSyncingMockX
         state.trustState = .TRUSTED
         XCTAssertNoThrow(try state.saveToKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext), "saving to the keychain should work")
 
-        let deleted:Bool = try OTAccountMetadataClassC.deleteFromKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext)
+        let deleted: Bool = try OTAccountMetadataClassC.deleteFromKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext)
         XCTAssertTrue(deleted, "deleteFromKeychain should return true")
         XCTAssertThrowsError(try OTAccountMetadataClassC.loadFromKeychain(forContainer: OTCKContainerName, contextID: OTDefaultContext))
     }

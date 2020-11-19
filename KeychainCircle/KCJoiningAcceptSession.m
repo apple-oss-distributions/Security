@@ -20,7 +20,6 @@
 #include <corecrypto/ccsha2.h>
 #include <corecrypto/ccdh_gp.h>
 #include <utilities/debugging.h>
-#include <CommonCrypto/CommonRandomSPI.h>
 #include <notify.h>
 
 #if OCTAGON
@@ -30,6 +29,9 @@
 #import "keychain/ot/proto/generated_source/OTApplicantToSponsorRound2M1.h"
 #import "keychain/ot/proto/generated_source/OTSponsorToApplicantRound2M2.h"
 #import "keychain/ot/proto/generated_source/OTSponsorToApplicantRound1M2.h"
+#import "keychain/ot/proto/generated_source/OTGlobalEnums.h"
+#import "keychain/ot/proto/generated_source/OTSupportSOSMessage.h"
+#import "keychain/ot/proto/generated_source/OTSupportOctagonMessage.h"
 #import "keychain/ot/proto/generated_source/OTPairingMessage.h"
 #endif
 
@@ -42,8 +44,8 @@ typedef enum {
 
 @interface KCJoiningAcceptSession ()
 @property (readonly) uint64_t dsid;
-@property (readonly) NSObject<KCJoiningAcceptSecretDelegate>* secretDelegate;
-@property (readonly) NSObject<KCJoiningAcceptCircleDelegate>* circleDelegate;
+@property (weak) id<KCJoiningAcceptSecretDelegate> secretDelegate;
+@property (weak) id<KCJoiningAcceptCircleDelegate> circleDelegate;
 @property (readonly) KCSRPServerContext* context;
 @property (readonly) KCAESGCMDuplexSession* session;
 @property (readonly) KCJoiningAcceptSessionState state;
@@ -103,38 +105,39 @@ typedef enum {
                                             dsid: (uint64_t) dsid
                                              rng: (struct ccrng_state *)rng
                                            error: (NSError**) error {
-    self = [super init];
+    if ((self = [super init])) {
 
-    secnotice("accepting", "initWithSecretDelegate");
+        secnotice("accepting", "initWithSecretDelegate");
 
-    NSString* name = [NSString stringWithFormat: @"%llu", dsid];
+        NSString* name = [NSString stringWithFormat: @"%llu", dsid];
 
-    self->_context = [[KCSRPServerContext alloc] initWithUser: name
-                                                     password: [secretDelegate secret]
-                                                   digestInfo: ccsha256_di()
-                                                        group: ccsrp_gp_rfc5054_3072()
-                                                 randomSource: rng];
-    self->_secretDelegate = secretDelegate;
-    self->_circleDelegate = circleDelegate;
-    self->_state = kExpectingA;
-    self->_dsid = dsid;
-    self->_piggy_uuid = nil;
-    self->_defaults = [NSMutableDictionary dictionary];
+        self->_context = [[KCSRPServerContext alloc] initWithUser: name
+                                                         password: [secretDelegate secret]
+                                                       digestInfo: ccsha256_di()
+                                                            group: ccsrp_gp_rfc5054_3072()
+                                                     randomSource: rng];
+        self.secretDelegate = secretDelegate;
+        self.circleDelegate = circleDelegate;
+        self->_state = kExpectingA;
+        self->_dsid = dsid;
+        self->_piggy_uuid = nil;
+        self->_defaults = [NSMutableDictionary dictionary];
 
 #if OCTAGON
-    self->_otControl = [OTControl controlObject:true error:error];
-    self->_piggy_version = KCJoiningOctagonPiggybackingEnabled()? kPiggyV2 : kPiggyV1;
-    self->_joiningConfiguration = [[OTJoiningConfiguration alloc]initWithProtocolType:@"OctagonPiggybacking"
-                                                                       uniqueDeviceID:@"acceptor-deviceid"
-                                                                       uniqueClientID:@"requester-deviceid"
-                                                                        containerName:nil
-                                                                            contextID:OTDefaultContext
-                                                                                epoch:0
-                                                                          isInitiator:false];
+        self->_otControl = [OTControl controlObject:true error:error];
+        self->_piggy_version = KCJoiningOctagonPiggybackingEnabled()? kPiggyV2 : kPiggyV1;
+        self->_joiningConfiguration = [[OTJoiningConfiguration alloc]initWithProtocolType:@"OctagonPiggybacking"
+                                                                           uniqueDeviceID:@"acceptor-deviceid"
+                                                                           uniqueClientID:@"requester-deviceid"
+                                                                              pairingUUID:[[NSUUID UUID] UUIDString]
+                                                                            containerName:nil
+                                                                                contextID:OTDefaultContext
+                                                                                    epoch:0
+                                                                              isInitiator:false];
 #else
-    self->_piggy_version = kPiggyV1;
+        self->_piggy_version = kPiggyV1;
 #endif
-    
+    }    
     return self;
 }
 
@@ -242,8 +245,14 @@ typedef enum {
                 captureError = epochError;
             }else{
                 OTPairingMessage* responseMessage = [[OTPairingMessage alloc] init];
+                responseMessage.supportsSOS = [[OTSupportSOSMessage alloc] init];
+                responseMessage.supportsOctagon = [[OTSupportOctagonMessage alloc] init];
+
                 responseMessage.epoch = [[OTSponsorToApplicantRound1M2 alloc] init];
                 responseMessage.epoch.epoch = epoch;
+                
+                responseMessage.supportsSOS.supported = OctagonPlatformSupportsSOS() ? OTSupportType_supported : OTSupportType_not_supported;
+                responseMessage.supportsOctagon.supported = OTSupportType_supported;
                 next = responseMessage.data;
             }
             dispatch_semaphore_signal(sema);
@@ -273,25 +282,27 @@ typedef enum {
         return nil;
     }
 
+    id<KCJoiningAcceptSecretDelegate> secretDelegate = self.secretDelegate;
+
     // We handle failure, don't capture the error.
     NSData* confirmation = [self.context copyConfirmationFor:message.firstData error:NULL];
     if (!confirmation) {
         // Find out what kind of error we should send.
         NSData* errorData = nil;
 
-        KCRetryOrNot status = [self.secretDelegate verificationFailed: error];
+        KCRetryOrNot status = [secretDelegate verificationFailed: error];
         secerror("processResponse: handle error: %d", (int)status);
 
         switch (status) {
             case kKCRetryError:
                 // We fill in an error if they didn't, but if they did this wont bother.
-                KCJoiningErrorCreate(kInternalError, error, @"Delegate returned error without filling in error: %@", self.secretDelegate);
+                KCJoiningErrorCreate(kInternalError, error, @"Delegate returned error without filling in error: %@", secretDelegate);
                 return nil;
             case kKCRetryWithSameChallenge:
                 errorData = [NSData data];
                 break;
             case kKCRetryWithNewChallenge:
-                if ([self.context resetWithPassword:[self.secretDelegate secret] error:error]) {
+                if ([self.context resetWithPassword:[secretDelegate secret] error:error]) {
                     errorData = [self copyChallengeMessage: error];
                 }
                 break;
@@ -303,7 +314,7 @@ typedef enum {
                                             error:error] der];
     }
 
-    NSData* encoded = [NSData dataWithEncodedString:[self.secretDelegate accountCode] error:error];
+    NSData* encoded = [NSData dataWithEncodedString:[secretDelegate accountCode] error:error];
     if (encoded == nil)
         return nil;
 
@@ -323,6 +334,8 @@ typedef enum {
     NSData* decryptedPayload = [self.session decryptAndVerify:message error:error];
     if (decryptedPayload == nil) return nil;
 
+    id<KCJoiningAcceptCircleDelegate> circleDelegate = self.circleDelegate;
+
     CFErrorRef cfError = NULL;
     SOSPeerInfoRef ref = SOSPeerInfoCreateFromData(NULL, &cfError, (__bridge CFDataRef) decryptedPayload);
     if (ref == NULL) {
@@ -331,7 +344,7 @@ typedef enum {
         return nil;
     }
 
-    NSData* joinData = [self.circleDelegate circleJoinDataFor:ref error:error];
+    NSData* joinData = [circleDelegate circleJoinDataFor:ref error:error];
     if(ref) {
         CFRelease(ref);
         ref = NULL;
@@ -339,13 +352,26 @@ typedef enum {
 
     if (joinData == nil) return nil;
 
-    if(self->_piggy_version == kPiggyV1){
+    SOSInitialSyncFlags flags = 0;
+    switch (self.piggy_version) {
+        case kPiggyV0:
+            break;
+        case kPiggyV1:
+            secnotice("acceptor", "piggy version is 1");
+            flags |= kSOSInitialSyncFlagTLKs | kSOSInitialSyncFlagiCloudIdentity;
+            break;
+        case kPiggyV2:
+            secnotice("acceptor", "piggy version is 2");
+            flags |= kSOSInitialSyncFlagiCloudIdentity;
+            break;
+    }
+
+    if (flags) {
         //grab iCloud Identities, TLKs
-        secnotice("acceptor", "piggy version is 1");
-        NSError *localV1Error = nil;
-        NSData* initialSyncData = [self.circleDelegate circleGetInitialSyncViews:&localV1Error];
-        if(localV1Error){
-            secnotice("piggy", "PB v1 threw an error: %@", localV1Error);
+        NSError *localISVError = nil;
+        NSData* initialSyncData = [circleDelegate circleGetInitialSyncViews:flags error:&localISVError];
+        if(initialSyncData == NULL){
+            secnotice("piggy", "PB threw an error: %@", localISVError);
         }
 
         NSMutableData* growPacket = [[NSMutableData alloc] initWithData:joinData];
@@ -385,7 +411,58 @@ typedef enum {
 }
 #endif
 
+- (NSData*) createTLKRequestResponse: (NSError**) error {
+    NSError* localError = NULL;
+    NSData* initialSync = [self.circleDelegate circleGetInitialSyncViews:kSOSInitialSyncFlagTLKsRequestOnly error:&localError];
+    if (!initialSync) {
+        secnotice("joining", "Failed to get initial sync view: %@", localError);
+        if ( error!=NULL && localError != NULL )
+            *error = localError;
+        return nil;
+    }
+    
+    NSData* encryptedOutgoing = [self.session encrypt:initialSync error:&localError];
+    if (!encryptedOutgoing) {
+        secnotice("joining", "TLK request failed to encrypt: %@", localError);
+        if ( error!=NULL && localError != NULL )
+            *error = localError;
+        return nil;
+    }
+    self->_state = kAcceptDone;
+
+    secnotice("joining", "TLKRequest done.");
+
+    return [[KCJoiningMessage messageWithType:kTLKRequest
+                                         data:encryptedOutgoing
+                                        error:error] der];
+}
+
+
+- (BOOL)shouldProcessSOSApplication:(KCJoiningMessage*)message pairingMessage:(OTPairingMessage*)pairingMessage
+{
+    BOOL shouldProcess = YES;
+
+    if (OctagonPlatformSupportsSOS() == NO) {
+        secnotice("joining", "platform does not support SOS");
+        shouldProcess = NO;
+    } else if (message.secondData == nil) {
+        secnotice("joining", "message does not contain SOS data");
+        shouldProcess = NO;
+    } else if (pairingMessage.hasSupportsSOS && pairingMessage.supportsSOS.supported == OTSupportType_not_supported) {
+        secnotice("joining", "requester explicitly does not support SOS");
+        shouldProcess = NO;
+    }
+
+    return shouldProcess;
+}
+
+
 - (NSData*) processApplication: (KCJoiningMessage*) message error:(NSError**) error {
+    
+    if ([message type] == kTLKRequest) {
+        return [self createTLKRequestResponse: error];
+    }
+    
     if ([message type] != kPeerInfo) {
         KCJoiningErrorCreate(kUnexpectedMessage, error, @"Expected peerInfo!");
         return nil;
@@ -424,9 +501,14 @@ typedef enum {
                 localError = err;
             }else{
                 OTPairingMessage *pairingResponse = [[OTPairingMessage alloc] init];
+                pairingResponse.supportsSOS = [[OTSupportSOSMessage alloc] init];
+                pairingResponse.supportsOctagon = [[OTSupportOctagonMessage alloc] init];
                 pairingResponse.voucher = [[OTSponsorToApplicantRound2M2 alloc] init];
                 pairingResponse.voucher.voucher = voucher;
                 pairingResponse.voucher.voucherSignature = voucherSig;
+
+                pairingMessage.supportsSOS.supported = OctagonPlatformSupportsSOS() ? OTSupportType_supported : OTSupportType_not_supported;
+                pairingMessage.supportsOctagon.supported = OTSupportType_supported;
                 next = pairingResponse.data;
             }
             dispatch_semaphore_signal(sema);
@@ -444,17 +526,19 @@ typedef enum {
         }
 
         NSData* encryptedOutgoing = nil;
-        if (OctagonPlatformSupportsSOS() && message.secondData) {
+        if ([self shouldProcessSOSApplication:message pairingMessage:pairingMessage]) {
             secnotice("joining", "doing SOS processSOSApplication");
-            //note we are stuffing SOS into the payload "secondData"
             encryptedOutgoing = [self processSOSApplication: message.secondData error:error];
-        } else {
-            secnotice("joining", "no platform support processSOSApplication, peer sent data: %s",
-                      message.secondData ? "yes" : "no");
+            if (encryptedOutgoing == nil) {
+                secerror("joining: failed to process SOS application: %@", error && *error ? *error : nil);
+                KCJoiningErrorCreate(kProcessApplicationFailure, error, @"message failed to process application");
+                return nil;
+            }
         }
 
         self->_state = kAcceptDone;
 
+        //note we are stuffing SOS into the payload
         return [[KCJoiningMessage messageWithType:kCircleBlob
                                              data:next
                                           payload:encryptedOutgoing
@@ -513,6 +597,11 @@ typedef enum {
 - (void)setConfiguration:(OTJoiningConfiguration *)config
 {
     self.joiningConfiguration = config;
+}
+
+- (KCAESGCMDuplexSession*)accessSession
+{
+    return self.session;
 }
 #endif
 

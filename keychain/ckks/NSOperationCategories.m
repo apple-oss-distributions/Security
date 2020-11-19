@@ -22,6 +22,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import "keychain/ckks/CKKS.h"
 #import "keychain/ckks/NSOperationCategories.h"
 #import "keychain/ot/ObjCImprovements.h"
 
@@ -41,6 +42,9 @@
                 // don't depend on yourself
                 continue;
             }
+#if DEBUG
+            ckksnotice_global("ckks-operation", "adding dependency of %@ on %@", self.name, existingop);
+#endif
             [self addDependency: existingop];
         }
         [collection addObject:self];

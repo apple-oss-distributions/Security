@@ -47,7 +47,7 @@
 #include <MobileCoreServices/LSApplicationProxy.h>
 #endif
 
-#if TARGET_OS_IPHONE && !TARGET_OS_WATCH
+#if TARGET_OS_IPHONE && !TARGET_OS_WATCH && !TARGET_OS_TV
 #include <dlfcn.h>
 #include <WebUI/WBUAutoFillData.h>
 
@@ -62,10 +62,10 @@ typedef WBSAutoFillDataClasses (*WBUAutoFillGetEnabledDataClasses_f)(void);
 #include <ipc/securityd_client.h>
 #include "swcagent_client.h"
 
-#include <securityd/SecItemServer.h>
-#include <securityd/SecTrustServer.h>
-#include <securityd/SecTrustStoreServer.h>
-#include <securityd/spi.h>
+#include "keychain/securityd/SecItemServer.h"
+#include "trust/trustd/SecTrustServer.h"
+#include "trust/trustd/SecTrustStoreServer.h"
+#include "keychain/securityd/spi.h"
 #include <Security/SecTask.h>
 
 #include <utilities/SecCFWrappers.h>
@@ -85,7 +85,7 @@ typedef WBSAutoFillDataClasses (*WBUAutoFillGetEnabledDataClasses_f)(void);
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <LocalAuthentication/LAContext+Private.h>
 #import <MobileGestalt.h>
-#import <ManagedConfiguration/MCProfileConnection.h>
+#import <ManagedConfiguration/ManagedConfiguration.h>
 #endif
 
 static NSString *swca_string_table = @"SharedWebCredentials";

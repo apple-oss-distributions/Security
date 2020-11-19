@@ -458,13 +458,18 @@ SOSRingRef SOSAccountCreateBackupRingForView(SOSAccount* account, CFStringRef ri
     return newRing;
 }
 
-void SOSAccountProcessBackupRings(SOSAccount*  account, CFErrorRef *error) {
+void SOSAccountProcessBackupRings(SOSAccount*  account) {
     SOSAccountForEachBackupView(account, ^(const void *value) {
+        CFErrorRef localError = NULL;
         CFStringRef viewName = (CFStringRef)value;
-        SOSAccountUpdateBackupRing(account, viewName, error, ^SOSRingRef(SOSRingRef existing, CFErrorRef *error) {
+        SOSAccountUpdateBackupRing(account, viewName, &localError, ^SOSRingRef(SOSRingRef existing, CFErrorRef *error) {
             SOSRingRef newRing = SOSAccountCreateBackupRingForView(account, viewName, error);
             return newRing;
         });
+        if(localError) {
+            secnotice("ring", "Error during SOSAccountProcessBackupRings (%@)", localError);
+            CFReleaseNull(localError);
+        }
     });
 }
 
@@ -524,7 +529,9 @@ bool SOSAccountSetBackupPublicKey(SOSAccountTransaction* aTxn, CFDataRef cfBacku
     })){
         return result;
     }
-    SOSAccountProcessBackupRings(account, NULL);
+    SOSAccountProcessBackupRings(account);
+    account.need_backup_peers_created_after_backup_key_set = true;
+    account.circle_rings_retirements_need_attention = true;
     return true;
 
 }
@@ -628,34 +635,4 @@ exit:
     CFReleaseNull(ringName);
 
     return bskb;
-}
-
-bool SOSAccountIsLastBackupPeer(SOSAccount*  account, CFErrorRef *error) {
-    __block bool retval = false;
-    SOSPeerInfoRef pi = account.peerInfo;
-
-    if(![account isInCircle:error]) {
-        return retval;
-    }
-
-    if(!SOSPeerInfoHasBackupKey(pi))
-        return retval;
-
-    SOSCircleRef circle = [account.trust getCircle:error];
-
-    if(SOSCircleCountValidSyncingPeers(circle, SOSAccountGetTrustedPublicCredential(account, error)) == 1){
-        retval = true;
-        return retval;
-    }
-    // We're in a circle with more than 1 ActiveValidPeers - are they in the backups?
-    SOSAccountForEachBackupView(account, ^(const void *value) {
-        CFStringRef viewname = (CFStringRef) value;
-        SOSBackupSliceKeyBagRef keybag = SOSAccountBackupSliceKeyBagForView(account, viewname, error);
-        require_quiet(keybag, inner_errOut);
-        retval |= ((SOSBSKBCountPeers(keybag) == 1) && (SOSBSKBPeerIsInKeyBag(keybag, pi)));
-    inner_errOut:
-        CFReleaseNull(keybag);
-    });
-
-    return retval;
 }

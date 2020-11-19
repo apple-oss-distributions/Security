@@ -18,10 +18,14 @@
         _essential = essential;
 
         _circleStatus = kSOSCCInCircle;
+        _safariViewEnabled = YES;
 
         _excludeSelfPeerFromTrustSet = false;
 
         _peerChangeListeners = [[CKKSListenerCollection alloc] initWithName:@"ckks-mock-sos"];
+
+        _ckks4AllStatus = NO;
+        _ckks4AllStatusIsSet = NO;
 
         _selfPeer = selfPeer;
         _trustedPeers = [trustedPeers mutableCopy];
@@ -38,7 +42,8 @@
 {
     if(!self.sosEnabled || self.circleStatus == kSOSCCError) {
         if(error && self.circleStatus == kSOSCCError) {
-            *error = [NSError errorWithDomain:(__bridge NSString*)kSOSErrorDomain code:self.circleStatus userInfo:nil];
+            // I'm not at all sure that the second error here actually is any error in particular
+            *error = self.circleStatusError ?: [NSError errorWithDomain:(__bridge NSString*)kSOSErrorDomain code:self.circleStatus userInfo:nil];
         }
         return kSOSCCError;
     }
@@ -53,6 +58,13 @@
     if(self.selfPeerError) {
         if(error) {
             *error = self.selfPeerError;
+        }
+        return nil;
+    }
+
+    if(self.aksLocked) {
+        if(error) {
+            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecInteractionNotAllowed userInfo:nil];
         }
         return nil;
     }
@@ -80,7 +92,7 @@
 - (NSSet<id<CKKSRemotePeerProtocol>> * _Nullable)fetchTrustedPeers:(NSError * _Nullable __autoreleasing * _Nullable)error
 {
     if(self.trustedPeersError) {
-        if(*error) {
+        if(error) {
             *error = self.trustedPeersError;
         }
         return nil;
@@ -101,8 +113,18 @@
     }
 }
 
-- (void)updateOctagonKeySetWithAccount:(nonnull id<CKKSSelfPeer>)currentSelfPeer error:(NSError *__autoreleasing  _Nullable * _Nullable)error {
-    return;
+- (BOOL)updateOctagonKeySetWithAccount:(nonnull id<CKKSSelfPeer>)currentSelfPeer error:(NSError *__autoreleasing  _Nullable * _Nullable)error {
+    if(self.updateOctagonKeySetListener) {
+        self.updateOctagonKeySetListener(currentSelfPeer);
+    }
+    return YES;
+}
+
+- (BOOL)updateCKKS4AllStatus:(BOOL)status error:(NSError**)error
+{
+    self.ckks4AllStatus = status;
+    self.ckks4AllStatusIsSet = YES;
+    return YES;
 }
 
 - (void)registerForPeerChangeUpdates:(nonnull id<CKKSPeerUpdateListener>)listener {
@@ -121,6 +143,10 @@
     }];
 }
 
+- (nonnull CKKSPeerProviderState *)currentState {
+    return [CKKSPeerProviderState createFromProvider:self];
+}
+
 - (NSSet<id<CKKSRemotePeerProtocol>>*)allPeers
 {
     // include the self peer, but as a CKKSSOSPeer object instead of a self peer
@@ -130,6 +156,17 @@
                                                    viewList:self.selfPeer.viewList];
 
     return [self.trustedPeers setByAddingObject: s];
+}
+
+- (BOOL)safariViewSyncingEnabled:(NSError**)error
+{
+    // TODO: what happens if you call this when not in circle?
+    return self.safariViewEnabled;
+}
+
+- (BOOL)preloadOctagonKeySetOnAccount:(nonnull id<CKKSSelfPeer>)currentSelfPeer error:(NSError *__autoreleasing  _Nullable * _Nullable)error {
+    // No-op
+    return YES;
 }
 
 @end

@@ -84,6 +84,8 @@ typedef enum {
     kPeerInfo = 4,
     kCircleBlob = 5,
 
+    kTLKRequest = 6,
+    
     kError = 0,
 
     kUnknown = 255,
@@ -109,7 +111,7 @@ typedef enum {
 
 + (nullable instancetype) messageWithType: (KCJoiningMessageType) type
                                      data: (NSData*) firstData
-                                  payload: (NSData*) secondData
+                                  payload: (nullable NSData*) secondData
                                     error: (NSError**) error;
 
 

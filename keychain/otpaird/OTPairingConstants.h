@@ -3,10 +3,9 @@
 #define OTPairingIDSServiceName     @"com.apple.private.alloy.octagon"
 
 #define OTPairingIDSKeyMessageType  @"m"
-#define OTPairingIDSKeyError        @"e"
 #define OTPairingIDSKeySession      @"session"
 #define OTPairingIDSKeyPacket       @"packet"
-#define OTPairingIDSKeyErrorDeprecated  @"error"
+#define OTPairingIDSKeyErrorDescription @"error"
 
 enum OTPairingIDSMessageType {
     OTPairingIDSMessageTypePacket = 1,
@@ -38,3 +37,5 @@ enum {
 #define OTPairingXPCActivityInterval    XPC_ACTIVITY_INTERVAL_1_HOUR
 
 #define OTPairingXPCActivityPoke        "com.apple.security.otpaird.poke"
+
+#define OTPairingXPCEventIDSDeviceState "ids-device-state"

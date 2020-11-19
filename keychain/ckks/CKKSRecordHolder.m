@@ -31,8 +31,8 @@
 #import "CKKSSIV.h"
 
 #include <utilities/SecDb.h>
-#include <securityd/SecDbItem.h>
-#include <securityd/SecItemSchema.h>
+#include "keychain/securityd/SecDbItem.h"
+#include "keychain/securityd/SecItemSchema.h"
 
 #import <CloudKit/CloudKit.h>
 
@@ -54,7 +54,7 @@
         _encodedCKRecord = encodedCKRecord;
 
         if(self.encodedCKRecord && ![self.storedCKRecord.recordID.zoneID isEqual: self.zoneID]) {
-            secerror("ckks: mismatching zone ids in a single record: %@ and %@", self.zoneID, self.storedCKRecord.recordID.zoneID);
+            ckkserror("ckks", self.zoneID, "mismatching zone ids in a single record: %@ and %@", self.zoneID, self.storedCKRecord.recordID.zoneID);
         }
     }
     return self;

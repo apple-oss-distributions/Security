@@ -41,6 +41,7 @@ const char *kSecXPCKeyPeerInfo = "peer-info";
 const char *kSecXPCKeyUserLabel = "userlabel";
 const char *kSecXPCKeyBackup = "backup";
 const char *kSecXPCKeyKeybag = "keybag";
+const char *kSecXPCKeyFlags = "flags";
 const char *kSecXPCKeyUserPassword = "password";
 const char *kSecXPCKeyEMCSBackup = "emcsbackup";
 const char *kSecXPCKeyDSID = "dsid";
@@ -100,8 +101,6 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("OTASecExperimentGetAsset");
         case kSecXPCOpAcceptApplicants:
             return CFSTR("AcceptApplicants");
-        case kSecXPCOpApplyToARing:
-            return CFSTR("ApplyToARing");
         case kSecXPCOpBailFromCircle:
             return CFSTR("BailFromCircle");
         case kSecXPCOpCanAuthenticate:
@@ -114,8 +113,6 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("CopyEngineState");
         case kSecXPCOpCopyGenerationPeerInfo:
             return CFSTR("CopyGenerationPeerInfo");
-        case kSecXPCOpCopyIncompatibilityInfo:
-            return CFSTR("CopyIncompatibilityInfo");
         case kSecXPCOpCopyMyPeerInfo:
             return CFSTR("CopyMyPeerInfo");
         case kSecXPCOpCopyNotValidPeerPeerInfo:
@@ -130,10 +127,6 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("CopyViewUnawarePeerInfo");
         case kSecXPCOpDeviceInCircle:
             return CFSTR("DeviceInCircle");
-        case kSecXPCOpEnableRing:
-            return CFSTR("EnableRing");
-        case kSecXPCOpGetAllTheRings:
-            return CFSTR("GetAllTheRings");
         case kSecXPCOpGetLastDepartureReason:
             return CFSTR("GetLastDepartureReason");
         case kSecXPCOpLoggedOutOfAccount:
@@ -150,30 +143,16 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("RejectApplicants");
         case kSecXPCOpRemoveThisDeviceFromCircle:
             return CFSTR("RemoveThisDeviceFromCircle");
-        case kSecXPCOpRemoveThisDeviceFromCircleWithAnalytics:
-            return CFSTR("RemoveThisDeviceFromCircleWithAnalytics");
         case kSecXPCOpRemovePeersFromCircle:
             return CFSTR("RemovePeersFromCircle");
-        case kSecXPCOpRemovePeersFromCircleWithAnalytics:
-            return CFSTR("RemovePeersFromCircleWithAnalytics");
-        case kSecXPCOpRequestEnsureFreshParameters:
-            return CFSTR("RequestEnsureFreshParameters");
         case kSecXPCOpRequestToJoin:
             return CFSTR("RequestToJoin");
-        case kSecXPCOpRequestToJoinWithAnalytics:
-            return CFSTR("RequestToJoinWithAnalytics");
         case kSecXPCOpRequestToJoinAfterRestore:
             return CFSTR("RequestToJoinAfterRestore");
-        case kSecXPCOpRequestToJoinAfterRestoreWithAnalytics:
-            return CFSTR("RequestToJoinAfterRestoreWithAnalytics");
         case kSecXPCOpResetToEmpty:
             return CFSTR("ResetToEmpty");
-        case kSecXPCOpResetToEmptyWithAnalytics:
-            return CFSTR("ResetToEmptyWithAnalytics");
         case kSecXPCOpResetToOffering:
             return CFSTR("ResetToOffering");
-        case kSecXPCOpRingStatus:
-            return CFSTR("RingStatus");
         case kSecXPCOpRollKeys:
             return CFSTR("RollKeys");
         case kSecXPCOpSetBagForAllSlices:
@@ -186,16 +165,12 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("SetUserCredentials");
         case kSecXPCOpSetUserCredentialsAndDSID:
             return CFSTR("SetUserCredentialsAndDSID");
-        case kSecXPCOpSetUserCredentialsAndDSIDWithAnalytics:
-            return CFSTR("SetUserCredentialsAndDSIDWithAnalytics");
         case kSecXPCOpTryUserCredentials:
             return CFSTR("TryUserCredentials");
         case kSecXPCOpValidateUserPublic:
             return CFSTR("ValidateUserPublic");
         case kSecXPCOpView:
             return CFSTR("View");
-        case kSecXPCOpWithdrawlFromARing:
-            return CFSTR("WithdrawlFromARing");
         case sec_add_shared_web_credential_id:
             return CFSTR("add_shared_web_credential");
         case sec_copy_shared_web_credential_id:
@@ -208,6 +183,8 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("add");
         case sec_item_backup_copy_names_id:
             return CFSTR("backup_copy_names");
+        case sec_item_backup_ensure_copy_view_id:
+            return CFSTR("backup_register_view");
         case sec_item_backup_handoff_fd_id:
             return CFSTR("backup_handoff_fd");
         case sec_item_backup_restore_id:
@@ -258,25 +235,11 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("ocsp_cache_flush");
         case soscc_EnsurePeerRegistration_id:
             return CFSTR("EnsurePeerRegistration");
-        case kSecXPCOpSetEscrowRecord:
-            return CFSTR("SetEscrowRecord");
-        case kSecXPCOpGetEscrowRecord:
-            return CFSTR("GetEscrowRecord");
         case kSecXPCOpWhoAmI:
             return CFSTR("WhoAmI");
         case kSecXPCOpTransmogrifyToSyncBubble:
             return CFSTR("TransmogrifyToSyncBubble");
-        case kSecXPCOpWrapToBackupSliceKeyBagForView:
-            return CFSTR("WrapToBackupSliceKeyBagForView");
-        case kSecXPCOpCopyAccountData:
-            return CFSTR("CopyAccountDataFromKeychain");
-        case kSecXPCOpDeleteAccountData:
-            return CFSTR("DeleteAccountDataFromKeychain");
-        case kSecXPCOpCopyEngineData:
-            return CFSTR("CopyEngineDataFromKeychain");
-        case kSecXPCOpDeleteEngineData:
-            return CFSTR("DeleteEngineDataFromKeychain");
-        case sec_item_update_token_items_id:
+        case sec_item_update_token_items_for_access_groups_id:
             return CFSTR("UpdateTokenItems");
         case sec_delete_items_with_access_groups_id:
             return CFSTR("sec_delete_items_with_access_groups_id");
@@ -286,8 +249,6 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("RegisterRecoveryPublicKey");
         case kSecXPCOpGetRecoveryPublicKey:
             return CFSTR("GetRecoveryPublicKey");
-        case kSecXPCOpCopyBackupInformation:
-            return CFSTR("CopyBackupInformation");
         case kSecXPCOpMessageFromPeerIsPending:
             return CFSTR("MessageFromPeerIsPending");
         case kSecXPCOpSendToPeerIsPending:
@@ -312,6 +273,12 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
             return CFSTR("GetExceptionResetCount");
         case sec_trust_increment_exception_reset_count_id:
             return CFSTR("IncrementExceptionResetCount");
+        case kSecXPCOpSetCARevocationAdditions:
+            return CFSTR("SetCARevocationAdditions");
+        case kSecXPCOpCopyCARevocationAdditions:
+            return CFSTR("CopyCARevocationAdditions");
+        case kSecXPCOpValidUpdate:
+            return CFSTR("ValidUpdate");
         default:
             return CFSTR("Unknown xpc operation");
     }
@@ -319,15 +286,21 @@ CFStringRef SOSCCGetOperationDescription(enum SecXPCOperation op)
 
 bool SecXPCDictionarySetPList(xpc_object_t message, const char *key, CFTypeRef object, CFErrorRef *error)
 {
+    return SecXPCDictionarySetPListWithRepair(message, key, object, false, error);
+}
+
+bool SecXPCDictionarySetPListWithRepair(xpc_object_t message, const char *key, CFTypeRef object, bool repair, CFErrorRef *error)
+{
     if (!object)
         return SecError(errSecParam, error, CFSTR("object for key %s is NULL"), key);
 
     size_t size = der_sizeof_plist(object, error);
-    if (!size)
+    if (!size) {
         return false;
+    }
     uint8_t *der = malloc(size);
     uint8_t *der_end = der + size;
-    uint8_t *der_start = der_encode_plist(object, error, der, der_end);
+    uint8_t *der_start = der_encode_plist_repair(object, error, repair, der, der_end);
     if (!der_start) {
         free(der);
         return false;
@@ -521,10 +494,16 @@ CFTypeRef SecXPCDictionaryCopyPList(xpc_object_t message, const char *key, CFErr
 
     const uint8_t *der_end = der + size;
     /* use the sensitive allocator so that the dictionary is zeroized upon deallocation */
-    const uint8_t *decode_end = der_decode_plist(SecCFAllocatorZeroize(), kCFPropertyListImmutable,
+    const uint8_t *decode_end = der_decode_plist(SecCFAllocatorZeroize(),
                                           &cfobject, error, der, der_end);
     if (decode_end != der_end) {
-        SecError(errSecParam, error, CFSTR("trailing garbage after der decoded object for key %s"), key);
+        CFStringRef description = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("trailing garbage after der decoded object for key %s"), key);
+        SecError(errSecParam, error, CFSTR("%@"), description);
+        if (error) {    // The no-error case is handled in SecError directly
+            secerror("xpc: %@", *error);
+        }
+        __security_simulatecrash(description, __sec_exception_code_CorruptItem);
+        CFReleaseNull(description);
         CFReleaseNull(cfobject);
     }
 

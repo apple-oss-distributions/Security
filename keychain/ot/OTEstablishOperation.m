@@ -31,6 +31,7 @@
 #import "keychain/ckks/CloudKitCategories.h"
 #import "keychain/ckks/CKKSCurrentKeyPointer.h"
 #import "keychain/ckks/CKKSKeychainView.h"
+#import "keychain/SecureObjectSync/SOSAccount.h"
 
 #import "keychain/TrustedPeersHelper/TrustedPeersHelperProtocol.h"
 #import "keychain/ot/ObjCImprovements.h"
@@ -74,7 +75,8 @@
     [self dependOnBeforeGroupFinished:self.finishedOp];
 
     // First, interrogate CKKS views, and see when they have a TLK proposal.
-    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.operationDependencies];
+    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.operationDependencies
+                                                                                     refetchNeeded:NO];
     [self runBeforeGroupFinished:fetchKeysOp];
 
     CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"establish-with-keys"
@@ -93,19 +95,16 @@
     WEAKIFY(self);
 
     NSArray<NSData*>* publicSigningSPKIs = nil;
-
     if(self.operationDependencies.sosAdapter.sosEnabled) {
-        NSError* peerError = nil;
+        NSError* sosPreapprovalError = nil;
+        publicSigningSPKIs = [OTSOSAdapterHelpers peerPublicSigningKeySPKIsForCircle:self.operationDependencies.sosAdapter error:&sosPreapprovalError];
 
-        secnotice("octagon-sos", "SOS not enabled; no preapproved keys");
-        NSSet<id<CKKSRemotePeerProtocol>>* peerSet = [self.operationDependencies.sosAdapter fetchTrustedPeers:&peerError];
-
-        if(!peerSet || peerError) {
-            secerror("octagon-sos: Can't fetch trusted peers during establish: %@", peerError);
+        if(publicSigningSPKIs) {
+            secnotice("octagon-sos", "SOS preapproved keys are %@", publicSigningSPKIs);
+        } else {
+            secnotice("octagon-sos", "Unable to fetch SOS preapproved keys: %@", sosPreapprovalError);
         }
 
-        publicSigningSPKIs = [OTSOSActualAdapter peerPublicSigningKeySPKIs:peerSet];
-        secnotice("octagon-sos", "SOS preapproved keys are %@", publicSigningSPKIs);
     } else {
         secnotice("octagon-sos", "SOS not enabled; no preapproved keys");
     }
@@ -117,58 +116,58 @@
     }
 
     secnotice("octagon-ckks", "Beginning establish with keys: %@", viewKeySets);
-    [[self.operationDependencies.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        STRONGIFY(self);
-        secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-        [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventEstablishIdentity withAttributes:NULL];
-        self.error = error;
-        [self runBeforeGroupFinished:self.finishedOp];
+    [self.operationDependencies.cuttlefishXPCWrapper establishWithContainer:self.operationDependencies.containerName
+                                                                    context:self.operationDependencies.contextID
+                                                                   ckksKeys:viewKeySets
+                                                                  tlkShares:pendingTLKShares
+                                                            preapprovedKeys:publicSigningSPKIs
+                                                                      reply:^(NSString * _Nullable peerID,
+                                                                              NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
+                                                                              TPSyncingPolicy* _Nullable syncingPolicy,
+                                                                              NSError * _Nullable error) {
+            STRONGIFY(self);
 
-    }] establishWithContainer:self.operationDependencies.containerName
-                      context:self.operationDependencies.contextID
-                     ckksKeys:viewKeySets
-                    tlkShares:pendingTLKShares
-              preapprovedKeys:publicSigningSPKIs
-                        reply:^(NSString * _Nullable peerID, NSArray<CKRecord*>* _Nullable keyHierarchyRecords, NSError * _Nullable error) {
-        STRONGIFY(self);
+            [[CKKSAnalytics logger] logResultForEvent:OctagonEventEstablishIdentity hardFailure:true result:error];
+            if(error) {
+                secerror("octagon: Error calling establish: %@", error);
 
-        [[CKKSAnalytics logger] logResultForEvent:OctagonEventEstablishIdentity hardFailure:true result:error];
-        if(error) {
-            secerror("octagon: Error calling establish: %@", error);
-
-            if ([error isCuttlefishError:CuttlefishErrorKeyHierarchyAlreadyExists]) {
-                secnotice("octagon-ckks", "A CKKS key hierarchy is out of date; moving to '%@'", self.ckksConflictState);
-                self.nextState = self.ckksConflictState;
-            } else {
-                self.error = error;
+                if ([error isCuttlefishError:CuttlefishErrorKeyHierarchyAlreadyExists]) {
+                    secnotice("octagon-ckks", "A CKKS key hierarchy is out of date; moving to '%@'", self.ckksConflictState);
+                    self.nextState = self.ckksConflictState;
+                } else {
+                    self.error = error;
+                }
+                [self runBeforeGroupFinished:self.finishedOp];
+                return;
             }
-            [self runBeforeGroupFinished:self.finishedOp];
-            return;
-        }
 
-        self.peerID = peerID;
+            self.peerID = peerID;
 
-        NSError* localError = nil;
-        BOOL persisted = [self.operationDependencies.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nonnull(OTAccountMetadataClassC * _Nonnull metadata) {
+            NSError* localError = nil;
+            BOOL persisted = [self.operationDependencies.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nonnull(OTAccountMetadataClassC * _Nonnull metadata) {
                 metadata.trustState = OTAccountMetadataClassC_TrustState_TRUSTED;
                 metadata.peerID = peerID;
+                [metadata setTPSyncingPolicy:syncingPolicy];
                 return metadata;
             } error:&localError];
-        if(!persisted || localError) {
-            secnotice("octagon", "Couldn't persist results: %@", localError);
-            self.error = localError;
-        } else {
-            self.nextState = self.intendedState;
-        }
 
-        // Tell CKKS about our shiny new records!
-        for (id key in self.operationDependencies.viewManager.views) {
-            CKKSKeychainView* view = self.operationDependencies.viewManager.views[key];
-            secnotice("octagon-ckks", "Providing records to %@", view);
-            [view receiveTLKUploadRecords: keyHierarchyRecords];
-        }
-        [self runBeforeGroupFinished:self.finishedOp];
-    }];
+            if(!persisted || localError) {
+                secnotice("octagon", "Couldn't persist results: %@", localError);
+                self.error = localError;
+            } else {
+                self.nextState = self.intendedState;
+            }
+
+            [self.operationDependencies.viewManager setCurrentSyncingPolicy:syncingPolicy];
+
+            // Tell CKKS about our shiny new records!
+            for (id key in self.operationDependencies.viewManager.views) {
+                CKKSKeychainView* view = self.operationDependencies.viewManager.views[key];
+                secnotice("octagon-ckks", "Providing records to %@", view);
+                [view receiveTLKUploadRecords: keyHierarchyRecords];
+            }
+            [self runBeforeGroupFinished:self.finishedOp];
+        }];
 }
 
 @end

@@ -58,11 +58,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithConnection:(NSXPCConnection*)connection sync:(bool)sync;
 
 - (void)restore:(NSString *)contextID dsid:(NSString *)dsid secret:(NSData*)secret escrowRecordID:(NSString*)escrowRecordID
-          reply:(void (^)(NSData* signingKeyData, NSData* encryptionKeyData, NSError* _Nullable error))reply;
-- (void)encryptionKey:(void (^)(NSData* result, NSError* _Nullable error))reply;
-- (void)signingKey:(void (^)(NSData* result, NSError* _Nullable error))reply;
-- (void)listOfRecords:(void (^)(NSArray* list, NSError* _Nullable error))reply;
-- (void)reset:(void (^)(BOOL result, NSError* _Nullable error))reply;
+          reply:(void (^)(NSData* signingKeyData, NSData* encryptionKeyData, NSError* _Nullable error))reply
+    API_DEPRECATED("Use OTClique API", macos(10.14, 10.15.1), ios(4, 17.2));
+- (void)encryptionKey:(void (^)(NSData* result, NSError* _Nullable error))reply
+    API_DEPRECATED("No longer needed", macos(10.14, 10.15.1), ios(4, 17.2));
+- (void)signingKey:(void (^)(NSData* result, NSError* _Nullable error))reply
+    API_DEPRECATED("No longer needed", macos(10.14, 10.15.1), ios(4, 17.2));
+- (void)listOfRecords:(void (^)(NSArray* list, NSError* _Nullable error))reply
+    API_DEPRECATED("No longer needed", macos(10.14, 10.15.1), ios(4, 17.2));
+- (void)reset:(void (^)(BOOL result, NSError* _Nullable error))reply
+    API_DEPRECATED("No longer needed", macos(10.14, 10.15.1), ios(4, 17.2));
 
 - (void)signIn:(NSString*)dsid container:(NSString* _Nullable)container context:(NSString*)contextID reply:(void (^)(NSError * _Nullable error))reply;
 - (void)signOut:(NSString* _Nullable)container context:(NSString*)contextID reply:(void (^)(NSError * _Nullable error))reply;
@@ -72,19 +77,20 @@ NS_ASSUME_NONNULL_BEGIN
                          ForEncryptionKey:(SFECKeyPair* _Nonnull)encryptionKey
                                 ForPeerID:(NSString*)peerID
                                     reply:(void (^)(BOOL result,
-                                                    NSError* _Nullable error))reply;
+                                                    NSError* _Nullable error))reply
+    API_DEPRECATED("No longer needed", macos(10.14, 10.15.1), ios(4, 17.2));
 
 - (void)rpcEpochWithConfiguration:(OTJoiningConfiguration*)config
                             reply:(void (^)(uint64_t epoch,
                                             NSError * _Nullable error))reply;
 
 - (void)rpcPrepareIdentityAsApplicantWithConfiguration:(OTJoiningConfiguration*)config
-                                              reply:(void (^)(NSString * _Nullable peerID,
-                                                              NSData * _Nullable permanentInfo,
-                                                              NSData * _Nullable permanentInfoSig,
-                                                              NSData * _Nullable stableInfo,
-                                                              NSData * _Nullable stableInfoSig,
-                                                              NSError * _Nullable error))reply;
+                                                 reply:(void (^)(NSString * _Nullable peerID,
+                                                                 NSData * _Nullable permanentInfo,
+                                                                 NSData * _Nullable permanentInfoSig,
+                                                                 NSData * _Nullable stableInfo,
+                                                                 NSData * _Nullable stableInfoSig,
+                                                                 NSError * _Nullable error))reply;
 - (void)rpcVoucherWithConfiguration:(OTJoiningConfiguration*)config
                              peerID:(NSString*)peerID
                       permanentInfo:(NSData *)permanentInfo
@@ -96,7 +102,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)rpcJoinWithConfiguration:(OTJoiningConfiguration*)config
                        vouchData:(NSData*)vouchData
                         vouchSig:(NSData*)vouchSig
-                 preapprovedKeys:(NSArray<NSData*>* _Nullable)preapprovedKeys
                            reply:(void (^)(NSError * _Nullable error))reply;
 
 
@@ -155,12 +160,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)resetAndEstablish:(NSString* _Nullable)container
                   context:(NSString*)context
                   altDSID:(NSString*)altDSID
+              resetReason:(CuttlefishResetReason)resetReason
                     reply:(void (^)(NSError* _Nullable error))reply;
 
 - (void)establish:(NSString* _Nullable)container
-                  context:(NSString*)context
-                  altDSID:(NSString*)altDSID
-                    reply:(void (^)(NSError* _Nullable error))reply;
+          context:(NSString*)context
+          altDSID:(NSString*)altDSID
+            reply:(void (^)(NSError* _Nullable error))reply;
 
 - (void)leaveClique:(NSString* _Nullable)container
             context:(NSString*)context
@@ -208,10 +214,6 @@ NS_ASSUME_NONNULL_BEGIN
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
               reply:(void (^)(NSError *_Nullable error))reply;
 
-- (void)attemptSosUpgrade:(NSString* _Nullable)container
-                  context:(NSString*)context
-                    reply:(void (^)(NSError* _Nullable error))reply;
-
 - (void)waitForOctagonUpgrade:(NSString* _Nullable)container
                       context:(NSString*)context
                         reply:(void (^)(NSError* _Nullable error))reply;
@@ -227,6 +229,38 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
        description:(NSString *)description
              radar:(NSString *)radar
              reply:(void (^)(NSError* _Nullable error))reply;
+
+- (void)setCDPEnabled:(NSString* _Nullable)containerName
+            contextID:(NSString*)contextID
+                reply:(void (^)(NSError* _Nullable error))reply;
+
+- (void)getCDPStatus:(NSString* _Nullable)containerName
+           contextID:(NSString*)contextID
+               reply:(void (^)(OTCDPStatus status, NSError* _Nullable error))reply;
+
+- (void)refetchCKKSPolicy:(NSString* _Nullable)containerName
+                contextID:(NSString*)contextID
+                    reply:(void (^)(NSError* _Nullable error))reply;
+
+
+- (void)fetchEscrowRecords:(NSString * _Nullable)container
+                 contextID:(NSString*)contextID
+                forceFetch:(BOOL)forceFetch
+                     reply:(void (^)(NSArray<NSData*>* _Nullable records,
+                                     NSError* _Nullable error))reply;
+
+- (void)setUserControllableViewsSyncStatus:(NSString* _Nullable)containerName
+                                 contextID:(NSString*)contextID
+                                   enabled:(BOOL)enabled
+                                     reply:(void (^)(BOOL nowSyncing, NSError* _Nullable error))reply;
+
+- (void)fetchUserControllableViewsSyncStatus:(NSString* _Nullable)containerName
+                                   contextID:(NSString*)contextID
+                                       reply:(void (^)(BOOL nowSyncing, NSError* _Nullable error))reply;
+
+- (void)invalidateEscrowCache:(NSString * _Nullable)containerName
+                    contextID:(NSString*)contextID
+                        reply:(nonnull void (^)(NSError * _Nullable error))reply;
 
 @end
 

@@ -4,6 +4,8 @@
 <dict>
 	<key>KeySyncTopic</key>
 	<dict>
+		<key>uploadSizeLimit</key>
+		<real>1000000</real>
 		<key>splunk_allowInsecureCertificate</key>
 		<false/>
 		<key>splunk_topic</key>
@@ -13,6 +15,8 @@
 	</dict>
 	<key>CloudServicesTopic</key>
 	<dict>
+		<key>uploadSizeLimit</key>
+		<real>1000000</real>
 		<key>splunk_allowInsecureCertificate</key>
 		<false/>
 		<key>splunk_topic</key>
@@ -24,6 +28,8 @@
 	</dict>
 	<key>TrustTopic</key>
 	<dict>
+		<key>uploadSizeLimit</key>
+		<real>1000000</real>
 		<key>splunk_allowInsecureCertificate</key>
 		<false/>
 		<key>splunk_topic</key>
@@ -35,12 +41,27 @@
 	</dict>
 	<key>TransparencyTopic</key>
 	<dict>
+		<key>uploadSizeLimit</key>
+		<real>10000</real>
 		<key>splunk_allowInsecureCertificate</key>
 		<false/>
 		<key>splunk_topic</key>
 		<string>TransparencyAnalytics</string>
 		<key>splunk_bagURL</key>
 		<string>https://metrics-config.icloud.com/config/TransparencyAnalytics</string>
+	</dict>
+	<key>NetworkingTopic</key>
+	<dict>
+		<key>uploadSizeLimit</key>
+		<real>1000000</real>
+		<key>splunk_allowInsecureCertificate</key>
+		<false/>
+		<key>splunk_topic</key>
+		<string>xp_sear_trust</string>
+		<key>splunk_bagURL</key>
+		<string>https://xp.apple.com/config/1/report/xp_sear_trust</string>
+		<key>disableClientId</key>
+		<true/>
 	</dict>
 </dict>
 </plist>

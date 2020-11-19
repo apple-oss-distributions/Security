@@ -59,10 +59,11 @@
             // Is this a very scary error?
             bool fatal = false;
 
-            NSTimeInterval ckdelay = CKRetryAfterSecondsForError(self.error);
-            NSTimeInterval delay = 30;
-            if(ckdelay != 0) {
-                delay = ckdelay;
+            NSTimeInterval ckDelay = CKRetryAfterSecondsForError(self.error);
+            NSTimeInterval cuttlefishDelay = [self.error cuttlefishRetryAfter];
+            NSTimeInterval delay = MAX(ckDelay, cuttlefishDelay);
+            if (delay == 0) {
+                delay = 30;
             }
 
             if([self.error isCuttlefishError:CuttlefishErrorResultGraphNotFullyReachable]) {
@@ -84,40 +85,39 @@
     }];
     [self dependOnBeforeGroupFinished:self.finishedOp];
 
-    NSError* error = nil;
-    NSSet<id<CKKSRemotePeerProtocol>>* peerSet = [self.deps.sosAdapter fetchTrustedPeers:&error];
+    NSError* sosPreapprovalError = nil;
+    NSArray<NSData*>* publicSigningSPKIs = [OTSOSAdapterHelpers peerPublicSigningKeySPKIsForCircle:self.deps.sosAdapter error:&sosPreapprovalError];
 
-    if(!peerSet || error) {
-        secerror("octagon-sos: Can't fetch trusted peers; stopping preapproved key update: %@", error);
-        self.error = error;
+    if(!publicSigningSPKIs || sosPreapprovalError) {
+        secerror("octagon-sos: Can't fetch trusted peers; stopping preapproved key update: %@", sosPreapprovalError);
+        self.error = sosPreapprovalError;
         self.nextState = self.sosNotPresentState;
         [self runBeforeGroupFinished:self.finishedOp];
         return;
     }
 
-    NSArray<NSData*>* publicSigningSPKIs = [OTSOSActualAdapter peerPublicSigningKeySPKIs:peerSet];
     secnotice("octagon-sos", "Updating SOS preapproved keys to %@", publicSigningSPKIs);
 
-    [[self.deps.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        STRONGIFY(self);
-        secerror("octagon: Can't talk with TrustedPeersHelper, update of preapproved keys is lost: %@", error);
-        self.error = error;
-        [self runBeforeGroupFinished:self.finishedOp];
+    [self.deps.cuttlefishXPCWrapper setPreapprovedKeysWithContainer:self.deps.containerName
+                                                            context:self.deps.contextID
+                                                    preapprovedKeys:publicSigningSPKIs
+                                                              reply:^(TrustedPeersHelperPeerState* _Nullable peerState, NSError* error) {
+            STRONGIFY(self);
+            if(error) {
+                secerror("octagon-sos: unable to update preapproved keys: %@", error);
+                self.error = error;
+            } else {
+                secnotice("octagon-sos", "Updated SOS preapproved keys");
 
-    }] setPreapprovedKeysWithContainer:self.deps.containerName
-                               context:self.deps.contextID
-                       preapprovedKeys:publicSigningSPKIs
-                                 reply:^(NSError* error) {
-                                     STRONGIFY(self);
-                                     if(error) {
-                                         secerror("octagon-sos: unable to update preapproved keys: %@", error);
-                                         self.error = error;
-                                     } else {
-                                         secnotice("octagon-sos", "Updated SOS preapproved keys");
-                                         self.nextState = self.intendedState;
-                                     }
-                                     [self runBeforeGroupFinished:self.finishedOp];
-                                 }];
+                if (peerState.memberChanges) {
+                    secnotice("octagon", "Member list changed");
+                    [self.deps.octagonAdapter sendTrustedPeerSetChangedUpdate];
+                }
+
+                self.nextState = self.intendedState;
+            }
+            [self runBeforeGroupFinished:self.finishedOp];
+        }];
 }
 
 @end

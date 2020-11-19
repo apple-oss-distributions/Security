@@ -2,15 +2,16 @@
 //  LoggingServerTests.m
 //  Security
 //
-//  Created by Bailey Basile on 6/11/19.
 //
 
 #include <AssertMacros.h>
 #import <XCTest/XCTest.h>
 
-#import "../../../OSX/sec/securityd/SecTrustLoggingServer.h"
+#import "trust/trustd/SecTrustLoggingServer.h"
 
-@interface LoggingServerTests : XCTestCase
+#import "TrustDaemonTestCase.h"
+
+@interface LoggingServerTests : TrustDaemonTestCase
 @end
 
 @implementation LoggingServerTests

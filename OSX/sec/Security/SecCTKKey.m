@@ -36,6 +36,7 @@
 #include <utilities/array_size.h>
 #include <ctkclient/ctkclient.h>
 #include <libaks_acl_cf_keys.h>
+#include <coreauthd_spi.h>
 #include "OSX/sec/Security/SecItemShim.h"
 
 #include "SecECKey.h"
@@ -321,7 +322,7 @@ static Boolean SecCTKKeySetParameter(SecKeyRef key, CFStringRef name, CFProperty
     if (CFEqual(name, kSecUseAuthenticationContext)) {
         // Preprocess LAContext to ACMRef value.
         if (value != NULL) {
-            require_quiet(acm_reference = SecItemAttributesCopyPreparedAuthContext(value, error), out);
+            require_quiet(acm_reference = LACopyACMContext(value, error), out);
             value = acm_reference;
         }
         name = kSecUseCredentialReference;
@@ -352,6 +353,13 @@ out:
     return TRUE;
 }
 
+static Boolean SecCTKKeyIsEqual(SecKeyRef key1, SecKeyRef key2) {
+    SecCTKKeyData *kd1 = key1->key;
+    SecCTKKeyData *kd2 = key2->key;
+
+    return CFEqual(kd1->token_id, kd2->token_id) && CFEqual(kd1->object_id, kd2->object_id);
+}
+
 static SecKeyDescriptor kSecCTKKeyDescriptor = {
     .version = kSecKeyDescriptorVersion,
     .name = "CTKKey",
@@ -364,6 +372,7 @@ static SecKeyDescriptor kSecCTKKeyDescriptor = {
     .getAlgorithmID = SecCTKGetAlgorithmID,
     .copyPublic = SecCTKKeyCopyPublicOctets,
     .copyOperationResult = SecCTKKeyCopyOperationResult,
+    .isEqual = SecCTKKeyIsEqual,
     .createDuplicate = SecCTKKeyCreateDuplicate,
     .setParameter = SecCTKKeySetParameter,
 };
@@ -400,14 +409,6 @@ SecKeyRef SecKeyCreateCTKKey(CFAllocatorRef allocator, CFDictionaryRef refAttrib
         CFDictionarySetValue(SecCFDictionaryCOWGetMutable(&kd->attributes), kSecAttrIsPrivate, kCFBooleanTrue);
     }
 
-    // Convert some attributes which are stored as numbers in iOS keychain but a lot of code counts that the values
-    // are actually strings as specified by kSecAttrXxx constants.
-    static const CFStringRef *numericAttributes[] = {
-        &kSecAttrKeyType,
-        &kSecAttrKeyClass,
-        NULL,
-    };
-
     CFMutableDictionaryRef attrs = NULL;
     if (kd->token == NULL) {
         require_quiet(kd->token = SecCTKKeyCopyToken(key, error), out);
@@ -431,6 +432,14 @@ SecKeyRef SecKeyCreateCTKKey(CFAllocatorRef allocator, CFDictionaryRef refAttrib
         require_quiet(kd->token != NULL && kd->object_id != NULL, out);
     }
 
+    // Convert some attributes which are stored as numbers in iOS keychain but a lot of code counts that the values
+    // are actually strings as specified by kSecAttrXxx constants.
+    static const CFStringRef *numericAttributes[] = {
+        &kSecAttrKeyType,
+        &kSecAttrKeyClass,
+        NULL,
+    };
+
     for (const CFStringRef **attrName = &numericAttributes[0]; *attrName != NULL; attrName++) {
         CFTypeRef value = CFDictionaryGetValue(kd->attributes.dictionary, **attrName);
         if (value != NULL && CFGetTypeID(value) == CFNumberGetTypeID()) {
@@ -444,6 +453,11 @@ SecKeyRef SecKeyCreateCTKKey(CFAllocatorRef allocator, CFDictionaryRef refAttrib
             }
         }
     }
+
+    // Sanitize some important attributes.
+    CFDictionarySetValue(SecCFDictionaryCOWGetMutable(&kd->attributes), kSecClass, kSecClassKey);
+    CFDictionarySetValue(SecCFDictionaryCOWGetMutable(&kd->attributes), kSecAttrKeyClass, kSecAttrKeyClassPrivate);
+
     result = (SecKeyRef)CFRetain(key);
 
 out:
@@ -522,7 +536,17 @@ SecKeyRef SecKeyCopyAttestationKey(SecKeyAttestationKeyType keyType, CFErrorRef 
     static const uint8_t uikProposedObjectIDBytes[] = { 0x04, 22, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 't', 'o', 'k', 'e', 'n', '.', 'u', 'i', 'k', 'p' };
 
     static const uint8_t casdObjectIDBytes[] = { 0x04, 27, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 'c', 'e', 'l', 'e', 'm', 't', 'o', 'k', 'e', 'n', '.', 'c', 'a', 's', 'd' };
-    
+
+    // [[TKTLVBERRecord alloc] initWithPropertyList:[@"com.apple.setoken.oikc" dataUsingEncoding:NSUTF8StringEncoding]].data
+    static const uint8_t oikCommittedObjectIDBytes[] = { 0x04, 22, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 't', 'o', 'k', 'e', 'n', '.', 'o', 'i', 'k', 'c' };
+    // [[TKTLVBERRecord alloc] initWithPropertyList:[@"com.apple.setoken.oikp" dataUsingEncoding:NSUTF8StringEncoding]].data
+    static const uint8_t oikProposedObjectIDBytes[] = { 0x04, 22, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 't', 'o', 'k', 'e', 'n', '.', 'o', 'i', 'k', 'p' };
+
+    // [[TKTLVBERRecord alloc] initWithPropertyList:[@"com.apple.setoken.dakc" dataUsingEncoding:NSUTF8StringEncoding]].data
+    static const uint8_t dakCommittedObjectIDBytes[] = { 0x04, 22, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 't', 'o', 'k', 'e', 'n', '.', 'd', 'a', 'k', 'c' };
+    // [[TKTLVBERRecord alloc] initWithPropertyList:[@"com.apple.setoken.dakp" dataUsingEncoding:NSUTF8StringEncoding]].data
+    static const uint8_t dakProposedObjectIDBytes[] = { 0x04, 22, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 'e', 't', 'o', 'k', 'e', 'n', '.', 'd', 'a', 'k', 'p' };
+
     CFStringRef token = kSecAttrTokenIDAppleKeyStore;
     
     switch (keyType) {
@@ -541,6 +565,18 @@ SecKeyRef SecKeyCopyAttestationKey(SecKeyAttestationKeyType keyType, CFErrorRef 
         case kSecKeyAttestationKeyTypeSecureElement:
             object_id = CFDataCreate(kCFAllocatorDefault, casdObjectIDBytes, sizeof(casdObjectIDBytes));
             token = kSecAttrTokenIDSecureElement;
+            break;
+        case kSecKeyAttestationKeyTypeOIKCommitted:
+            object_id = CFDataCreate(kCFAllocatorDefault, oikCommittedObjectIDBytes, sizeof(uikCommittedObjectIDBytes));
+            break;
+        case kSecKeyAttestationKeyTypeOIKProposed:
+            object_id = CFDataCreate(kCFAllocatorDefault, oikProposedObjectIDBytes, sizeof(uikProposedObjectIDBytes));
+            break;
+        case kSecKeyAttestationKeyTypeDAKCommitted:
+            object_id = CFDataCreate(kCFAllocatorDefault, dakCommittedObjectIDBytes, sizeof(uikCommittedObjectIDBytes));
+            break;
+        case kSecKeyAttestationKeyTypeDAKProposed:
+            object_id = CFDataCreate(kCFAllocatorDefault, dakProposedObjectIDBytes, sizeof(uikProposedObjectIDBytes));
             break;
         default:
             SecError(errSecParam, error, CFSTR("unexpected attestation key type %d"), (int)keyType);
@@ -637,10 +673,6 @@ Boolean SecKeyControlLifetime(SecKeyRef key, SecKeyControlLifetimeType type, CFE
         return outputAttributes ? kSecItemAuthResultOK : kSecItemAuthResultError;
     }, NULL);
 }
-
-#if TKTOKEN_CLIENT_INTERFACE_VERSION < 5
-#define kTKTokenCreateAttributeTestMode "testmode"
-#endif
 
 void SecCTKKeySetTestMode(CFStringRef tokenID, CFTypeRef enable) {
     CFErrorRef error = NULL;

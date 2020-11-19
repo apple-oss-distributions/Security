@@ -99,19 +99,6 @@
     return current.peerID;
 }
 
-- (OTAccountMetadataClassC_AttemptedAJoinState)fetchPersistedJoinAttempt:(NSError * _Nullable *)error {
-    NSError* localError = nil;
-    OTAccountMetadataClassC* current = [self loadOrCreateAccountMetadata:&localError];
-
-    if(localError || !current) {
-        if(error) {
-            *error = localError;
-        }
-        return OTAccountMetadataClassC_AttemptedAJoinState_UNKNOWN;
-    }
-    return current.attemptedJoin;
-}
-
 - (NSDate *)lastHealthCheckupDate:(NSError * _Nullable *)error {
     NSError* localError = nil;
 
@@ -144,27 +131,7 @@
     } error:error];
 }
 
-- (BOOL)persistNewAccountState:(OTAccountMetadataClassC_AccountState)newState
-               optionalAltDSID:(NSString* _Nullable)altDSID
-                         error:(NSError**)error
-{
-    return [self persistAccountChanges:^(OTAccountMetadataClassC *metadata) {
-        metadata.icloudAccountState = newState;
-        metadata.altDSID = altDSID;
-        return metadata;
-    } error:error];
-}
-
-- (BOOL)persistNewEpoch:(uint64_t)epoch
-                  error:(NSError**)error
-{
-    return [self persistAccountChanges:^(OTAccountMetadataClassC *metadata) {
-        metadata.epoch = epoch;
-        return metadata;
-    } error:error];
-}
-
-- (BOOL)persistAccountChanges:(OTAccountMetadataClassC* (^)(OTAccountMetadataClassC*))makeChanges
+- (BOOL)persistAccountChanges:(OTAccountMetadataClassC* _Nullable (^)(OTAccountMetadataClassC*))makeChanges
                         error:(NSError**)error
 {
     __block NSError* localError = nil;
@@ -178,7 +145,7 @@
         }
 
         newState = makeChanges([oldState copy]);
-        if(![newState saveToKeychainForContainer:self.containerName contextID:self.contextID error:&localError]) {
+        if(newState && ![newState saveToKeychainForContainer:self.containerName contextID:self.contextID error:&localError]) {
             newState = nil;
         }
     });
@@ -213,7 +180,7 @@
     } error:error];
 }
 
-- (BOOL)_onqueuePersistAccountChanges:(OTAccountMetadataClassC* (^)(OTAccountMetadataClassC* metadata))makeChanges
+- (BOOL)_onqueuePersistAccountChanges:(OTAccountMetadataClassC* _Nullable (^)(OTAccountMetadataClassC* metadata))makeChanges
                                 error:(NSError**)error
 {
     __block NSError* localError = nil;
@@ -255,6 +222,5 @@
         }
     });
 }
-
 
 @end

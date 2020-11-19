@@ -18,10 +18,10 @@ class FakeCuttlefishInvocableCreator: ContainerNameToCuttlefishInvocable {
 }
 
 class OTMockDeviceInfoAdapter: OTDeviceInformationAdapter {
-    let mockModelID: String
-    let mockDeviceName: String?
-    let mockOsVersion: String
-    let mockSerialNumber: String
+    var mockModelID: String
+    var mockDeviceName: String?
+    var mockOsVersion: String
+    var mockSerialNumber: String
 
     init(modelID: String, deviceName: String?, serialNumber: String, osVersion: String) {
         self.mockModelID = modelID
@@ -42,43 +42,21 @@ class OTMockDeviceInfoAdapter: OTDeviceInformationAdapter {
         return self.mockOsVersion
     }
 
-    func serialNumber() -> String {
+    func serialNumber() -> String? {
         return self.mockSerialNumber
     }
-}
 
-class OTMockDeviceInfoAdapterFakeSerial: OTDeviceInformationAdapter
-{
-    let mockSerialNumber: String
-    let actualAdapter: OTDeviceInformationActualAdapter
-
-    init() {
-        mockSerialNumber = NSUUID().uuidString
-        actualAdapter = OTDeviceInformationActualAdapter()
-    }
-    func modelID() -> String {
-        return self.actualAdapter.modelID()
-    }
-
-    func deviceName() -> String? {
-        return self.actualAdapter.deviceName()
-    }
-
-    func osVersion() -> String {
-        return self.actualAdapter.osVersion()
-    }
-
-    func serialNumber() -> String {
-        return self.mockSerialNumber
+    func register(forDeviceNameUpdates listener: OTDeviceInformationNameUpdateListener) {
     }
 }
-
 
 class OTMockAuthKitAdapter: OTAuthKitAdapter {
+
     // A nil altDSID means 'no authkit account'
     var altDSID: String?
 
     var hsa2: Bool
+    var isDemoAccount: Bool
 
     let currentMachineID: String
     var otherDevices: Set<String>
@@ -98,16 +76,25 @@ class OTMockAuthKitAdapter: OTAuthKitAdapter {
         self.otherDevices = otherDevices
         self.excludeDevices = Set()
         self.hsa2 = true
+        self.isDemoAccount = false
         self.listeners = CKKSListenerCollection<OTAuthKitAdapterNotifier>(name: "test-authkit")
     }
 
-    func primaryiCloudAccountAltDSID() -> String? {
-        return self.altDSID
+    func primaryiCloudAccountAltDSID() throws -> String {
+        guard let altDSID = self.altDSID else {
+            throw NSError(domain: OctagonErrorDomain,
+                          code: OctagonError.OTAuthKitNoPrimaryAccount.rawValue,
+                          userInfo: nil)
+        }
+        return altDSID
     }
 
     func accountIsHSA2(byAltDSID altDSID: String) -> Bool {
         // TODO: do we need to examine altDSID here?
         return self.hsa2
+    }
+    func accountIsDemoAccount(_ error: NSErrorPointer) -> Bool {
+        return self.isDemoAccount
     }
 
     func machineID() throws -> String {
@@ -202,8 +189,8 @@ class OTMockLogger: NSObject, SFAnalyticsProtocol {
 }
 
 let OTMockEscrowRequestNotification = Notification.Name("silent-escrow-request-triggered")
-class OTMockSecEscrowRequest: NSObject, SecEscrowRequestable {
 
+class OTMockSecEscrowRequest: NSObject, SecEscrowRequestable {
     static var populateStatuses = false
     var statuses: [String: String] = [:]
 
@@ -219,22 +206,20 @@ class OTMockSecEscrowRequest: NSObject, SecEscrowRequestable {
         NotificationCenter.default.post(name: OTMockEscrowRequestNotification, object: nil)
     }
 
-    func fetchStatuses() throws -> [AnyHashable : Any] {
+    func fetchStatuses() throws -> [AnyHashable: Any] {
         return statuses
     }
 
     func pendingEscrowUpload(_ error: NSErrorPointer) -> Bool {
         if statuses["uuid"] == SecEscrowRequestPendingCertificate {
             return true
-        }
-        else {
+        } else {
             return false
         }
     }
 }
 
-class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
-
+class OctagonTestsBase: CloudKitKeychainSyncingMockXCTest {
     var tmpPath: String!
     var tmpURL: URL!
 
@@ -243,7 +228,11 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
 
     var otcliqueContext: OTConfigurationContext!
 
+    var intendedCKKSZones: Set<CKRecordZone.ID>!
     var manateeZoneID: CKRecordZone.ID!
+    var limitedPeersAllowedZoneID: CKRecordZone.ID!
+    var passwordsZoneID: CKRecordZone.ID!
+
     var fakeCuttlefishServer: FakeCuttlefishServer!
     var fakeCuttlefishCreator: FakeCuttlefishInvocableCreator!
     var tphClient: Client!
@@ -256,8 +245,11 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
     var mockAuthKit2: OTMockAuthKitAdapter!
     var mockAuthKit3: OTMockAuthKitAdapter!
 
+    var mockDeviceInfo: OTMockDeviceInfoAdapter!
+
     var otControl: OTControl!
     var otXPCProxy: ProxyXPCConnection!
+
     var otControlEntitlementBearer: FakeOTControlEntitlementBearer!
     var otControlEntitlementChecker: OTControlProtocol!
     var otControlCLI: OTControlCLI!
@@ -266,8 +258,6 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
 
     override static func setUp() {
         UserDefaults.standard.register(defaults: ["com.apple.CoreData.ConcurrencyDebug": 1])
-        OctagonSetShouldPerformInitialization(true)
-        SecCKKSEnable()
 
         super.setUp()
 
@@ -275,40 +265,51 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         securityd_init_local_spi()
     }
 
-    func deviceInformationAdapter() -> OTDeviceInformationAdapter {
-        return OTMockDeviceInfoAdapterFakeSerial()
-    }
-
     override func setUp() {
         // Set the global bool to TRUE
         OctagonSetIsEnabled(true)
+
+        // Set the global CKKS bool to TRUE
+        SecCKKSEnable()
 
         // Until we can reasonably run SOS in xctest, this must be off. Note that this makes our tests
         // not accurately reproduce what a real device would do.
         OctagonSetPlatformSupportsSOS(false)
 
-        // Tell SecDb not to initialize the manager (as we haven't made our fake one yet).
-        // Each test is responsible for initialization, to allow for pre-test setup
-        OctagonSetShouldPerformInitialization(false)
+        if self.mockDeviceInfo == nil {
+            let actualDeviceAdapter = OTDeviceInformationActualAdapter()
+            self.mockDeviceInfo = OTMockDeviceInfoAdapter(modelID: actualDeviceAdapter.modelID(),
+                                                          deviceName: actualDeviceAdapter.deviceName(),
+                                                          serialNumber: NSUUID().uuidString,
+                                                          osVersion: actualDeviceAdapter.osVersion())
+        }
 
-        super.setUp()
-
-        // Octagon must initialize the views
-        self.automaticallyBeginCKKSViewCloudKitOperation = false
-
-        // The CKKStests use the "keychain" view heavily, but that causes issues in Octagon as it isn't in the Octagon policy.
-        // Replace it with the Manatee view, unless you're on an appleTV: in that case, make it the LimitedPeersAllowed view
-        self.injectedManager!.clearAllViews()
-        #if !os(tvOS)
-        self.ckksViews = NSMutableSet(array: [self.injectedManager!.findOrCreateView("Manatee")])
         self.manateeZoneID = CKRecordZone.ID(zoneName: "Manatee")
-        #else
-        self.ckksViews = NSMutableSet(array: [self.injectedManager!.findOrCreateView("LimitedPeersAllowed")])
-        self.manateeZoneID = CKRecordZone.ID(zoneName: "LimitedPeersAllowed")
-        #endif
+        self.limitedPeersAllowedZoneID = CKRecordZone.ID(zoneName: "LimitedPeersAllowed")
+        self.passwordsZoneID = CKRecordZone.ID(zoneName: "Passwords")
 
-        self.zones!.removeAllObjects()
-        self.zones![self.manateeZoneID] = FakeCKZone(zone: self.manateeZoneID)
+        // We'll use this set to limit the views that CKKS brings up in the tests (mostly for performance reasons)
+        if self.intendedCKKSZones == nil {
+            if self.mockDeviceInfo.mockModelID.contains("AppleTV") {
+                self.intendedCKKSZones = Set([
+                    self.limitedPeersAllowedZoneID!,
+                ])
+            } else {
+                self.intendedCKKSZones = Set([
+                    self.limitedPeersAllowedZoneID!,
+                    self.manateeZoneID!,
+                ])
+            }
+        }
+        self.ckksZones = NSMutableSet(array: Array(self.intendedCKKSZones))
+
+        // Create the zones, so we can inject them into our fake cuttlefish server
+        self.zones = [:]
+        self.keys = [:]
+        self.ckksZones.forEach { obj in
+            let zoneID = obj as! CKRecordZone.ID
+            self.zones![zoneID] = FakeCKZone(zone: zoneID)
+        }
 
         // Asserting a type on self.zones seems to duplicate the dictionary, but not deep-copy the contents
         // We'll use them as NSMutableDictionaries, I guess
@@ -319,49 +320,45 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
 
         self.otFollowUpController = OTMockFollowUpController()
 
-        // Octagon requires the self peer keys to be persisted in the keychain
-        saveToKeychain(keyPair: self.mockSOSAdapter.selfPeer.signingKey, label: "com.apple.securityd.sossigningkey")
-        saveToKeychain(keyPair: self.mockSOSAdapter.selfPeer.encryptionKey, label: "com.apple.securityd.sosencryptionkey")
-
         self.mockAuthKit = OTMockAuthKitAdapter(altDSID: UUID().uuidString, machineID: "MACHINE1", otherDevices: ["MACHINE2", "MACHINE3"])
         self.mockAuthKit2 = OTMockAuthKitAdapter(altDSID: self.mockAuthKit.altDSID, machineID: "MACHINE2", otherDevices: ["MACHINE1", "MACHINE3"])
         self.mockAuthKit3 = OTMockAuthKitAdapter(altDSID: self.mockAuthKit.altDSID, machineID: "MACHINE3", otherDevices: ["MACHINE1", "MACHINE2"])
+
+        let tphInterface = TrustedPeersHelperSetupProtocol(NSXPCInterface(with: TrustedPeersHelperProtocol.self))
+        self.tphXPCProxy = ProxyXPCConnection(self.tphClient!, interface: tphInterface)
+
+        self.disableConfigureCKKSViewManagerWithViews = true
+
+        // Now, perform further test initialization (including temporary keychain creation)
+        super.setUp()
+
+        self.injectedManager!.setSyncingViewsAllowList(Set(self.intendedCKKSZones!.map { $0.zoneName }))
+
+        // Octagon is responsible for creating CKKS views; so we don't create any in the test setup
+
+        // Double-check that the world of zones and views looks like what we expect
+        XCTAssertEqual(self.ckksZones as? Set<CKRecordZone.ID>, self.intendedCKKSZones, "should still operate on our expected zones only")
+        XCTAssertEqual(self.ckksZones.count, self.zones!.count, "Should have the same number of fake zones as expected zones")
+
+        // Octagon must initialize the views
+        self.automaticallyBeginCKKSViewCloudKitOperation = false
+
+        // Octagon requires the self peer keys to be persisted in the keychain
+        saveToKeychain(keyPair: self.mockSOSAdapter.selfPeer.signingKey, label: "com.apple.securityd.sossigningkey")
+        saveToKeychain(keyPair: self.mockSOSAdapter.selfPeer.encryptionKey, label: "com.apple.securityd.sosencryptionkey")
 
         // By default, not in SOS when test starts
         // And under octagon, SOS trust is not essential
         self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
         self.mockSOSAdapter.essential = false
 
-        let tphInterface = TrustedPeersHelperSetupProtocol(NSXPCInterface(with: TrustedPeersHelperProtocol.self))
-        self.tphXPCProxy = ProxyXPCConnection(self.tphClient, interface: tphInterface)
-
-        self.manager = OTManager(context: nil,
-                                 localStore: nil,
-                                 enroll: nil,
-                                 restore: nil,
-                                 cfu: nil,
-                                 cfuScheduler: nil,
-                                 sosAdapter: self.mockSOSAdapter,
-                                 authKitAdapter: self.mockAuthKit,
-                                 deviceInformationAdapter: deviceInformationAdapter(),
-                                 apsConnectionClass: FakeAPSConnection.self,
-                                 escrowRequestClass: OTMockSecEscrowRequest.self,
-                                 loggerClass: OTMockLogger.self,
-                                 lockStateTracker: self.lockStateTracker,
-                                 accountStateTracker: self.accountStateTracker,
-                                 cuttlefishXPCConnection: tphXPCProxy.connection(),
-                                 cdpd: self.otFollowUpController)
-
-        OTManager.resetManager(true, to: self.manager)
-
         self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
 
         self.otControlEntitlementBearer = FakeOTControlEntitlementBearer()
         self.otControlEntitlementChecker = OctagonXPCEntitlementChecker.create(with: self.manager, entitlementBearer: self.otControlEntitlementBearer)
 
-        self.otXPCProxy = ProxyXPCConnection(self.otControlEntitlementChecker, interface: OTSetupControlProtocol(NSXPCInterface(with: OTControlProtocol.self)))
+        self.otXPCProxy = ProxyXPCConnection(self.otControlEntitlementChecker!, interface: OTSetupControlProtocol(NSXPCInterface(with: OTControlProtocol.self)))
         self.otControl = OTControl(connection: self.otXPCProxy.connection(), sync: true)
-
         self.otControlCLI = OTControlCLI(otControl: self.otControl)
 
         self.otcliqueContext = OTConfigurationContext()
@@ -371,9 +368,26 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         self.otcliqueContext.otControl = self.otControl
     }
 
+    override func setUpOTManager(_ cloudKitClassDependencies: CKKSCloudKitClassDependencies) -> OTManager {
+        self.manager = OTManager(sosAdapter: self.mockSOSAdapter,
+                                 authKitAdapter: self.mockAuthKit,
+                                 deviceInformationAdapter: self.mockDeviceInfo,
+                                 apsConnectionClass: FakeAPSConnection.self,
+                                 escrowRequestClass: OTMockSecEscrowRequest.self,
+                                 loggerClass: OTMockLogger.self,
+                                 lockStateTracker: CKKSLockStateTracker(),
+                                 cloudKitClassDependencies: cloudKitClassDependencies,
+                                 cuttlefishXPCConnection: tphXPCProxy.connection(),
+                                 cdpd: self.otFollowUpController)
+        return self.manager
+    }
+
     override func tearDown() {
+        // Just to be sure
+        self.verifyDatabaseMocks()
+
         let statusExpectation = self.expectation(description: "status callback occurs")
-        self.cuttlefishContext.rpcStatus() { _, _ in
+        self.cuttlefishContext.rpcStatus { _, _ in
             statusExpectation.fulfill()
         }
         self.wait(for: [statusExpectation], timeout: 10)
@@ -388,23 +402,71 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         // Stop all of CKKS
         self.injectedManager!.haltAll()
 
-        XCTAssertTrue(self.manager.allContextsPause(10*NSEC_PER_SEC), "All cuttlefish contexts should pause")
+        XCTAssertTrue(self.manager.allContextsPause(10 * NSEC_PER_SEC), "All cuttlefish contexts should pause")
+
+        do {
+            try self.tphClient.containerMap.deleteAllPersistentStores()
+        } catch {
+            XCTFail("Failed to clean up CoreData databases: \(error)")
+        }
+        self.tphClient.containerMap.removeAllContainers()
 
         super.tearDown()
+
+        self.cuttlefishContext = nil
+        self.manager = nil
+
+        self.otcliqueContext = nil
+
+        self.manateeZoneID = nil
+        self.limitedPeersAllowedZoneID = nil
+
+        self.fakeCuttlefishServer = nil
+        self.fakeCuttlefishCreator = nil
+        self.tphClient = nil
+        self.tphXPCProxy = nil
+
+        self.accountAltDSID = nil
+
+        self.mockAuthKit = nil
+        self.mockAuthKit2 = nil
+        self.mockAuthKit3 = nil
+
+        self.mockDeviceInfo = nil
+
+        self.otControl = nil
+        self.otXPCProxy = nil
+
+        self.otControlEntitlementBearer = nil
+        self.otControlEntitlementChecker = nil
+        self.otControlCLI = nil
+
+        self.otFollowUpController = nil
     }
 
     override func managedViewList() -> Set<String> {
-        #if !os(tvOS)
-        return Set(["Manatee"])
-        #else
-        return Set(["LimitedPeersAllowed"])
-        #endif
+        if self.overrideUseCKKSViewsFromPolicy {
+            let viewNames = self.ckksZones.map { ($0 as! CKRecordZone.ID).zoneName }
+            return Set(viewNames)
+        } else {
+            // We only want to return the 'base' set of views here; not the full set.
+            // This should go away when CKKS4A is enabled...
+            #if !os(tvOS)
+            return Set(["LimitedPeersAllowed", "Manatee"])
+            #else
+            return Set(["LimitedPeersAllowed"])
+            #endif
+        }
     }
 
     func fetchEgoPeerID() -> String {
+        return self.fetchEgoPeerID(context: self.cuttlefishContext)
+    }
+
+    func fetchEgoPeerID(context: OTCuttlefishContext) -> String {
         var ret: String!
         let fetchPeerIDExpectation = self.expectation(description: "fetchPeerID callback occurs")
-        self.cuttlefishContext.rpcFetchEgoPeerID { peerID, fetchError in
+        context.rpcFetchEgoPeerID { peerID, fetchError in
             XCTAssertNil(fetchError, "should not error fetching ego peer ID")
             XCTAssertNotNil(peerID, "Should have a peer ID")
             ret = peerID
@@ -414,13 +476,14 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         return ret
     }
 
-    func setAllowListToCurrentAuthKit(container: String, context: String) {
+    func setAllowListToCurrentAuthKit(container: String, context: String, accountIsDemo: Bool) {
         let allowListExpectation = self.expectation(description: "set allow list callback occurs")
+        let honorIDMSListChanges = accountIsDemo ? false : true
         self.tphClient.setAllowedMachineIDsWithContainer(container,
                                                          context: context,
-                                                         allowedMachineIDs: self.mockAuthKit.currentDeviceList()) { _, error in
-            XCTAssertNil(error, "Should be no error setting allow list")
-            allowListExpectation.fulfill()
+                                                         allowedMachineIDs: self.mockAuthKit.currentDeviceList(), honorIDMSListChanges: honorIDMSListChanges) { _, error in
+                                                            XCTAssertNil(error, "Should be no error setting allow list")
+                                                            allowListExpectation.fulfill()
         }
         self.wait(for: [allowListExpectation], timeout: 10)
     }
@@ -440,18 +503,25 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
 
     func assertEnters(context: OTCuttlefishContext, state: String, within: UInt64) {
         XCTAssertEqual(0, (context.stateMachine.stateConditions[state] as! CKKSCondition).wait(within), "State machine should enter '\(state)'")
-        if(state == OctagonStateReady || state == OctagonStateUntrusted) {
+        if state == OctagonStateReady || state == OctagonStateUntrusted {
             XCTAssertEqual(0, context.stateMachine.paused.wait(10 * NSEC_PER_SEC), "State machine should pause soon")
         }
+    }
+
+    func assertPendingFlagHandled(context: OTCuttlefishContext, pendingFlag: String, within: UInt64) {
+        XCTAssertEqual(0, (context.stateMachine.flags.condition(forFlag: pendingFlag)).wait(within), "State machine should have handled '\(pendingFlag)'")
     }
 
     func assertConsidersSelfTrusted(context: OTCuttlefishContext, isLocked: Bool = false) {
         XCTAssertEqual(context.currentMemoizedTrustState(), .TRUSTED, "Trust state (for \(context)) should be trusted")
 
+        let accountMetadata = try! context.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(accountMetadata.attemptedJoin, .ATTEMPTED, "Should have 'attempted a join'")
+
         let statusexpectation = self.expectation(description: "trust status returns")
         let configuration = OTOperationConfiguration()
-        configuration.timeoutWaitForCKAccount = 500*NSEC_PER_MSEC
-        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, isLocked, error  in
+        configuration.timeoutWaitForCKAccount = 500 * NSEC_PER_MSEC
+        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, isLocked, _, _   in
             XCTAssertEqual(egoStatus, .in, "Self peer (for \(context)) should be trusted")
             XCTAssertNotNil(egoPeerID, "Should have a peerID")
             XCTAssertEqual(isLocked, isLocked, "should be \(isLocked)")
@@ -466,9 +536,9 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         let cachedStatusexpectation = self.expectation(description: "(cached) trust status returns")
         let configuration = OTOperationConfiguration()
         configuration.useCachedAccountStatus = true
-        configuration.timeoutWaitForCKAccount = 500*NSEC_PER_MSEC
+        configuration.timeoutWaitForCKAccount = 500 * NSEC_PER_MSEC
 
-        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, isLocked, error in
+        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, _, _, _ in
             XCTAssertEqual(egoStatus, .in, "Cached self peer (for \(context)) should be trusted")
             XCTAssertNotNil(egoPeerID, "Should have a (cached) peerID")
             cachedStatusexpectation.fulfill()
@@ -480,14 +550,14 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         cliqueConfiguration.dsid = "1234"
         cliqueConfiguration.altDSID = self.mockAuthKit.altDSID!
         cliqueConfiguration.otControl = self.otControl
-        let otclique = try! OTClique(contextData: cliqueConfiguration)
+        let otclique = OTClique(contextData: cliqueConfiguration)
 
-        let status = otclique.cachedCliqueStatus(true, error: nil)
+        let status = otclique.fetchStatus(nil)
         XCTAssertEqual(status, .in, "OTClique API should return (trusted)")
 
         configuration.useCachedAccountStatus = false
         let statusexpectation = self.expectation(description: "(cached) trust status returns")
-        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, isLocked, error in
+        context.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, _, _, _ in
             XCTAssertEqual(egoStatus, .in, "Self peer (for \(context)) should be trusted")
             XCTAssertNotNil(egoPeerID, "Should have a peerID")
             statusexpectation.fulfill()
@@ -499,8 +569,8 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         XCTAssertEqual(context.currentMemoizedTrustState(), .UNTRUSTED, "Trust state (for \(context)) should be untrusted")
         let statusexpectation = self.expectation(description: "trust status returns")
         let configuration = OTOperationConfiguration()
-        configuration.timeoutWaitForCKAccount = 500*NSEC_PER_MSEC
-        self.cuttlefishContext.rpcTrustStatus(configuration) { egoStatus, egoPeerID, _, isLocked, error in
+        configuration.timeoutWaitForCKAccount = 500 * NSEC_PER_MSEC
+        context.rpcTrustStatus(configuration) { egoStatus, _, _, _, _, _ in
             // TODO: separate 'untrusted' and 'no trusted peers for account yet'
             XCTAssertTrue([.notIn, .absent].contains(egoStatus), "Self peer (for \(context)) should be distrusted or absent")
             statusexpectation.fulfill()
@@ -508,13 +578,44 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         self.wait(for: [statusexpectation], timeout: 10)
     }
 
+    func assertConsidersSelfWaitingForCDP(context: OTCuttlefishContext) {
+        XCTAssertEqual(context.currentMemoizedTrustState(), .UNKNOWN, "Trust state (for \(context)) should be unknown")
+        let statusexpectation = self.expectation(description: "trust status returns")
+        let configuration = OTOperationConfiguration()
+        configuration.timeoutWaitForCKAccount = 500 * NSEC_PER_MSEC
+        context.rpcTrustStatus(configuration) { egoStatus, _, _, _, _, _ in
+            // TODO: separate 'untrusted' and 'no trusted peers for account yet'
+            XCTAssertTrue([.notIn, .absent].contains(egoStatus), "Self peer (for \(context)) should be distrusted or absent")
+            statusexpectation.fulfill()
+        }
+        self.wait(for: [statusexpectation], timeout: 10)
+
+        XCTAssertEqual(self.fetchCDPStatus(context: context), .disabled, "CDP status should be 'disabled'")
+    }
+
+    func assertAccountAvailable(context: OTCuttlefishContext) {
+        XCTAssertEqual(context.currentMemoizedAccountState(), .ACCOUNT_AVAILABLE, "Account state (for \(context)) should be 'available''")
+    }
+
     func assertNoAccount(context: OTCuttlefishContext) {
         XCTAssertEqual(context.currentMemoizedAccountState(), .NO_ACCOUNT, "Account state (for \(context)) should be no account")
     }
 
+    func fetchCDPStatus(context: OTCuttlefishContext) -> OTCDPStatus {
+        let config = OTConfigurationContext()
+        config.context = context.contextID
+        config.otControl = self.otControl
+
+        var error: NSError?
+        let cdpstatus = OTClique.getCDPStatus(config, error: &error)
+        XCTAssertNil(error, "Should have no error fetching CDP status")
+
+        return cdpstatus
+    }
+
     func assertTrusts(context: OTCuttlefishContext, includedPeerIDCount: Int, excludedPeerIDCount: Int) {
         let dumpCallback = self.expectation(description: "dump callback occurs")
-        self.tphClient.dumpEgoPeer(withContainer: context.containerName, context: context.contextID) { peerID, permanentInfo, stableInfo, dynamicInfo, error in
+        self.tphClient.dumpEgoPeer(withContainer: context.containerName, context: context.contextID) { _, _, _, dynamicInfo, error in
             XCTAssertNil(error, "should be no error")
             XCTAssertNotNil(dynamicInfo, "Should be a dynamic info")
             XCTAssertEqual(dynamicInfo!.includedPeerIDs.count, includedPeerIDCount, "should be \(includedPeerIDCount) included peer ids")
@@ -526,44 +627,86 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
     }
 
     func restartCKKSViews() {
-        let viewNames = self.ckksViews.map { ($0 as! CKKSKeychainView).zoneName }
-        self.ckksViews.removeAllObjects()
+        let viewNames = self.intendedCKKSZones.map { $0.zoneName }
+
+        self.injectedManager!.resetSyncingPolicy()
+
         for view in viewNames {
-            self.ckksViews.add(self.injectedManager!.restartZone(view))
+            self.injectedManager!.restartZone(view)
         }
     }
 
     func sendAllCKKSTrustedPeersChanged() {
-        self.ckksViews.forEach { view in
+        self.injectedManager!.views.forEach { _, view in
             (view as! CKKSKeychainView).trustedPeerSetChanged(nil)
         }
     }
 
     func assert(ckks: CKKSKeychainView, enters: String, within: UInt64) {
-        XCTAssertEqual(0, (ckks.keyHierarchyConditions[enters] as! CKKSCondition).wait(within), "CKKS state machine should enter '\(enters)' (currently '\(ckks.keyHierarchyState)')")
+        XCTAssertEqual(0, (ckks.stateMachine.stateConditions[enters] as! CKKSCondition).wait(within), "CKKS state machine should enter '\(enters)' (currently '\(ckks.stateMachine.currentState)')")
     }
 
-    func assertAllCKKSViews(enter: String, within: UInt64) {
-        for view in self.ckksViews {
-            self.assert(ckks: view as! CKKSKeychainView, enters: enter, within: within)
+    func assertAllCKKSViews(enter: String, within: UInt64, filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { expectedView in
+            let view = self.injectedManager?.findView((expectedView as! CKRecordZone.ID).zoneName)
+            XCTAssertNotNil(view, "Should have a view '\(expectedView)'")
+            self.assert(ckks: view!, enters: enter, within: within)
         }
     }
 
     func assertAllCKKSViewsUploadKeyHierarchy(tlkShares: UInt) {
-        self.ckksViews.forEach { view in
-            self.expectCKModifyKeyRecords(3, currentKeyPointerRecords: 3, tlkShareRecords: tlkShares, zoneID: (view as! CKKSKeychainView).zoneID)
+        for expectedView in self.ckksZones {
+            let view = self.injectedManager?.findView((expectedView as! CKRecordZone.ID).zoneName)
+            XCTAssertNotNil(view, "Should have a view '\(expectedView)'")
+            self.expectCKModifyKeyRecords(3, currentKeyPointerRecords: 3, tlkShareRecords: tlkShares, zoneID: view!.zoneID)
         }
     }
 
-    func assertAllCKKSViewsUpload(tlkShares: UInt) {
-        self.ckksViews.forEach { view in
-            self.expectCKModifyKeyRecords(0, currentKeyPointerRecords: 0, tlkShareRecords: tlkShares, zoneID: (view as! CKKSKeychainView).zoneID)
+    func assertAllCKKSViewsUpload(tlkShares: UInt, filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { expectedView in
+            self.expectCKModifyKeyRecords(0, currentKeyPointerRecords: 0, tlkShareRecords: tlkShares, zoneID: expectedView as! CKRecordZone.ID)
+        }
+    }
+
+    func putFakeKeyHierarchiesInCloudKit(filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { zone in
+            self.putFakeKeyHierarchy(inCloudKit: zone as! CKRecordZone.ID)
+        }
+    }
+
+    func putSelfTLKSharesInCloudKit(filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { zone in
+            self.putSelfTLKShares(inCloudKit: zone as! CKRecordZone.ID)
+        }
+    }
+
+    func putFakeDeviceStatusesInCloudKit(filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { zone in
+            self.putFakeDeviceStatus(inCloudKit: zone as! CKRecordZone.ID)
+        }
+    }
+
+    func saveTLKMaterialToKeychain(filter: ((CKRecordZone.ID) -> Bool)? = nil) {
+        let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { zone in
+            self.saveTLKMaterial(toKeychain: zone as! CKRecordZone.ID)
         }
     }
 
     func resetAllCKKSViews() {
         let resetExpectation = self.expectation(description: "rpcResetCloudKit callback occurs")
-        self.injectedManager!.rpcResetCloudKit(nil, reason:"octagon=unit-test") { error in
+        self.injectedManager!.rpcResetCloudKit(nil, reason: "octagon=unit-test") { error in
             XCTAssertNil(error, "Error should be nil?")
             resetExpectation.fulfill()
         }
@@ -571,11 +714,67 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         self.wait(for: [resetExpectation], timeout: 30)
     }
 
-    func putSelfTLKShareInCloudKit(context: OTCuttlefishContext, zoneID: CKRecordZone.ID) throws {
-        let accountMetadata = try context.accountMetadataStore.loadOrCreateAccountMetadata()
-        let peerKeys: OctagonSelfPeerKeys = try loadEgoKeysSync(peerID: accountMetadata.peerID)
+    func putSelfTLKSharesInCloudKit(context: OTCuttlefishContext, filter: ((CKRecordZone.ID) -> Bool)? = nil) throws {
+    let f: ((CKRecordZone.ID) -> Bool) = filter ?? { (zone: CKRecordZone.ID) in return true }
+
+        try self.ckksZones.filter { f($0 as! CKRecordZone.ID) }.forEach { zone in
+            try self.putTLKShareInCloudKit(to: context, from: context, zoneID: zone as! CKRecordZone.ID)
+        }
+    }
+
+    func putAllTLKSharesInCloudKit(to: OTCuttlefishContext, from: OTCuttlefishContext) throws {
+        try self.ckksZones.forEach { zone in
+            try self.putTLKShareInCloudKit(to: to, from: from, zoneID: zone as! CKRecordZone.ID)
+        }
+    }
+
+    func putTLKShareInCloudKit(to: OTCuttlefishContext, from: OTCuttlefishContext, zoneID: CKRecordZone.ID) throws {
+        let fromAccountMetadata = try from.accountMetadataStore.loadOrCreateAccountMetadata()
+        let fromPeerKeys: OctagonSelfPeerKeys = try loadEgoKeysSync(peerID: fromAccountMetadata.peerID)
+
+        let toAccountMetadata = try to.accountMetadataStore.loadOrCreateAccountMetadata()
+        let toPeerKeys: OctagonSelfPeerKeys = try loadEgoKeysSync(peerID: toAccountMetadata.peerID)
+
         let zoneKeys = self.keys![zoneID] as! ZoneKeys
-        self.putTLKShare(inCloudKit: zoneKeys.tlk!, from: peerKeys, to: peerKeys, zoneID: zoneID)
+        self.putTLKShare(inCloudKit: zoneKeys.tlk!, from: fromPeerKeys, to: toPeerKeys, zoneID: zoneID)
+    }
+
+    func putRecoveryKeyTLKSharesInCloudKit(recoveryKey: String, salt: String) throws {
+        let recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+
+        self.ckksZones.forEach { zone in
+            let zoneID = zone as! CKRecordZone.ID
+            let zoneKeys = self.keys![zoneID] as! ZoneKeys
+            self.putTLKShare(inCloudKit: zoneKeys.tlk!, from: recoveryKeys.peerKeys, to: recoveryKeys.peerKeys, zoneID: zoneID)
+        }
+    }
+
+    func putRecoveryKeyTLKSharesInCloudKit(recoveryKey: String, salt: String, sender: OTCuttlefishContext) throws {
+        let recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+
+        let senderAccountMetadata = try sender.accountMetadataStore.loadOrCreateAccountMetadata()
+        let senderPeerKeys: OctagonSelfPeerKeys = try loadEgoKeysSync(peerID: senderAccountMetadata.peerID)
+
+        self.ckksZones.forEach { zone in
+            let zoneID = zone as! CKRecordZone.ID
+            let zoneKeys = self.keys![zoneID] as! ZoneKeys
+            self.putTLKShare(inCloudKit: zoneKeys.tlk!, from: senderPeerKeys, to: recoveryKeys.peerKeys, zoneID: zoneID)
+        }
+    }
+
+    func recoveryKeyTLKSharesInCloudKit(recoveryKey: String, salt: String) throws -> Bool {
+        let recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+
+        return self.tlkSharesInCloudKit(receiverPeerID: recoveryKeys.peerKeys.peerID,
+                                        senderPeerID: recoveryKeys.peerKeys.peerID)
+    }
+
+    func recoveryKeyTLKSharesInCloudKit(recoveryKey: String, salt: String, sender: OTCuttlefishContext) throws -> Bool {
+        let recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+        let senderAccountMetadata = try sender.accountMetadataStore.loadOrCreateAccountMetadata()
+
+        return self.tlkSharesInCloudKit(receiverPeerID: recoveryKeys.peerKeys.peerID,
+                                        senderPeerID: senderAccountMetadata.peerID)
     }
 
     func assertSelfTLKSharesInCloudKit(context: OTCuttlefishContext) {
@@ -596,24 +795,38 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
     }
 
     func assertTLKSharesInCloudKit(receiverPeerID: String, senderPeerID: String) {
-        for case let view as CKKSKeychainView in self.ckksViews {
-            XCTAssertNoThrow(try self.assertTLKShareInCloudKit(receiverPeerID: receiverPeerID, senderPeerID: senderPeerID, zoneID: view.zoneID), "view \(view) should have a self TLK uploaded")
-        }
+        XCTAssertTrue(self.tlkSharesInCloudKit(receiverPeerID: receiverPeerID, senderPeerID: senderPeerID), "All views should have a self TLK uploaded")
     }
 
-    func assertTLKShareInCloudKit(receiverPeerID: String, senderPeerID: String, zoneID: CKRecordZone.ID) throws {
-        let zone = self.zones![zoneID] as! FakeCKZone
+    func tlkSharesInCloudKit(receiverPeerID: String, senderPeerID: String) -> Bool {
+        let tlkContains: [Bool] = self.ckksViews.map {
+            let view: CKKSKeychainView = $0 as! CKKSKeychainView
+            return self.tlkShareInCloudKit(receiverPeerID: receiverPeerID, senderPeerID: senderPeerID, zoneID: view.zoneID)
+        }
+
+        // return true if all entries in tlkContains is true
+        return tlkContains.allSatisfy { $0 == true }
+    }
+
+    func tlkShareInCloudKit(receiverPeerID: String, senderPeerID: String, zoneID: CKRecordZone.ID) -> Bool {
+        guard let zone = self.zones![zoneID] as? FakeCKZone else {
+            return false
+        }
 
         let tlkShares = zone.currentDatabase.allValues.filter { ($0 as? CKRecord)?.recordType == SecCKRecordTLKShareType }.map { CKKSTLKShareRecord(ckRecord: $0 as! CKRecord) }
 
         for share in tlkShares {
             if share.share.receiverPeerID == receiverPeerID && share.senderPeerID == senderPeerID {
                 // Found one!
-                return
+                return true
             }
         }
+        return false
+    }
 
-        XCTFail("Unable to find a TLKShare for peer ID \(String(describing: receiverPeerID)) sent by \(String(describing: senderPeerID))")
+    func assertTLKShareInCloudKit(receiverPeerID: String, senderPeerID: String, zoneID: CKRecordZone.ID) {
+        XCTAssertTrue(self.tlkShareInCloudKit(receiverPeerID: receiverPeerID, senderPeerID: senderPeerID, zoneID: zoneID),
+                      "Should have found a TLKShare for peerID \(String(describing: receiverPeerID)) sent by \(String(describing: senderPeerID)) for \(zoneID)")
     }
 
     func assertMIDList(context: OTCuttlefishContext,
@@ -627,6 +840,29 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
             XCTAssertEqual(midList.machineIDs(in: .disallowed), disallowed, "Model's disallowed list should match pattern")
             XCTAssertEqual(midList.machineIDs(in: .unknown), unknown, "Model's unknown list should match pattern")
         }
+
+        for allowedMID in allowed {
+            var err: NSError?
+            let onList = context.machineID(onMemoizedList: allowedMID, error: &err)
+
+            XCTAssertNil(err, "Should not have failed determining memoized list state")
+            XCTAssertTrue(onList, "MID on allowed list should return 'is on list'")
+
+            do {
+                let number = try context.numberOfPeersInModel(withMachineID: allowedMID)
+                XCTAssert(number.intValue >= 0, "Should have a non-negative number for numberOfPeersInModel")
+            } catch {
+                XCTFail("Should not have failed fetching the number of peers with a mid: \(error)")
+            }
+        }
+
+        for disallowedMID in disallowed {
+            var err: NSError?
+            let onList = context.machineID(onMemoizedList: disallowedMID, error: &err)
+
+            XCTAssertNil(err, "Should not have failed determining memoized list state")
+            XCTAssertFalse(onList, "MID on allowed list should return 'not on list'")
+        }
     }
 
     func loadSecret(label: String) throws -> (Data?) {
@@ -638,7 +874,7 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
             kSecAttrDescription: label,
             kSecReturnAttributes: true,
             kSecReturnData: true,
-            kSecAttrSynchronizable: kCFBooleanFalse,
+            kSecAttrSynchronizable: false,
             kSecMatchLimit: kSecMatchLimitOne,
         ]
 
@@ -650,7 +886,7 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         }
 
         if result != nil {
-            if let dictionary = result as? Dictionary<CFString, Any> {
+            if let dictionary = result as? [CFString: Any] {
                 secret = dictionary[kSecValueData] as? Data
             } else {
                 throw ContainerError.failedToLoadSecretDueToType
@@ -688,7 +924,6 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         ])
     }
 
-
     func sendContainerChangeWaitForFetch(context: OTCuttlefishContext) {
         self.sendContainerChangeWaitForFetchForStates(context: context, states: [OctagonStateReadyUpdated, OctagonStateReady])
     }
@@ -697,12 +932,16 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         self.sendContainerChangeWaitForFetchForStates(context: context, states: [OctagonStateUntrustedUpdated, OctagonStateUntrusted])
     }
 
-    func sendContainerChangeWaitForFetchForState(context: OTCuttlefishContext, state: String) {
-        return self.sendContainerChangeWaitForFetchForStates(context: context, states: [state])
-    }
-
+    // Please ensure that the first state in this list is not the state that the context is currently in
     func sendContainerChangeWaitForFetchForStates(context: OTCuttlefishContext, states: [String]) {
+
+        // If we wait for each condition in order here, we might lose thread races and cause issues.
+        // Fetch every state we'll examine (note that this doesn't handle repeated checks for the same state)
+
+        let stateConditions = states.map { ($0, context.stateMachine.stateConditions[$0] as! CKKSCondition) }
+
         let updateTrustExpectation = self.expectation(description: "fetchChanges")
+
         self.fakeCuttlefishServer.fetchChangesListener = { request in
             self.fakeCuttlefishServer.fetchChangesListener = nil
             updateTrustExpectation.fulfill()
@@ -710,8 +949,12 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
         }
         context.notifyContainerChange(nil)
         self.wait(for: [updateTrustExpectation], timeout: 10)
-        for state in states {
-            self.assertEnters(context: context, state: state, within: 10 * NSEC_PER_SEC)
+
+        for (state, stateCondition) in stateConditions {
+            XCTAssertEqual(0, stateCondition.wait(10 * NSEC_PER_SEC), "State machine should enter '\(String(describing: state))'")
+            if state == OctagonStateReady || state == OctagonStateUntrusted {
+                XCTAssertEqual(0, context.stateMachine.paused.wait(10 * NSEC_PER_SEC), "State machine should pause soon")
+            }
         }
     }
 
@@ -729,7 +972,7 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
 
     func makeInitiatorDeviceInfoAdapter() -> OTMockDeviceInfoAdapter {
         // Note that the type of your initiator changes based on the platform you're currently on
-        return OTMockDeviceInfoAdapter(modelID: self.deviceInformationAdapter().modelID(),
+        return OTMockDeviceInfoAdapter(modelID: self.mockDeviceInfo.modelID(),
                                        deviceName: "test-device-2",
                                        serialNumber: "456",
                                        osVersion: "iSomething (fake version)")
@@ -740,36 +983,57 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
     }
 
     func makeInitiatorContext(contextID: String, authKitAdapter: OTAuthKitAdapter) -> OTCuttlefishContext {
+        return self.makeInitiatorContext(contextID: contextID, authKitAdapter: authKitAdapter, sosAdapter: self.mockSOSAdapter)
+    }
+
+    func makeInitiatorContext(contextID: String, authKitAdapter: OTAuthKitAdapter, sosAdapter: OTSOSAdapter) -> OTCuttlefishContext {
         // Note that the type of your initiator changes based on the platform you're currently on
         return self.manager.context(forContainerName: OTCKContainerName,
                                     contextID: contextID,
-                                    sosAdapter: self.mockSOSAdapter,
+                                    sosAdapter: sosAdapter,
                                     authKitAdapter: authKitAdapter,
                                     lockStateTracker: self.lockStateTracker,
                                     accountStateTracker: self.accountStateTracker,
                                     deviceInformationAdapter: self.makeInitiatorDeviceInfoAdapter())
     }
 
+    @discardableResult
     func assertResetAndBecomeTrustedInDefaultContext() -> String {
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+        let ret = self.assertResetAndBecomeTrusted(context: self.cuttlefishContext)
+
+        // And, the default context runs CKKS:
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.verifyDatabaseMocks()
+        self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
+
+        return ret
+    }
+
+    @discardableResult
+    func assertResetAndBecomeTrusted(context: OTCuttlefishContext) -> String {
+        context.startOctagonStateMachine()
+        XCTAssertNoThrow(try context.setCDPEnabled())
+        self.assertEnters(context: context, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let arguments = OTConfigurationContext()
+            arguments.altDSID = try context.authKitAdapter.primaryiCloudAccountAltDSID()
+            arguments.context = context.contextID
+            arguments.otControl = self.otControl
+
+            let clique = try OTClique.newFriends(withContextData: arguments, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
         }
 
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
-        self.verifyDatabaseMocks()
-        self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
-        return try! self.cuttlefishContext.accountMetadataStore.getEgoPeerID()
+        self.assertEnters(context: context, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: context)
+
+        return try! context.accountMetadataStore.getEgoPeerID()
     }
 
+    @discardableResult
     func assertJoinViaEscrowRecovery(joiningContext: OTCuttlefishContext, sponsor: OTCuttlefishContext) -> String {
         do {
             joiningContext.startOctagonStateMachine()
@@ -779,7 +1043,7 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
             let entropy = try self.loadSecret(label: sponsorPeerID!)
             XCTAssertNotNil(entropy, "entropy should not be nil")
 
-            let altDSID = joiningContext.authKitAdapter.primaryiCloudAccountAltDSID()
+            let altDSID = try joiningContext.authKitAdapter.primaryiCloudAccountAltDSID()
             XCTAssertNotNil(altDSID, "Should have an altDSID")
 
             let bottles = self.fakeCuttlefishServer.state.bottles.filter { $0.peerID == sponsorPeerID }
@@ -787,7 +1051,7 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
             let bottle = bottles[0]
 
             let joinWithBottleExpectation = self.expectation(description: "joinWithBottle callback occurs")
-            joiningContext.join(withBottle: bottle.bottleID, entropy: entropy!, bottleSalt: altDSID!) { error in
+            joiningContext.join(withBottle: bottle.bottleID, entropy: entropy!, bottleSalt: altDSID) { error in
                 XCTAssertNil(error, "error should be nil")
                 joinWithBottleExpectation.fulfill()
             }
@@ -802,10 +1066,46 @@ class OctagonTestsBase: CloudKitKeychainSyncingTestsBase {
             return "failed"
         }
     }
+
+    func assertJoinViaProximitySetup(joiningContext: OTCuttlefishContext, sponsor: OTCuttlefishContext) -> String {
+        do {
+            joiningContext.startOctagonStateMachine()
+            self.assertEnters(context: joiningContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+            let (sponsorPairingChannel, initiatorPairingChannel) = self.setupPairingChannels(initiator: joiningContext, sponsor: sponsor)
+
+            let firstInitiatorPacket = self.sendPairingExpectingReply(channel: initiatorPairingChannel, packet: nil, reason: "session initialization")
+            let sponsorEpochPacket = self.sendPairingExpectingReply(channel: sponsorPairingChannel, packet: firstInitiatorPacket, reason: "sponsor epoch")
+            let initiatorIdentityPacket = self.sendPairingExpectingReply(channel: initiatorPairingChannel, packet: sponsorEpochPacket, reason: "initiator identity")
+            let sponsorVoucherPacket = self.sendPairingExpectingCompletionAndReply(channel: sponsorPairingChannel, packet: initiatorIdentityPacket, reason: "sponsor voucher")
+            self.sendPairingExpectingCompletion(channel: initiatorPairingChannel, packet: sponsorVoucherPacket, reason: "initiator completion")
+
+            self.assertEnters(context: joiningContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+            self.assertConsidersSelfTrusted(context: joiningContext)
+
+            return try joiningContext.accountMetadataStore.getEgoPeerID()
+        } catch {
+            XCTFail("Expected no error: \(error)")
+            return "failed"
+        }
+    }
+
+    func assertSelfOSVersion(_ osVersion: String) {
+        let statusExpectation = self.expectation(description: "status callback occurs")
+        self.tphClient.dumpEgoPeer(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) { _, _, stableInfo, _, error in
+            XCTAssertNil(error, "should be no error dumping ego peer")
+            XCTAssertEqual(stableInfo?.osVersion, osVersion, "os version should be as required")
+            statusExpectation.fulfill()
+        }
+
+        self.wait(for: [statusExpectation], timeout: 2)
+    }
 }
 
 class OctagonTests: OctagonTestsBase {
     func testTPHPrepare() {
+        self.startCKAccountStatusMock()
+
         let contextName = "asdf"
         let containerName = "test_container"
 
@@ -816,28 +1116,40 @@ class OctagonTests: OctagonTestsBase {
                           machineID: "asdf",
                           bottleSalt: "123456789",
                           bottleID: UUID().uuidString,
-                          modelID: "asdf",
+                          modelID: "iPhone9,1",
                           deviceName: "asdf",
                           serialNumber: "1234",
                           osVersion: "asdf",
                           policyVersion: nil,
                           policySecrets: nil,
+                          syncUserControllableViews: .UNKNOWN,
                           signingPrivKeyPersistentRef: nil,
-                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
-                            XCTAssertNil(error, "Should be no error preparing identity")
-                            XCTAssertNotNil(peerID, "Should be a peer ID")
-                            XCTAssertNotNil(permanentInfo, "Should have a permenent info")
-                            XCTAssertNotNil(permanentInfoSig, "Should have a permanent info signature")
-                            XCTAssertNotNil(stableInfo, "Should have a stable info")
-                            XCTAssertNotNil(stableInfoSig, "Should have a stable info signature")
+                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
+            XCTAssertNil(error, "Should be no error preparing identity")
+            XCTAssertNotNil(peerID, "Should be a peer ID")
+            XCTAssertNotNil(permanentInfo, "Should have a permenent info")
+            XCTAssertNotNil(permanentInfoSig, "Should have a permanent info signature")
+            XCTAssertNotNil(stableInfo, "Should have a stable info")
+            XCTAssertNotNil(stableInfoSig, "Should have a stable info signature")
 
-                            tphPrepareExpectation.fulfill()
+            let adapter = OctagonCKKSPeerAdapter(peerID: peerID!, containerName: containerName, contextID: contextName, cuttlefishXPC: CuttlefishXPCWrapper(cuttlefishXPCConnection: self.tphXPCProxy.connection()))
+
+            do {
+                let selves = try adapter.fetchSelfPeers()
+                try TestsObjectiveC.testSecKey(selves)
+            } catch {
+                XCTFail("Test failed: \(error)")
+            }
+
+            tphPrepareExpectation.fulfill()
         }
 
         self.wait(for: [tphPrepareExpectation], timeout: 10)
     }
 
     func testTPHMultiPrepare() throws {
+        self.startCKAccountStatusMock()
+
         let contextName = OTDefaultContext
         let containerName = OTCKContainerName
 
@@ -850,14 +1162,15 @@ class OctagonTests: OctagonTestsBase {
                           machineID: "asdf",
                           bottleSalt: "123456789",
                           bottleID: UUID().uuidString,
-                          modelID: "asdf",
+                          modelID: "iPhone9,1",
                           deviceName: "asdf",
                           serialNumber: "1234",
                           osVersion: "asdf",
                           policyVersion: nil,
                           policySecrets: nil,
+                          syncUserControllableViews: .UNKNOWN,
                           signingPrivKeyPersistentRef: nil,
-                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                             XCTAssertNil(error, "Should be no error preparing identity")
                             XCTAssertNotNil(peerID, "Should be a peer ID")
                             XCTAssertNotNil(permanentInfo, "Should have a permenent info")
@@ -878,14 +1191,15 @@ class OctagonTests: OctagonTestsBase {
                           machineID: "asdf",
                           bottleSalt: "123456789",
                           bottleID: UUID().uuidString,
-                          modelID: "asdf",
+                          modelID: "iPhone9,1",
                           deviceName: "asdf",
                           serialNumber: "1234",
                           osVersion: "asdf",
                           policyVersion: nil,
                           policySecrets: nil,
+                          syncUserControllableViews: .UNKNOWN,
                           signingPrivKeyPersistentRef: nil,
-                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                             XCTAssertNil(error, "Should be no error preparing identity")
                             XCTAssertNotNil(peerID, "Should be a peer ID")
                             XCTAssertNotNil(permanentInfo, "Should have a permenent info")
@@ -901,86 +1215,29 @@ class OctagonTests: OctagonTestsBase {
         self.wait(for: [tphPrepareExpectation2], timeout: 10)
     }
 
-    func testAccountSave() throws {
-        let contextName = OTDefaultContext
-        let containerName = OTCKContainerName
-
-        self.startCKAccountStatusMock()
-
-        // Before resetAndEstablish, there shouldn't be any stored account state
-               XCTAssertThrowsError(try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName), "Before doing anything, loading a non-existent account state should fail")
-
-        let resetAndEstablishExpectation = self.expectation(description: "resetAndEstablish callback occurs")
-        self.manager.resetAndEstablish(containerName,
-                                       context: contextName,
-                                       altDSID: "new altDSID") { resetError in
-                                        XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
-                                        resetAndEstablishExpectation.fulfill()
-        }
-
-        self.wait(for: [resetAndEstablishExpectation], timeout: 10)
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-
-        let selfPeerID = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata().peerID
-
-        // After resetAndEstablish, you should be able to see the persisted account state
-        do {
-            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName)
-            XCTAssertEqual(selfPeerID, accountState.peerID, "Saved account state should have the same peer ID that prepare returned")
-        } catch {
-            XCTFail("error loading account state: \(error)")
-        }
-    }
-
-    func testLoadToNoAccount() throws {
-        // No CloudKit account, either
-        self.accountStatus = .noAccount;
-        self.startCKAccountStatusMock()
-
-        // With no identity and AuthKit reporting no iCloud account, Octagon should go directly into 'no account'
-        self.mockAuthKit.altDSID = nil
-
-        let asyncExpectation = self.expectation(description: "dispatch works")
-        let quiescentExpectation = self.expectation(description: "quiescence has been determined")
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            asyncExpectation.fulfill()
-
-            let c = self!.cuttlefishContext.stateMachine.paused
-            XCTAssertEqual(0, c.wait(10 * NSEC_PER_SEC), "State machine should become quiescent")
-            quiescentExpectation.fulfill()
-        }
-        // Wait for the block above to fire before continuing
-        self.wait(for: [asyncExpectation], timeout: 10)
-
-        // Run initialization, like the real secd will do
-        OctagonInitialize()
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        XCTAssertTrue(self.cuttlefishContext.stateMachine.isPaused(), "State machine should be stopped")
-        self.assertNoAccount(context: self.cuttlefishContext)
-
-        XCTAssertEqual(0, self.cuttlefishContext.stateMachine.paused.wait(10 * NSEC_PER_SEC), "State machine should be quiescent")
-
-        self.wait(for: [quiescentExpectation], timeout: 10)
-
-        // CKKS should also be logged out, since Octagon believes there's no account
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateLoggedOut, within: 10 * NSEC_PER_SEC)
-    }
-
     func testLoadToUntrusted() throws {
         self.startCKAccountStatusMock()
 
+        // Tell SOS that it is absent, so we don't enable CDP on bringup
+        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+
         // With no identity but AuthKit reporting an existing iCloud account, Octagon should go directly into 'untrusted'
-        OctagonInitialize()
+        self.cuttlefishContext.startOctagonStateMachine()
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDP, within: 10 * NSEC_PER_SEC)
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
 
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
     }
 
     func testLoadToUntrustedIfTPHHasPreparedIdentityOnly() throws {
         self.startCKAccountStatusMock()
+
+        // Tell SOS that it is absent, so we don't enable CDP on bringup
+        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // Prepare an identity, then pretend like securityd thought it was in the right account
         let containerName = OTCKContainerName
@@ -994,14 +1251,15 @@ class OctagonTests: OctagonTestsBase {
                           machineID: "asdf",
                           bottleSalt: "123456789",
                           bottleID: UUID().uuidString,
-                          modelID: "asdf",
+                          modelID: "iPhone9,1",
                           deviceName: "asdf",
                           serialNumber: "1234",
                           osVersion: "asdf",
                           policyVersion: nil,
                           policySecrets: nil,
+                          syncUserControllableViews: .UNKNOWN,
                           signingPrivKeyPersistentRef: nil,
-                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                             XCTAssertNil(error, "Should be no error preparing identity")
                             XCTAssertNotNil(peerID, "Should be a peer ID")
                             XCTAssertNotNil(permanentInfo, "Should have a permenent info")
@@ -1021,7 +1279,10 @@ class OctagonTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try account.saveToKeychain(forContainer: containerName, contextID: contextName), "Should be no error saving fake account metadata")
 
-        OctagonInitialize()
+        self.cuttlefishContext.startOctagonStateMachine()
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDP, within: 10 * NSEC_PER_SEC)
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
@@ -1030,86 +1291,65 @@ class OctagonTests: OctagonTestsBase {
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
     }
 
-    func testSignIn() throws {
-        self.startCKAccountStatusMock()
-
-        // Device is signed out
-        self.mockAuthKit.altDSID = nil
-        self.mockAuthKit.hsa2 = false
-
-        // With no account, Octagon should go directly into 'NoAccount'
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-
-        // Sign in occurs
-        let newAltDSID = UUID().uuidString
-        self.mockAuthKit.altDSID = newAltDSID
-        self.mockAuthKit.hsa2 = true
-        XCTAssertNoThrow(try self.cuttlefishContext.accountAvailable(newAltDSID), "Sign-in shouldn't error")
-
-        // Octagon should go into 'untrusted'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 100 * NSEC_PER_SEC)
-        self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
-
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
-
-        // On sign-out, octagon should go back to 'no account'
-        self.mockAuthKit.altDSID = nil
-        XCTAssertNoThrow(try self.cuttlefishContext.accountNoLongerAvailable(), "sign-out shouldn't error")
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        self.assertNoAccount(context: self.cuttlefishContext)
-
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
-    }
-
-    func testSignInWithDelayedHSA2Status() throws {
-        self.startCKAccountStatusMock()
-
-        // Device is signed out
-        self.mockAuthKit.altDSID = nil
-        self.mockAuthKit.hsa2 = false
-
-        // With no account, Octagon should go directly into 'NoAccount'
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-
-        // Sign in occurs, but HSA2 status isn't here yet
-        let newAltDSID = UUID().uuidString
-        self.mockAuthKit.altDSID = newAltDSID
-        XCTAssertNoThrow(try self.cuttlefishContext.accountAvailable(newAltDSID), "Sign-in shouldn't error")
-
-        // Octagon should go into 'waitforhsa2'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
-
-        self.mockAuthKit.hsa2 = true
-        XCTAssertNoThrow(try self.cuttlefishContext.idmsTrustLevelChanged(), "Notification of IDMS trust level shouldn't error")
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
-
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
-
-        // On sign-out, octagon should go back to 'no account'
-        self.mockAuthKit.altDSID = nil
-        XCTAssertNoThrow(try self.cuttlefishContext.accountNoLongerAvailable(), "sign-out shouldn't error")
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        self.assertNoAccount(context: self.cuttlefishContext)
-
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
-    }
-
     func testNewFriendsForEmptyAccount() throws {
         self.startCKAccountStatusMock()
 
+        // Tell SOS that it is absent, so we don't enable CDP on bringup
+        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+
         self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDP, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
         }
+
+        // Now, we should be in 'ready'
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
+        self.assertConsidersSelfTrustedCachedAccountStatus(context: self.cuttlefishContext)
+
+        // and the act of calling newFriends should set the CDP bit
+        XCTAssertEqual(self.fetchCDPStatus(context: self.cuttlefishContext), .enabled, "CDP status should be 'enabled'")
+
+        // and all subCKKSes should enter ready...
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.verifyDatabaseMocks()
+
+        self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
+
+        // Also, CKKS should be configured with the prevailing policy version
+        XCTAssertNotNil(self.injectedManager?.policy, "Should have given CKKS a TPPolicy during initialization")
+        XCTAssertEqual(self.injectedManager?.policy?.version, prevailingPolicyVersion, "Policy given to CKKS should be prevailing policy")
+
+        // TODO: add a CKKS item
+    }
+
+    func testNewFriendsWithResetReasonForEmptyAccount() throws {
+        self.startCKAccountStatusMock()
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+        let resetExpectation = self.expectation(description: "resetExpectation")
+
+        self.fakeCuttlefishServer.resetListener = {  request in
+            self.fakeCuttlefishServer.resetListener = nil
+            resetExpectation.fulfill()
+            XCTAssertTrue(request.resetReason.rawValue == CuttlefishResetReason.testGenerated.rawValue, "reset reason should be unknown")
+            return nil
+        }
+
+        do {
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
+            XCTAssertNotNil(clique, "Clique should not be nil")
+        } catch {
+            XCTFail("Shouldn't have errored making new friends: \(error)")
+        }
+
+        self.wait(for: [resetExpectation], timeout: 10)
 
         // Now, we should be in 'ready'
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -1121,18 +1361,50 @@ class OctagonTests: OctagonTestsBase {
         self.verifyDatabaseMocks()
 
         self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
+    }
 
-        // TODO: add a CKKS item
+    func testRequestToJoinCircleForEmptyAccount() throws {
+        self.startCKAccountStatusMock()
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        let clique = OTClique(contextData: self.otcliqueContext)
+
+        // Now, call requestToJoin. It should cause an establish to happen
+        try clique.requestToJoinCircle()
+
+        // Now, we should be in 'ready'
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
+        self.assertConsidersSelfTrustedCachedAccountStatus(context: self.cuttlefishContext)
+
+        // and all subCKKSes should enter ready...
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.verifyDatabaseMocks()
+
+        self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
+
+        // But calling it again shouldn't make establish() occur again
+        self.fakeCuttlefishServer.establishListener = { _ in
+            XCTFail("establish called at incorrect time")
+            return nil
+        }
+
+        // call should be a nop
+        try clique.requestToJoinCircle()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
     }
 
     func testCliqueStatusWhileLocked() throws {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1154,20 +1426,19 @@ class OctagonTests: OctagonTestsBase {
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext, isLocked: false)
     }
 
-
     func testDeviceFetchRetry() throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-        
-        let cuttlefishError = NSError(domain: CuttlefishErrorDomain, code: CuttlefishErrorCode.transactionalFailure.rawValue, userInfo: nil)
-        let ckError = NSError(domain: CKInternalErrorDomain, code: CKInternalErrorCode.errorInternalPluginError.rawValue, userInfo: [NSUnderlyingErrorKey: cuttlefishError])
+
+        let ckError = FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         self.fakeCuttlefishServer.nextFetchErrors.append(ckError)
 
         self.sendContainerChange(context: self.cuttlefishContext)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1185,43 +1456,28 @@ class OctagonTests: OctagonTestsBase {
 
     func testDeviceFetchRetryFail() throws {
         self.startCKAccountStatusMock()
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-        
-        let cuttlefishError = NSError(domain: CuttlefishErrorDomain, code: CuttlefishErrorCode.transactionalFailure.rawValue, userInfo: nil)
-        let ckError = NSError(domain: CKInternalErrorDomain, code: CKInternalErrorCode.errorInternalPluginError.rawValue, userInfo: [NSUnderlyingErrorKey: cuttlefishError])
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        let ckError = FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         self.fakeCuttlefishServer.nextFetchErrors.append(ckError)
         self.fakeCuttlefishServer.nextFetchErrors.append(ckError)
-        self.cuttlefishContext.notifyContainerChange(nil)
 
-        do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-        }
-
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
-        self.verifyDatabaseMocks()
-        self.assertSelfTLKSharesInCloudKit(context: self.cuttlefishContext)
-
-        self.cuttlefishContext.notifyContainerChange(nil)
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.sendContainerChangeWaitForFetchForStates(context: self.cuttlefishContext, states: [OctagonStateReadyUpdated])
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 30 * NSEC_PER_SEC)
     }
 
     func testNewFriendsForEmptyAccountReturnsMoreChanges() throws {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         self.fakeCuttlefishServer.nextEstablishReturnsMoreChanges = true
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1240,7 +1496,7 @@ class OctagonTests: OctagonTestsBase {
     }
 
     func testNewFriendsForEmptyAccountWithoutTLKsResetsZones() throws {
-        self.putFakeKeyHierarchy(inCloudKit: self.manateeZoneID)
+        self.putFakeKeyHierarchiesInCloudKit()
         // But do NOT add them to the keychain
 
         // CKKS+Octagon should reset the zones and be ready
@@ -1248,13 +1504,14 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         // CKKS should reset the zones after Octagon has entered
         self.silentZoneDeletesAllowed = true
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1270,7 +1527,7 @@ class OctagonTests: OctagonTestsBase {
     }
 
     func testUploadTLKsRetry() throws {
-        self.putFakeKeyHierarchy(inCloudKit: self.manateeZoneID)
+        self.putFakeKeyHierarchiesInCloudKit()
         // But do NOT add them to the keychain
 
         // CKKS+Octagon should reset the zones and be ready
@@ -1278,13 +1535,14 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         // CKKS should reset the zones after Octagon has entered
         self.silentZoneDeletesAllowed = true
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1294,8 +1552,7 @@ class OctagonTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
 
-        let cuttlefishError = NSError(domain: CuttlefishErrorDomain, code: CuttlefishErrorCode.transactionalFailure.rawValue, userInfo: nil)
-        let ckError = NSError(domain: CKInternalErrorDomain, code: CKInternalErrorCode.errorInternalPluginError.rawValue, userInfo: [NSUnderlyingErrorKey: cuttlefishError])
+        let ckError = FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         self.fakeCuttlefishServer.nextUpdateTrustErrors.append(ckError)
 
         // and all subCKKSes should enter ready (eventually)
@@ -1312,11 +1569,11 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
-
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1333,8 +1590,7 @@ class OctagonTests: OctagonTestsBase {
 
         self.resetAllCKKSViews()
 
-        let cuttlefishError = NSError(domain: CuttlefishErrorDomain, code: CuttlefishErrorCode.transactionalFailure.rawValue, userInfo: nil)
-        let ckError = NSError(domain: CKInternalErrorDomain, code: CKInternalErrorCode.errorInternalPluginError.rawValue, userInfo: [NSUnderlyingErrorKey: cuttlefishError])
+        let ckError = FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         self.fakeCuttlefishServer.nextUpdateTrustErrors.append(ckError)
         self.fakeCuttlefishServer.nextUpdateTrustErrors.append(ckError)
         self.fakeCuttlefishServer.nextUpdateTrustErrors.append(ckError)
@@ -1344,33 +1600,27 @@ class OctagonTests: OctagonTestsBase {
 
         // these should be failures
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKUpload, within: 10 * NSEC_PER_SEC)
-        self.cuttlefishContext.rpcStatus() { _, _ in
-            return
+        self.cuttlefishContext.rpcStatus { _, _ in
         }
 
         self.verifyDatabaseMocks()
         XCTAssertEqual(0, self.cuttlefishContext.stateMachine.paused.wait(60 * NSEC_PER_SEC), "Main cuttlefish context should quiesce before the test ends")
     }
 
-    func testNewFriendsForEmptyAccountWithTLKs() throws {
-        self.putFakeKeyHierarchy(inCloudKit: self.manateeZoneID)
-        self.saveTLKMaterial(toKeychain: self.manateeZoneID)
+    func testNewFriendsForEmptyAccountWithExistingTLKs() throws {
+        self.putFakeKeyHierarchiesInCloudKit()
+        self.saveTLKMaterialToKeychain()
 
         self.startCKAccountStatusMock()
 
-        // CKKS should go into 'logged out', as Octagon hasn't told it to go yet
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateLoggedOut, within: 10 * NSEC_PER_SEC)
-
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTrust, within: 10 * NSEC_PER_SEC)
-
-        // CKKS should reset the zones after Octagon has entered
-        self.silentZoneDeletesAllowed = true
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTrust, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1380,21 +1630,20 @@ class OctagonTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
 
-        // and all subCKKSes should enter ready upload...
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.verifyDatabaseMocks()
     }
 
     func testLoadToReadyOnRestart() throws {
-
         let startDate = Date()
 
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1404,6 +1653,10 @@ class OctagonTests: OctagonTestsBase {
         self.verifyDatabaseMocks()
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
+
+        // Ensure CKKS has a policy after newFriends
+        XCTAssertNotNil(self.injectedManager?.policy, "Should have given CKKS a TPPolicy during initialization")
+        XCTAssertEqual(self.injectedManager?.policy?.version, prevailingPolicyVersion, "Policy given to CKKS should be prevailing policy")
 
         let peerID = try self.cuttlefishContext.accountMetadataStore.getEgoPeerID()
         XCTAssertNotNil(peerID, "Should have a peer ID after making new friends")
@@ -1417,6 +1670,8 @@ class OctagonTests: OctagonTestsBase {
         self.restartCKKSViews()
         self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
 
+        XCTAssertNil(self.injectedManager?.policy, "CKKS should not have a policy after 'restart'")
+
         let restartDate = Date()
         self.cuttlefishContext.startOctagonStateMachine()
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -1429,18 +1684,44 @@ class OctagonTests: OctagonTestsBase {
         XCTAssertEqual(peerID, restartedPeerID, "Should have the same peer ID after restarting")
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
 
+        XCTAssertNotNil(self.injectedManager?.policy, "Should have given CKKS a TPPolicy after restart")
+        XCTAssertEqual(self.injectedManager?.policy?.version, prevailingPolicyVersion, "Policy given to CKKS after restart should be prevailing policy")
+
         readyDate = CKKSAnalytics.logger().dateProperty(forKey: OctagonAnalyticsLastKeystateReady)
         XCTAssertNotNil(readyDate, "Should have a ready date")
         XCTAssert(readyDate! > restartDate, "ready date should be after re-startdate")
     }
 
+    func testFillInUnknownAttemptedJoinState() throws {
+        self.startCKAccountStatusMock()
+
+        _ = self.assertResetAndBecomeTrustedInDefaultContext()
+
+        try self.cuttlefishContext.accountMetadataStore.persistAccountChanges { metadata in
+            metadata.attemptedJoin = .UNKNOWN
+            return metadata
+        }
+
+        self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+        self.restartCKKSViews()
+        self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+
+        // And check that the metadata is fixed:
+        let metadata = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(metadata.attemptedJoin, .ATTEMPTED, "Should have attempted a join")
+    }
+
     func testLoadToUntrustedOnRestartIfKeysGone() throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1458,7 +1739,7 @@ class OctagonTests: OctagonTestsBase {
         let query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrAccessGroup: "com.apple.security.egoIdentities",
-            kSecUseDataProtectionKeychain: kCFBooleanTrue,
+            kSecUseDataProtectionKeychain: true,
         ]
 
         let status = SecItemDelete(query as CFDictionary)
@@ -1476,10 +1757,11 @@ class OctagonTests: OctagonTestsBase {
     func testLoadToUntrustedOnRestartIfTPHLosesAllData() throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1515,10 +1797,11 @@ class OctagonTests: OctagonTestsBase {
     func testLoadToTrustedOnRestartIfMismatchedPeerIDs() throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1550,70 +1833,6 @@ class OctagonTests: OctagonTestsBase {
         XCTAssertEqual(peerID, newPeerID, "Should now have TPH's peer ID")
     }
 
-    func testStatusRPCsWithUnknownCloudKitAccount() throws {
-        // If CloudKit isn't returning our calls, we should still return something reasonable...
-        let statusexpectation = self.expectation(description: "trust status returns")
-        let configuration = OTOperationConfiguration()
-        configuration.timeoutWaitForCKAccount = 500*NSEC_PER_MSEC
-        self.cuttlefishContext.rpcTrustStatus(configuration) { egoStatus, _, _, _, _ in
-            XCTAssertTrue([.absent].contains(egoStatus), "Self peer should be in the 'absent' state")
-            statusexpectation.fulfill()
-        }
-        self.wait(for: [statusexpectation], timeout: 10)
-
-        // Now sign in to 'untrusted'
-        self.startCKAccountStatusMock()
-
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
-
-        // And restart, without any idea of the cloudkit state
-        self.ckaccountHoldOperation = BlockOperation()
-        self.injectedManager!.accountTracker = CKKSAccountStateTracker(self.injectedManager!.container,
-                                                                       nsnotificationCenterClass: FakeNSNotificationCenter.self as CKKSNSNotificationCenter.Type)
-        self.manager.accountStateTracker = self.injectedManager!.accountTracker
-
-        self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
-        self.restartCKKSViews()
-        self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
-
-        // Should know it's untrusted
-        self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
-        self.startCKAccountStatusMock()
-
-        // Now become ready
-        do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-        }
-
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-        self.assertConsidersSelfTrustedCachedAccountStatus(context: self.cuttlefishContext)
-
-        // and all subCKKSes should enter ready...
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
-        self.verifyDatabaseMocks()
-
-        // Restart one more time:
-
-        self.ckaccountHoldOperation = BlockOperation()
-        self.injectedManager!.accountTracker = CKKSAccountStateTracker(self.injectedManager!.container,
-                                                                       nsnotificationCenterClass: FakeNSNotificationCenter.self as CKKSNSNotificationCenter.Type)
-        self.manager.accountStateTracker = self.injectedManager!.accountTracker
-
-        self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
-        self.restartCKKSViews()
-        self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
-
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-        self.assertConsidersSelfTrustedCachedAccountStatus(context: self.cuttlefishContext)
-    }
-
     func testRestoreToNewClique() throws {
         self.startCKAccountStatusMock()
 
@@ -1630,7 +1849,7 @@ class OctagonTests: OctagonTestsBase {
 
         let clique: OTClique?
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1646,11 +1865,10 @@ class OctagonTests: OctagonTestsBase {
         let memberIdentifier = clique!.cliqueMemberIdentifier
 
         let dumpExpectation = self.expectation(description: "dump callback occurs")
-        self.tphClient.dump(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) {
-            dump, error in
+        self.tphClient.dump(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) { dump, error in
             XCTAssertNil(error, "Should be no error dumping data")
             XCTAssertNotNil(dump, "dump should not be nil")
-            let egoSelf = dump!["self"] as? Dictionary<String, AnyObject>
+            let egoSelf = dump!["self"] as? [String: AnyObject]
             XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
             let peerID = egoSelf!["peerID"] as? String
             XCTAssertNotNil(peerID, "peerID should not be nil")
@@ -1665,11 +1883,12 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1680,6 +1899,9 @@ class OctagonTests: OctagonTestsBase {
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.verifyDatabaseMocks()
+        XCTAssertTrue(self.mockSOSAdapter.ckks4AllStatusIsSet, "SOS adapter should have been told that CKKS4All is not enabled")
+        XCTAssertTrue(self.mockSOSAdapter.ckks4AllStatus, "SOS adapter should have been told that CKKS4All is enabled")
+        self.mockSOSAdapter.ckks4AllStatusIsSet = false
 
         // Technically, it's a server-side cuttlefish error for the last signed-in peer to leave. But, for now, just go for it.
         XCTAssertNoThrow(try clique.leave(), "Should be no error departing clique")
@@ -1689,103 +1911,23 @@ class OctagonTests: OctagonTestsBase {
         self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTrust, within: 10 * NSEC_PER_SEC)
 
+        XCTAssertTrue(self.mockSOSAdapter.ckks4AllStatusIsSet, "SOS adapter should have been told that CKKS4All is not enabled")
+        XCTAssertFalse(self.mockSOSAdapter.ckks4AllStatus, "SOS adapter should have been told that CKKS4All is not enabled")
+
         // TODO: an item added here shouldn't sync
-    }
-
-    func testSignOut() throws {
-        self.startCKAccountStatusMock()
-
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-        do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-        }
-
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-        self.verifyDatabaseMocks()
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
-
-        // And 'dump' should show some information
-        let dumpExpectation = self.expectation(description: "dump callback occurs")
-        self.tphClient.dump(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) {
-            dump, error in
-            XCTAssertNil(error, "Should be no error dumping data")
-            XCTAssertNotNil(dump, "dump should not be nil")
-            let egoSelf = dump!["self"] as? Dictionary<String, AnyObject>
-            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
-            let peerID = egoSelf!["peerID"] as? String
-            XCTAssertNotNil(peerID, "peerID should not be nil")
-
-            dumpExpectation.fulfill()
-        }
-        self.wait(for: [dumpExpectation], timeout: 10)
-
-        // Turn off the CK account too
-        self.accountStatus = .noAccount
-        self.accountStateTracker.notifyCKAccountStatusChangeAndWaitForSignal()
-
-        XCTAssertNoThrow(try self.cuttlefishContext.accountNoLongerAvailable(), "Should be no issue signing out")
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        self.assertNoAccount(context: self.cuttlefishContext)
-
-        // And 'dump' should show nothing
-        let signedOutDumpExpectation = self.expectation(description: "dump callback occurs")
-        self.tphClient.dump(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) {
-            dump, error in
-            XCTAssertNil(error, "Should be no error dumping data")
-            XCTAssertNotNil(dump, "dump should not be nil")
-            let egoSelf = dump!["self"] as? Dictionary<String, AnyObject>
-            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
-            XCTAssertEqual(egoSelf!.count, 0, "egoSelf should have zero elements")
-
-            signedOutDumpExpectation.fulfill()
-        }
-        self.wait(for: [signedOutDumpExpectation], timeout: 10)
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateLoggedOut, within: 10 * NSEC_PER_SEC)
-
-        //check trust status
-        let checkTrustExpectation = self.expectation(description: "checkTrustExpectation callback occurs")
-        let configuration = OTOperationConfiguration()
-        self.cuttlefishContext.rpcTrustStatus(configuration) { _, _, _, _, _ in
-            checkTrustExpectation.fulfill()
-        }
-        self.wait(for: [checkTrustExpectation], timeout: 10)
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-
-        // And 'dump' should show nothing
-        let signedOutDumpExpectationAfterCheckTrustStatus = self.expectation(description: "dump callback occurs")
-        self.tphClient.dump(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) {
-            dump, error in
-            XCTAssertNil(error, "Should be no error dumping data")
-            XCTAssertNotNil(dump, "dump should not be nil")
-            let egoSelf = dump!["self"] as? Dictionary<String, AnyObject>
-            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
-            XCTAssertEqual(egoSelf!.count, 0, "egoSelf should have zero elements")
-
-            signedOutDumpExpectationAfterCheckTrustStatus.fulfill()
-        }
-        self.wait(for: [signedOutDumpExpectationAfterCheckTrustStatus], timeout: 10)
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        self.assertNoAccount(context: self.cuttlefishContext)
     }
 
     func testCliqueFriendAPI() throws {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -1795,7 +1937,7 @@ class OctagonTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
         self.verifyDatabaseMocks()
-        assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
 
         let peer1ID = fetchEgoPeerID()
 
@@ -1807,6 +1949,13 @@ class OctagonTests: OctagonTestsBase {
             XCTFail("Error thrown: \(error)")
         }
 
+        let peer2DeviceName = "peer2-asdf"
+
+        let peer2DeviceAdapter = OTMockDeviceInfoAdapter(modelID: "AppleTV5,3",
+                                                         deviceName: peer2DeviceName,
+                                                         serialNumber: "peer2-asdf",
+                                                         osVersion: "tvOS (fake version)")
+
         // Now, fake up a voucher for the second peer using TPH
         let peer2ContextID = "asdf"
         let peer2 = self.manager.context(forContainerName: OTCKContainerName,
@@ -1815,12 +1964,11 @@ class OctagonTests: OctagonTestsBase {
                                          authKitAdapter: self.mockAuthKit2,
                                          lockStateTracker: self.lockStateTracker,
                                          accountStateTracker: self.accountStateTracker,
-                                         deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-SOS-iphone", serialNumber: "456", osVersion: "iOS (fake version)"))
+                                         deviceInformationAdapter: peer2DeviceAdapter)
 
-        self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID)
+        self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID, accountIsDemo: false)
 
         var peer2ID: String!
-        let peer2DeviceName = "peer2-asdf"
         let joinExpectation = self.expectation(description: "join callback occurs")
         self.tphClient.prepare(withContainer: OTCKContainerName,
                                context: peer2ContextID,
@@ -1828,14 +1976,15 @@ class OctagonTests: OctagonTestsBase {
                                machineID: self.mockAuthKit2.currentMachineID,
                                bottleSalt: "123456789",
                                bottleID: UUID().uuidString,
-                               modelID: "AppleTV5,3",
-                               deviceName: peer2DeviceName,
-                               serialNumber: "1234",
-                               osVersion: "something",
+                               modelID: peer2DeviceAdapter.modelID(),
+                               deviceName: peer2DeviceAdapter.deviceName(),
+                               serialNumber: peer2DeviceAdapter.serialNumber(),
+                               osVersion: peer2DeviceAdapter.osVersion(),
                                policyVersion: nil,
                                policySecrets: nil,
+                               syncUserControllableViews: .UNKNOWN,
                                signingPrivKeyPersistentRef: nil,
-                               encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                               encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                                 XCTAssertNil(error, "Should be no error preparing identity")
                                 XCTAssertNotNil(permanentInfo, "Should have a permanent identity")
                                 XCTAssertNotNil(permanentInfoSig, "Should have a permanent identity signature")
@@ -1858,7 +2007,7 @@ class OctagonTests: OctagonTestsBase {
                                                                             voucherSig: voucherSig!,
                                                                             ckksKeys: [],
                                                                             tlkShares: [],
-                                                                            preapprovedKeys: []) { peerID, _, error in
+                                                                            preapprovedKeys: []) { peerID, _, _, error in
                                                                                 XCTAssertNil(error, "Should be no error joining")
                                                                                 XCTAssertNotNil(peerID, "Should have a peerID")
                                                                                 peer2ID = peerID
@@ -1873,6 +2022,7 @@ class OctagonTests: OctagonTestsBase {
         account.peerID = peer2ID
         account.icloudAccountState = .ACCOUNT_AVAILABLE
         account.trustState = .TRUSTED
+        account.attemptedJoin = . ATTEMPTED
         XCTAssertNoThrow(try account.saveToKeychain(forContainer: OTCKContainerName, contextID: peer2ContextID), "Should be no error saving fake account metadata")
 
         peer2.startOctagonStateMachine()
@@ -1880,12 +2030,17 @@ class OctagonTests: OctagonTestsBase {
         self.assertConsidersSelfTrusted(context: peer2)
 
         // Now that we've lied enough...
+        self.assertAllCKKSViewsUpload(tlkShares: 1, filter: { $0.zoneName == "LimitedPeersAllowed" })
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
 
         XCTAssertTrue(self.fakeCuttlefishServer.assertCuttlefishState(FakeCuttlefishAssertion(peer: peer1ID, opinion: .trusts, target: peer2ID)),
                       "peer 1 should trust peer 2")
         XCTAssertTrue(self.fakeCuttlefishServer.assertCuttlefishState(FakeCuttlefishAssertion(peer: peer2ID, opinion: .trusts, target: peer1ID)),
                       "peer 2 should trust peer 1")
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.verifyDatabaseMocks()
 
         // But does peer1 claim to know peer2?
         do {
@@ -1916,53 +2071,25 @@ class OctagonTests: OctagonTestsBase {
         }
     }
 
-    func testNoAccountLeadsToInitialize() throws {
-        self.startCKAccountStatusMock()
-
-        // With no identity and AuthKit reporting no iCloud account, Octagon should go directly into 'no account'
-        self.mockAuthKit.altDSID = nil
-
-        // Run initialization, like the real secd will do
-        OctagonInitialize()
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-
-        self.mockAuthKit.altDSID = "1234"
-        let signinExpectation = self.expectation(description: "sign in returns")
-        self.otControl.sign(in: "1234", container: nil, context:OTDefaultContext) { error in
-            XCTAssertNil(error, "error should be nil")
-            signinExpectation.fulfill()
-        }
-        self.wait(for: [signinExpectation], timeout: 10)
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-    }
-
     func testOTCliqueOctagonAuthoritativeTrustResponse() throws {
         self.startCKAccountStatusMock()
         OctagonAuthoritativeTrustSetIsEnabled(true)
 
-        do {
-            let absentClique = try OTClique(contextData: self.otcliqueContext)
-            let absentStatus = absentClique.cachedCliqueStatus(true, error: nil)
-            XCTAssertEqual(absentStatus, CliqueStatus.absent, "clique should return Absent")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-            throw error
-        }
+        let absentClique = OTClique(contextData: self.otcliqueContext)
+        let absentStatus = absentClique.fetchStatus(nil)
+        XCTAssertEqual(absentStatus, CliqueStatus.absent, "clique should return Absent")
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
 
-            let status = clique.cachedCliqueStatus(true, error: nil)
+            let status = clique.fetchStatus(nil)
             XCTAssertEqual(status, CliqueStatus.in, "clique should return In")
-
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
             throw error
@@ -1975,7 +2102,7 @@ class OctagonTests: OctagonTestsBase {
         // Technically, it's a server-side cuttlefish error for the last signed-in peer to leave. But, for now, just go for it.
         XCTAssertNoThrow(try clique.leave(), "Should be no error departing clique")
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-        let status = clique.cachedCliqueStatus(true, error: nil)
+        let status = clique.fetchStatus(nil)
         XCTAssertEqual(status, CliqueStatus.notIn, "clique should return Not In")
 
         let newOTCliqueContext = OTConfigurationContext()
@@ -1986,18 +2113,17 @@ class OctagonTests: OctagonTestsBase {
         let newClique: OTClique
 
         do {
-            newClique = try OTClique.newFriends(withContextData: newOTCliqueContext)
+            newClique = try OTClique.newFriends(withContextData: newOTCliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(newClique, "newClique should not be nil")
 
             OctagonSetPlatformSupportsSOS(true)
-            let status = newClique.cachedCliqueStatus(true, error: nil)
+            let status = newClique.fetchStatus(nil)
             XCTAssertEqual(status, CliqueStatus.in, "clique should return In")
-
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
             throw error
         }
-        let newContext = self.manager.context(forContainerName: OTCKContainerName, contextID: newOTCliqueContext.context!)
+        let newContext = self.manager.context(forContainerName: OTCKContainerName, contextID: newOTCliqueContext.context)
         self.assertEnters(context: newContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
     }
 
@@ -2010,7 +2136,7 @@ class OctagonTests: OctagonTestsBase {
                                  json: false)
 
         do {
-            _ = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            _ = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         } catch {
             XCTFail("failed to make new friends: \(error)")
@@ -2022,60 +2148,39 @@ class OctagonTests: OctagonTestsBase {
                                  json: false)
     }
 
-    func testNoAccountTimeoutTransitionWatcher() throws {
-        self.startCKAccountStatusMock()
-
-        // With no identity and AuthKit reporting no iCloud account, Octagon should go directly into 'no account'
-        self.mockAuthKit.altDSID = nil
-
-        // Run initialization, like the real secd will do
-        OctagonInitialize()
-        self.cuttlefishContext.stateMachine.setWatcherTimeout(2*NSEC_PER_SEC);
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateNoAccount, within: 10 * NSEC_PER_SEC)
-        XCTAssertTrue(self.cuttlefishContext.stateMachine.isPaused(), "State machine should be stopped")
-        self.assertNoAccount(context: self.cuttlefishContext)
-        XCTAssertEqual(0, self.cuttlefishContext.stateMachine.paused.wait(10 * NSEC_PER_SEC), "State machine should be quiescent")
-
-        let joinWithBottleExpectation = self.expectation(description: "joinWithBottle callback occurs")
-        self.cuttlefishContext.join(withBottle: "bottleID", entropy: Data(), bottleSalt: "peer2AltDSID") { error in
-            XCTAssertNotNil(error, "error should not be nil")
-            joinWithBottleExpectation.fulfill()
-        }
-        self.wait(for: [joinWithBottleExpectation], timeout: 3)
-    }
-
     func testFailingStateTransitionWatcher() throws {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         // Set up a watcher that we expect to fail...
         let path = OctagonStateTransitionPath(from: [
             OctagonStateResetAndEstablish: [
-                OctagonStateInitiatorVouchWithBottle: [
+                OctagonStateBottleJoinVouchWithBottle: [
                         OctagonStateResetAndEstablish: OctagonStateTransitionPathStep.success(),
                     ],
                 ],
             ])
         let watcher = OctagonStateTransitionWatcher(named: "should-fail",
                                                     serialQueue: self.cuttlefishContext.queue,
-                                                    path: path!)
+                                                    path: path!,
+                                                    initialRequest: nil)
         self.cuttlefishContext.stateMachine.register(watcher)
 
         let watcherCompleteOperationExpectation = self.expectation(description: "watcherCompleteOperationExpectation returns")
-        let watcherFinishOp = CKKSResultOperation.named("should-fail-cleanup", with: {
+        let watcherFinishOp = CKKSResultOperation.named("should-fail-cleanup") {
             XCTAssertNotNil(watcher.result.error, "watcher should have errored")
             watcherCompleteOperationExpectation.fulfill()
-        })
+        }
 
         watcherFinishOp.addDependency(watcher.result)
         self.operationQueue.addOperation(watcherFinishOp)
 
         // and now cause the watcher to fail...
         let resetAndEstablishExpectation = self.expectation(description: "resetAndEstablishExpectation returns")
-        self.cuttlefishContext.rpcResetAndEstablish() { resetError in
+        self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             XCTAssertNil(resetError, "should be no error resetting and establishing")
             resetAndEstablishExpectation.fulfill()
         }
@@ -2087,16 +2192,61 @@ class OctagonTests: OctagonTestsBase {
         self.verifyDatabaseMocks()
     }
 
+    func testTimingOutStateTransitionWatcher() throws {
+        self.startCKAccountStatusMock()
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        let stateTransitionOp = OctagonStateTransitionOperation(name: "will-never-run",
+                                                                entering: OctagonStateReady)
+        let requestNever = OctagonStateTransitionRequest("name",
+                                                         sourceStates: Set([OctagonStateWaitForHSA2]),
+                                                         serialQueue: self.cuttlefishContext.queue,
+                                                         timeout: 1 * NSEC_PER_SEC,
+                                                         transitionOp: stateTransitionOp)
+
+        // Set up a watcher that we expect to fail due to its initial transition op timing out...
+        let path = OctagonStateTransitionPath(from: [
+            OctagonStateResetAndEstablish: [
+                OctagonStateBottleJoinVouchWithBottle: [
+                    OctagonStateResetAndEstablish: OctagonStateTransitionPathStep.success(),
+                ],
+            ],
+        ])
+        let watcher = OctagonStateTransitionWatcher(named: "should-fail",
+                                                    serialQueue: self.cuttlefishContext.queue,
+                                                    path: path!,
+                                                    initialRequest: (requestNever as! OctagonStateTransitionRequest<CKKSResultOperation & OctagonStateTransitionOperationProtocol>))
+        self.cuttlefishContext.stateMachine.register(watcher)
+
+        let watcherCompleteOperationExpectation = self.expectation(description: "watcherCompleteOperationExpectation returns")
+        let watcherFinishOp = CKKSResultOperation.named("should-fail-cleanup") {
+            XCTAssertNotNil(watcher.result.error, "watcher should have errored")
+            watcherCompleteOperationExpectation.fulfill()
+        }
+
+        watcherFinishOp.addDependency(watcher.result)
+        self.operationQueue.addOperation(watcherFinishOp)
+
+        // and the watcher should finish, too
+        self.wait(for: [watcherCompleteOperationExpectation], timeout: 10)
+
+        self.verifyDatabaseMocks()
+    }
+
     func testLeaveCliqueAndPostCFU() throws {
         self.startCKAccountStatusMock()
-        
+
         OctagonAuthoritativeTrustSetIsEnabled(true)
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2114,9 +2264,13 @@ class OctagonTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfUntrusted(context: self.cuttlefishContext)
 
+        // As a bonus, calling leave again should be fast (and not error)
+        XCTAssertNoThrow(try clique.leave(), "Should be no error departing clique (again)")
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
         let cfuExpectation = self.expectation(description: "cfu callback occurs")
-        self.cuttlefishContext.setPostedBool(false)
-        self.cuttlefishContext.checkTrustStatusAndPostRepairCFUIfNecessary() { status, posted, egoPeerID, error in
+        self.cuttlefishContext.followupHandler.clearAllPostedFlags()
+        self.cuttlefishContext.checkTrustStatusAndPostRepairCFUIfNecessary { _, posted, _, _, error in
             #if !os(tvOS)
             XCTAssertTrue(posted, "posted should be true")
             #else
@@ -2127,12 +2281,12 @@ class OctagonTests: OctagonTestsBase {
         }
         self.wait(for: [cfuExpectation], timeout: 10)
     }
-    
-    func testDeviceLockedDuringAccountRetrieval() throws {
-        self.startCKAccountStatusMock()
 
-        self.aksLockState = true
-        self.lockStateTracker.recheck()
+    func testDeviceLockedDuringAccountRetrieval() throws {
+        // Tell SOS that it is absent, so we don't enable CDP on bringup
+        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+
+        self.startCKAccountStatusMock()
 
         let initiatorContext = self.manager.context(forContainerName: OTCKContainerName,
                                                     contextID: OTDefaultContext,
@@ -2142,17 +2296,25 @@ class OctagonTests: OctagonTestsBase {
                                                     accountStateTracker: self.accountStateTracker,
                                                     deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-SOS-iphone", serialNumber: "456", osVersion: "iOS (fake version)"))
 
-        let accountMetadataStoreActual = initiatorContext.accountMetadataStore //grab the previously instantiated account state holder
+        // Pre-create some Account metadata, so that Octagon will experience a keychain locked error when loading
+        try initiatorContext.accountMetadataStore.persistAccountChanges { metadata in
+            return metadata
+        }
 
-        initiatorContext.setAccountStateHolder(self.accountMetaDataStore) // set the mocked account state holder
+        // Lock all AKS classes
+        self.aksLockState = true
+        SecMockAKS.lockClassA_C()
+        self.lockStateTracker.recheck()
 
         initiatorContext.startOctagonStateMachine()
-        self.assertEnters(context: initiatorContext, state: OctagonStateWaitForUnlock, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: initiatorContext, state: OctagonStateWaitForClassCUnlock, within: 10 * NSEC_PER_SEC)
 
-        initiatorContext.setAccountStateHolder(accountMetadataStoreActual) //re-set the actual store
         self.aksLockState = false
         self.lockStateTracker.recheck()
 
+        self.assertEnters(context: initiatorContext, state: OctagonStateWaitForCDP, within: 10 * NSEC_PER_SEC)
+
+        XCTAssertNoThrow(try initiatorContext.setCDPEnabled())
         self.assertEnters(context: initiatorContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
     }
 
@@ -2160,10 +2322,11 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2182,17 +2345,17 @@ class OctagonTests: OctagonTestsBase {
         self.fakeCuttlefishServer.deleteAllPeers()
         self.sendContainerChange(context: self.cuttlefishContext)
 
-
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
     }
 
     func testFetchViewList() throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2203,113 +2366,50 @@ class OctagonTests: OctagonTestsBase {
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
 
         #if !os(tvOS)
-        let expectedViews = Set(["ProtectedCloudStorage",
-                                 "AutoUnlock",
-                                 "LimitedPeersAllowed",
-                                 "SecureObjectSync",
-                                 "DevicePairing",
-                                 "Engram",
-                                 "Home",
-                                 "Applications",
-                                 "WiFi",
-                                 "Health",
-                                 "Manatee",
-                                 "CreditCards",
-                                 "Passwords",
-                                 "ApplePay", ])
+        let expectedViews = Set([
+            "ApplePay",
+            "Applications",
+            "AutoUnlock",
+            "Backstop",
+            "CreditCards",
+            "DevicePairing",
+            "Engram",
+            "Health",
+            "Home",
+            "LimitedPeersAllowed",
+            "Manatee",
+            "Passwords",
+            "ProtectedCloudStorage",
+            "SecureObjectSync",
+            "WiFi",
+        ])
         #else
         let expectedViews = Set(["LimitedPeersAllowed",
+                                 "Home",
                                  "WiFi", ])
         #endif
 
         let getViewsExpectation = self.expectation(description: "getViews callback happens")
-        self.tphClient.getViewsWithContainer(OTCKContainerName, context: OTDefaultContext, inViews: []) { outViews, error in
+        self.tphClient.fetchCurrentPolicy(withContainer: OTCKContainerName, context: OTDefaultContext, modelIDOverride: nil) { outPolicy, _, error in
             XCTAssertNil(error, "should not have failed")
-            XCTAssertEqual(expectedViews, Set(outViews!))
+            XCTAssertEqual(expectedViews, outPolicy!.viewList)
             getViewsExpectation.fulfill()
         }
         self.wait(for: [getViewsExpectation], timeout: 10)
     }
 
-    func testMergedViewListOff() throws {
-        self.startCKAccountStatusMock()
-        self.cuttlefishContext.viewManager!.setOverrideCKKSViewsFromPolicy(false)
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-        do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-        }
-
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-
-        let viewList = self.cuttlefishContext.viewManager!.viewList()
-        #if !os(tvOS)
-        let expected = Set<String>(["Manatee"])
-        #else
-        let expected = Set<String>(["LimitedPeersAllowed"])
-        #endif
-        XCTAssertEqual(expected, viewList)
-    }
-
-    func testMergedViewListOn() throws {
-        /*
-        self.startCKAccountStatusMock()
-        self.cuttlefishContext.viewManager!.setOverrideCKKSViewsFromPolicy(true)
-        self.cuttlefishContext.startOctagonStateMachine()
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-        do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-        }
-
-        // Now, we should be in 'ready'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
-
-        let viewList = self.cuttlefishContext.viewManager!.viewList()
-        let expected = Set<String>([
-                                    "ApplePay",                         
-                                    "Applications",
-                                    "AutoUnlock",
-                                    "Backstop",
-                                    "DevicePairing",
-                                    "Engram",
-                                    "Health",
-                                    "Home",
-                                    "LimitedPeersAllowed",
-                                    "Manatee",
-                                    "ProtectedCloudStorage",
-                                    "SafariCreditCards",
-                                    "SafariPasswords",
-                                    "SecureObjectSync",
-                                    "WiFi",
-                                    "keychain",                
-                                    ])
-        XCTAssertEqual(expected, viewList)
- */
-    }
-
     let octagonNotificationName = "com.apple.security.octagon.trust-status-change"
 
     func testNotifications() throws {
-
         let contextName = OTDefaultContext
         let containerName = OTCKContainerName
 
         let untrustedNotification = XCTDarwinNotificationExpectation(notificationName: octagonNotificationName)
 
         self.startCKAccountStatusMock()
-        self.cuttlefishContext.startOctagonStateMachine()
 
+        self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.wait(for: [untrustedNotification], timeout: 2)
 
@@ -2321,7 +2421,8 @@ class OctagonTests: OctagonTestsBase {
                                                     handler: nil)
         self.manager.resetAndEstablish(containerName,
                                        context: contextName,
-                                       altDSID: "new altDSID") { resetError in
+                                       altDSID: "new altDSID",
+                                       resetReason: .testGenerated) { resetError in
                                         XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
                                         resetAndEstablishExpectation.fulfill()
         }
@@ -2334,17 +2435,163 @@ class OctagonTests: OctagonTestsBase {
         self.wait(for: [trustedNotification], timeout: 2)
     }
 
-    func testAPSRateLimiter() throws {
+    func testDeviceNameNotifications() throws {
+        self.startCKAccountStatusMock()
 
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        let newDeviceName = "new-name-testDeviceNameNotifications"
+        self.mockDeviceInfo.mockDeviceName = newDeviceName
+
+        let updateTrustExpectation = self.expectation(description: "updateTrust")
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTAssertTrue(request.hasStableInfoAndSig, "updateTrust request should have a stableInfo info")
+            let newStableInfo = TPPeerStableInfo(data: request.stableInfoAndSig.peerStableInfo, sig: request.stableInfoAndSig.sig)
+            XCTAssertNotNil(newStableInfo, "should be able to make a stableInfo info from protobuf")
+            XCTAssertEqual(newStableInfo?.deviceName, newDeviceName, "name should be updated")
+            updateTrustExpectation.fulfill()
+
+            return nil
+        }
+
+        self.cuttlefishContext.deviceNameUpdated()
+        self.wait(for: [updateTrustExpectation], timeout: 10)
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
+
+        let statusExpectation = self.expectation(description: "status callback occurs")
+        self.tphClient.dumpEgoPeer(withContainer: self.cuttlefishContext.containerName, context: self.cuttlefishContext.contextID) { _, _, stableInfo, _, error in
+            XCTAssertNil(error, "should be no error dumping ego peer")
+            XCTAssertEqual(stableInfo?.deviceName, newDeviceName, "device name should be updated")
+            statusExpectation.fulfill()
+        }
+        self.wait(for: [statusExpectation], timeout: 2)
+
+        // Receiving a push shouldn't cause another update to be sent
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTFail("Shouldn't have received another updateTrust")
+            return nil
+        }
+
+        self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+    }
+
+    func testUpdateDeviceOSVersionOnRestart() throws {
+        self.startCKAccountStatusMock()
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        let differentVersion = "iOS (different version)"
+        self.mockDeviceInfo.mockOsVersion = differentVersion
+
+        let updateTrustExpectation = self.expectation(description: "updateTrust")
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTAssertTrue(request.hasStableInfoAndSig, "updateTrust request should have a stableInfo info")
+            let newStableInfo = TPPeerStableInfo(data: request.stableInfoAndSig.peerStableInfo, sig: request.stableInfoAndSig.sig)
+            XCTAssertNotNil(newStableInfo, "should be able to make a stableInfo info from protobuf")
+            XCTAssertEqual(newStableInfo?.osVersion, differentVersion, "version should be updated")
+
+            updateTrustExpectation.fulfill()
+            return nil
+        }
+
+        self.aksLockState = true
+        self.lockStateTracker.recheck()
+
+        // re-start
+        self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+        self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForUnlock, within: 10 * NSEC_PER_SEC)
+
+        self.aksLockState = false
+        self.lockStateTracker.recheck()
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+
+        self.wait(for: [updateTrustExpectation], timeout: 10)
+
+        // Double check that version
+        self.assertSelfOSVersion(differentVersion)
+
+        // Second restart should not trigger an update
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTFail("Shouldn't have received another updateTrust")
+            return nil
+        }
+
+        // re-start
+        self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+        self.cuttlefishContext = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
+
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+    }
+
+    func testUpdateDeviceOSVersionOnContainerUpdate() throws {
+        self.startCKAccountStatusMock()
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        let differentVersion = "iOS (different version)"
+        self.mockDeviceInfo.mockOsVersion = differentVersion
+
+        let updateTrustExpectation = self.expectation(description: "updateTrust")
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTAssertTrue(request.hasStableInfoAndSig, "updateTrust request should have a stableInfo info")
+            let newStableInfo = TPPeerStableInfo(data: request.stableInfoAndSig.peerStableInfo, sig: request.stableInfoAndSig.sig)
+            XCTAssertNotNil(newStableInfo, "should be able to make a stableInfo info from protobuf")
+            XCTAssertEqual(newStableInfo?.osVersion, differentVersion, "version should be updated")
+
+            updateTrustExpectation.fulfill()
+            return nil
+        }
+        self.cuttlefishContext.notifyContainerChange(nil)
+        self.wait(for: [updateTrustExpectation], timeout: 10)
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
+
+        self.assertSelfOSVersion(differentVersion)
+
+        // Receiving a push shouldn't cause another update to be sent
+        self.fakeCuttlefishServer.updateListener = { request in
+            XCTFail("Shouldn't have received another updateTrust")
+            return nil
+        }
+
+        self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+    }
+
+    func testAPSRateLimiter() throws {
         let untrustedNotification = XCTDarwinNotificationExpectation(notificationName: octagonNotificationName)
 
         self.startCKAccountStatusMock()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.cuttlefishContext.startOctagonStateMachine()
+
+        // Octagon will fetch once to determine its trust state
+        let trustStateFetchExpectation = self.expectation(description: "trust state fetch occurs")
+        self.fakeCuttlefishServer.fetchChangesListener = { [unowned self] _ in
+            self.fakeCuttlefishServer.fetchChangesListener = nil
+            trustStateFetchExpectation.fulfill()
+            return nil
+        }
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.wait(for: [untrustedNotification], timeout: 2)
 
-        self.cuttlefishContext.notifyContainerChange(nil)
+        self.wait(for: [trustStateFetchExpectation], timeout: 10)
+
+        let fetchExpectation = self.expectation(description: "fetch occurs")
+        self.fakeCuttlefishServer.fetchChangesListener = { _ in
+            fetchExpectation.fulfill()
+            return nil
+        }
 
         self.cuttlefishContext.notifyContainerChange(nil)
 
@@ -2354,7 +2601,10 @@ class OctagonTests: OctagonTestsBase {
 
         self.cuttlefishContext.notifyContainerChange(nil)
 
-        XCTAssertEqual(self.fakeCuttlefishServer.fetchChangesCalledCount, 1, "fetchChanges should have been called 1 times")
+        self.cuttlefishContext.notifyContainerChange(nil)
+
+        self.wait(for: [fetchExpectation], timeout: 10)
+        XCTAssertEqual(self.fakeCuttlefishServer.fetchChangesCalledCount, 2, "fetchChanges should have been called 1 times")
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
@@ -2364,20 +2614,38 @@ class OctagonTests: OctagonTestsBase {
         let untrustedNotification = XCTDarwinNotificationExpectation(notificationName: octagonNotificationName)
 
         self.startCKAccountStatusMock()
+
+        // Set the CDP bit before the test begins, so we don't have to fetch to discover CDP status
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
+
         self.cuttlefishContext.startOctagonStateMachine()
+
+        // Octagon will fetch once to determine its trust state
+        let trustStateFetchExpectation = self.expectation(description: "trust state fetch occurs")
+        self.fakeCuttlefishServer.fetchChangesListener = { [unowned self] _ in
+            self.fakeCuttlefishServer.fetchChangesListener = nil
+            trustStateFetchExpectation.fulfill()
+            return nil
+        }
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.wait(for: [untrustedNotification], timeout: 2)
 
-        self.cuttlefishContext.notifyContainerChange(nil)
+        self.wait(for: [trustStateFetchExpectation], timeout: 10)
+
+        let fetchExpectation = self.expectation(description: "fetch occurs")
+        self.fakeCuttlefishServer.fetchChangesListener = { _ in
+            fetchExpectation.fulfill()
+            return nil
+        }
 
         self.cuttlefishContext.notifyContainerChange(nil)
-
+        self.cuttlefishContext.notifyContainerChange(nil)
+        self.cuttlefishContext.notifyContainerChange(nil)
         self.cuttlefishContext.notifyContainerChange(nil)
 
-        self.cuttlefishContext.notifyContainerChange(nil)
-
-        XCTAssertEqual(self.fakeCuttlefishServer.fetchChangesCalledCount, 1, "fetchChanges should have been called 1 times")
+        self.wait(for: [fetchExpectation], timeout: 10)
+        XCTAssertEqual(self.fakeCuttlefishServer.fetchChangesCalledCount, 2, "fetchChanges should have been called 1 times")
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateWaitForTLKCreation, within: 10 * NSEC_PER_SEC)
@@ -2387,12 +2655,20 @@ class OctagonTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
         OctagonSetPlatformSupportsSOS(true)
 
-        let initiatorPiggybackingConfig = OTJoiningConfiguration(protocolType: OTProtocolPiggybacking, uniqueDeviceID: "initiator", uniqueClientID: "acceptor", containerName: OTCKContainerName, contextID: OTDefaultContext, epoch: 1, isInitiator: true)
+        let initiatorPiggybackingConfig = OTJoiningConfiguration(protocolType: OTProtocolPiggybacking,
+                                                                 uniqueDeviceID: "initiator",
+                                                                 uniqueClientID: "acceptor",
+                                                                 pairingUUID: UUID().uuidString,
+                                                                 containerName: OTCKContainerName,
+                                                                 contextID: OTDefaultContext,
+                                                                 epoch: 1,
+                                                                 isInitiator: true)
 
         let resetAndEstablishExpectation = self.expectation(description: "resetAndEstablish callback occurs")
         self.manager.resetAndEstablish(OTCKContainerName,
                                        context: OTDefaultContext,
-                                       altDSID: "new altDSID") { resetError in
+                                       altDSID: "new altDSID",
+                                       resetReason: .testGenerated) { resetError in
                                         XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
                                         resetAndEstablishExpectation.fulfill()
         }
@@ -2417,7 +2693,7 @@ class OctagonTests: OctagonTestsBase {
 
         //this call uses the default value and should timeout in 10 seconds
         let upgradeCallback = self.expectation(description: "attempting sos upgrade callback")
-        self.manager.attemptSosUpgrade(OTCKContainerName, context: OTDefaultContext) { error in
+        self.manager.wait(forOctagonUpgrade: OTCKContainerName, context: OTDefaultContext) { error in
             XCTAssertNotNil(error, "error should not be nil")
             upgradeCallback.fulfill()
         }
@@ -2425,14 +2701,14 @@ class OctagonTests: OctagonTestsBase {
     }
 
     func testTTRTrusted() {
-
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         do {
-            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            let clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2462,17 +2738,32 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
     struct TestCase {
         let model: String
         let success: Bool
-        let sendTLKs: Bool
+        let manateeTLKs: Bool
+        let limitedTLKs: Bool
+    }
+
+    func assertTLKs(expectation: TestCase, receiverPeerID: String, senderPeerID: String) {
+        let haveManateeTLK = self.tlkShareInCloudKit(receiverPeerID: receiverPeerID,
+                                                     senderPeerID: senderPeerID,
+                                                     zoneID: self.manateeZoneID)
+        let haveLimitedPeersAllowedTLK = self.tlkShareInCloudKit(receiverPeerID: receiverPeerID,
+                                                                 senderPeerID: senderPeerID,
+                                                                 zoneID: self.limitedPeersAllowedZoneID)
+
+        XCTAssertEqual(haveManateeTLK, expectation.manateeTLKs, "manatee should be what's expected: \(expectation)")
+        XCTAssertEqual(haveLimitedPeersAllowedTLK, expectation.limitedTLKs, "limited should be what's expected: \(expectation)")
     }
 
     func _testVouchers(expectations: [TestCase]) throws {
         self.startCKAccountStatusMock()
+
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2482,7 +2773,14 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.assertConsidersSelfTrusted(context: self.cuttlefishContext)
 
-        _ = fetchEgoPeerID()
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+
+        let ckksKeys: [CKKSKeychainBackedKeySet] = self.intendedCKKSZones.compactMap { zoneID in
+            let currentKeySet = CKKSCurrentKeySet.load(forZone: zoneID)
+            return try! currentKeySet.asKeychainBackedSet()
+        }
+
+        let senderPeerID = fetchEgoPeerID()
 
         for testCase in expectations {
             let model = testCase.model
@@ -2497,7 +2795,7 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                      accountStateTracker: self.accountStateTracker,
                                      deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-SOS-iphone", serialNumber: "456", osVersion: "iOS (fake version)"))
 
-            self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID)
+            self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID, accountIsDemo: false)
 
             let peer2DeviceName = "peer2-asdf"
             let joinExpectation = self.expectation(description: "join callback occurs")
@@ -2513,8 +2811,9 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                    osVersion: "something",
                                    policyVersion: nil,
                                    policySecrets: nil,
+                                   syncUserControllableViews: .UNKNOWN,
                                    signingPrivKeyPersistentRef: nil,
-                                   encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                                   encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                                     XCTAssertNil(error, "Should be no error preparing identity")
                                     XCTAssertNotNil(permanentInfo, "Should have a permanent identity")
                                     XCTAssertNotNil(permanentInfoSig, "Should have a permanent identity signature")
@@ -2528,17 +2827,22 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                              permanentInfoSig: permanentInfoSig!,
                                                              stableInfo: stableInfo!,
                                                              stableInfoSig: stableInfoSig!,
-                                                             ckksKeys: []) { voucher, voucherSig, error in
+                                                             ckksKeys: ckksKeys) { voucher, voucherSig, error in
                                                                 XCTAssertNil(error, "Should be no error vouching")
                                                                 XCTAssertNotNil(voucher, "Should have a voucher")
                                                                 XCTAssertNotNil(voucherSig, "Should have a voucher signature")
+
+                                                                self.assertTLKs(expectation: testCase,
+                                                                                receiverPeerID: peerID!,
+                                                                                senderPeerID: senderPeerID)
+
                                                                 self.tphClient.join(withContainer: OTCKContainerName,
                                                                                     context: peer2ContextID,
                                                                                     voucherData: voucher!,
                                                                                     voucherSig: voucherSig!,
                                                                                     ckksKeys: [],
                                                                                     tlkShares: [],
-                                                                                    preapprovedKeys: []) { peerID, _, error in
+                                                                                    preapprovedKeys: []) { peerID, _, _, error in
                                                                                         XCTAssertNil(error, "Should be no error joining")
                                                                                         XCTAssertNotNil(peerID, "Should have a peerID")
                                                                                         joinExpectation.fulfill()
@@ -2556,6 +2860,11 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                                 XCTAssertNil(voucher, "voucher should be nil")
                                                                 XCTAssertNil(voucherSig, "voucherSig should be nil")
                                                                 XCTAssertNotNil(error, "error should be non nil")
+
+                                                                self.assertTLKs(expectation: testCase,
+                                                                                receiverPeerID: peerID!,
+                                                                                senderPeerID: senderPeerID)
+
                                                                 joinExpectation.fulfill()
                                         }
                                     }
@@ -2567,11 +2876,12 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
     func _testJoin(expectations: [TestCase]) throws {
         self.startCKAccountStatusMock()
         self.cuttlefishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let clique: OTClique
         do {
-            clique = try OTClique.newFriends(withContextData: self.otcliqueContext)
+            clique = try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated)
             XCTAssertNotNil(clique, "Clique should not be nil")
         } catch {
             XCTFail("Shouldn't have errored making new friends: \(error)")
@@ -2594,7 +2904,7 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
             let peer2DeviceName = "peer2-device-name"
             var peer2ID: String!
 
-            self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID)
+            self.setAllowListToCurrentAuthKit(container: OTCKContainerName, context: peer2ContextID, accountIsDemo: false)
 
             let joinExpectation = self.expectation(description: "join callback occurs")
             self.tphClient.prepare(withContainer: OTCKContainerName,
@@ -2609,8 +2919,9 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                    osVersion: "something",
                                    policyVersion: nil,
                                    policySecrets: nil,
+                                   syncUserControllableViews: .UNKNOWN,
                                    signingPrivKeyPersistentRef: nil,
-                                   encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                                   encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error in
                                     XCTAssertNil(error, "Should be no error preparing identity")
                                     XCTAssertNotNil(permanentInfo, "Should have a permanent identity")
                                     XCTAssertNotNil(permanentInfoSig, "Should have a permanent identity signature")
@@ -2633,7 +2944,7 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                         voucherSig: voucher!.sig,
                                                         ckksKeys: [],
                                                         tlkShares: [],
-                                                        preapprovedKeys: []) { peerID, _, error in
+                                                        preapprovedKeys: []) { peerID, _, _, error in
                                                             if expectedSuccess {
                                                                 XCTAssertNil(error, "expected success")
                                                                 XCTAssertNotNil(peerID, "peerID should be set")
@@ -2643,7 +2954,6 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                             }
                                                             joinExpectation.fulfill()
                                     }
-
             }
             self.wait(for: [joinExpectation], timeout: 10)
 
@@ -2661,9 +2971,11 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                     return nil
                 }
 
-                // Maybe send TLKs?
-                if testCase.sendTLKs {
-                    self.assertAllCKKSViewsUpload(tlkShares: 1)
+                if testCase.manateeTLKs {
+                    self.expectCKModifyKeyRecords(0, currentKeyPointerRecords: 0, tlkShareRecords: 1, zoneID: self.manateeZoneID)
+                }
+                if testCase.limitedTLKs {
+                    self.expectCKModifyKeyRecords(0, currentKeyPointerRecords: 0, tlkShareRecords: 1, zoneID: self.limitedPeersAllowedZoneID)
                 }
 
                 self.cuttlefishContext.notifyContainerChange(nil)
@@ -2672,59 +2984,59 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                 self.fakeCuttlefishServer.updateListener = nil
 
                 self.sendAllCKKSTrustedPeersChanged()
-                self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10*NSEC_PER_SEC)
                 self.verifyDatabaseMocks()
+                self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
             }
+
+            self.assertTLKs(expectation: testCase,
+                            receiverPeerID: peer2ID,
+                            senderPeerID: peer1ID)
         }
     }
 }
 
 class OctagonTestsOverrideModelTV: OctagonTestsOverrideModelBase {
-    // If this test is running on a TV, we will send TLKs, since we're using the LimitedPeersAllowed view
-    #if !os(tvOS)
-    let sendTLKsToAllPeers = false
-    #else
-    let sendTLKsToAllPeers = true
-    #endif
+    override func setUp() {
+        self.mockDeviceInfo = OTMockDeviceInfoAdapter(modelID: "AppleTV5,3",
+                                                      deviceName: "intro-TV",
+                                                      serialNumber: "456",
+                                                      osVersion: "tvOS (whatever TV version)")
 
-    override func deviceInformationAdapter() -> OTDeviceInformationAdapter {
-        return OTMockDeviceInfoAdapter(modelID: "AppleTV5,3", deviceName: "intro-TV", serialNumber: "456", osVersion: "iOS (whatever TV version)")
+        super.setUp()
     }
 
     func testVoucherFromTV() throws {
-        try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, sendTLKs: sendTLKsToAllPeers),
-                                              TestCase(model: "MacFoo", success: false, sendTLKs: sendTLKsToAllPeers),
-                                              TestCase(model: "Watch17", success: false, sendTLKs: sendTLKsToAllPeers)])
+        try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                              TestCase(model: "MacFoo", success: false, manateeTLKs: false, limitedTLKs: false),
+                                              TestCase(model: "Watch17", success: false, manateeTLKs: false, limitedTLKs: false), ])
     }
 
     func testJoinFromTV() throws {
-        try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, sendTLKs: sendTLKsToAllPeers),
-                                          TestCase(model: "MacFoo", success: false, sendTLKs: sendTLKsToAllPeers),
-                                          TestCase(model: "Watch17", success: false, sendTLKs: sendTLKsToAllPeers)])
+        try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                          TestCase(model: "MacFoo", success: false, manateeTLKs: false, limitedTLKs: false),
+                                          TestCase(model: "Watch17", success: false, manateeTLKs: false, limitedTLKs: false), ])
     }
 }
 
 class OctagonTestsOverrideModelMac: OctagonTestsOverrideModelBase {
-    #if !os(tvOS)
-    let sendTLKsToAllPeers = false
-    #else
-    let sendTLKsToAllPeers = true
-    #endif
-
-    override func deviceInformationAdapter() -> OTDeviceInformationAdapter {
-        return OTMockDeviceInfoAdapter(modelID: "Mac17", deviceName: "macbook", serialNumber: "456", osVersion: "OSX 11")
+    override func setUp() {
+        self.mockDeviceInfo = OTMockDeviceInfoAdapter(modelID: "Mac17",
+                                                      deviceName: "macbook",
+                                                      serialNumber: "456",
+                                                      osVersion: "OSX 11")
+        super.setUp()
     }
 
     func testVoucherFromMac() throws {
-        try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, sendTLKs: sendTLKsToAllPeers),
-                                              TestCase(model: "MacFoo", success: true, sendTLKs: sendTLKsToAllPeers),
-                                              TestCase(model: "Watch17", success: true, sendTLKs: sendTLKsToAllPeers)])
+        try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                              TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
+                                              TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true), ])
     }
 
     func testJoinFromMac() throws {
-        try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, sendTLKs: sendTLKsToAllPeers),
-                                          TestCase(model: "MacFoo", success: true, sendTLKs: true),
-                                          TestCase(model: "Watch17", success: true, sendTLKs: true)])
+        try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                          TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
+                                          TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true), ])
     }
 }
 

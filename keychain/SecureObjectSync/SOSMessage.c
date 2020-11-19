@@ -48,7 +48,7 @@
 
 // TODO: This is a layer violation, we need a better way to do this
 // Currently it's only used for logging.
-#include <securityd/SecItemDataSource.h>
+#include "keychain/securityd/SecItemDataSource.h"
 
 #if defined(SOSMessageFormatSpecification) && 0
 
@@ -211,29 +211,6 @@ parameters	 ANY DEFINED BY algorithm OPTIONAL }
 #endif // defined(SOSMessageFormatSpecification) && 0
 
 
-#if 0
-static inline bool SecMallocOk(const void *ptr) {
-    if (ptr) return true;
-
-    return false;
-}
-#endif
-#if 0
-static void appendObjects(CFMutableStringRef desc, CFArrayRef objects) {
-    __block bool needComma = false;
-    CFArrayForEach(objects, ^(const void *value) {
-        if (needComma)
-            CFStringAppend(desc, CFSTR(","));
-        else
-            needComma = true;
-
-        SecItemServerAppendItemDescription(desc, value);
-    });
-}
-#endif
-
-
-
 //
 // MARK: SOSMessage implementation.
 //
@@ -300,7 +277,7 @@ static void SOSMessageDestroy(CFTypeRef cf) {
 }
 
 // TODO: Remove this layer violation!
-#include <securityd/SecItemServer.h>
+#include "keychain/securityd/SecItemServer.h"
 
 static uint64_t SOSMessageInferType(SOSMessageRef message, CFErrorRef *error);
 
@@ -466,13 +443,13 @@ bool SOSMessageAppendObject(SOSMessageRef message, CFDataRef object, CFErrorRef 
     return true;
 }
 
-static CC_NONNULL_ALL
-size_t ccder_sizeof_bit_string(cc_size n, const cc_unit *s) {
+static
+size_t ccder_sizeof_bit_string(cc_size n, const cc_unit *_Nonnull s) {
     return ccder_sizeof(CCDER_BIT_STRING, ccn_sizeof(ccn_bitlen(n, s)) + 1);
 }
 
-static CC_NONNULL_ALL
-uint8_t *ccder_encode_bit_string(cc_size n, const cc_unit *s, const uint8_t *der, uint8_t *der_end) {
+static
+uint8_t *ccder_encode_bit_string(cc_size n, const cc_unit *_Nonnull s, const uint8_t *_Nonnull der, uint8_t *_Nonnull der_end) {
     size_t bits = ccn_bitlen(n, s);
     size_t out_size = ccn_sizeof(bits) + 1;
     der_end = ccder_encode_body_nocopy(out_size, der, der_end);
@@ -490,8 +467,8 @@ size_t der_sizeof_implicit_data(ccder_tag tag, CFDataRef data) {
 }
 
 
-static CC_NONNULL((3, 4))
-uint8_t *der_encode_implicit_data(ccder_tag tag, CFDataRef data, const uint8_t *der, uint8_t *der_end) {
+static
+uint8_t *der_encode_implicit_data(ccder_tag tag, CFDataRef data, const uint8_t *_Nonnull der, uint8_t *_Nonnull der_end) {
     if (!data)
         return der_end;
     return ccder_encode_implicit_raw_octet_string(tag, CFDataGetLength(data), CFDataGetBytePtr(data), der, der_end);
@@ -788,8 +765,8 @@ CFDataRef SOSMessageCreateData(SOSMessageRef message, uint64_t sequenceNumber, C
 
 // Decode BER length field.  Sets *lenp to ccber_indefinite_len if this is an indefinite length encoded object.
 // Behaves like ccder_decode_len in every other way.
-static CC_NONNULL((1, 3))
-const uint8_t *ccber_decode_len(size_t *lenp, const uint8_t *der, const uint8_t *der_end) {
+static
+const uint8_t *ccber_decode_len(size_t *_Nonnull lenp, const uint8_t *_Nullable der, const uint8_t *_Nonnull der_end) {
     if (der && der < der_end) {
         if (*der == 0x80) {
             der++;
@@ -816,8 +793,8 @@ static const uint8_t *der_decode_optional_generalizedtime(CFAbsoluteTime *at, CF
     return times_end ? times_end : der;
 }
 
-static CC_NONNULL((2, 4))
-const uint8_t *ccder_decode_implicit_uint64(ccder_tag expected_tag, uint64_t* r, const uint8_t *der, const uint8_t *der_end) {
+static
+const uint8_t *ccder_decode_implicit_uint64(ccder_tag expected_tag, uint64_t *_Nonnull r, const uint8_t *_Nullable der, const uint8_t *_Nonnull der_end) {
     size_t len;
     der = ccder_decode_tl(expected_tag, &len, der, der_end);
     if (der && len && (*der & 0x80) != 0x80) {
@@ -974,22 +951,6 @@ static const uint8_t *der_decode_optional_objects(SOSMessageRef message, CFError
     const uint8_t *seq_end = der_decode_objects(message, NULL, der, der_end);
     return seq_end ? seq_end : der;
 }
-
-#if 0
-// Move to ccder and possibly refactor ccder_decode_constructed_tl to call this.
-#ifdef CCDER_DECODE_CONSTRUCTED_LEN_SPECIFIER
-CCDER_DECODE_CONSTRUCTED_LEN_SPECIFIER
-#endif
-inline CC_NONNULL((1, 3))
-const uint8_t *
-ccder_decode_constructed_len(const uint8_t **body_end,
-                             const uint8_t *der, const uint8_t *der_end) {
-    size_t len;
-    der = ccder_decode_len(&len, der, der_end);
-    *body_end = der + len;
-    return der;
-}
-#endif
 
 static const uint8_t *der_decode_message_header(SOSMessageRef message, CFErrorRef *error, const uint8_t *der, const uint8_t *der_end) {
     cc_unit flags[1] = {};
@@ -1194,7 +1155,7 @@ bool SOSMessageWithSOSObjects(SOSMessageRef message, SOSDataSourceRef dataSource
         const uint8_t *der = CFDataGetBytePtr(object);
         const uint8_t *der_end = der + CFDataGetLength(object);
         // TODO Remove intermediate plist format
-        der = der_decode_dictionary(kCFAllocatorDefault, kCFPropertyListImmutable, &plist, error, der, der_end);
+        der = der_decode_dictionary(kCFAllocatorDefault, &plist, error, der, der_end);
         if (der) {
             SOSObjectRef peersObject = SOSObjectCreateWithPropertyList(dataSource, plist, error);
             withObject(peersObject, stop);

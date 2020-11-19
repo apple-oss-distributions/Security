@@ -29,12 +29,16 @@
 #import "keychain/ot/OTClientStateMachine.h"
 #import "keychain/ot/OTCuttlefishContext.h"
 #import "keychain/ot/OTFetchCKKSKeysOperation.h"
+#import "keychain/ot/OTStates.h"
 
 #import "keychain/TrustedPeersHelper/TrustedPeersHelperProtocol.h"
 #import "keychain/ot/ObjCImprovements.h"
 
 @interface OTVouchWithRecoveryKeyOperation ()
 @property OTOperationDependencies* deps;
+
+@property NSString* salt;
+@property NSString* recoveryKey;
 
 @property NSOperation* finishOp;
 @end
@@ -46,6 +50,7 @@
                        intendedState:(OctagonState*)intendedState
                           errorState:(OctagonState*)errorState
                          recoveryKey:(NSString*)recoveryKey
+                         saveVoucher:(BOOL)saveVoucher
 {
     if((self = [super init])) {
         _deps = dependencies;
@@ -53,6 +58,8 @@
         _nextState = errorState;
 
         _recoveryKey = recoveryKey;
+
+        _saveVoucher = saveVoucher;
     }
     return self;
 }
@@ -64,41 +71,85 @@
     self.finishOp = [[NSOperation alloc] init];
     [self dependOnBeforeGroupFinished:self.finishOp];
 
-    NSString* salt = nil;
+    NSString *altDSID = [self.deps.authKitAdapter primaryiCloudAccountAltDSID:nil];
+    if(altDSID){
+        secnotice("octagon", "using auth kit adapter, altdsid is: %@", altDSID);
+        self.salt = altDSID;
+    }
+    else {
+        NSError* accountError = nil;
+        OTAccountMetadataClassC* account = [self.deps.stateHolder loadOrCreateAccountMetadata:&accountError];
 
-    if(self.salt != nil) {
-        secnotice("octagon", "using passed in altdsid, altdsid is: %@", self.salt);
-        salt = self.salt;
-    } else{
-        if(self.deps.authKitAdapter.primaryiCloudAccountAltDSID){
-            secnotice("octagon", "using auth kit adapter, altdsid is: %@", self.deps.authKitAdapter.primaryiCloudAccountAltDSID);
-            salt = self.deps.authKitAdapter.primaryiCloudAccountAltDSID;
+        if(account && !accountError) {
+            secnotice("octagon", "retrieved account, altdsid is: %@", account.altDSID);
+            self.salt = account.altDSID;
         }
-        else {
-            NSError* accountError = nil;
-            OTAccountMetadataClassC* account = [self.deps.stateHolder loadOrCreateAccountMetadata:&accountError];
-
-            if(account && !accountError) {
-                secnotice("octagon", "retrieved account, altdsid is: %@", account.altDSID);
-                salt = account.altDSID;
-            }
-            if(accountError || !account){
-                secerror("failed to rerieve account object: %@", accountError);
-            }
+        if(accountError || !account){
+            secerror("failed to rerieve account object: %@", accountError);
         }
     }
 
+    // First, let's preflight the vouch (to receive a policy and view set to use for TLK fetching
+    WEAKIFY(self);
+    [self.deps.cuttlefishXPCWrapper preflightVouchWithRecoveryKeyWithContainer:self.deps.containerName
+                                                                  context:self.deps.contextID
+                                                                   recoveryKey:self.recoveryKey
+                                                                          salt:self.salt
+                                                                    reply:^(NSString * _Nullable recoveryKeyID,
+                                                                            TPSyncingPolicy* _Nullable peerSyncingPolicy,
+                                                                            NSError * _Nullable error) {
+        STRONGIFY(self);
+        [[CKKSAnalytics logger] logResultForEvent:OctagonEventPreflightVouchWithRecoveryKey hardFailure:true result:error];
+
+        if(error || !recoveryKeyID) {
+            secerror("octagon: Error preflighting voucher using recovery key: %@", error);
+            self.error = error;
+            [self runBeforeGroupFinished:self.finishOp];
+            return;
+        }
+
+        secnotice("octagon", "Recovery key ID %@ looks good to go", recoveryKeyID);
+
+        // Tell CKKS to spin up the new views and policy
+        // But, do not persist this view set! We'll do that when we actually manage to join
+        [self.deps.viewManager setCurrentSyncingPolicy:peerSyncingPolicy];
+
+        [self proceedWithRecoveryKeyID:recoveryKeyID];
+    }];
+}
+
+- (void)proceedWithRecoveryKeyID:(NSString*)recoveryKeyID
+{
     WEAKIFY(self);
 
     // After a vouch, we also want to acquire all TLKs that the bottled peer might have had
-    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps];
+    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps
+                                                                                     refetchNeeded:NO];
     [self runBeforeGroupFinished:fetchKeysOp];
 
     CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"recovery-tlks"
                                                             withBlock:^{
-                                                                STRONGIFY(self);
-                                                                [self proceedWithKeys:fetchKeysOp.viewKeySets tlkShares:fetchKeysOp.tlkShares salt:salt];
-                                                            }];
+        STRONGIFY(self);
+
+        NSMutableArray<CKKSTLKShare*>* filteredTLKShares = [NSMutableArray array];
+        for(CKKSTLKShare* share in fetchKeysOp.tlkShares) {
+            // If we didn't get a recoveryKeyID, just pass every tlkshare and hope for the best
+            if(recoveryKeyID == nil || [share.receiverPeerID isEqualToString:recoveryKeyID]) {
+                [filteredTLKShares addObject:share];
+            }
+        }
+
+        if(fetchKeysOp.viewsTimedOutWithoutKeysets.count > 0) {
+            // At least one view failed to find a keyset in time.
+            // Set up a retry with this recovery key, once CKKS is done fetching
+            secnotice("octagon", "Timed out fetching key hierarchy for CKKS views; marking for TLK recovery follow up: %@", fetchKeysOp.viewsTimedOutWithoutKeysets);
+            OctagonPendingFlag* flag = [[OctagonPendingFlag alloc] initWithFlag:OctagonFlagAttemptRecoveryKeyTLKExtraction
+                                                                          after:self.deps.viewManager.zoneChangeFetcher.inflightFetch];
+            [self.deps.flagHandler handlePendingFlag:flag];
+        }
+
+        [self proceedWithKeys:fetchKeysOp.viewKeySets tlkShares:filteredTLKShares salt:self.salt];
+    }];
 
     [proceedWithKeys addDependency:fetchKeysOp];
     [self runBeforeGroupFinished:proceedWithKeys];
@@ -108,31 +159,42 @@
 {
     WEAKIFY(self);
 
-    [[self.deps.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        STRONGIFY(self);
-        secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-        [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventVoucherWithBottle withAttributes:NULL];
-        self.error = error;
-        [self runBeforeGroupFinished:self.finishOp];
+    [self.deps.cuttlefishXPCWrapper vouchWithRecoveryKeyWithContainer:self.deps.containerName
+                                                              context:self.deps.contextID
+                                                          recoveryKey:self.recoveryKey
+                                                                 salt:salt
+                                                            tlkShares:tlkShares
+                                                                reply:^(NSData * _Nullable voucher, NSData * _Nullable voucherSig, NSError * _Nullable error) {
+            STRONGIFY(self);
+            if(error){
+                [[CKKSAnalytics logger] logResultForEvent:OctagonEventVoucherWithRecoveryKey hardFailure:true result:error];
+                secerror("octagon: Error preparing voucher using recovery key: %@", error);
+                self.error = error;
+                [self runBeforeGroupFinished:self.finishOp];
+                return;
+            }
+            self.voucher = voucher;
+            self.voucherSig = voucherSig;
 
-    }]  vouchWithRecoveryKeyWithContainer:self.deps.containerName
-     context:self.deps.contextID
-     recoveryKey:self.recoveryKey
-     salt:salt
-     tlkShares:tlkShares
-     reply:^(NSData * _Nullable voucher, NSData * _Nullable voucherSig, NSError * _Nullable error) {
-         if(error){
-             [[CKKSAnalytics logger] logResultForEvent:OctagonEventVoucherWithRecoveryKey hardFailure:true result:error];
-             secerror("octagon: Error preparing voucher using recovery key: %@", error);
-             self.error = error;
-             [self runBeforeGroupFinished:self.finishOp];
-             return;
-         }
-         self.voucher = voucher;
-         self.voucherSig = voucherSig;
-         self.nextState = self.intendedState;
-         [self runBeforeGroupFinished:self.finishOp];
-     }];
+            if(self.saveVoucher) {
+                secnotice("octagon", "Saving voucher for later use...");
+                NSError* saveError = nil;
+                [self.deps.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nullable(OTAccountMetadataClassC * _Nonnull metadata) {
+                    metadata.voucher = voucher;
+                    metadata.voucherSignature = voucherSig;
+                    return metadata;
+                } error:&saveError];
+                if(saveError) {
+                    secnotice("octagon", "unable to save voucher: %@", saveError);
+                    [self runBeforeGroupFinished:self.finishOp];
+                    return;
+                }
+            }
+
+            secnotice("octagon", "Successfully vouched with a recovery key: %@, %@", voucher, voucherSig);
+            self.nextState = self.intendedState;
+            [self runBeforeGroupFinished:self.finishOp];
+        }];
 }
 
 @end

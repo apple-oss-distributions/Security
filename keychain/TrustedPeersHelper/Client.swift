@@ -23,6 +23,38 @@
 
 import Foundation
 
+extension Error {
+    func sanitizeForClientXPC() -> Error {
+        let nserror = self as NSError
+
+        // CoreData errors might have extra things in them that need removal.
+        if nserror.domain == NSCocoaErrorDomain {
+            return nserror.cleanAllButDescription()
+        }
+
+        // The docs for CKXPCSuitableError say it only returns nil if you pass it nil, but swift can't read those.
+        guard let ckCleanedError = CKXPCSuitableError(self) else {
+            return ContainerError.unknownCloudKitError
+        }
+        return ckCleanedError
+    }
+}
+
+extension NSError {
+    func cleanAllButDescription() -> NSError {
+        let userInfo: [String: AnyHashable]?
+        if let description = self.userInfo[NSLocalizedDescriptionKey] as? AnyHashable {
+            userInfo = [NSLocalizedDescriptionKey: description]
+        } else {
+            userInfo = nil
+        }
+
+        return NSError(domain: self.domain,
+                       code: self.code,
+                       userInfo: userInfo)
+    }
+}
+
 class Client: TrustedPeersHelperProtocol {
 
     let endpoint: NSXPCListenerEndpoint?
@@ -39,9 +71,9 @@ class Client: TrustedPeersHelperProtocol {
 
     func logComplete(function: String, container: ContainerName, error: Error?) {
         if let error = error {
-            os_log("%@ errored for %@: %@", log: tplogDebug, type: .default, function, container.description, error as CVarArg)
+            os_log("%{public}@ errored for %{public}@: %{public}@", log: tplogDebug, type: .default, function, container.description, error as CVarArg)
         } else {
-            os_log("%@ finished for %@", log: tplogDebug, type: .default, function, container.description)
+            os_log("%{public}@ finished for %{public}@", log: tplogDebug, type: .default, function, container.description)
         }
     }
 
@@ -53,15 +85,15 @@ class Client: TrustedPeersHelperProtocol {
     func dump(withContainer container: String, context: String, reply: @escaping ([AnyHashable: Any]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Dumping for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Dumping for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.dump { result, error in
                 self.logComplete(function: "Dumping", container: container.name, error: error)
-                reply(result, CKXPCSuitableError(error))
+                reply(result, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Dumping failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, CKXPCSuitableError(error))
+            os_log("Dumping failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -70,15 +102,15 @@ class Client: TrustedPeersHelperProtocol {
                      reply: @escaping (String?, TPPeerPermanentInfo?, TPPeerStableInfo?, TPPeerDynamicInfo?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Dumping peer for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Dumping peer for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.dumpEgoPeer { peerID, perm, stable, dyn, error in
                 self.logComplete(function: "Dumping peer", container: container.name, error: error)
-                reply(peerID, perm, stable, dyn, CKXPCSuitableError(error))
+                reply(peerID, perm, stable, dyn, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Dumping peer failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, nil, nil, CKXPCSuitableError(error))
+            os_log("Dumping peer failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -86,69 +118,80 @@ class Client: TrustedPeersHelperProtocol {
         do {
             let containerName = ContainerName(container: container, context: context)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.trustStatus(reply: reply)
+            container.trustStatus { egoPeerStatus, error in
+                reply(egoPeerStatus, error?.sanitizeForClientXPC())
+            }
         } catch {
-            os_log("Trust status failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(TrustedPeersHelperEgoPeerStatus(egoPeerID: nil, status: TPPeerStatus.unknown, peerCountsByModelID: [:], isExcluded: false, isLocked: false), CKXPCSuitableError(error))
+            os_log("Trust status failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(TrustedPeersHelperEgoPeerStatus(egoPeerID: nil,
+                                                  status: TPPeerStatus.unknown,
+                                                  viablePeerCountsByModelID: [:],
+                                                  peerCountsByMachineID: [:],
+                                                  isExcluded: false,
+                                                  isLocked: false),
+                  error.sanitizeForClientXPC())
         }
     }
 
     func fetchTrustState(withContainer container: String, context: String, reply: @escaping (TrustedPeersHelperPeerState?, [TrustedPeersHelperPeer]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Fetch Trust State for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Fetch Trust State for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.fetchTrustState(reply: reply)
+            container.fetchTrustState { peerState, peerList, error in
+                reply(peerState, peerList, error?.sanitizeForClientXPC())
+            }
         } catch {
-            os_log("Fetch Trust State failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Fetch Trust State failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
         }
     }
 
-    func reset(withContainer container: String, context: String, reply: @escaping (Error?) -> Void) {
+    func reset(withContainer container: String, context: String, resetReason: CuttlefishResetReason, reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Resetting for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Resetting for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.reset { error in
+            container.reset(resetReason: resetReason) { error in
                 self.logComplete(function: "Resetting", container: container.name, error: error)
-                reply(CKXPCSuitableError(error)) }
+                reply(error?.sanitizeForClientXPC()) }
         } catch {
-            os_log("Resetting failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("Resetting failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
     func localReset(withContainer container: String, context: String, reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Performing local reset for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Performing local reset for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.localReset { error in
                 self.logComplete(function: "Local reset", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Local reset failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("Local reset failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
     func setAllowedMachineIDsWithContainer(_ container: String,
                                            context: String,
                                            allowedMachineIDs: Set<String>,
+                                           honorIDMSListChanges: Bool,
                                            reply: @escaping (Bool, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Setting allowed machineIDs for %@ to %@", log: tplogDebug, type: .default, containerName.description, allowedMachineIDs)
+            os_log("Setting allowed machineIDs for %{public}@ to %{public}@", log: tplogDebug, type: .default, containerName.description, allowedMachineIDs)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.setAllowedMachineIDs(allowedMachineIDs) { differences, error in
+            container.setAllowedMachineIDs(allowedMachineIDs, honorIDMSListChanges: honorIDMSListChanges) { differences, error in
                 self.logComplete(function: "Setting allowed machineIDs", container: container.name, error: error)
-                reply(differences, CKXPCSuitableError(error))
+                reply(differences, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Setting allowed machineIDs failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(false, CKXPCSuitableError(error))
+            os_log("Setting allowed machineIDs failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(false, error.sanitizeForClientXPC())
         }
     }
 
@@ -158,15 +201,15 @@ class Client: TrustedPeersHelperProtocol {
                               reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Adding allowed machineIDs for %@: %@", log: tplogDebug, type: .default, containerName.description, machineIDs)
+            os_log("Adding allowed machineIDs for %{public}@: %{public}@", log: tplogDebug, type: .default, containerName.description, machineIDs)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.addAllow(machineIDs) { error in
                 self.logComplete(function: "Adding allowed machineIDs", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Adding allowed machineID failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("Adding allowed machineID failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
@@ -176,29 +219,44 @@ class Client: TrustedPeersHelperProtocol {
                                  reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Removing allowed machineIDs for %@: %@", log: tplogDebug, type: .default, containerName.description, machineIDs)
+            os_log("Removing allowed machineIDs for %{public}@: %{public}@", log: tplogDebug, type: .default, containerName.description, machineIDs)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.removeAllow(machineIDs) { error in
                 self.logComplete(function: "Removing allowed machineIDs", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Removing allowed machineID failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("Removing allowed machineID failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
+        }
+    }
+
+    func fetchAllowedMachineIDs(withContainer container: String, context: String, reply: @escaping (Set<String>?, Error?) -> Void) {
+        do {
+            let containerName = ContainerName(container: container, context: context)
+            os_log("Fetching allowed machineIDs for %{public}@", log: tplogDebug, type: .default, containerName.description)
+            let container = try self.containerMap.findOrCreate(name: containerName)
+            container.fetchAllowedMachineIDs { mids, error in
+                self.logComplete(function: "Fetched allowed machineIDs", container: container.name, error: error)
+                reply(mids, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            os_log("Fetching allowed machineIDs failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
     func fetchEgoEpoch(withContainer container: String, context: String, reply: @escaping (UInt64, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("retrieving epoch for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("retrieving epoch for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.getEgoEpoch { epoch, error in
-                reply(epoch, CKXPCSuitableError(error))
+                reply(epoch, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Epoch retrieval failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(0, CKXPCSuitableError(error))
+            os_log("Epoch retrieval failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(0, error.sanitizeForClientXPC())
         }
     }
 
@@ -210,16 +268,17 @@ class Client: TrustedPeersHelperProtocol {
                  bottleID: String,
                  modelID: String,
                  deviceName: String?,
-                 serialNumber: String,
+                 serialNumber: String?,
                  osVersion: String,
-                 policyVersion: NSNumber?,
+                 policyVersion: TPPolicyVersion?,
                  policySecrets: [String: Data]?,
+                 syncUserControllableViews: TPPBPeerStableInfo_UserControllableViewStatus,
                  signingPrivKeyPersistentRef: Data?,
                  encPrivKeyPersistentRef: Data?,
-                 reply: @escaping (String?, Data?, Data?, Data?, Data?, Error?) -> Void) {
+                 reply: @escaping (String?, Data?, Data?, Data?, Data?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Preparing new identity for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Preparing new identity for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.prepare(epoch: epoch,
                               machineID: machineID,
@@ -229,16 +288,17 @@ class Client: TrustedPeersHelperProtocol {
                               deviceName: deviceName,
                               serialNumber: serialNumber,
                               osVersion: osVersion,
-                              policyVersion: policyVersion?.uint64Value,
+                              policyVersion: policyVersion,
                               policySecrets: policySecrets,
+                              syncUserControllableViews: syncUserControllableViews,
                               signingPrivateKeyPersistentRef: signingPrivKeyPersistentRef,
-                              encryptionPrivateKeyPersistentRef: encPrivKeyPersistentRef) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                              encryptionPrivateKeyPersistentRef: encPrivKeyPersistentRef) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, policy, error in
                                 self.logComplete(function: "Prepare", container: container.name, error: error)
-                                reply(peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, CKXPCSuitableError(error))
+                                reply(peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, policy, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Prepare failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, nil, nil, nil, CKXPCSuitableError(error))
+            os_log("Prepare failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -247,19 +307,19 @@ class Client: TrustedPeersHelperProtocol {
                    ckksKeys: [CKKSKeychainBackedKeySet],
                    tlkShares: [CKKSTLKShare],
                    preapprovedKeys: [Data]?,
-                   reply: @escaping (String?, [CKRecord]?, Error?) -> Void) {
+                   reply: @escaping (String?, [CKRecord]?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Establishing %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Establishing %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.establish(ckksKeys: ckksKeys,
                                 tlkShares: tlkShares,
-                                preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, error in
+                                preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, policy, error in
                                     self.logComplete(function: "Establishing", container: container.name, error: error)
-                                    reply(peerID, keyHierarchyRecords, CKXPCSuitableError(error)) }
+                                    reply(peerID, keyHierarchyRecords, policy, error?.sanitizeForClientXPC()) }
         } catch {
-            os_log("Establishing failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Establishing failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -274,7 +334,7 @@ class Client: TrustedPeersHelperProtocol {
                reply: @escaping (Data?, Data?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Vouching %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Vouching %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.vouch(peerID: peerID,
                             permanentInfo: permanentInfo,
@@ -283,10 +343,27 @@ class Client: TrustedPeersHelperProtocol {
                             stableInfoSig: stableInfoSig,
                             ckksKeys: ckksKeys) { voucher, voucherSig, error in
                                 self.logComplete(function: "Vouching", container: container.name, error: error)
-                                reply(voucher, voucherSig, CKXPCSuitableError(error)) }
+                                reply(voucher, voucherSig, error?.sanitizeForClientXPC()) }
         } catch {
-            os_log("Vouching failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Vouching failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func preflightVouchWithBottle(withContainer container: String,
+                                  context: String,
+                                  bottleID: String,
+                                  reply: @escaping (String?, TPSyncingPolicy?, Bool, Error?) -> Void) {
+        do {
+            let containerName = ContainerName(container: container, context: context)
+            os_log("Preflight Vouch With Bottle %{public}@", log: tplogDebug, type: .default, containerName.description)
+            let container = try self.containerMap.findOrCreate(name: containerName)
+            container.preflightVouchWithBottle(bottleID: bottleID) { peerID, policy, refetched, error in
+                self.logComplete(function: "Preflight Vouch With Bottle", container: container.name, error: error)
+                reply(peerID, policy, refetched, error?.sanitizeForClientXPC()) }
+        } catch {
+            os_log("Preflighting Vouch With Bottle failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, false, error.sanitizeForClientXPC())
         }
     }
 
@@ -296,17 +373,35 @@ class Client: TrustedPeersHelperProtocol {
                          entropy: Data,
                          bottleSalt: String,
                          tlkShares: [CKKSTLKShare],
-                         reply: @escaping (Data?, Data?, Error?) -> Void) {
+                         reply: @escaping (Data?, Data?, Int64, Int64, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Vouching With Bottle %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Vouching With Bottle %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.vouchWithBottle(bottleID: bottleID, entropy: entropy, bottleSalt: bottleSalt, tlkShares: tlkShares) { voucher, voucherSig, error in
+            container.vouchWithBottle(bottleID: bottleID, entropy: entropy, bottleSalt: bottleSalt, tlkShares: tlkShares) { voucher, voucherSig, uniqueTLKsRecovered, totalTLKSharesRecovered, error in
                 self.logComplete(function: "Vouching With Bottle", container: container.name, error: error)
-                reply(voucher, voucherSig, CKXPCSuitableError(error)) }
+                reply(voucher, voucherSig, uniqueTLKsRecovered, totalTLKSharesRecovered, error?.sanitizeForClientXPC()) }
         } catch {
-            os_log("Vouching with Bottle failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Vouching with Bottle failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, 0, 0, error.sanitizeForClientXPC())
+        }
+    }
+
+    func preflightVouchWithRecoveryKey(withContainer container: String,
+                                       context: String,
+                                       recoveryKey: String,
+                                       salt: String,
+                                       reply: @escaping (String?, TPSyncingPolicy?, Error?) -> Void) {
+        do {
+            let containerName = ContainerName(container: container, context: context)
+            os_log("Preflight Vouch With RecoveryKey %{public}@", log: tplogDebug, type: .default, containerName.description)
+            let container = try self.containerMap.findOrCreate(name: containerName)
+            container.preflightVouchWithRecoveryKey(recoveryKey: recoveryKey, salt: salt) { rkID, policy, error in
+                self.logComplete(function: "Preflight Vouch With RecoveryKey", container: container.name, error: error)
+                reply(rkID, policy, error?.sanitizeForClientXPC()) }
+        } catch {
+            os_log("Preflighting Vouch With RecoveryKey failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -318,14 +413,14 @@ class Client: TrustedPeersHelperProtocol {
                               reply: @escaping (Data?, Data?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Vouching With Recovery Key %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Vouching With Recovery Key %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.vouchWithRecoveryKey(recoveryKey: recoveryKey, salt: salt, tlkShares: tlkShares) { voucher, voucherSig, error in
                 self.logComplete(function: "Vouching With Recovery Key", container: container.name, error: error)
-                reply(voucher, voucherSig, CKXPCSuitableError(error)) }
+                reply(voucher, voucherSig, error?.sanitizeForClientXPC()) }
         } catch {
-            os_log("Vouching with Recovery Key failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Vouching with Recovery Key failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -335,32 +430,37 @@ class Client: TrustedPeersHelperProtocol {
               voucherSig: Data,
               ckksKeys: [CKKSKeychainBackedKeySet],
               tlkShares: [CKKSTLKShare],
-              preapprovedKeys: [Data],
-              reply: @escaping (String?, [CKRecord]?, Error?) -> Void) {
+              preapprovedKeys: [Data]?,
+              reply: @escaping (String?, [CKRecord]?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Joining %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Joining %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.join(voucherData: voucherData,
                            voucherSig: voucherSig,
                            ckksKeys: ckksKeys,
                            tlkShares: tlkShares,
-                           preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, error in reply(peerID, keyHierarchyRecords, CKXPCSuitableError(error)) }
+                           preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, policy, error in
+                            reply(peerID, keyHierarchyRecords, policy, error?.sanitizeForClientXPC())
+            }
         } catch {
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("Joining failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
     func preflightPreapprovedJoin(withContainer container: String,
                                   context: String,
+                                  preapprovedKeys: [Data]?,
                                   reply: @escaping (Bool, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Attempting to preflight a preapproved join for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Attempting to preflight a preapproved join for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.preflightPreapprovedJoin() { success, error in reply(success, CKXPCSuitableError(error)) }
+            container.preflightPreapprovedJoin(preapprovedKeys: preapprovedKeys) { success, error in reply(success, error?.sanitizeForClientXPC()) }
         } catch {
-            reply(false, CKXPCSuitableError(error))
+            os_log("preflightPreapprovedJoin failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(false, error.sanitizeForClientXPC())
         }
     }
 
@@ -368,17 +468,19 @@ class Client: TrustedPeersHelperProtocol {
                                 context: String,
                                 ckksKeys: [CKKSKeychainBackedKeySet],
                                 tlkShares: [CKKSTLKShare],
-                                preapprovedKeys: [Data],
-                                reply: @escaping (String?, [CKRecord]?, Error?) -> Void) {
+                                preapprovedKeys: [Data]?,
+                                reply: @escaping (String?, [CKRecord]?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Attempting a preapproved join for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Attempting a preapproved join for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.preapprovedJoin(ckksKeys: ckksKeys,
                                       tlkShares: tlkShares,
-                                      preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, error in reply(peerID, keyHierarchyRecords, CKXPCSuitableError(error)) }
+                                      preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, policy, error in
+                                        reply(peerID, keyHierarchyRecords, policy, error?.sanitizeForClientXPC()) }
         } catch {
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("attemptPreapprovedJoin failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -389,32 +491,53 @@ class Client: TrustedPeersHelperProtocol {
                 osVersion: String?,
                 policyVersion: NSNumber?,
                 policySecrets: [String: Data]?,
-                reply: @escaping (TrustedPeersHelperPeerState?, Error?) -> Void) {
+                syncUserControllableViews: NSNumber?,
+                reply: @escaping (TrustedPeersHelperPeerState?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Updating %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Updating %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
+
+            let syncUserControllableSetting: TPPBPeerStableInfo_UserControllableViewStatus?
+            if let value = syncUserControllableViews?.int32Value {
+                switch value {
+                case TPPBPeerStableInfo_UserControllableViewStatus.ENABLED.rawValue:
+                    syncUserControllableSetting = .ENABLED
+                case TPPBPeerStableInfo_UserControllableViewStatus.DISABLED.rawValue:
+                    syncUserControllableSetting = .DISABLED
+                case TPPBPeerStableInfo_UserControllableViewStatus.FOLLOWING.rawValue:
+                    syncUserControllableSetting = .FOLLOWING
+                default:
+                    throw ContainerError.unknownSyncUserControllableViewsValue(value: value)
+                }
+            } else {
+                syncUserControllableSetting = nil
+            }
+
             container.update(deviceName: deviceName,
                              serialNumber: serialNumber,
                              osVersion: osVersion,
                              policyVersion: policyVersion?.uint64Value,
-                             policySecrets: policySecrets) { state, error in reply(state, CKXPCSuitableError(error)) }
+                             policySecrets: policySecrets,
+                             syncUserControllableViews: syncUserControllableSetting) { state, policy, error in reply(state, policy, error?.sanitizeForClientXPC()) }
         } catch {
-            reply(nil, CKXPCSuitableError(error))
+            os_log("update failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
         }
     }
 
     func setPreapprovedKeysWithContainer(_ container: String,
-                               context: String,
-                               preapprovedKeys: [Data],
-                               reply: @escaping (Error?) -> Void) {
+                                         context: String,
+                                         preapprovedKeys: [Data],
+                                         reply: @escaping (TrustedPeersHelperPeerState?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Updating %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("setPreapprovedKeysWithContainer %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.set(preapprovedKeys: preapprovedKeys) { error in reply(CKXPCSuitableError(error)) }
+            container.set(preapprovedKeys: preapprovedKeys) { state, error in reply(state, error?.sanitizeForClientXPC()) }
         } catch {
-            reply(CKXPCSuitableError(error))
+            os_log("setPreapprovedKeysWithContainer failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -425,13 +548,15 @@ class Client: TrustedPeersHelperProtocol {
                     reply: @escaping ([CKRecord]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Updating TLKs for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Updating TLKs for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.updateTLKs(ckksKeys: ckksKeys,
-                                 tlkShares: tlkShares,
-                                 reply: reply)
+                                 tlkShares: tlkShares) { records, error in
+                reply(records, error?.sanitizeForClientXPC())
+            }
         } catch {
-            reply(nil, CKXPCSuitableError(error))
+            os_log("updateTLKs failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
@@ -440,13 +565,14 @@ class Client: TrustedPeersHelperProtocol {
                                  reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Departing %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Departing %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.departByDistrustingSelf { error in
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(CKXPCSuitableError(error))
+            os_log("departByDistrustingSelf failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
@@ -456,162 +582,199 @@ class Client: TrustedPeersHelperProtocol {
                          reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Distrusting %@ in %@", log: tplogDebug, type: .default, peerIDs, containerName.description)
+            os_log("Distrusting %{public}@ in %{public}@", log: tplogDebug, type: .default, peerIDs, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.distrust(peerIDs: peerIDs) { error in
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(CKXPCSuitableError(error))
+            os_log("distrustPeerIDs failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
     func fetchViableBottles(withContainer container: String, context: String, reply: @escaping ([String]?, [String]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("fetchViableBottles in %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("fetchViableBottles in %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.fetchViableBottles { sortedBottleIDs, partialBottleIDs, error in
-                reply(sortedBottleIDs, partialBottleIDs, CKXPCSuitableError(error))
+                reply(sortedBottleIDs, partialBottleIDs, error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(nil, nil, CKXPCSuitableError(error))
+            os_log("fetchViableBottles failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func fetchViableEscrowRecords(withContainer container: String, context: String, forceFetch: Bool, reply: @escaping ([Data]?, Error?) -> Void) {
+        do {
+            let containerName = ContainerName(container: container, context: context)
+            os_log("fetchViableEscrowRecords in %@", log: tplogDebug, type: .default, containerName.description)
+            let container = try self.containerMap.findOrCreate(name: containerName)
+            container.fetchEscrowRecords(forceFetch: forceFetch) { recordDatas, error in
+                reply(recordDatas, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
     func fetchEscrowContents(withContainer container: String, context: String, reply: @escaping (Data?, String?, Data?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("fetchEscrowContents in %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("fetchEscrowContents in %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.fetchEscrowContents { entropy, bottleID, signingPublicKey, error in
-                reply(entropy, bottleID, signingPublicKey, CKXPCSuitableError(error))
+                reply(entropy, bottleID, signingPublicKey, error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(nil, nil, nil, CKXPCSuitableError(error))
+            os_log("fetchEscrowContents failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, nil, nil, error.sanitizeForClientXPC())
         }
     }
 
-    func fetchPolicy(withContainer container: String,
-                     context: String,
-                     reply: @escaping (TPPolicy?, Error?) -> Void) {
+    func fetchCurrentPolicy(withContainer container: String,
+                            context: String,
+                            modelIDOverride: String?,
+                            reply: @escaping (TPSyncingPolicy?, TPPBPeerStableInfo_UserControllableViewStatus, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Fetching policy for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("Fetching policy+views for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.fetchPolicy { policy, error in
-                reply(policy, CKXPCSuitableError(error))
+            container.fetchCurrentPolicy(modelIDOverride: modelIDOverride) { policy, peersOpinion, error in
+                reply(policy, peersOpinion, error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(nil, CKXPCSuitableError(error))
+            os_log("fetchCurrentPolicy failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, .UNKNOWN, error.sanitizeForClientXPC())
         }
     }
 
     func fetchPolicyDocuments(withContainer container: String,
                               context: String,
-                              keys: [NSNumber: String],
-                              reply: @escaping ([NSNumber: [String]]?, Error?) -> Void) {
+                              versions: Set<TPPolicyVersion>,
+                              reply: @escaping ([TPPolicyVersion: Data]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Fetching policy documents %@ with keys: %@", log: tplogDebug, type: .default, containerName.description, keys)
+            os_log("Fetching policy documents %{public}@ with versions: %{public}@", log: tplogDebug, type: .default, containerName.description, versions)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.fetchPolicyDocuments(keys: keys) { entries, error in
-                reply(entries, CKXPCSuitableError(error))
+            container.fetchPolicyDocuments(versions: versions) { entries, error in
+                reply(entries, error?.sanitizeForClientXPC())
             }
         } catch {
-            reply(nil, CKXPCSuitableError(error))
+            os_log("fetchPolicyDocuments failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
     func validatePeers(withContainer container: String, context: String, reply: @escaping ([AnyHashable: Any]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("ValidatePeers for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("ValidatePeers for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             let request = ValidatePeersRequest()
             container.validatePeers(request: request) { result, error in
                 self.logComplete(function: "validatePeers", container: container.name, error: error)
-                reply(result, CKXPCSuitableError(error))
+                reply(result, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("ValidatePeers failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, CKXPCSuitableError(error))
+            os_log("ValidatePeers failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
-    func setRecoveryKeyWithContainer(_ container: String, context: String, recoveryKey: String, salt: String, ckksKeys: [CKKSKeychainBackedKeySet], reply: @escaping (Error?) -> Void) {
+    func setRecoveryKeyWithContainer(_ container: String,
+                                     context: String,
+                                     recoveryKey: String,
+                                     salt: String,
+                                     ckksKeys: [CKKSKeychainBackedKeySet],
+                                     reply: @escaping ([CKRecord]?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("SetRecoveryKey for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("SetRecoveryKey for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.setRecoveryKey(recoveryKey: recoveryKey, salt: salt, ckksKeys: ckksKeys) { error in
+            container.setRecoveryKey(recoveryKey: recoveryKey, salt: salt, ckksKeys: ckksKeys) { records, error in
                 self.logComplete(function: "setRecoveryKey", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(records, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("SetRecoveryKey failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("SetRecoveryKey failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
         }
     }
 
     func reportHealth(withContainer container: String, context: String, stateMachineState: String, trustState: String, reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("ReportHealth for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("ReportHealth for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             let request = ReportHealthRequest.with {
                 $0.stateMachineState = stateMachineState
             }
             container.reportHealth(request: request) { error in
                 self.logComplete(function: "reportHealth", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("ReportHealth failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("ReportHealth failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
     func pushHealthInquiry(withContainer container: String, context: String, reply: @escaping (Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("PushHealthInquiry for %@", log: tplogDebug, type: .default, containerName.description)
+            os_log("PushHealthInquiry for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
             container.pushHealthInquiry { error in
                 self.logComplete(function: "pushHealthInquiry", container: container.name, error: error)
-                reply(CKXPCSuitableError(error))
+                reply(error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("PushHealthInquiry failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(CKXPCSuitableError(error))
+            os_log("PushHealthInquiry failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 
-    func getViewsWithContainer(_ container: String, context: String, inViews: [String], reply: @escaping ([String]?, Error?) -> Void) {
+    func requestHealthCheck(withContainer container: String, context: String, requiresEscrowCheck: Bool, reply: @escaping (Bool, Bool, Bool, Bool, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("GetViews (%@) for %@", log: tplogDebug, type: .default, inViews, containerName.description)
+            os_log("Health Check! requiring escrow check? %d for %{public}@", log: tplogDebug, type: .default, requiresEscrowCheck, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.getViews(inViews: inViews) { outViews, error in
-                reply(outViews, CKXPCSuitableError(error))
+            container.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck) { postRepair, postEscrow, postReset, leaveTrust, error in
+                reply(postRepair, postEscrow, postReset, leaveTrust, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("GetViews failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(nil, CKXPCSuitableError(error))
+            os_log("Health Check! failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(false, false, false, false, error.sanitizeForClientXPC())
         }
     }
 
-    func requestHealthCheck(withContainer container: String, context: String, requiresEscrowCheck: Bool, reply: @escaping (Bool, Bool, Bool, Error?) -> Void) {
+    func getSupportAppInfo(withContainer container: String, context: String, reply: @escaping (Data?, Error?) -> Void) {
         do {
             let containerName = ContainerName(container: container, context: context)
-            os_log("Health Check! requiring escrow check? %d for %@", log: tplogDebug, type: .default, requiresEscrowCheck, containerName.description)
+            os_log("getSupportAppInfo for %{public}@", log: tplogDebug, type: .default, containerName.description)
             let container = try self.containerMap.findOrCreate(name: containerName)
-            container.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck) { postRepair, postEscrow, postReset, error in
-                reply(postRepair, postEscrow, postReset, CKXPCSuitableError(error))
+            container.getSupportAppInfo { info, error in
+                reply(info, error?.sanitizeForClientXPC())
             }
         } catch {
-            os_log("Health Check! failed for (%@, %@): %@", log: tplogDebug, type: .default, container, context, error as CVarArg)
-            reply(false, false, false, CKXPCSuitableError(error))
+            os_log("getSupportInfo failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(nil, error.sanitizeForClientXPC())
+        }
+    }
+    func removeEscrowCache(withContainer container: String, context: String, reply: @escaping (Error?) -> Void) {
+        do {
+            let containerName = ContainerName(container: container, context: context)
+            os_log("removeEscrowCache for %{public}@", log: tplogDebug, type: .default, containerName.description)
+            let container = try self.containerMap.findOrCreate(name: containerName)
+            container.removeEscrowCache { error in
+                reply(error?.sanitizeForClientXPC())
+            }
+        } catch {
+            os_log("removeEscrowCache failed for (%{public}@, %{public}@): %{public}@", log: tplogDebug, type: .default, container, context, error as CVarArg)
+            reply(error.sanitizeForClientXPC())
         }
     }
 }

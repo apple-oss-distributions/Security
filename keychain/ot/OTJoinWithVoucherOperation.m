@@ -43,10 +43,6 @@
 @property OctagonState* ckksConflictState;
 
 @property NSOperation* finishedOp;
-@property int retries;
-@property int maxRetries;
-@property int delay;
-@property CKKSNearFutureScheduler* retrySched;
 @end
 
 @implementation OTJoinWithVoucherOperation
@@ -57,38 +53,47 @@
                        intendedState:(OctagonState*)intendedState
                    ckksConflictState:(OctagonState*)ckksConflictState
                           errorState:(OctagonState*)errorState
-                         voucherData:(NSData*)voucherData
-                          voucherSig:(NSData*)voucherSig
-                     preapprovedKeys:(NSArray<NSData *>*)preapprovedKeys
 {
     if((self = [super init])) {
         _deps = dependencies;
-
-        _retries = 0;
-        _maxRetries = 5;
-        _delay = 1;
 
         _intendedState = intendedState;
         _nextState = errorState;
         _ckksConflictState = ckksConflictState;
 
-        _voucherData = voucherData;
-        _voucherSig = voucherSig;
-        _preapprovedKeys = preapprovedKeys;
+        _peerID = nil;
+        _voucherData = nil;
+        _voucherSig = nil;
     }
     return self;
 }
 
 - (void)groupStart
 {
-    secnotice("octagon", "joining");
+    // Load the voucher from the state handler
+    NSError* error = nil;
+    OTAccountMetadataClassC* metadata = [self.deps.stateHolder loadOrCreateAccountMetadata:&error];
+
+    if(!metadata.voucher || !metadata.voucherSignature || error) {
+        secnotice("octagon", "No voucher available: %@", error);
+        self.error = error;
+        return;
+    }
+
+    self.voucherData = metadata.voucher;
+    self.voucherSig = metadata.voucherSignature;
+
+    secnotice("octagon", "joining with a voucher: %@", self.voucherData);
 
     self.finishedOp = [[NSOperation alloc] init];
     [self dependOnBeforeGroupFinished:self.finishedOp];
 
     WEAKIFY(self);
 
-    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps];
+    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps
+                                                                                     refetchNeeded:NO];
+    // We only care about TLKs that are ready for upload. Don't wait long.
+    fetchKeysOp.desiredTimeout = 2*NSEC_PER_SEC;
     [self runBeforeGroupFinished:fetchKeysOp];
 
     CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"vouch-with-keys"
@@ -102,107 +107,87 @@
     [self runBeforeGroupFinished:proceedWithKeys];
 }
 
-- (BOOL)isRetryable:(NSError* _Nonnull)error {
-    return [error isCuttlefishError:CuttlefishErrorTransactionalFailure];
-}
-
-- (int)retryDelay:(NSError* _Nonnull)error {
-    NSError* underlyingError = error.userInfo[NSUnderlyingErrorKey];
-    int ret = self->_delay;
-    if (underlyingError) {
-        id tmp = underlyingError.userInfo[@"retryafter"];
-        if ([tmp isKindOfClass:[NSNumber class]]) {
-            ret = [(NSNumber*)tmp intValue];
-        }
-    }
-    ret = MAX(MIN(ret, 32), self->_delay);
-    self->_delay *= 2;
-    return ret;
-}
-
 - (void)proceedWithKeys:(NSArray<CKKSKeychainBackedKeySet*>*)viewKeySets pendingTLKShares:(NSArray<CKKSTLKShare*>*)pendingTLKShares
 {
     WEAKIFY(self);
 
-    [[self.deps.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        STRONGIFY(self);
-        secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-        [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventJoinWithVoucher withAttributes:NULL];
-        self.error = error;
-        [self runBeforeGroupFinished:self.finishedOp];
+    NSArray<NSData*>* publicSigningSPKIs = nil;
+    if(self.deps.sosAdapter.sosEnabled) {
+        NSError* sosPreapprovalError = nil;
+        publicSigningSPKIs = [OTSOSAdapterHelpers peerPublicSigningKeySPKIsForCircle:self.deps.sosAdapter error:&sosPreapprovalError];
 
-    }] joinWithContainer:self.deps.containerName
-                 context:self.deps.contextID
-             voucherData:self.voucherData
-              voucherSig:self.voucherSig
-                ckksKeys:viewKeySets
-               tlkShares:pendingTLKShares
-         preapprovedKeys:self.preapprovedKeys
-                   reply:^(NSString * _Nullable peerID, NSArray<CKRecord*>* keyHierarchyRecords, NSError * _Nullable error) {
-        if(error){
-            secerror("octagon: Error joining with voucher: %@", error);
-            [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventJoinWithVoucher withAttributes:NULL];
-
-            if (self.retries < self.maxRetries && [self isRetryable:error]) {
-                ++self.retries;
-                if (!self.retrySched) {
-                    self.retrySched = [[CKKSNearFutureScheduler alloc] initWithName:@"cuttlefish-join-retry"
-                                                                              delay:1*NSEC_PER_SEC
-                                                                   keepProcessAlive:true
-                                                          dependencyDescriptionCode:CKKSResultDescriptionNone
-                                                                              block:^{
-                                                                                  CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"vouch-with-keys"
-                                                                                                                                          withBlock:^{
-                                                                                                                                              STRONGIFY(self);
-                                                                                                                                              secnotice("octagon", "retrying (%d/%d) join", self.retries, self->_maxRetries);
-                                                                                                                                              [self proceedWithKeys:viewKeySets
-                                                                                                                                                   pendingTLKShares:pendingTLKShares];
-                                                                                                                                          }];
-                                                                                  STRONGIFY(self);
-                                                                                  [self runBeforeGroupFinished:proceedWithKeys];
-                                                                              }];
-                }
-                int delay_s = [self retryDelay:error];
-                [self.retrySched waitUntil:delay_s*NSEC_PER_SEC];
-                [self.retrySched trigger];
-                return;
-            }
-
-            // IF this is a CKKS conflict error, don't retry
-            if ([error isCuttlefishError:CuttlefishErrorKeyHierarchyAlreadyExists]) {
-                secnotice("octagon-ckks", "A CKKS key hierarchy is out of date; going to state '%@'", self.ckksConflictState);
-                self.nextState = self.ckksConflictState;
-            } else {
-                self.error = error;
-            }
+        if(publicSigningSPKIs) {
+            secnotice("octagon-sos", "SOS preapproved keys are %@", publicSigningSPKIs);
         } else {
-            self.peerID = peerID;
-
-            [[CKKSAnalytics logger] logSuccessForEventNamed:OctagonEventJoinWithVoucher];
-
-            NSError* localError = nil;
-            BOOL persisted = [self.deps.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nonnull(OTAccountMetadataClassC * _Nonnull metadata) {
-                metadata.trustState = OTAccountMetadataClassC_TrustState_TRUSTED;
-                metadata.peerID = peerID;
-                return metadata;
-            } error:&localError];
-            if(!persisted || localError) {
-                secnotice("octagon", "Couldn't persist results: %@", localError);
-                self.error = localError;
-            } else {
-                secerror("octagon: join successful");
-                self.nextState = self.intendedState;
-            }
-
-            // Tell CKKS about our shiny new records!
-            for (id key in self.deps.viewManager.views) {
-                CKKSKeychainView* view = self.deps.viewManager.views[key];
-                secnotice("octagon-ckks", "Providing join() records to %@", view);
-                [view receiveTLKUploadRecords: keyHierarchyRecords];
-            }
+            secnotice("octagon-sos", "Unable to fetch SOS preapproved keys: %@", sosPreapprovalError);
         }
-        [self runBeforeGroupFinished:self.finishedOp];
-    }];
+
+    } else {
+        secnotice("octagon-sos", "SOS not enabled; no preapproved keys");
+    }
+
+    [self.deps.cuttlefishXPCWrapper joinWithContainer:self.deps.containerName
+                                              context:self.deps.contextID
+                                          voucherData:self.voucherData
+                                           voucherSig:self.voucherSig
+                                             ckksKeys:viewKeySets
+                                            tlkShares:pendingTLKShares
+                                      preapprovedKeys:publicSigningSPKIs
+                                                reply:^(NSString * _Nullable peerID,
+                                                        NSArray<CKRecord*>* keyHierarchyRecords,
+                                                        TPSyncingPolicy* _Nullable syncingPolicy,
+                                                        NSError * _Nullable error) {
+            STRONGIFY(self);
+            if(error){
+                secerror("octagon: Error joining with voucher: %@", error);
+                [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventJoinWithVoucher withAttributes:NULL];
+
+                // IF this is a CKKS conflict error, don't retry
+                if ([error isCuttlefishError:CuttlefishErrorKeyHierarchyAlreadyExists]) {
+                    secnotice("octagon-ckks", "A CKKS key hierarchy is out of date; going to state '%@'", self.ckksConflictState);
+                    self.nextState = self.ckksConflictState;
+                } else if ([error isCuttlefishError:CuttlefishErrorResultGraphNotFullyReachable]) {
+                    secnotice("octagon", "requesting cuttlefish health check");
+                    self.nextState = OctagonStateCuttlefishTrustCheck;
+                    self.error = error;
+                } else {
+                    self.error = error;
+                }
+            } else {
+                self.peerID = peerID;
+
+                [[CKKSAnalytics logger] logSuccessForEventNamed:OctagonEventJoinWithVoucher];
+
+                [self.deps.viewManager setCurrentSyncingPolicy:syncingPolicy];
+
+                NSError* localError = nil;
+                BOOL persisted = [self.deps.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nonnull(OTAccountMetadataClassC * _Nonnull metadata) {
+                    metadata.trustState = OTAccountMetadataClassC_TrustState_TRUSTED;
+                    metadata.peerID = peerID;
+
+                    metadata.voucher = nil;
+                    metadata.voucherSignature = nil;
+
+                    [metadata setTPSyncingPolicy:syncingPolicy];
+                    return metadata;
+                } error:&localError];
+                if(!persisted || localError) {
+                    secnotice("octagon", "Couldn't persist results: %@", localError);
+                    self.error = localError;
+                } else {
+                    secerror("octagon: join successful");
+                    self.nextState = self.intendedState;
+                }
+
+                // Tell CKKS about our shiny new records!
+                for (id key in self.deps.viewManager.views) {
+                    CKKSKeychainView* view = self.deps.viewManager.views[key];
+                    secnotice("octagon-ckks", "Providing join() records to %@", view);
+                    [view receiveTLKUploadRecords: keyHierarchyRecords];
+                }
+            }
+            [self runBeforeGroupFinished:self.finishedOp];
+        }];
 }
 
 @end

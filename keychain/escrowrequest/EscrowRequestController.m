@@ -38,9 +38,10 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
 
         _stateMachine = [[OctagonStateMachine alloc] initWithName:@"escrowrequest"
                                                            states:[NSSet setWithArray:@[EscrowRequestStateNothingToDo,
-                                                                                          EscrowRequestStateTriggerCloudServices,
-                                                                                          EscrowRequestStateAttemptEscrowUpload,
-                                                                                          EscrowRequestStateWaitForUnlock]]
+                                                                                        EscrowRequestStateTriggerCloudServices,
+                                                                                        EscrowRequestStateAttemptEscrowUpload,
+                                                                                        EscrowRequestStateWaitForUnlock]]
+                                                            flags: [NSSet setWithArray:@[OctagonFlagEscrowRequestInformCloudServicesOperation]]
                                                      initialState:EscrowRequestStateNothingToDo
                                                             queue:_queue
                                                       stateEngine:self
@@ -56,6 +57,7 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
                                                                                                          flags:(nonnull OctagonFlags *)flags
                                                                                                   pendingFlags:(nonnull id<OctagonStateOnqueuePendingFlagHandler>)pendingFlagHandler
 {
+    dispatch_assert_queue(self.queue);
     if([flags _onqueueContains:OctagonFlagEscrowRequestInformCloudServicesOperation]) {
         [flags _onqueueRemoveFlag:OctagonFlagEscrowRequestInformCloudServicesOperation];
         return [[EscrowRequestInformCloudServicesOperation alloc] initWithIntendedState:EscrowRequestStateNothingToDo

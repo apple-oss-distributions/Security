@@ -3,7 +3,6 @@
 #import <IDS/IDS.h>
 #import <KeychainCircle/KeychainCircle.h>
 #import <os/assumes.h>
-#import <Security/SecXPCHelper.h>
 #import <xpc/private.h>
 
 #if TARGET_OS_WATCH
@@ -49,8 +48,7 @@
 
 - (instancetype)init
 {
-    self = [super init];
-    if (self != nil) {
+    if ((self = [super init])) {
         self.queue = dispatch_queue_create("com.apple.security.otpaird", DISPATCH_QUEUE_SERIAL);
         self.service = [[IDSService alloc] initWithService:OTPairingIDSServiceName];
         [self.service addDelegate:self queue:self.queue];
@@ -58,6 +56,18 @@
         self.deviceInfo = [[OTDeviceInformationActualAdapter alloc] init];
     }
     return self;
+}
+
+- (NSString *)pairedDeviceNotificationName
+{
+	NSString *result = nil;
+	for (IDSDevice *device in self.service.devices) {
+		if (device.isDefaultPairedDevice) {
+			result = [NSString stringWithFormat:@"ids-device-state-%@", device.uniqueIDOverride];
+			break;
+		}
+	}
+	return result;
 }
 
 #if TARGET_OS_WATCH
@@ -147,8 +157,7 @@
     NSMutableDictionary *message = [[NSMutableDictionary alloc] init];
     message[OTPairingIDSKeyMessageType] = @(OTPairingIDSMessageTypeError);
     message[OTPairingIDSKeySession] = self.session.identifier;
-    message[OTPairingIDSKeyError] = [SecXPCHelper encodedDataFromError:unlockError];
-    message[OTPairingIDSKeyErrorDeprecated] = unlockError.localizedDescription; // For older watchOS builds; remove soon
+    message[OTPairingIDSKeyErrorDescription] = unlockError.description;
     NSString *toID = packet.fromID;
     NSString *responseIdentifier = packet.outgoingResponseIdentifier;
     [self _sendMessage:message to:toID identifier:responseIdentifier];
@@ -174,14 +183,18 @@
             NSString *responseIdentifier;
 
             os_log(OS_LOG_DEFAULT, "exchangePacket: complete=%d responsePacket=%@ channelError=%@", complete, responsePacket, channelError);
+
+            if (self.session == nil) {
+                os_log(OS_LOG_DEFAULT, "pairing session went away, dropping exchangePacket response");
+                return;
+            }
+
             if (channelError != nil) {
 #if TARGET_OS_IOS
-                NSError *cleansedError = [SecXPCHelper cleanseErrorForXPC:channelError];
                 NSMutableDictionary *message = [[NSMutableDictionary alloc] init];
                 message[OTPairingIDSKeyMessageType] = @(OTPairingIDSMessageTypeError);
                 message[OTPairingIDSKeySession] = self.session.identifier;
-                message[OTPairingIDSKeyError] = cleansedError ? [SecXPCHelper encodedDataFromError:cleansedError] : nil;
-                message[OTPairingIDSKeyErrorDeprecated] = channelError.description;
+                message[OTPairingIDSKeyErrorDescription] = channelError.description;
                 os_assert(packet != nil); // the acceptor always responds to a request packet, it's never initiating
                 toID = packet.fromID;
                 responseIdentifier = packet.outgoingResponseIdentifier;
@@ -242,7 +255,10 @@
                                 identifier:&identifier
                                      error:&error];
     if (sendResult) {
-        self.session.sentMessageIdentifier = identifier;
+        /* sentMessageIdentifier is used to validate the next reply; do not set if no reply is expected. */
+        if (expectReply) {
+            self.session.sentMessageIdentifier = identifier;
+        }
     } else {
         os_log(OS_LOG_DEFAULT, "send message failed (%@): %@", identifier, error);
         // On iOS, do nothing; watch will time out waiting for response.

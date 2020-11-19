@@ -21,7 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#include <securityd/SecDbItem.h>
+#include "keychain/securityd/SecDbItem.h"
 #include <utilities/SecDb.h>
 #import "CKKSSQLDatabaseObject.h"
 
@@ -55,9 +55,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property bool ckzonesubscribed;
 @property (nullable, getter=getChangeToken, setter=setChangeToken:) CKServerChangeToken* changeToken;
 @property (nullable) NSData* encodedChangeToken;
+@property BOOL moreRecordsInCloudKit;
 @property (nullable) NSDate* lastFetchTime;
+@property (nullable) NSDate* lastLocalKeychainScanTime;
 
 @property CKKSFixup lastFixup;
+
 
 @property (nullable) CKKSRateLimiter* rateLimiter;
 @property (nullable) NSData* encodedRateLimiter;
@@ -71,11 +74,13 @@ NS_ASSUME_NONNULL_BEGIN
                    zoneCreated:(bool)ckzonecreated
                 zoneSubscribed:(bool)ckzonesubscribed
                    changeToken:(NSData* _Nullable)changetoken
+         moreRecordsInCloudKit:(BOOL)moreRecords
                      lastFetch:(NSDate* _Nullable)lastFetch
+                      lastScan:(NSDate* _Nullable)localKeychainScanned
                      lastFixup:(CKKSFixup)lastFixup
             encodedRateLimiter:(NSData* _Nullable)encodedRateLimiter;
 
-- (CKServerChangeToken*)getChangeToken;
+- (CKServerChangeToken* _Nullable)getChangeToken;
 - (void)setChangeToken:(CKServerChangeToken* _Nullable)token;
 
 - (BOOL)isEqual:(id)object;

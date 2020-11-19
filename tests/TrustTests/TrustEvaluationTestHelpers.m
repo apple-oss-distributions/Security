@@ -10,11 +10,20 @@
 
 #include <utilities/SecInternalReleasePriv.h>
 #include <utilities/SecCFRelease.h>
+#include <utilities/SecCFWrappers.h>
 #include <Security/SecCertificate.h>
 #include <Security/SecCertificatePriv.h>
 #include <Security/SecPolicyPriv.h>
 #include <Security/SecTrust.h>
 #include <Security/SecTrustPriv.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <string.h>
 
 #include "TrustEvaluationTestHelpers.h"
 
@@ -96,6 +105,10 @@
         _verifyDate = aVerifyDate;
         (void)SecTrustSetVerifyDate(_trust, (__bridge CFDateRef)aVerifyDate);
     }
+}
+
+- (void)setNeedsEvaluation {
+    SecTrustSetNeedsEvaluation(_trust);
 }
 
 - (bool)evaluate:(out NSError * _Nullable __autoreleasing *)outError {
@@ -276,6 +289,50 @@ errOut:
     return false;
 }
 
+- (bool)addThirdPartyPinningPolicyChecks:(CFDictionaryRef)properties
+                                  policy:(SecPolicyRef)policy
+{
+    if (!properties) {
+        return true;
+    }
+
+    CFStringRef spkiSHA256Options[] = {
+        kSecPolicyCheckLeafSPKISHA256,
+        kSecPolicyCheckCAspkiSHA256,
+    };
+
+    for (size_t i = 0; i < sizeof(spkiSHA256Options)/sizeof(spkiSHA256Options[0]); i++) {
+        CFArrayRef spkiSHA256StringArray = CFDictionaryGetValue(properties, spkiSHA256Options[i]);
+        // Relevant property is not set.
+        if (!spkiSHA256StringArray) {
+            continue;
+        }
+        require_string(isArray(spkiSHA256StringArray), errOut, "SPKISHA256 property is not an array");
+
+        CFMutableArrayRef spkiSHA256DataArray = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+        require_string(spkiSHA256DataArray, errOut, "failed to allocate memory for the SPKISHA256 data array");
+
+        for (CFIndex j = 0; j < CFArrayGetCount(spkiSHA256StringArray); j++) {
+            CFStringRef spkiSHA256String = CFArrayGetValueAtIndex(spkiSHA256StringArray, j);
+            require_string(isString(spkiSHA256String), errOut, "SPKISHA256 property array element is not a string");
+            CFDataRef spkiSHA256Data = CreateCFDataFromBase64CFString(spkiSHA256String);
+            // 'spkiSHA256Data' is optional because we want to allow empty strings.
+            if (spkiSHA256Data) {
+                CFArrayAppendValue(spkiSHA256DataArray, spkiSHA256Data);
+            }
+            CFReleaseNull(spkiSHA256Data);
+        }
+
+        SecPolicySetOptionsValue(policy, spkiSHA256Options[i], spkiSHA256DataArray);
+        CFReleaseNull(spkiSHA256DataArray);
+    }
+
+    return true;
+
+errOut:
+    return false;
+}
+
 - (bool)addPolicy:(NSDictionary *)policyDict
 {
     SecPolicyRef policy = NULL;
@@ -283,14 +340,17 @@ errOut:
     NSDictionary *policyProperties = [(NSDictionary *)policyDict objectForKey:kSecTrustTestPolicyProperties];
     require_string(policyIdentifier, errOut, "failed to get policy OID");
 
+    CFDictionaryRef properties = (__bridge CFDictionaryRef)policyProperties;
     policy = SecPolicyCreateWithProperties((__bridge CFStringRef)policyIdentifier,
-                                           (__bridge CFDictionaryRef)policyProperties);
+                                           properties);
     require_string(policy, errOut, "failed to create properties for policy OID");
+    require_string([self addThirdPartyPinningPolicyChecks:properties policy:policy], errOut, "failed to parse properties for third-party-pinning policy checks");
     [self.policies addObject:(__bridge id)policy];
     CFReleaseNull(policy);
 
     return true;
 errOut:
+    CFReleaseNull(policy);
     return false;
 }
 
@@ -502,3 +562,43 @@ errOut:
 }
 
 @end
+
+int ping_host(char *host_name)
+{
+    struct sockaddr_in pin;
+    struct hostent *nlp_host;
+    struct in_addr addr;
+    int sd = 0;
+    int port = 80;
+    int retries = 5; // we try 5 times, then give up
+    char **h_addr_list = NULL;
+
+    while ((nlp_host=gethostbyname(host_name)) == 0 && retries--) {
+        printf("Resolve Error! (%s) %d\n", host_name, h_errno);
+        sleep(1);
+    }
+    if (nlp_host == 0) {
+        return 0;
+    }
+
+    bzero(&pin,sizeof(pin));
+    pin.sin_family=AF_INET;
+    pin.sin_addr.s_addr=htonl(INADDR_ANY);
+    h_addr_list = malloc(nlp_host->h_length * sizeof(char *));
+    memcpy(h_addr_list, nlp_host->h_addr_list, nlp_host->h_length * sizeof(char *));
+    memcpy(&addr, h_addr_list[0], sizeof(struct in_addr));
+    pin.sin_addr.s_addr=addr.s_addr;
+    pin.sin_port=htons(port);
+
+    sd=socket(AF_INET,SOCK_STREAM,0);
+
+    if (connect(sd,(struct sockaddr*)&pin,sizeof(pin)) == -1) {
+        printf("connect error! (%s) %d\n", host_name, errno);
+        close(sd);
+        free(h_addr_list);
+        return 0;
+    }
+    close(sd);
+    free(h_addr_list);
+    return 1;
+}

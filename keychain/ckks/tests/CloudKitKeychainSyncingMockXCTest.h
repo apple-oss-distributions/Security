@@ -29,7 +29,6 @@
 #import "keychain/ckks/CKKSCurrentKeyPointer.h"
 #import "keychain/ckks/CKKSItem.h"
 #import "keychain/ckks/tests/CKKSMockSOSPresentAdapter.h"
-#import "keychain/ot/proto/generated_source/OTAccountMetadataClassC.h"
 #import "keychain/ot/OTCuttlefishAccountStateHolder.h"
 #include "OSX/sec/Security/SecItemShim.h"
 
@@ -51,19 +50,19 @@ NS_ASSUME_NONNULL_BEGIN
 @interface CloudKitKeychainSyncingMockXCTest : CloudKitMockXCTest
 
 @property CKKSControl* ckksControl;
-@property OTCuttlefishAccountStateHolder *accountMetaDataStore;
 @property (nullable) id mockCKKSKeychainBackedKey;
 
 @property (nullable) NSError* keychainFetchError;
 
 // A single trusted SOSPeer, but without any CKKS keys
-@property CKKSSOSPeer* remoteSOSOnlyPeer;
+@property (nullable) CKKSSOSPeer* remoteSOSOnlyPeer;
 
 // Set this to false after calling -setUp if you want to initialize the views yourself
 @property bool automaticallyBeginCKKSViewCloudKitOperation;
 
-// Fill this in before allowing initialization to use your own mock instead of a default stub
+// Fill these in before allowing initialization to use your own mock instead of a default stub
 @property id suggestTLKUpload;
+@property id requestPolicyCheck;
 
 @property NSMutableSet<CKKSKeychainView*>* ckksViews;
 @property NSMutableSet<CKRecordZoneID*>* ckksZones;
@@ -122,20 +121,34 @@ NS_ASSUME_NONNULL_BEGIN
                   withAccount:(NSString* _Nullable)account
                           key:(CKKSKey* _Nullable)key;
 
+- (CKRecord*)createFakeTombstoneRecord:(CKRecordZoneID*)zoneID recordName:(NSString*)recordName account:(NSString*)account;
+
 - (CKKSItem*)newItem:(CKRecordID*)recordID withNewItemData:(NSDictionary*) dictionary key:(CKKSKey*)key;
 - (CKRecord*)newRecord:(CKRecordID*)recordID withNewItemData:(NSDictionary*)dictionary;
 - (CKRecord*)newRecord:(CKRecordID*)recordID withNewItemData:(NSDictionary*)dictionary key:(CKKSKey*)key;
 - (NSDictionary*)decryptRecord:(CKRecord*)record;
 
+- (void)addItemToCloudKitZone:(NSDictionary*)itemDict recordName:(NSString*)recordName zoneID:(CKRecordZoneID*)zoneID;
+
 // Do keychain things:
 - (void)addGenericPassword:(NSString*)password account:(NSString*)account;
 - (void)addGenericPassword:(NSString*)password account:(NSString*)account viewHint:(NSString* _Nullable)viewHint;
+- (void)addGenericPassword:(NSString*)password account:(NSString*)account accessGroup:(NSString*)accessGroup;
 - (void)addGenericPassword:(NSString*)password
                    account:(NSString*)account
                   viewHint:(NSString* _Nullable)viewHint
                     access:(NSString*)access
                  expecting:(OSStatus)status
                    message:(NSString*)message;
+
+- (BOOL)addGenericPassword:(NSString*)password
+                   account:(NSString*)account
+                    access:(NSString*)access
+                  viewHint:(NSString* _Nullable)viewHint
+               accessGroup:(NSString* _Nullable)accessGroup
+                 expecting:(OSStatus)status
+                   message:(NSString*)message;
+
 - (void)addGenericPassword:(NSString*)password account:(NSString*)account expecting:(OSStatus)status message:(NSString*)message;
 
 - (void)updateGenericPassword:(NSString*)newPassword account:(NSString*)account;
@@ -148,6 +161,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)findGenericPassword:(NSString*)account expecting:(OSStatus)status;
 - (void)checkGenericPassword:(NSString*)password account:(NSString*)account;
+
+- (void)checkGenericPasswordStoredUUID:(NSString*)uuid account:(NSString*)account;
+- (void)setGenericPasswordStoredUUID:(NSString*)uuid account:(NSString*)account;
 
 - (void)createClassCItemAndWaitForUpload:(CKRecordZoneID*)zoneID account:(NSString*)account;
 - (void)createClassAItemAndWaitForUpload:(CKRecordZoneID*)zoneID account:(NSString*)account;

@@ -43,6 +43,7 @@
 
 #if TARGET_OS_OSX
 #include "dirhelper_priv.h"
+#include <membership.h>
 #endif
 
 #if TARGET_OS_OSX
@@ -59,15 +60,18 @@
 #import <AppleAccount/ACAccount+AppleAccount.h>
 #import <AppleAccount/ACAccountStore+AppleAccount.h>
 
+#import "utilities/simulatecrash_assert.h"
+
 
 NSString* const SFAnalyticsSplunkTopic = @"topic";
-NSString* const SFAnalyticsSplunkPostTime = @"postTime";
 NSString* const SFAnalyticsClientId = @"clientId";
 NSString* const SFAnalyticsInternal = @"internal";
 
 NSString* const SFAnalyticsMetricsBase = @"metricsBase";
 NSString* const SFAnalyticsDeviceID = @"ckdeviceID";
 NSString* const SFAnalyticsAltDSID = @"altDSID";
+
+NSString* const SFAnalyticsEventCorrelationID = @"eventLinkID";
 
 NSString* const SFAnalyticsSecondsCustomerKey = @"SecondsBetweenUploadsCustomer";
 NSString* const SFAnalyticsSecondsInternalKey = @"SecondsBetweenUploadsInternal";
@@ -340,18 +344,18 @@ _isiCloudAnalyticsEnabled()
                                                         deviceAnalytics:YES
                                                         iCloudAnalytics:NO]];
     } else if ([topicName isEqualToString:SFAnalyticsTopicTrust]) {
-#if TARGET_OS_OSX
-        _set_user_dir_suffix("com.apple.trustd"); // supd needs to read trustd's cache dir for these
-#endif
         [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForTrust]
                                                                    name:@"trust" deviceAnalytics:YES iCloudAnalytics:NO]];
-        [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForTrustdHealth]
-                                                                   name:@"trustdHealth" deviceAnalytics:YES iCloudAnalytics:NO]];
-        [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForTLS]
-                                                                   name:@"tls" deviceAnalytics:YES iCloudAnalytics:NO]];
-
 #if TARGET_OS_OSX
-        _set_user_dir_suffix(NULL); // set back to the default cache dir
+        [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForRootTrust]
+                                                                   name:@"rootTrust" deviceAnalytics:YES iCloudAnalytics:NO]];
+#endif
+    } else if ([topicName isEqualToString:SFAnalyticsTopicNetworking]) {
+        [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForNetworking]
+                                                                   name:@"networking" deviceAnalytics:YES iCloudAnalytics:NO]];
+#if TARGET_OS_OSX
+        [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForRootNetworking]
+                                                                   name:@"rootNetworking" deviceAnalytics:YES iCloudAnalytics:NO]];
 #endif
     } else if ([topicName isEqualToString:SFAnalyticsTopicTransparency]) {
         [clients addObject:[[SFAnalyticsClient alloc] initWithStorePath:[self.class databasePathForTransparency]
@@ -369,6 +373,8 @@ _isiCloudAnalyticsEnabled()
         __splunkUploadURL = [NSURL URLWithString:dictionary[@"splunk_uploadURL"]];
         _splunkBagURL = [NSURL URLWithString:dictionary[@"splunk_bagURL"]];
         _allowInsecureSplunkCert = [[dictionary valueForKey:@"splunk_allowInsecureCertificate"] boolValue];
+        _uploadSizeLimit = [[dictionary valueForKey:@"uploadSizeLimit"] unsignedIntegerValue];
+
         NSString* splunkEndpoint = dictionary[@"splunk_endpointDomain"];
         if (dictionary[@"disableClientId"]) {
             _disableClientId = YES;
@@ -388,6 +394,11 @@ _isiCloudAnalyticsEnabled()
         NSURL* userDefaultsSplunkBagURL = [NSURL URLWithString:[defaults stringForKey:@"splunk_bagURL"]];
         if (userDefaultsSplunkBagURL) {
             _splunkBagURL = userDefaultsSplunkBagURL;
+        }
+
+        NSInteger userDefaultsUploadSizeLimit = [defaults integerForKey:@"uploadSizeLimit"];
+        if (userDefaultsUploadSizeLimit > 0) {
+            _uploadSizeLimit = userDefaultsUploadSizeLimit;
         }
 
         BOOL userDefaultsAllowInsecureSplunkCert = [defaults boolForKey:@"splunk_allowInsecureCertificate"];
@@ -536,7 +547,8 @@ _isiCloudAnalyticsEnabled()
     }];
 }
 
-- (BOOL)prepareEventForUpload:(NSMutableDictionary*)event {
+- (BOOL)prepareEventForUpload:(NSMutableDictionary*)event
+                   linkedUUID:(NSUUID *)linkedUUID {
     if ([self eventIsBlacklisted:event]) {
         return NO;
     }
@@ -547,10 +559,13 @@ _isiCloudAnalyticsEnabled()
         event[SFAnalyticsClientId] = @(0);
     }
     event[SFAnalyticsSplunkTopic] = self->_splunkTopicName ?: [NSNull null];
+    if (linkedUUID) {
+        event[SFAnalyticsEventCorrelationID] = [linkedUUID UUIDString];
+    }
     return YES;
 }
 
-- (void)addFailures:(NSMutableArray<NSArray*>*)failures toUploadRecords:(NSMutableArray*)records threshold:(NSUInteger)threshold
+- (void)addFailures:(NSMutableArray<NSArray*>*)failures toUploadRecords:(NSMutableArray*)records threshold:(NSUInteger)threshold linkedUUID:(NSUUID *)linkedUUID
 {
     // The first 0 through 'threshold' items are getting uploaded in any case (which might be 0 for lower priority data)
 
@@ -561,7 +576,7 @@ _isiCloudAnalyticsEnabled()
                 *stop = YES;
                 return;
             }
-            if ([self prepareEventForUpload:event]) {
+            if ([self prepareEventForUpload:event linkedUUID:linkedUUID]) {
                 if ([NSJSONSerialization isValidJSONObject:event]) {
                     [records addObject:event];
                 } else {
@@ -594,7 +609,7 @@ _isiCloudAnalyticsEnabled()
                 NSRange range = NSMakeRange(threshold, (client.count - threshold) * scale);
                 NSArray* sub = [client subarrayWithRange:range];
                 [sub enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-                    if ([self prepareEventForUpload:obj]) {
+                    if ([self prepareEventForUpload:obj linkedUUID:linkedUUID]) {
                         [records addObject:obj];
                     }
                 }];
@@ -651,7 +666,7 @@ _isiCloudAnalyticsEnabled()
     return statistics;
 }
 
-- (NSMutableDictionary*)healthSummaryWithName:(NSString*)name store:(SFAnalyticsSQLiteStore*)store
+- (NSMutableDictionary*)healthSummaryWithName:(NSString*)name store:(SFAnalyticsSQLiteStore*)store uuid:(NSUUID *)uuid
 {
     __block NSMutableDictionary* summary = [NSMutableDictionary new];
 
@@ -703,7 +718,7 @@ _isiCloudAnalyticsEnabled()
     }];
 
     // Should always return yes because we already checked for event blacklisting specifically (unless summary itself is blacklisted)
-    if (![self prepareEventForUpload:summary]) {
+    if (![self prepareEventForUpload:summary linkedUUID:uuid]) {
         secwarning("supd: health summary for %@ blacklisted", name);
         return nil;
     }
@@ -731,67 +746,197 @@ _isiCloudAnalyticsEnabled()
     }
 }
 
-- (NSData*)getLoggingJSON:(bool)pretty
-                forUpload:(BOOL)upload
-     participatingClients:(NSMutableArray<SFAnalyticsClient*>**)clients
-                    force:(BOOL)force                                       // supdctl uploads ignore privacy settings and recency
-                    error:(NSError**)error
+- (size_t)serializedEventSize:(NSObject *)event
+                        error:(NSError**)error
 {
-    NSMutableArray<SFAnalyticsClient*>* localClients = [NSMutableArray new];
-    __block NSMutableArray* uploadRecords = [NSMutableArray arrayWithCapacity:_maxEventsToReport];
-    __block NSError *localError;
-    __block NSMutableArray<NSArray*>* hardFailures = [NSMutableArray new];
-    __block NSMutableArray<NSArray*>* softFailures = [NSMutableArray new];
-    NSString* ckdeviceID = nil;
-    NSString* accountID = nil;
+    if (![NSJSONSerialization isValidJSONObject:event]) {
+        secnotice("serializedEventSize", "invalid JSON object");
+        return 0;
+    }
+
+    NSData *json = [NSJSONSerialization dataWithJSONObject:event
+                                                   options:0
+                                                     error:error];
+    if (json) {
+        return [json length];
+    } else {
+        secnotice("serializedEventSize", "failed to serialize event");
+        return 0;
+    }
+}
+
+- (NSArray<NSArray *> *)chunkFailureSet:(size_t)sizeCapacity
+                                 events:(NSArray<NSDictionary *> *)events
+                                  error:(NSError **)error
+{
+    const size_t postBodyLimit = 1000; // 1000 events in a single upload
+    size_t currentSize = 0;
+    size_t currentEventCount = 0;
+
+    NSMutableArray<NSArray<NSDictionary *> *> *eventChunks = [[NSMutableArray<NSArray<NSDictionary *> *> alloc] init];
+    NSMutableArray<NSDictionary *> *currentEventChunk = [[NSMutableArray<NSDictionary *> alloc] init];
+    for (NSDictionary *event in events) {
+        NSError *localError = nil;
+        size_t eventSize = [self serializedEventSize:event error:&localError];
+        if (localError != nil) {
+            if (error) {
+                *error = localError;
+            }
+            secemergency("Unable to serialize event JSON: %@", [localError localizedDescription]);
+            return nil;
+        }
+
+        BOOL countLessThanLimit = currentEventCount < postBodyLimit;
+        BOOL sizeLessThanCapacity = (currentSize + eventSize) <= sizeCapacity;
+        if (!countLessThanLimit || !sizeLessThanCapacity) {
+            [eventChunks addObject:currentEventChunk];
+            currentEventChunk = [[NSMutableArray<NSDictionary *> alloc] init];
+            currentEventCount = 0;
+            currentSize = 0;
+        }
+
+        [currentEventChunk addObject:event];
+        currentEventCount++;
+        currentSize += eventSize;
+    }
+
+    if ([currentEventChunk count] > 0) {
+        [eventChunks addObject:currentEventChunk];
+    }
+
+    return eventChunks;
+}
+
+- (NSDictionary *)createEventDictionary:(NSArray *)healthSummaries
+                               failures:(NSArray<NSDictionary *> *)failures
+                                  error:(NSError **)error
+{
+    NSMutableArray *events = [[NSMutableArray alloc] init];
+    [events addObjectsFromArray:healthSummaries];
+    if (failures) {
+        [events addObjectsFromArray:failures];
+    }
+
+    NSDictionary *eventDictionary = @{
+        SFAnalyticsPostTime : @([[NSDate date] timeIntervalSince1970] * 1000),
+        @"events" : events,
+    };
+
+    if (![NSJSONSerialization isValidJSONObject:eventDictionary]) {
+        secemergency("json: final dictionary invalid JSON.");
+        if (error) {
+            *error = [NSError errorWithDomain:SupdErrorDomain code:SupdInvalidJSONError
+                                     userInfo:@{NSLocalizedDescriptionKey : [NSString localizedStringWithFormat:@"Final dictionary for upload is invalid JSON: %@", eventDictionary]}];
+        }
+        return nil;
+    }
+
+    return eventDictionary;
+}
+
+- (NSArray<NSDictionary *> *)createChunkedLoggingJSON:(NSArray<NSDictionary *> *)healthSummaries
+                                             failures:(NSArray<NSDictionary *> *)failures
+                                                error:(NSError **)error
+{
+    NSError *localError = nil;
+    size_t baseSize = [self serializedEventSize:healthSummaries error:&localError];
+    if (localError != nil) {
+        secemergency("Unable to serialize health summary JSON");
+        if (error) {
+            *error = localError;
+        }
+        return nil;
+    }
+
+    NSArray<NSArray *> *chunkedEvents = [self chunkFailureSet:(self.uploadSizeLimit - baseSize) events:failures error:&localError];
+
+    NSMutableArray<NSDictionary *> *jsonResults = [[NSMutableArray<NSDictionary *> alloc] init];
+    for (NSArray<NSDictionary *> *failureSet in chunkedEvents) {
+        NSDictionary *eventDictionary = [self createEventDictionary:healthSummaries failures:failureSet error:error];
+        if (eventDictionary) {
+            [jsonResults addObject:eventDictionary];
+        } else {
+            return nil;
+        }
+    }
+
+    if ([jsonResults count] == 0) {
+        NSDictionary *eventDictionary = [self createEventDictionary:healthSummaries failures:nil error:error];
+        if (eventDictionary) {
+            [jsonResults addObject:eventDictionary];
+        } else {
+            return nil;
+        }
+    }
+
+    return jsonResults;
+}
+
+- (BOOL)copyEvents:(NSMutableArray<NSDictionary *> **)healthSummaries
+          failures:(NSMutableArray<NSDictionary *> **)failures
+         forUpload:(BOOL)upload
+participatingClients:(NSMutableArray<SFAnalyticsClient*>**)clients
+             force:(BOOL)force
+        linkedUUID:(NSUUID *)linkedUUID
+             error:(NSError**)error
+{
+    NSMutableArray<SFAnalyticsClient*> *localClients = [[NSMutableArray alloc] init];
+    NSMutableArray<NSDictionary *> *localHealthSummaries = [[NSMutableArray<NSDictionary *> alloc] init];
+    NSMutableArray<NSDictionary *> *localFailures = [[NSMutableArray<NSDictionary *> alloc] init];
+    NSMutableArray<NSArray*> *hardFailures = [[NSMutableArray alloc] init];
+    NSMutableArray<NSArray*> *softFailures = [[NSMutableArray alloc] init];
+    NSString *ckdeviceID = nil;
+    NSString *accountID = nil;
 
     if (os_variant_has_internal_diagnostics("com.apple.security") && [_internalTopicName isEqualToString:SFAnalyticsTopicKeySync]) {
         ckdeviceID = [self askSecurityForCKDeviceID];
         accountID = accountAltDSID();
     }
     for (SFAnalyticsClient* client in self->_topicClients) {
-        if (!force && [client requireDeviceAnalytics] && !_isDeviceAnalyticsEnabled()) {
-            // Client required device analytics, yet the user did not opt in. 
-            secnotice("getLoggingJSON", "Client '%@' requires device analytics yet user did not opt in.", [client name]);
-            continue;
-        } 
-        if (!force && [client requireiCloudAnalytics] && !_isiCloudAnalyticsEnabled()) {
-            // Client required iCloud analytics, yet the user did not opt in. 
-            secnotice("getLoggingJSON", "Client '%@' requires iCloud analytics yet user did not opt in.", [client name]);
-            continue;
-        }
-
-        SFAnalyticsSQLiteStore* store = [SFAnalyticsSQLiteStore storeWithPath:client.storePath schema:SFAnalyticsTableSchema];
-
-        if (upload) {
-            NSDate* uploadDate = store.uploadDate;
-            if (!force && uploadDate && [[NSDate date] timeIntervalSinceDate:uploadDate] < _secondsBetweenUploads) {
-                secnotice("json", "ignoring client '%@' for %@ because last upload too recent: %@",
-                          client.name, _internalTopicName, uploadDate);
+        @autoreleasepool {
+            if (!force && [client requireDeviceAnalytics] && !_isDeviceAnalyticsEnabled()) {
+                // Client required device analytics, yet the user did not opt in.
+                secnotice("getLoggingJSON", "Client '%@' requires device analytics yet user did not opt in.", [client name]);
+                continue;
+            }
+            if (!force && [client requireiCloudAnalytics] && !_isiCloudAnalyticsEnabled()) {
+                // Client required iCloud analytics, yet the user did not opt in.
+                secnotice("getLoggingJSON", "Client '%@' requires iCloud analytics yet user did not opt in.", [client name]);
                 continue;
             }
 
-            if (force) {
-                secnotice("json", "client '%@' for topic '%@' force-included", client.name, _internalTopicName);
-            } else {
-                secnotice("json", "including client '%@' for topic '%@' for upload", client.name, _internalTopicName);
-            }
-            [localClients addObject:client];
-        }
+            SFAnalyticsSQLiteStore* store = [SFAnalyticsSQLiteStore storeWithPath:client.storePath schema:SFAnalyticsTableSchema];
 
-        NSMutableDictionary* healthSummary = [self healthSummaryWithName:client.name store:store];
-        if (healthSummary) {
-            if (ckdeviceID) {
-                healthSummary[SFAnalyticsDeviceID] = ckdeviceID;
-            }
-            if (accountID) {
-                healthSummary[SFAnalyticsAltDSID] = accountID;
-            }
-            [uploadRecords addObject:healthSummary];
-        }
+            if (upload) {
+                NSDate* uploadDate = store.uploadDate;
+                if (!force && uploadDate && [[NSDate date] timeIntervalSinceDate:uploadDate] < _secondsBetweenUploads) {
+                    secnotice("json", "ignoring client '%@' for %@ because last upload too recent: %@",
+                              client.name, _internalTopicName, uploadDate);
+                    continue;
+                }
 
-        [hardFailures addObject:store.hardFailures];
-        [softFailures addObject:store.softFailures];
+                if (force) {
+                    secnotice("json", "client '%@' for topic '%@' force-included", client.name, _internalTopicName);
+                } else {
+                    secnotice("json", "including client '%@' for topic '%@' for upload", client.name, _internalTopicName);
+                }
+                [localClients addObject:client];
+            }
+
+            NSMutableDictionary* healthSummary = [self healthSummaryWithName:client.name store:store uuid:linkedUUID];
+            if (healthSummary) {
+                if (ckdeviceID) {
+                    healthSummary[SFAnalyticsDeviceID] = ckdeviceID;
+                }
+                if (accountID) {
+                    healthSummary[SFAnalyticsAltDSID] = accountID;
+                }
+                [localHealthSummaries addObject:healthSummary];
+            }
+
+            [hardFailures addObject:store.hardFailures];
+            [softFailures addObject:store.softFailures];
+        }
     }
 
     if (upload && [localClients count] == 0) {
@@ -801,40 +946,93 @@ _isiCloudAnalyticsEnabled()
                                          code:-10
                                      userInfo:@{NSLocalizedDescriptionKey : description}];
         }
-        return nil;
+        return NO;
     }
 
     if (clients) {
         *clients = localClients;
     }
 
-    [self addFailures:hardFailures toUploadRecords:uploadRecords threshold:_maxEventsToReport/10];
-    [self addFailures:softFailures toUploadRecords:uploadRecords threshold:0];
+    if (failures) {
+        [self addFailures:hardFailures toUploadRecords:localFailures threshold:_maxEventsToReport/10 linkedUUID:linkedUUID];
+        [self addFailures:softFailures toUploadRecords:localFailures threshold:0 linkedUUID:linkedUUID];
+        [*failures addObjectsFromArray:localFailures];
+    }
 
-    NSDictionary* jsonDict = @{
-                               SFAnalyticsSplunkPostTime : @([[NSDate date] timeIntervalSince1970] * 1000),
-                               @"events" : uploadRecords
-                               };
+    if (healthSummaries) {
+        [*healthSummaries addObjectsFromArray:localHealthSummaries];
+    }
 
-    // This check is "belt and suspenders" because we already checked each event separately
-    if (![NSJSONSerialization isValidJSONObject:jsonDict]) {
-        secemergency("json: final dictionary invalid JSON. This is terrible!");
+    return YES;
+}
+
+- (NSArray<NSDictionary *> *)createChunkedLoggingJSON:(bool)pretty
+                                            forUpload:(BOOL)upload
+                                 participatingClients:(NSMutableArray<SFAnalyticsClient*>**)clients
+                                                force:(BOOL)force                                       // supdctl uploads ignore privacy settings and recency
+                                                error:(NSError**)error
+{
+    NSUUID *linkedUUID = [NSUUID UUID];
+    NSError *localError = nil;
+    NSMutableArray *failures = [[NSMutableArray alloc] init];
+    NSMutableArray *healthSummaries = [[NSMutableArray alloc] init];
+    BOOL copied = [self copyEvents:&healthSummaries
+                          failures:&failures
+                         forUpload:upload
+              participatingClients:clients
+                             force:force
+                        linkedUUID:linkedUUID
+                             error:&localError];
+    if (!copied || localError) {
         if (error) {
-            *error = [NSError errorWithDomain:SupdErrorDomain code:SupdInvalidJSONError
-                                     userInfo:@{NSLocalizedDescriptionKey : [NSString localizedStringWithFormat:@"Final dictionary for upload is invalid JSON: %@", jsonDict]}];
+            *error = localError;
         }
         return nil;
     }
 
-    NSData *json = [NSJSONSerialization dataWithJSONObject:jsonDict
-                                                   options:(pretty ? NSJSONWritingPrettyPrinted : 0)
-                                                     error:&localError];
-    
-    if (error) {
-        *error = localError;
+    // Trim failures to the max count, based on health summary count
+    if ([failures count] > (_maxEventsToReport - [healthSummaries count])) {
+        NSRange range;
+        range.location = 0;
+        range.length = _maxEventsToReport - [healthSummaries count];
+        failures = [[failures subarrayWithRange:range] mutableCopy];
     }
 
-    return json;
+    return [self createChunkedLoggingJSON:healthSummaries failures:failures error:error];
+}
+
+- (NSDictionary *)createLoggingJSON:(bool)pretty
+                          forUpload:(BOOL)upload
+               participatingClients:(NSMutableArray<SFAnalyticsClient*>**)clients
+                              force:(BOOL)force                                       // supdctl uploads ignore privacy settings and recency
+                              error:(NSError**)error
+{
+    NSError *localError = nil;
+    NSMutableArray *failures = [[NSMutableArray alloc] init];
+    NSMutableArray *healthSummaries = [[NSMutableArray alloc] init];
+    BOOL copied = [self copyEvents:&healthSummaries
+                          failures:&failures
+                         forUpload:upload
+              participatingClients:clients
+                             force:force
+                        linkedUUID:nil
+                             error:&localError];
+    if (!copied || localError) {
+        if (error) {
+            *error = localError;
+        }
+        return nil;
+    }
+
+    // Trim failures to the max count, based on health summary count
+    if ([failures count] > (_maxEventsToReport - [healthSummaries count])) {
+        NSRange range;
+        range.location = 0;
+        range.length = _maxEventsToReport - [healthSummaries count];
+        failures = [[failures subarrayWithRange:range] mutableCopy];
+    }
+
+    return [self createEventDictionary:healthSummaries failures:failures error:error];
 }
 
 // Is at least one client eligible for data collection based on user consent? Otherwise callers should NOT reach off-device.
@@ -1062,32 +1260,49 @@ _isiCloudAnalyticsEnabled()
     return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory((__bridge CFStringRef)@"Analytics/localkeychain.db") path];
 }
 
-+ (NSString*)databasePathForTrustdHealth
-{
-#if TARGET_OS_IPHONE
-    return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory(CFSTR("Analytics/trustd_health_analytics.db")) path];
-#else
-    return [(__bridge_transfer NSURL*)SecCopyURLForFileInUserCacheDirectory(CFSTR("Analytics/trustd_health_analytics.db")) path];
-#endif
-}
-
 + (NSString*)databasePathForTrust
 {
 #if TARGET_OS_IPHONE
     return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory(CFSTR("Analytics/trust_analytics.db")) path];
 #else
-    return [(__bridge_transfer NSURL*)SecCopyURLForFileInUserCacheDirectory(CFSTR("Analytics/trust_analytics.db")) path];
+    return [SFAnalytics defaultProtectedAnalyticsDatabasePath:@"trust_analytics"];
 #endif
 }
 
-+ (NSString*)databasePathForTLS
+#if TARGET_OS_OSX
++ (NSUUID *)rootUUID
+{
+    uuid_t rootUuid;
+    int ret = mbr_uid_to_uuid(0, rootUuid);
+    if (ret != 0) {
+        return nil;
+    }
+    return [[NSUUID alloc] initWithUUIDBytes:rootUuid];
+}
+#endif
+
+#if TARGET_OS_OSX
++ (NSString*)databasePathForRootTrust
+{
+    return [SFAnalytics defaultProtectedAnalyticsDatabasePath:@"trust_analytics" uuid:[SFAnalyticsTopic rootUUID]];
+}
+#endif
+
++ (NSString*)databasePathForNetworking
 {
 #if TARGET_OS_IPHONE
-    return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory(CFSTR("Analytics/TLS_analytics.db")) path];
+    return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory(CFSTR("Analytics/networking_analytics.db")) path];
 #else
-    return [(__bridge_transfer NSURL*)SecCopyURLForFileInUserCacheDirectory(CFSTR("Analytics/TLS_analytics.db")) path];
+    return [SFAnalytics defaultProtectedAnalyticsDatabasePath:@"networking_analytics"];
 #endif
 }
+
+#if TARGET_OS_OSX
++ (NSString*)databasePathForRootNetworking
+{
+    return [SFAnalytics defaultProtectedAnalyticsDatabasePath:@"networking_analytics" uuid:[SFAnalyticsTopic rootUUID]];
+}
+#endif
 
 + (NSString*)databasePathForSignIn
 {
@@ -1252,6 +1467,30 @@ static bool ShouldInitializeWithAsset(NSBundle *trustStoreBundle, NSURL *directo
     }
 }
 
+- (NSArray<NSData *> *)serializeLoggingEvents:(NSArray<NSDictionary *> *)events
+                                        error:(NSError **)error
+{
+    if (!events) {
+        return nil;
+    }
+
+    NSMutableArray<NSData *> *serializedEvents = [[NSMutableArray<NSData *> alloc] init];
+    for (NSDictionary *event in events) {
+        NSError *serializationError = nil;
+        NSData* serializedEvent = [NSJSONSerialization dataWithJSONObject:event
+                                                                  options:0
+                                                                    error:&serializationError];
+        if (serializedEvent && !serializationError) {
+            [serializedEvents addObject:serializedEvent];
+        } else if (error) {
+            *error = serializationError;
+            return nil;
+        }
+    }
+
+    return serializedEvents;
+}
+
 - (BOOL)uploadAnalyticsWithError:(NSError**)error force:(BOOL)force {
     [self sendNotificationForOncePerReportSamplers];
     
@@ -1272,9 +1511,32 @@ static bool ShouldInitializeWithAsset(NSBundle *trustStoreBundle, NSURL *directo
             }
 
             NSMutableArray<SFAnalyticsClient*>* clients = [NSMutableArray new];
-            NSData* json = [topic getLoggingJSON:false forUpload:YES participatingClients:&clients force:force error:&localError];
-            if (json) {
-                if ([topic isSampledUpload]) {
+            NSArray<NSDictionary *> *jsonEvents = [topic createChunkedLoggingJSON:false forUpload:YES participatingClients:&clients force:force error:&localError];
+            if (!jsonEvents || localError) {
+                if ([[localError domain] isEqualToString:SupdErrorDomain] && [localError code] == SupdInvalidJSONError) {
+                    // Pretend this was a success because at least we'll get rid of bad data.
+                    // If someone keeps logging bad data and we only catch it here then
+                    // this causes sustained data loss for the entire topic.
+                    [topic updateUploadDateForClients:clients date:[NSDate date] clearData:YES];
+                }
+                secerror("upload: failed to create chunked log events for logging topic %@: %@", [topic internalTopicName], localError);
+                continue;
+            }
+
+            NSArray<NSData *> *serializedEvents = [self serializeLoggingEvents:jsonEvents error:&localError];
+            if (!serializedEvents || localError) {
+                if ([[localError domain] isEqualToString:SupdErrorDomain] && [localError code] == SupdInvalidJSONError) {
+                    // Pretend this was a success because at least we'll get rid of bad data.
+                    // If someone keeps logging bad data and we only catch it here then
+                    // this causes sustained data loss for the entire topic.
+                    [topic updateUploadDateForClients:clients date:[NSDate date] clearData:YES];
+                }
+                secerror("upload: failed to serialized chunked log events for logging topic %@: %@", [topic internalTopicName], localError);
+                continue;
+            }
+
+            if ([topic isSampledUpload]) {
+                for (NSData *json in serializedEvents) {
                     if (![self->_reporter saveReport:json fileName:[topic internalTopicName]]) {
                         secerror("upload: failed to write analytics data to log");
                     }
@@ -1285,20 +1547,12 @@ static bool ShouldInitializeWithAsset(NSBundle *trustStoreBundle, NSURL *directo
                     } else {
                         secerror("upload: Failed to post JSON for %@: %@", [topic internalTopicName], localError);
                     }
-                } else {
-                    /* If we didn't sample this report, update date to prevent trying to upload again sooner
-                     * than we should. Clear data so that per-day calculations remain consistent. */
-                    secnotice("upload", "skipping unsampled upload for %@ and clearing data", [topic internalTopicName]);
-                    [topic updateUploadDateForClients:clients date:[NSDate date] clearData:YES];
                 }
             } else {
-                if ([[localError domain] isEqualToString:SupdErrorDomain] && [localError code] == SupdInvalidJSONError) {
-                    // Pretend this was a success because at least we'll get rid of bad data.
-                    // If someone keeps logging bad data and we only catch it here then
-                    // this causes sustained data loss for the entire topic.
-                    [topic updateUploadDateForClients:clients date:[NSDate date] clearData:YES];
-                }
-                secerror("upload: failed to get logging JSON for topic %@: %@", [topic internalTopicName], localError);
+                /* If we didn't sample this report, update date to prevent trying to upload again sooner
+                 * than we should. Clear data so that per-day calculations remain consistent. */
+                secnotice("upload", "skipping unsampled upload for %@ and clearing data", [topic internalTopicName]);
+                [topic updateUploadDateForClients:clients date:[NSDate date] clearData:YES];
             }
         }
         if (error && localError) {
@@ -1382,8 +1636,6 @@ static bool ShouldInitializeWithAsset(NSBundle *trustStoreBundle, NSURL *directo
     reply(info, nil);
 }
 
-
-
 - (NSString*)stringForEventClass:(SFAnalyticsEventClass)eventClass
 {
     if (eventClass == SFAnalyticsEventClassNote) {
@@ -1409,20 +1661,51 @@ static bool ShouldInitializeWithAsset(NSBundle *trustStoreBundle, NSURL *directo
     reply([self getSysdiagnoseDump]);
 }
 
-- (void)getLoggingJSON:(bool)pretty topic:(NSString *)topicName reply:(void (^)(NSData*, NSError*))reply {
-    secnotice("rpcGetLoggingJSON", "Building a JSON blob resembling the one we would have uploaded");
+- (void)createLoggingJSON:(bool)pretty topic:(NSString *)topicName reply:(void (^)(NSData *, NSError*))reply {
+    secnotice("rpcCreateLoggingJSON", "Building a JSON blob resembling the one we would have uploaded");
     NSError* error = nil;
     [self sendNotificationForOncePerReportSamplers];
-    NSData* json = nil;
+    NSDictionary *eventDictionary = nil;
     for (SFAnalyticsTopic* topic in self->_analyticsTopics) {
         if ([topic.internalTopicName isEqualToString:topicName]) {
-            json = [topic getLoggingJSON:pretty forUpload:NO participatingClients:nil force:!runningTests error:&error];
+            eventDictionary = [topic createLoggingJSON:pretty forUpload:NO participatingClients:nil force:!runningTests error:&error];
         }
     }
-    if (!json) {
+
+    NSData *data = nil;
+    if (!eventDictionary) {
         secerror("Unable to obtain JSON: %@", error);
+    } else {
+        data = [NSJSONSerialization dataWithJSONObject:eventDictionary
+                                               options:(pretty ? NSJSONWritingPrettyPrinted : 0)
+                                                 error:&error];
     }
-    reply(json, error);
+
+    reply(data, error);
+}
+
+- (void)createChunkedLoggingJSON:(bool)pretty topic:(NSString *)topicName reply:(void (^)(NSData *, NSError*))reply
+{
+    secnotice("rpcCreateChunkedLoggingJSON", "Building an array of JSON blobs resembling the one we would have uploaded");
+    NSError* error = nil;
+    [self sendNotificationForOncePerReportSamplers];
+    NSArray<NSDictionary *> *events = nil;
+    for (SFAnalyticsTopic* topic in self->_analyticsTopics) {
+        if ([topic.internalTopicName isEqualToString:topicName]) {
+            events = [topic createChunkedLoggingJSON:pretty forUpload:NO participatingClients:nil force:!runningTests error:&error];
+        }
+    }
+
+    NSData *data = nil;
+    if (!events) {
+        secerror("Unable to obtain JSON: %@", error);
+    } else {
+        data = [NSJSONSerialization dataWithJSONObject:events
+                                               options:(pretty ? NSJSONWritingPrettyPrinted : 0)
+                                                 error:&error];
+    }
+
+    reply(data, error);
 }
 
 - (void)forceUploadWithReply:(void (^)(BOOL, NSError*))reply {

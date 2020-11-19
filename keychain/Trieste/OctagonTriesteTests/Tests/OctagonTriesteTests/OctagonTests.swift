@@ -16,7 +16,6 @@ extension CDAIOSDevice {
 }
 
 final class OctagonTests: CDTTestCase {
-
     let username: String? = nil
     let password: String? = nil
     var signedIn: Bool = false
@@ -77,7 +76,7 @@ final class OctagonTests: CDTTestCase {
             }
 
             addTeardownBlock {
-                if (self.signedIn) {
+                if self.signedIn {
                     do {
                         let listAccounts = try device.executeFile(atPath: "/usr/local/bin/accounts_tool", withArguments: ["--no-confirmation", "deleteAccountsForUsername", self.username!])
                         XCTAssertEqual(listAccounts.returnCode, 0, "deleteAccountsForUsername")
@@ -89,7 +88,7 @@ final class OctagonTests: CDTTestCase {
                 device.relinquish()
             }
 
-            if (self.username != nil) {
+            if self.username != nil {
                 CDALog(at: .infoLevel, "Signing in to iCloud here \(self.username!)")
 
                 let listAccounts = try device.executeFile(atPath: "/usr/local/bin/accounts_tool", withArguments: ["listAccounts", "-v"])
@@ -111,7 +110,6 @@ final class OctagonTests: CDTTestCase {
     }
 
     func compareCKKSZone(name zone: String, status1: NSDictionary, status2: NSDictionary) -> Bool {
-
         let zone1 = status1[zone] as! NSDictionary
         let zone2 = status2[zone] as! NSDictionary
 
@@ -136,7 +134,6 @@ final class OctagonTests: CDTTestCase {
     }
 
     func compareCKKSStatus(c1: NSDictionary, c2: NSDictionary) -> Bool {
-
         let status1 = c1["status"] as! NSDictionary
         let status2 = c2["status"] as! NSDictionary
 
@@ -150,13 +147,13 @@ final class OctagonTests: CDTTestCase {
 
     func sosStatus(_ device: CDAIOSDevice, verbose: Bool = false) throws {
         let result = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-i"])
-        if (verbose) {
+        if verbose {
             print("security sync -i\n\(String(data: result.standardOutput, encoding: .utf8)!)\n")
         }
     }
     func ckksStatus(_ device: CDAIOSDevice, verbose: Bool = false) throws -> NSDictionary {
         let ckks = try device.executeFile(atPath: self.ckksTool, withArguments: ["status", "--json"])
-        if (verbose) {
+        if verbose {
             print("ckks status\n\(String(data: ckks.standardOutput, encoding: .utf8)!)\n")
         }
 
@@ -164,8 +161,7 @@ final class OctagonTests: CDTTestCase {
     }
 
     func sosApplication(_ device: CDAIOSDevice, verbose: Bool = false) throws {
-        if (self.password != nil) {
-
+        if self.password != nil {
             print("submitting application\n")
 
             let password = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-P", self.password!])
@@ -182,8 +178,7 @@ final class OctagonTests: CDTTestCase {
     }
 
     func sosApprove(_ device: CDAIOSDevice, verbose: Bool = false) throws {
-        if (self.password != nil) {
-
+        if self.password != nil {
             print("approving applications\n")
 
             let password = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-P", self.password!])
@@ -200,7 +195,7 @@ final class OctagonTests: CDTTestCase {
     }
 
     func forceResetSOS(_ device: CDAIOSDevice, resetCKKS: Bool = false) throws {
-        if (self.password != nil) {
+        if self.password != nil {
             _ = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-P", self.password!])
             _ = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-R"])
             _ = try device.executeFile(atPath: securityTool, withArguments: ["sync", "-C"])
@@ -213,7 +208,7 @@ final class OctagonTests: CDTTestCase {
             print("sleeping some to allow cdpd, cloudd and friends to catch up \n")
             sleep(4)
 
-            if (resetCKKS) {
+            if resetCKKS {
                 _ = try device.executeFile(atPath: self.ckksTool, withArguments: ["reset-cloudkit"])
 
                 print("sleeps some after ckksctl reset (should be removed)\n")
@@ -234,7 +229,7 @@ final class OctagonTests: CDTTestCase {
     }
 
     func test2DeviceSOS() throws {
-        if (self.password == nil) {
+        if self.password == nil {
             print("this test only works with password")
             return
         }
@@ -272,9 +267,9 @@ final class OctagonTests: CDTTestCase {
 
             for i in 0..<2 {
                 CDALog(at: .infoLevel, "Reset \(i)")
-                octagon.octagonReset("altDSID", complete: { _, error in
+                octagon.octagonReset("altDSID") { _, error in
                     CDTAssert(error == nil, "Octagon wasn't reset, error was \(String(describing: error))")
-                })
+                }
             }
         }
 

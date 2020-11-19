@@ -75,7 +75,7 @@
         self.completionBlock = ^{
             __strong __typeof(weakSelf) strongSelf = weakSelf;
             if(!strongSelf) {
-                secerror("ckks: received callback for released object");
+                ckkserror_global("ckks", "received callback for released object");
                 return;
             }
 
@@ -121,7 +121,7 @@
 
         if(!skipCreation) {
             // Create the zone:
-            secnotice("ckks", "Creating zone %@", zone);
+            ckksnotice_global("ckks", "Creating zone %@", zone);
             ckdb[zone.zoneID] = [[FakeCKZone alloc] initZone: zone.zoneID];
         }
 
@@ -213,7 +213,7 @@
         self.completionBlock = ^{
             __strong __typeof(weakSelf) strongSelf = weakSelf;
             if(!strongSelf) {
-                secerror("ckks: received callback for released object");
+                ckkserror_global("ckks", "received callback for released object");
                 return;
             }
 
@@ -232,6 +232,7 @@
 
         if(!fakezone) {
             // This is an error: the zone doesn't exist
+            ckksnotice("fakeck", subscription.zoneID, "failing subscription for missing zone");
             self.subscriptionError = [[CKPrettyError alloc] initWithDomain:CKErrorDomain
                                                                       code:CKErrorPartialFailure
                                                                   userInfo:@{
@@ -243,6 +244,7 @@
                                                                                                       }];
 
         } else if(fakezone.subscriptionError) {
+            ckksnotice("fakeck", subscription.zoneID, "failing subscription with injected error %@", fakezone.subscriptionError);
             // Not the best way to do this, but it's an error
             // Needs fixing if you want to support multiple zone failures
             self.subscriptionError = fakezone.subscriptionError;
@@ -250,6 +252,7 @@
             // 'clear' the error
             fakezone.subscriptionError = nil;
         } else {
+            ckksnotice("fakeck", subscription.zoneID, "Successfully subscribed to zone");
             if(!self.subscriptionsSaved) {
                 self.subscriptionsSaved = [[NSMutableArray alloc] init];
             }
@@ -258,6 +261,7 @@
     }
 
     for(NSString* subscriptionID in self.subscriptionIDsToDelete) {
+        secnotice("fakeck", "Successfully deleted subscription: %@", subscriptionID);
         if(!self.subscriptionIDsDeleted) {
             self.subscriptionIDsDeleted = [[NSMutableArray alloc] init];
         }
@@ -287,6 +291,8 @@
 @synthesize recordZoneFetchCompletionBlock = _recordZoneFetchCompletionBlock;
 @synthesize fetchRecordZoneChangesCompletionBlock = _fetchRecordZoneChangesCompletionBlock;
 
+@synthesize deviceIdentifier = _deviceIdentifier;
+
 @synthesize operationID = _operationID;
 @synthesize resolvedConfiguration = _resolvedConfiguration;
 @synthesize group = _group;
@@ -309,6 +315,7 @@
         _configurationsByRecordZoneID = configurationsByRecordZoneID;
 
         _operationID = @"fake-operation-ID";
+        _deviceIdentifier = @"ckkstests";
     }
     return self;
 }
@@ -352,7 +359,7 @@
             return;
         }
 
-        // Not precisely correct in the case of multiple zone fetches. However, we don't currently do that, so it'll work for now.
+        // Not precisely correct in the case of multiple zone fetches.
         NSError* mockError = [zone popFetchChangesError];
         if(mockError) {
             self.fetchRecordZoneChangesCompletionBlock(mockError);
@@ -418,11 +425,10 @@
 
         self.recordZoneChangeTokensUpdatedBlock(zoneID, currentChangeToken, nil);
         self.recordZoneFetchCompletionBlock(zoneID, currentChangeToken, nil, moreComing, opError);
+    }
 
-        if(self.blockAfterFetch) {
-            self.blockAfterFetch();
-        }
-
+    if(self.blockAfterFetch) {
+        self.blockAfterFetch();
     }
 
     self.fetchRecordZoneChangesCompletionBlock(nil);
@@ -594,18 +600,15 @@
 @implementation FakeAPSConnection
 @synthesize delegate;
 
+@synthesize enabledTopics;
+@synthesize opportunisticTopics;
+@synthesize darkWakeTopics;
+
 - (id)initWithEnvironmentName:(NSString *)environmentName namedDelegatePort:(NSString*)namedDelegatePort queue:(dispatch_queue_t)queue {
     if(self = [super init]) {
     }
     return self;
 }
-
-- (void)setEnabledTopics:(NSArray<NSString *> *)enabledTopics {
-}
-
-- (void)setDarkWakeTopics:(NSArray<NSString *> *)darkWakeTopics {
-}
-
 @end
 
 // Do literally nothing
@@ -678,6 +681,10 @@
     dispatch_assert_queue(self.queue);
 
     CKRecord* record = [item CKRecordWithZoneID: zoneID];
+
+    secnotice("fake-cloudkit", "adding item to zone(%@): %@", zoneID.zoneName, item);
+    secnotice("fake-cloudkit", "new record: %@", record);
+
     [self _onqueueAddToZone: record];
 
     // Save off the etag
@@ -708,6 +715,21 @@
 
 - (NSError * _Nullable)errorFromSavingRecord:(CKRecord*) record {
     CKRecord* existingRecord = self.currentDatabase[record.recordID];
+
+    // First, implement CKKS-specific server-side checks
+    if([record.recordType isEqualToString:SecCKRecordCurrentKeyType]) {
+        CKReference* parentKey = record[SecCKRecordParentKeyRefKey];
+
+        CKRecord* existingParentKey = self.currentDatabase[parentKey.recordID];
+
+        if(!existingParentKey) {
+            ckksnotice("fakeck", self.zoneID, "bad sync key reference! Fail the write: %@ %@", record, existingRecord);
+
+            return [FakeCKZone internalPluginError:@"CloudkitKeychainService" code:CKKSServerMissingRecord description:@"synckey record: record not found"];
+        }
+    }
+    //
+
     if(existingRecord && ![existingRecord.recordChangeTag isEqualToString: record.recordChangeTag]) {
         ckksnotice("fakeck", self.zoneID, "change tag mismatch! Fail the write: %@ %@", record, existingRecord);
 
@@ -744,10 +766,14 @@
 - (NSError*)deleteCKRecordIDFromZone:(CKRecordID*) recordID {
     // todo: fail somehow
     dispatch_sync(self.queue, ^{
+        ckksnotice("fakeck", self.zoneID, "Change token before server-deleted record is : %@", self.currentChangeToken);
+
         self.pastDatabases[self.currentChangeToken] = [self.currentDatabase mutableCopy];
         [self _onqueueRollChangeToken];
 
         [self.currentDatabase removeObjectForKey: recordID];
+
+        ckksnotice("fakeck", self.zoneID, "Change token after server-deleted record is : %@", self.currentChangeToken);
     });
     return nil;
 }
@@ -768,6 +794,32 @@
     }
     return error;
 }
+
++ (NSError*)internalPluginError:(NSString*)serverDomain code:(NSInteger)code description:(NSString*)desc
+{
+    // Note: uses SecCKKSContainerName, but that's probably okay
+    NSError* extensionError = [[CKPrettyError alloc] initWithDomain:serverDomain
+                                                               code:code
+                                                           userInfo:@{
+                                                                      CKErrorServerDescriptionKey: desc,
+                                                                      NSLocalizedDescriptionKey: desc,
+                                                                      }];
+    NSError* internalError = [[CKPrettyError alloc] initWithDomain:CKInternalErrorDomain
+                                                              code:CKErrorInternalPluginError
+                                                          userInfo:@{CKErrorServerDescriptionKey: desc,
+                                                                     NSLocalizedDescriptionKey: desc,
+                                                                     NSUnderlyingErrorKey: extensionError,
+                                                                     }];
+    NSError* error = [[CKPrettyError alloc] initWithDomain:CKErrorDomain
+                                                      code:CKErrorServerRejectedRequest
+                                                  userInfo:@{NSUnderlyingErrorKey: internalError,
+                                                             CKErrorServerDescriptionKey: desc,
+                                                             NSLocalizedDescriptionKey: desc,
+                                                             CKContainerIDKey: SecCKKSContainerName,
+                                                             }];
+
+    return error;
+}
 @end
 
 @implementation FakeCKKSNotifier
@@ -775,7 +827,7 @@
     if(notification) {
         // This isn't actually fake, but XCTest likes NSNotificationCenter a whole lot.
         // These notifications shouldn't escape this process, so it's perfect.
-        secnotice("ckks", "sending fake NSNotification %@", notification);
+        ckksnotice_global("ckks", "sending fake NSNotification %@", notification);
         [[NSNotificationCenter defaultCenter] postNotificationName:notification object:nil];
     }
 }

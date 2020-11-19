@@ -27,7 +27,7 @@
 #if OCTAGON
 #import "Analytics/SFAnalytics.h"
 #import "keychain/ot/OTManager.h"
-#import "keychain/ot/OTContext.h"
+#import "keychain/ot/OTRamping.h"
 #import "keychain/ot/OTFollowup.h"
 #import "keychain/ot/OTControlProtocol.h"
 #import "keychain/ot/OTSOSAdapter.h"
@@ -36,7 +36,8 @@
 #import "keychain/ot/OTCuttlefishAccountStateHolder.h"
 #import "keychain/escrowrequest/Framework/SecEscrowRequest.h"
 #import "keychain/ckks/CKKSAccountStateTracker.h"
-#include <securityd/SecDbItem.h>
+#import "keychain/ckks/CKKSViewManager.h"
+#include "keychain/securityd/SecDbItem.h"
 #import <CoreCDP/CDPAccount.h>
 NS_ASSUME_NONNULL_BEGIN
 
@@ -45,41 +46,41 @@ NS_ASSUME_NONNULL_BEGIN
 @class OTClientStateMachine;
 @class CKKSLockStateTracker;
 @class CKKSAccountStateTracker;
+@class CloudKitClassDependencies;
 
 @interface OTManager : NSObject <OTControlProtocol>
 
-@property (nonatomic, readonly) NSDate *lastPostedCoreFollowUp;
 @property (nonatomic, readonly) CKKSLockStateTracker* lockStateTracker;
-@property id<CKKSCloudKitAccountStateTrackingProvider> accountStateTracker;
+@property CKKSAccountStateTracker* accountStateTracker;
 
--(instancetype)init;
+@property (readonly) CKContainer* cloudKitContainer;
+@property (nullable) CKKSViewManager* viewManager;
 
--(instancetype) initWithContext:(OTContext* _Nullable)context
-                     localStore:(OTLocalStore* _Nullable)localStore
-                         enroll:(OTRamp* _Nullable)enroll
-                        restore:(OTRamp* _Nullable)restore
-                            cfu:(OTRamp* _Nullable)cfu
-                   cfuScheduler:(CKKSNearFutureScheduler* _Nullable)cfuScheduler
-                     sosAdapter:(id<OTSOSAdapter>)sosAdapter
-                 authKitAdapter:(id<OTAuthKitAdapter>)authKitAdapter
-       deviceInformationAdapter:(id<OTDeviceInformationAdapter>)deviceInformationAdapter
-             apsConnectionClass:(Class<OctagonAPSConnection>)apsConnectionClass
-             escrowRequestClass:(Class<SecEscrowRequestable>)escrowRequestClass
-                    loggerClass:(Class<SFAnalyticsProtocol> _Nullable)loggerClass
-               lockStateTracker:(CKKSLockStateTracker* _Nullable)lockStateTracker
-            accountStateTracker:(id<CKKSCloudKitAccountStateTrackingProvider>)accountStateTracker
-        cuttlefishXPCConnection:(id<NSXPCProxyCreating> _Nullable)cuttlefishXPCConnection
-                           cdpd:(id<OctagonFollowUpControllerProtocol>)cdpd;
+// Creates an OTManager ready for use with live external systems.
+- (instancetype)init;
+
+- (instancetype)initWithSOSAdapter:(id<OTSOSAdapter>)sosAdapter
+                    authKitAdapter:(id<OTAuthKitAdapter>)authKitAdapter
+          deviceInformationAdapter:(id<OTDeviceInformationAdapter>)deviceInformationAdapter
+                apsConnectionClass:(Class<OctagonAPSConnection>)apsConnectionClass
+                escrowRequestClass:(Class<SecEscrowRequestable>)escrowRequestClass
+                       loggerClass:(Class<SFAnalyticsProtocol>)loggerClass
+                  lockStateTracker:(CKKSLockStateTracker*)lockStateTracker
+         cloudKitClassDependencies:(CKKSCloudKitClassDependencies*)cloudKitClassDependencies
+           cuttlefishXPCConnection:(id<NSXPCProxyCreating> _Nullable)cuttlefishXPCConnection
+                              cdpd:(id<OctagonFollowUpControllerProtocol>)cdpd;
 
 // Call this to start up the state machinery
 - (void)initializeOctagon;
-- (void) moveToCheckTrustedStateForContainer:(NSString* _Nullable)containerName context:(NSString*)context;
+- (BOOL)waitForReady:(NSString* _Nullable)containerName context:(NSString*)context wait:(int64_t)wait;
+- (void)moveToCheckTrustedStateForContainer:(NSString* _Nullable)containerName context:(NSString*)context;
+
+// Call this to ensure SFA is ready
+- (void)setupAnalytics;
 
 + (instancetype _Nullable)manager;
 + (instancetype _Nullable)resetManager:(bool)reset to:(OTManager* _Nullable)obj;
-- (void)xpc24HrNotification:(NSString* _Nullable)containerName context:(NSString*)context skipRateLimitingCheck:(BOOL)skipRateLimitingCheck reply:(void (^)(NSError *error))reply;
-
--(BOOL)scheduledCloudKitRampCheck:(NSError**)error;
+- (void)xpc24HrNotification;
 
 - (OTCuttlefishContext*)contextForContainerName:(NSString* _Nullable)containerName
                                       contextID:(NSString*)contextID
@@ -135,10 +136,24 @@ NS_ASSUME_NONNULL_BEGIN
                 containerName:(NSString* _Nullable)containerName
                   contextName:(NSString *)contextName
                         reply:(void (^)(NSError *error))reply;
-
-//test only
-- (void)setSOSEnabledForPlatformFlag:(bool) value;
 @end
+
+@interface OTManager (Testing)
+- (void)setSOSEnabledForPlatformFlag:(bool) value;
+
+- (void)clearAllContexts;
+
+// Note that the OTManager returned by this will not work particularly well, if you want to do Octagon things
+// This should only be used for the CKKS tests
+- (instancetype)initWithSOSAdapter:(id<OTSOSAdapter>)sosAdapter
+                  lockStateTracker:(CKKSLockStateTracker*)lockStateTracker
+         cloudKitClassDependencies:(CKKSCloudKitClassDependencies*)cloudKitClassDependencies;
+
+- (void)invalidateEscrowCache:(NSString * _Nullable)containerName
+                    contextID:(NSString*)contextID
+                        reply:(nonnull void (^)(NSError * _Nullable error))reply;
+@end
+
 NS_ASSUME_NONNULL_END
 
 #endif  // OCTAGON

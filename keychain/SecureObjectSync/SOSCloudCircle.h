@@ -39,7 +39,6 @@
 
 #include <Security/SecureObjectSync/SOSTypes.h>
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
-#import <Security/SFSignInAnalytics.h>
 
 __BEGIN_DECLS
 
@@ -68,6 +67,13 @@ enum {
 //
 // Types
 //
+
+typedef CF_OPTIONS(uint32_t, SOSInitialSyncFlags) {
+    kSOSInitialSyncFlagTLKs = (1UL << 0),
+    kSOSInitialSyncFlagiCloudIdentity = (1UL << 1),
+    kSOSInitialSyncFlagTLKsRequestOnly = (1UL << 2), // Note that this overrides the other two flags, as it's used for aborting the piggybacking session early and returning a very small number of TLKs
+};
+
 
 enum {
     kSOSCCInCircle          = 0,
@@ -120,7 +126,6 @@ bool SOSCCSetUserCredentials(CFStringRef user_label, CFDataRef user_password, CF
  */
 
 bool SOSCCSetUserCredentialsAndDSID(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, CFErrorRef *error);
-bool SOSCCSetUserCredentialsAndDSIDWithAnalytics(CFStringRef user_label, CFDataRef user_password, CFStringRef dsid, CFDataRef parentevent, CFErrorRef *error);
 
 /*!
  @function SOSCCTryUserCredentials
@@ -152,15 +157,6 @@ bool SOSCCRegisterUserCredentials(CFStringRef user_label, CFDataRef user_passwor
  @return if we waited successfully
  */
 bool SOSCCWaitForInitialSync(CFErrorRef* error);
-bool SOSCCWaitForInitialSyncWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
-
-/*!
- @function SOSCCCopyYetToSyncViewsList
- @abstract returns views not yet synced
- @param error error to fill in if we have one
- @return List of view names that we haven't synced yet.
- */
-CFArrayRef SOSCCCopyYetToSyncViewsList(CFErrorRef* error);
 
 /*!
  @function SOSCCCanAuthenticate
@@ -249,7 +245,6 @@ bool SOSCCIsContinuityUnlockSyncing(void);
  @discussion Requests to join the user's circle or all the pending circles (other than his) if there are multiple pending circles.
  */
 bool SOSCCRequestToJoinCircle(CFErrorRef* error);
-bool SOSCCRequestToJoinCircleWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
 
 
 /*!
@@ -260,15 +255,6 @@ bool SOSCCRequestToJoinCircleWithAnalytics(CFDataRef parentEvent, CFErrorRef* er
  @discussion Uses the cloud identity to get in the circle if it can. If it cannot it falls back on simple application.
  */
 bool SOSCCRequestToJoinCircleAfterRestore(CFErrorRef* error);
-bool SOSCCRequestToJoinCircleAfterRestoreWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
-
-/*!
- @function SOSCCRequestEnsureFreshParameters
- @abstract function to help debug problems with EnsureFreshParameters
- @param error What went wrong if we tried to refresh parameters
- @result true if we successfully retrieved fresh parameters.  False if we failed.
-*/
-bool SOSCCRequestEnsureFreshParameters(CFErrorRef* error);
 
 /*!
  @function SOSCCAccountSetToNew
@@ -293,7 +279,6 @@ bool SOSCCResetToOffering(CFErrorRef* error);
  @result true if we posted the circle successfully. False if there was an error.
  */
 bool SOSCCResetToEmpty(CFErrorRef* error);
-bool SOSCCResetToEmptyWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
 
 /*!
  @function SOSCCRemoveThisDeviceFromCircle
@@ -304,7 +289,6 @@ bool SOSCCResetToEmptyWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
  */
 bool SOSCCRemoveThisDeviceFromCircle(CFErrorRef* error);
 
-bool SOSCCRemoveThisDeviceFromCircleWithAnalytics(CFDataRef parentEvent, CFErrorRef* error);
 
 /*!
  @function SOSCCRemoveThisDeviceFromCircle
@@ -316,14 +300,18 @@ bool SOSCCRemoveThisDeviceFromCircleWithAnalytics(CFDataRef parentEvent, CFError
              that we don't have the user credentail (need to prompt for password)
  */
 bool SOSCCRemovePeersFromCircle(CFArrayRef peerList, CFErrorRef* error);
-bool SOSCCRemovePeersFromCircleWithAnalytics(CFArrayRef peers, CFDataRef parentEvent, CFErrorRef* error);
 
 /*!
- @function SOSCCRemoveThisDeviceFromCircle
- @abstract Removes the current device from the circle.
- @param error What went wrong trying to remove ourselves.
- @result true if we posted the removal. False if there was an error.
- @discussion This removes us from the circle.
+ @function SOSCCLoggedIntoAccount
+ @param error value set if there are xpc errors.
+ @abstract Notifies the account object that the device logged into an icloud account
+ */
+bool SOSCCLoggedIntoAccount(CFErrorRef* error);
+
+/*!
+ @function SOSCCLoggedOutOfAccount
+ @param error value set if there are xpc errors.
+ @abstract Removes the current device from the circle.  Clears the account object
  */
 bool SOSCCLoggedOutOfAccount(CFErrorRef* error);
 
@@ -338,18 +326,6 @@ bool SOSCCLoggedOutOfAccount(CFErrorRef* error);
  erase.
  */
 bool SOSCCBailFromCircle_BestEffort(uint64_t limit_in_seconds, CFErrorRef* error);
-
-/*!
- @function SOSCCSignedOut
- @abstract Attempts to publish a retirement ticket for the current device.
- @param immediate If we should remove the device immediately or to leave the circle with best effort.
- @param error What went wrong trying to remove ourselves.
- @result true if we posted the ticket. False if there was an error.
- @discussion This attempts to post a retirement ticket that should
- result in other devices removing this device from the circle.  It does so
- with a 5 second timeout or immediately. 
- */
-bool SOSCCSignedOut(bool immediate, CFErrorRef* error);
 
 /*!
  @function SOSCCCopyApplicantPeerInfo
@@ -484,14 +460,6 @@ enum DepartureReason SOSCCGetLastDepartureReason(CFErrorRef *error);
 
 bool SOSCCSetLastDepartureReason(enum DepartureReason reason, CFErrorRef *error);
 
-/*!
- @function SOSCCGetIncompatibilityInfo
- @abstract Returns the information (string, hopefully URL) that will lead to an explanation of why you have an incompatible circle.
- @param error What went wrong if we returned NULL.
- */
-CFStringRef SOSCCCopyIncompatibilityInfo(CFErrorRef *error);
-
-
 /*
     Views
     
@@ -608,7 +576,6 @@ SOSViewResultCode SOSCCView(CFStringRef view, SOSViewActionCode action, CFErrorR
  */
 
 bool SOSCCViewSet(CFSetRef enabledviews, CFSetRef disabledviews);
-bool SOSCCViewSetWithAnalytics(CFSetRef enabledviews, CFSetRef disabledviews, CFDataRef parentEvent);
 /*
  Security Attributes for PeerInfos
  
@@ -646,34 +613,6 @@ CFDataRef SOSCopyDeviceBackupPublicKey(CFDataRef entropy, CFErrorRef *error);
  @discussion Asserts the keybag for use for backups when having a single secret. All views get backed up with this single bag.
  */
 bool SOSCCRegisterSingleRecoverySecret(CFDataRef aks_bag, bool forV0Only, CFErrorRef *error);
-
-
-/*!
- @function SOSCCIsThisDeviceLastBackup
- @param error Why this query can't be accepted.
- @result true if this is the last backup device, false otherwise.
- */
-
-bool SOSCCIsThisDeviceLastBackup(CFErrorRef *error);
-
-/*!
- @function SOSCCSetEscrowRecord
- @param escrow_label Account label
- @param tries Number of attempts
- @param error What went wrong trying to set the escrow label
- @result true if we saved the escrow record, false if we had an error
- @discussion persist escrow records in the account object or the peer info
- */
-bool SOSCCSetEscrowRecord(CFStringRef escrow_label, uint64_t tries, CFErrorRef *error);
-
-/*!
- @function SOSCCCopyEscrowRecord
- @param error What went wrong trying to set the escrow label
- @result dictionary of the escrow record, false if we had an error, dictionary will be of format: [account label: <dictionary>], dictionary will contain (ex):   "Burned Recovery Attempt Attestation Date" = "[2015-08-19 15:21]";
-                                     "Burned Recovery Attempt Count" = 8;
- @discussion for debugging - retrieve the escrow record
- */
-CFDictionaryRef SOSCCCopyEscrowRecord(CFErrorRef *error);
 
 /*!
  @function SOSCCCopyApplication
@@ -756,7 +695,7 @@ void SOSCCGhostBustTriggerTimed(SOSAccountGhostBustingOptions options, void (^co
 
 void SOSCCGhostBustInfo(void (^complete)(NSData *json, NSError *error));
 
-CFDataRef SOSCCCopyInitialSyncData(CFErrorRef *error);
+CFDataRef SOSCCCopyInitialSyncData(SOSInitialSyncFlags flags, CFErrorRef *error);
 
 NSString * SOSCCCircleHash(NSError **error);
 

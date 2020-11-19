@@ -38,16 +38,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
                        intendedState:(OctagonState*)intendedState
                    ckksConflictState:(OctagonState*)ckksConflictState
-                          errorState:(OctagonState*)errorState
-                         voucherData:(NSData*)voucherData
-                          voucherSig:(NSData*)voucherSig
-                     preapprovedKeys:(NSArray<NSData *>*)preapprovedKeys;
+                          errorState:(OctagonState*)errorState;
 
-@property (nonatomic) NSData* voucherData;
-@property (nonatomic) NSData* voucherSig;
-@property (nonatomic) NSArray<NSData *>* preapprovedKeys;
+@property (nullable) NSData* voucherData;
+@property (nullable) NSData* voucherSig;
 
-@property (nonatomic) NSString* peerID;
+@property (nullable) NSString* peerID;
 
 @end
 

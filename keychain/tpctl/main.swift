@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-let tplogDebug = OSLog(subsystem: "com.apple.security.trustedpeers", category: "debug")
+let logger = Logger(subsystem: "com.apple.security.trustedpeers", category: "tpctl")
 
 // This should definitely use the ArgumentParser library from the Utility package.
 // However, right now that's not accessible from this code due to build system issues.
@@ -24,7 +24,6 @@ var preapprovedKeys: [Data]?
 var deviceName: String?
 var serialNumber: String?
 var osVersion: String?
-var policyVersion: NSNumber?
 var policySecrets: [String: Data]?
 
 enum Command {
@@ -43,6 +42,7 @@ enum Command {
     case vouch(String, Data, Data, Data, Data)
     case vouchWithBottle(String, Data, String)
     case allow(Set<String>, Bool)
+    case supportApp
 }
 
 func printUsage() {
@@ -61,6 +61,7 @@ func printUsage() {
     print("  local-reset               Resets the local cuttlefish database, and ignores all previous information. Does not change anything off-device")
     print("  prepare [--modelid MODELID] [--machineid MACHINEID] [--epoch EPOCH] [--bottlesalt BOTTLESALT]")
     print("                            Creates a new identity and returns its attributes. If not provided, modelid and machineid will be given some defaults (ignoring the local device)")
+    print("  supportApp                Get SupportApp information from Cuttlefish")
     print("  update                    Fetch new information from Cuttlefish, and perform any actions this node deems necessary")
     print("  validate                  Vvalidate SOS and Octagon data structures from server side")
     print("  viable-bottles            Show bottles in preference order of server")
@@ -207,11 +208,11 @@ while let arg = argIterator.next() {
         osVersion = newOsVersion
 
     case "--policy-version":
-        guard let newPolicyVersion = UInt64(argIterator.next() ?? "") else {
+        guard let _ = UInt64(argIterator.next() ?? "") else {
             print("Error: --policy-version takes an integer argument")
             exitUsage(1)
         }
-        policyVersion = NSNumber(value: newPolicyVersion)
+        // Option ignored for now
 
     case "--policy-secret":
         guard let name = argIterator.next(), let dataBase64 = argIterator.next() else {
@@ -222,7 +223,7 @@ while let arg = argIterator.next() {
             print("Error: --policy-secret data must be base-64")
             exitUsage(1)
         }
-        if nil == policySecrets {
+        if policySecrets == nil {
             policySecrets = [:]
         }
         policySecrets![name] = data
@@ -269,7 +270,6 @@ while let arg = argIterator.next() {
             }
             voucher = voucherData
             voucherSig = voucherSigData
-
         } else {
             guard let voucherBase64 = argIterator.next() else {
                 print("Error: join needs a voucher")
@@ -315,6 +315,9 @@ while let arg = argIterator.next() {
     case "update":
         commands.append(.update)
 
+    case "supportApp":
+        commands.append(.supportApp)
+
     case "validate":
         commands.append(.validate)
 
@@ -356,9 +359,7 @@ while let arg = argIterator.next() {
             permanentInfoSig = permanentInfoSigData
             stableInfo = stableInfoData
             stableInfoSig = stableInfoSigData
-
         } else {
-
             guard let peerIDString = argIterator.next() else {
                 print("Error: vouch needs a peerID")
                 print()
@@ -446,7 +447,7 @@ while let arg = argIterator.next() {
         var machineIDs = Set<String>()
         var performIDMS = false
         while let arg = argIterator.next() {
-            if(arg == "--idms") {
+            if arg == "--idms" {
                 performIDMS = true
             } else {
                 machineIDs.insert(arg)
@@ -460,7 +461,7 @@ while let arg = argIterator.next() {
     }
 }
 
-if commands.count == 0 {
+if commands.isEmpty {
     exitUsage(0)
 }
 
@@ -484,14 +485,16 @@ func cleanDictionaryForJSON(_ d: [AnyHashable: Any]) -> [AnyHashable: Any] {
 
 // Bring up a connection to TrustedPeersHelper
 let connection = NSXPCConnection(serviceName: "com.apple.TrustedPeersHelper")
+
 connection.remoteObjectInterface = TrustedPeersHelperSetupProtocol(NSXPCInterface(with: TrustedPeersHelperProtocol.self))
 connection.resume()
+
 let tpHelper = connection.synchronousRemoteObjectProxyWithErrorHandler { error in print("Unable to connect to TPHelper:", error) } as! TrustedPeersHelperProtocol
 
 for command in commands {
     switch command {
     case .dump:
-        os_log("dumping (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("dumping (\(container), \(context))")
         tpHelper.dump(withContainer: container, context: context) { reply, error in
             guard error == nil else {
                 print("Error dumping:", error!)
@@ -510,7 +513,7 @@ for command in commands {
         }
 
     case .depart:
-        os_log("departing (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("departing (\(container), \(context))")
         tpHelper.departByDistrustingSelf(withContainer: container, context: context) { error in
             guard error == nil else {
                 print("Error departing:", error!)
@@ -521,7 +524,7 @@ for command in commands {
         }
 
     case .distrust(let peerIDs):
-        os_log("distrusting %@ for (%@, %@)", log: tplogDebug, type: .default, peerIDs, container, context)
+        logger.log("distrusting \(peerIDs.description) for (\(container), \(context))")
         tpHelper.distrustPeerIDs(withContainer: container, context: context, peerIDs: peerIDs) { error in
             guard error == nil else {
                 print("Error distrusting:", error!)
@@ -530,15 +533,15 @@ for command in commands {
             print("Distrust successful")
         }
 
-    case .join(let voucher, let voucherSig):
-        os_log("joining (%@, %@)", log: tplogDebug, type: .default, container, context)
+    case let .join(voucher, voucherSig):
+        logger.log("joining (\(container), \(context))")
         tpHelper.join(withContainer: container,
                       context: context,
                       voucherData: voucher,
                       voucherSig: voucherSig,
                       ckksKeys: [],
                       tlkShares: [],
-                      preapprovedKeys: preapprovedKeys ?? []) { peerID, _, error in
+                      preapprovedKeys: preapprovedKeys ?? []) { peerID, _, _, error in
                         guard error == nil else {
                             print("Error joining:", error!)
                             return
@@ -547,12 +550,12 @@ for command in commands {
         }
 
     case .establish:
-        os_log("establishing (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("establishing (\(container), \(context))")
         tpHelper.establish(withContainer: container,
                            context: context,
                            ckksKeys: [],
                            tlkShares: [],
-                           preapprovedKeys: preapprovedKeys ?? []) { peerID, _, error in
+                           preapprovedKeys: preapprovedKeys ?? []) { peerID, _, _, error in
                             guard error == nil else {
                                 print("Error establishing:", error!)
                                 return
@@ -561,7 +564,7 @@ for command in commands {
         }
 
     case .healthInquiry:
-        os_log("healthInquiry (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("healthInquiry (\(container), \(context))")
         tpHelper.pushHealthInquiry(withContainer: container, context: context) { error in
             guard error == nil else {
                 print("Error healthInquiry: \(String(describing: error))")
@@ -571,19 +574,40 @@ for command in commands {
         }
 
     case .localReset:
-        os_log("local-reset (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("local-reset (\(container), \(context))")
         tpHelper.localReset(withContainer: container, context: context) { error in
             guard error == nil else {
                 print("Error resetting:", error!)
                 return
             }
 
-            os_log("local-reset (%@, %@): successful", log: tplogDebug, type: .default, container, context)
+            logger.log("local-reset (\(container), \(context)): successful")
             print("Local reset successful")
         }
 
+    case .supportApp:
+        logger.log("supportApp (\(container), \(context))")
+
+        tpHelper.getSupportAppInfo(withContainer: container, context: context) { data, error in
+            guard error == nil else {
+                print("Error getting supportApp:", error!)
+                return
+            }
+
+            if let data = data {
+                do {
+                    let string = try GetSupportAppInfoResponse(serializedData: data).jsonString()
+                    print("\(string)")
+                } catch {
+                    print("Error decoding protobuf: \(error)")
+                }
+            } else {
+                print("Error: no results, but no error either?")
+            }
+        }
+
     case .prepare:
-        os_log("preparing (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("preparing (\(container), \(context))")
 
         if machineID == nil {
             let anisetteController = AKAnisetteProvisioningController()
@@ -598,6 +622,12 @@ for command in commands {
 
         let deviceInfo = OTDeviceInformationActualAdapter()
 
+        serialNumber = serialNumber ?? deviceInfo.serialNumber()
+        guard let serialNumber = serialNumber else {
+            print("failed to get serial number")
+            abort()
+        }
+
         tpHelper.prepare(withContainer: container,
                          context: context,
                          epoch: epoch,
@@ -606,13 +636,13 @@ for command in commands {
                          bottleID: UUID().uuidString,
                          modelID: modelID ?? deviceInfo.modelID(),
                          deviceName: deviceName ?? deviceInfo.deviceName(),
-                         serialNumber: serialNumber ?? deviceInfo.serialNumber(),
+                         serialNumber: serialNumber,
                          osVersion: osVersion ?? deviceInfo.osVersion(),
-                         policyVersion: policyVersion,
+                         policyVersion: nil,
                          policySecrets: policySecrets,
+                         syncUserControllableViews: .UNKNOWN,
                          signingPrivKeyPersistentRef: nil,
-                         encPrivKeyPersistentRef: nil) {
-                            peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error in
+                         encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, syncingPolicy, error in
                             guard error == nil else {
                                 print("Error preparing:", error!)
                                 return
@@ -625,7 +655,8 @@ for command in commands {
                                 "stableInfo": stableInfo!.base64EncodedString(),
                                 "stableInfoSig": stableInfoSig!.base64EncodedString(),
                                 "machineID": machineID!,
-                                ]
+                                "views": Array(syncingPolicy?.viewList ?? Set()),
+                                ] as [String: Any]
                             do {
                                 print(try TPCTLObjectiveC.jsonSerialize(cleanDictionaryForJSON(result)))
                             } catch {
@@ -634,14 +665,15 @@ for command in commands {
         }
 
     case .update:
-        os_log("updating (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("updating (\(container), \(context))")
         tpHelper.update(withContainer: container,
                         context: context,
                         deviceName: deviceName,
                         serialNumber: serialNumber,
                         osVersion: osVersion,
-                        policyVersion: policyVersion,
-                        policySecrets: policySecrets) { _, error in
+                        policyVersion: nil,
+                        policySecrets: policySecrets,
+                        syncUserControllableViews: nil) { _, _, error in
                             guard error == nil else {
                                 print("Error updating:", error!)
                                 return
@@ -651,8 +683,8 @@ for command in commands {
         }
 
     case .reset:
-        os_log("resetting (%@, %@)", log: tplogDebug, type: .default, container, context)
-        tpHelper.reset(withContainer: container, context: context) { error in
+        logger.log("resetting (\(container), \(context))")
+        tpHelper.reset(withContainer: container, context: context, resetReason: .userInitiatedReset) { error in
             guard error == nil else {
                 print("Error during reset:", error!)
                 return
@@ -662,7 +694,7 @@ for command in commands {
         }
 
     case .validate:
-        os_log("validate (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("validate (\(container), \(context))")
         tpHelper.validatePeers(withContainer: container, context: context) { reply, error in
             guard error == nil else {
                 print("Error validating:", error!)
@@ -681,7 +713,7 @@ for command in commands {
         }
 
     case .viableBottles:
-        os_log("viableBottles (%@, %@)", log: tplogDebug, type: .default, container, context)
+        logger.log("viableBottles (\(container), \(context))")
         tpHelper.fetchViableBottles(withContainer: container, context: context) { sortedBottleIDs, partialBottleIDs, error in
             guard error == nil else {
                 print("Error fetching viable bottles:", error!)
@@ -697,8 +729,8 @@ for command in commands {
             }
         }
 
-    case .vouch(let peerID, let permanentInfo, let permanentInfoSig, let stableInfo, let stableInfoSig):
-        os_log("vouching (%@, %@)", log: tplogDebug, type: .default, container, context)
+    case let .vouch(peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig):
+        logger.log("vouching (\(container), \(context))")
         tpHelper.vouch(withContainer: container,
                        context: context,
                        peerID: peerID,
@@ -721,14 +753,14 @@ for command in commands {
             }
         }
 
-    case .vouchWithBottle(let bottleID, let entropy, let salt):
-        os_log("vouching with bottle (%@, %@)", log: tplogDebug, type: .default, container, context)
+    case let .vouchWithBottle(bottleID, entropy, salt):
+        logger.log("vouching with bottle (\(container), \(context))")
         tpHelper.vouchWithBottle(withContainer: container,
                                  context: context,
                                  bottleID: bottleID,
                                  entropy: entropy,
                                  bottleSalt: salt,
-                                 tlkShares: []) { voucher, voucherSig, error in
+                                 tlkShares: []) { voucher, voucherSig, _, _, error in
                                     guard error == nil else {
                                         print("Error during vouchWithBottle", error!)
                                         return
@@ -741,12 +773,13 @@ for command in commands {
                                     }
         }
 
-    case .allow(let machineIDs, let performIDMS):
-        os_log("allow-listing (%@, %@)", log: tplogDebug, type: .default, container, context)
+    case let .allow(machineIDs, performIDMS):
+        logger.log("allow-listing (\(container), \(context))")
 
         var idmsDeviceIDs: Set<String> = Set()
+        var accountIsDemo: Bool = false
 
-        if(performIDMS) {
+        if performIDMS {
             let store = ACAccountStore()
             guard let account = store.aa_primaryAppleAccount() else {
                 print("Unable to fetch primary Apple account!")
@@ -756,6 +789,12 @@ for command in commands {
             let requestArguments = AKDeviceListRequestContext()
             requestArguments.altDSID = account.aa_altDSID
             requestArguments.services = [AKServiceNameiCloud]
+
+            let akManager = AKAccountManager.sharedInstance
+            let authKitAccount = akManager.authKitAccount(withAltDSID: account.aa_altDSID)
+            if let account = authKitAccount {
+                accountIsDemo = akManager.demoAccount(for: account)
+            }
 
             guard let controller = AKAppleIDAuthenticationController() else {
                 print("Unable to create AKAppleIDAuthenticationController!")
@@ -778,10 +817,9 @@ for command in commands {
             }
             semaphore.wait()
         }
-
         let allMachineIDs = machineIDs.union(idmsDeviceIDs)
         print("Setting allowed machineIDs to \(allMachineIDs)")
-        tpHelper.setAllowedMachineIDsWithContainer(container, context: context, allowedMachineIDs: allMachineIDs) { listChanged, error in
+        tpHelper.setAllowedMachineIDsWithContainer(container, context: context, allowedMachineIDs: allMachineIDs, honorIDMSListChanges: accountIsDemo) { listChanged, error in
             guard error == nil else {
                 print("Error during allow:", error!)
                 return

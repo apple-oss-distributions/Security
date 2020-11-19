@@ -101,11 +101,14 @@ TKTokenRef SecTokenCreate(CFStringRef token_id, SecCFDictionaryCOW *auth_params,
 
 CFDictionaryRef SecTokenItemValueCopy(CFDataRef db_value, CFErrorRef *error);
 
-CFDataRef SecItemAttributesCopyPreparedAuthContext(CFTypeRef la_context, CFErrorRef *error);
-
 CFArrayRef SecItemCopyParentCertificates_ios(CFDataRef normalizedIssuer, CFArrayRef accessGroups, CFErrorRef *error);
 
 bool SecItemCertificateExists(CFDataRef normalizedIssuer, CFDataRef serialNumber, CFArrayRef accessGroups, CFErrorRef *error);
+
+/*!
+    @constant kSecAttrAppClipItem Boolean attribute indicating whether the origin of this item is an App Clip client
+*/
+static const CFStringRef kSecAttrAppClipItem = CFSTR("clip");
 
 __END_DECLS
 

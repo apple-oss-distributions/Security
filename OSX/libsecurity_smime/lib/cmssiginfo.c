@@ -58,6 +58,7 @@
 #include <CoreServices/../Frameworks/CarbonCore.framework/Headers/MacErrors.h>
 #include <Security/SecPolicyPriv.h>
 #include <Security/SecItem.h>
+#include <libDER/asn1Types.h>
 
 #include "tsaSupport.h"
 #include "tsaSupportPriv.h"
@@ -93,104 +94,60 @@
 static OSStatus
 DER_UTCTimeToCFDate(const CSSM_DATA_PTR utcTime, CFAbsoluteTime *date)
 {
-    CFGregorianDate gdate;
-    char *string = (char *)utcTime->Data;
-    long year, month, mday, hour, minute, second, hourOff, minOff;
-    CFTimeZoneRef timeZone;
-
-    /* Verify time is formatted properly and capture information */
-    second = 0;
-    hourOff = 0;
-    minOff = 0;
-    CAPTURE(year,string+0,loser);
-    if (year < 50) {
-        /* ASSUME that year # is in the 2000's, not the 1900's */
-        year += 100;
-    }
-    CAPTURE(month,string+2,loser);
-    if ((month == 0) || (month > 12)) goto loser;
-    CAPTURE(mday,string+4,loser);
-    if ((mday == 0) || (mday > 31)) goto loser;
-    CAPTURE(hour,string+6,loser);
-    if (hour > 23) goto loser;
-    CAPTURE(minute,string+8,loser);
-    if (minute > 59) goto loser;
-    if (ISDIGIT(string[10])) {
-        CAPTURE(second,string+10,loser);
-        if (second > 59) goto loser;
-        string += 2;
-    }
-    if (string[10] == '+') {
-        CAPTURE(hourOff,string+11,loser);
-        if (hourOff > 23) goto loser;
-        CAPTURE(minOff,string+13,loser);
-        if (minOff > 59) goto loser;
-    } else if (string[10] == '-') {
-        CAPTURE(hourOff,string+11,loser);
-        if (hourOff > 23) goto loser;
-        hourOff = -hourOff;
-        CAPTURE(minOff,string+13,loser);
-        if (minOff > 59) goto loser;
-        minOff = -minOff;
-    } else if (string[10] != 'Z') {
-        goto loser;
+    CFErrorRef error = NULL;
+    /* <rdar://problem/55316705> CMS attributes don't correctly encode/decode times (always use UTCTime) */
+    CFAbsoluteTime result = SecAbsoluteTimeFromDateContentWithError(ASN1_UTC_TIME, utcTime->Data, utcTime->Length, &error);
+    if (error) {
+        CFReleaseNull(error);
+        return SECFailure;
     }
 
-    gdate.year = (SInt32)(year + 1900);
-    gdate.month = month;
-    gdate.day = mday;
-    gdate.hour = hour;
-    gdate.minute = minute;
-    gdate.second = second;
-
-    if (hourOff == 0 && minOff == 0)
-	timeZone = NULL; /* GMT */
-    else
-    {
-	timeZone = CFTimeZoneCreateWithTimeIntervalFromGMT(NULL, (hourOff * 60 + minOff) * 60);
+    if (date) {
+        *date = result;
     }
-
-    *date = CFGregorianDateGetAbsoluteTime(gdate, timeZone);
-    if (timeZone)
-	CFRelease(timeZone);
-
     return SECSuccess;
-
-loser:
-    return SECFailure;
 }
 
 static OSStatus
 DER_CFDateToUTCTime(CFAbsoluteTime date, CSSM_DATA_PTR utcTime)
 {
-    CFGregorianDate gdate =  CFAbsoluteTimeGetGregorianDate(date, NULL /* GMT */);
     unsigned char *d;
-    SInt8 second;
 
     utcTime->Length = 13;
     utcTime->Data = d = PORT_Alloc(13);
-    if (!utcTime->Data)
-	return SECFailure;
+    if (!utcTime->Data) {
+        return SECFailure;
+    }
 
-    /* UTC time does not handle the years before 1950 */
-    if (gdate.year < 1950)
-            return SECFailure;
+    __block int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    __block bool result;
+    SecCFCalendarDoWithZuluCalendar(^(CFCalendarRef zuluCalendar) {
+        result = CFCalendarDecomposeAbsoluteTime(zuluCalendar, date, "yMdHms", &year, &month, &day, &hour, &minute, &second);
+    });
+    if (!result) {
+        return SECFailure;
+    }
+
+    /* UTC time does not handle the years before 1950 or after 2049 */
+    /* <rdar://problem/55316705> CMS attributes don't correctly encode/decode times (always use UTCTime) */
+    if (year < 1950 || year > 2049) {
+        return SECFailure;
+    }
 
     /* remove the century since it's added to the year by the
        CFAbsoluteTimeGetGregorianDate routine, but is not needed for UTC time */
-    gdate.year %= 100;
-    second = gdate.second + 0.5;
+    year %= 100;
 
-    d[0] = HIDIGIT(gdate.year);
-    d[1] = LODIGIT(gdate.year);
-    d[2] = HIDIGIT(gdate.month);   
-    d[3] = LODIGIT(gdate.month);
-    d[4] = HIDIGIT(gdate.day);
-    d[5] = LODIGIT(gdate.day);
-    d[6] = HIDIGIT(gdate.hour);
-    d[7] = LODIGIT(gdate.hour);  
-    d[8] = HIDIGIT(gdate.minute);
-    d[9] = LODIGIT(gdate.minute);
+    d[0] = HIDIGIT(year);
+    d[1] = LODIGIT(year);
+    d[2] = HIDIGIT(month);
+    d[3] = LODIGIT(month);
+    d[4] = HIDIGIT(day);
+    d[5] = LODIGIT(day);
+    d[6] = HIDIGIT(hour);
+    d[7] = LODIGIT(hour);
+    d[8] = HIDIGIT(minute);
+    d[9] = LODIGIT(minute);
     d[10] = HIDIGIT(second);
     d[11] = LODIGIT(second);
     d[12] = 'Z';
@@ -499,24 +456,22 @@ SecCmsSignerInfoSign(SecCmsSignerInfoRef signerinfo, CSSM_DATA_PTR digest, CSSM_
 
     SECITEM_FreeItem(&signature, PR_FALSE);
 
-    if(pubkAlgTag == SEC_OID_EC_PUBLIC_KEY) {
-	/*
-	 * RFC 3278 section section 2.1.1 states that the signatureAlgorithm 
-	 * field contains the full ecdsa-with-SHA1 OID, not plain old ecPublicKey 
-	 * as would appear in other forms of signed datas. However Microsoft doesn't 
-	 * do this, it puts ecPublicKey there, and if we put ecdsa-with-SHA1 there, 
-	 * MS can't verify - presumably because it takes the digest of the digest 
-	 * before feeding it to ECDSA.
-	 * We handle this with a preference; default if it's not there is 
-	 * "Microsoft compatibility mode". 
-	 */
-	if(!SecCmsMsEcdsaCompatMode()) {
-	    pubkAlgTag = SEC_OID_ECDSA_WithSHA1;
-	}
-	/* else violating the spec for compatibility */
+    SECOidTag sigAlgTag = SecCmsUtilMakeSignatureAlgorithm(digestalgtag, pubkAlgTag);
+    if(pubkAlgTag == SEC_OID_EC_PUBLIC_KEY && SecCmsMsEcdsaCompatMode()) {
+        /*
+         * RFC 3278 section section 2.1.1 states that the signatureAlgorithm
+         * field contains the full ecdsa-with-SHA1 OID, not plain old ecPublicKey
+         * as would appear in other forms of signed datas. However Microsoft doesn't
+         * do this, it puts ecPublicKey there, and if we put ecdsa-with-SHA1 there,
+         * MS can't verify - presumably because it takes the digest of the digest
+         * before feeding it to ECDSA.
+         * We handle this with a preference; default if it's not there is
+         * "Microsoft compatibility mode".
+         */
+        sigAlgTag = SEC_OID_EC_PUBLIC_KEY;
     }
 
-    if (SECOID_SetAlgorithmID(poolp, &(signerinfo->digestEncAlg), pubkAlgTag, 
+    if (SECOID_SetAlgorithmID(poolp, &(signerinfo->digestEncAlg), sigAlgTag,
                               NULL) != SECSuccess)
 	goto loser;
 
@@ -641,16 +596,6 @@ SecCmsSignerInfoVerifyWithPolicy(SecCmsSignerInfoRef signerinfo,CFTypeRef timeSt
 
     digestAlgTag = SECOID_GetAlgorithmTag(&(signerinfo->digestAlg));
     digestEncAlgTag = SECOID_GetAlgorithmTag(&(signerinfo->digestEncAlg));
-    
-    /*
-     * Gross hack necessitated by RFC 3278 section 2.1.1, which states 
-     * that the signature algorithm (here, digestEncAlg) contains ecdsa_with-SHA1, 
-     * *not* (as in all other algorithms) the raw signature algorithm, e.g. 
-     * pkcs1RSAEncryption.
-     */
-    if(digestEncAlgTag == SEC_OID_ECDSA_WithSHA1) {
-	digestEncAlgTag = SEC_OID_EC_PUBLIC_KEY;
-    }
     
     if (!SecCmsArrayIsEmpty((void **)signerinfo->authAttr)) {
 	if (contentType) {
@@ -1225,12 +1170,19 @@ SecCmsSignerInfoGetSignerEmailAddress(SecCmsSignerInfoRef sinfo)
     SecCertificateRef signercert;
     CFStringRef emailAddress = NULL;
 
-    if ((signercert = SecCmsSignerInfoGetSigningCertificate(sinfo, NULL)) == NULL)
-	return NULL;
+    if ((signercert = SecCmsSignerInfoGetSigningCertificate(sinfo, NULL)) == NULL) {
+        return NULL;
+    }
 
-    SecCertificateGetEmailAddress(signercert, &emailAddress);
-
-    return CFRetainSafe(emailAddress);
+    CFArrayRef names = SecCertificateCopyRFC822Names(signercert);
+    if (names) {
+        if (CFArrayGetCount(names) > 0) {
+            emailAddress = (CFStringRef)CFArrayGetValueAtIndex(names, 0);
+        }
+        CFRetainSafe(emailAddress);
+        CFRelease(names);
+    }
+    return emailAddress;
 }
 
 

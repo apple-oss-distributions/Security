@@ -8,9 +8,12 @@
 #include "authtoken.h"
 #include "authutilities.h"
 #include "ccaudit.h"
+#include <libproc.h>
 
 #include <Security/SecCode.h>
 #include <Security/SecRequirement.h>
+
+#include <security_utilities/simulatecrash_assert.h>
 
 AUTHD_DEFINE_LOG
 
@@ -139,6 +142,12 @@ process_create(const audit_info_s * auditInfo, session_t session)
     proc->dispatch_queue = dispatch_queue_create(NULL, DISPATCH_QUEUE_SERIAL);
     check(proc->dispatch_queue != NULL);
 
+    // to have at least some code URL just for case later methods fail
+    int retval = proc_pidpath(proc->auditInfo.pid, proc->code_url, sizeof(proc->code_url));
+    if ( retval <= 0 ) {
+        os_log_error(AUTHD_LOG, "process: PID %d pidpathfailed %d", proc->auditInfo.pid, retval);
+    }
+    
     CFMutableDictionaryRef codeDict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFDataRef auditToken = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, (UInt8 *)&auditInfo->opaqueToken, sizeof(auditInfo->opaqueToken), kCFAllocatorNull);
     if (auditToken) {
@@ -152,12 +161,21 @@ process_create(const audit_info_s * auditInfo, session_t session)
     }
     status = SecCodeCopyGuestWithAttributes(NULL, codeDict, kSecCSDefaultFlags, &codeRef);
     CFReleaseSafe(codeDict);
-
     if (status) {
         os_log_error(AUTHD_LOG, "process: PID %d failed to create code ref %d", proc->auditInfo.pid, (int)status);
         CFReleaseNull(proc);
         goto done;
     }
+    
+    status = SecCodeCopyPath(codeRef, kSecCSDefaultFlags, &code_url);
+    if (status == errSecSuccess) {
+        CFURLGetFileSystemRepresentation(code_url, true, (UInt8*)proc->code_url, sizeof(proc->code_url));
+    } else {
+        os_log_error(AUTHD_LOG, "process: PID %d failed to get path %d", proc->auditInfo.pid, (int)status);
+    }
+    
+    status = SecCodeCheckValidity(codeRef, kSecCSDefaultFlags, NULL);
+    require_noerr_action(status, done, os_log_error(AUTHD_LOG, "process: PID %d SecCodeCheckValidity failed with %d", proc->auditInfo.pid, (int)status));
     
     status = SecCodeCopySigningInformation(codeRef, kSecCSRequirementInformation, &code_info);
     require_noerr_action(status, done, os_log_debug(AUTHD_LOG, "process: PID %d SecCodeCopySigningInformation failed with %d", proc->auditInfo.pid, (int)status));
@@ -171,10 +189,6 @@ process_create(const audit_info_s * auditInfo, session_t session)
             }
         }
         value = NULL;
-    }
-
-    if (SecCodeCopyPath(codeRef, kSecCSDefaultFlags, &code_url) == errSecSuccess) {
-        CFURLGetFileSystemRepresentation(code_url, true, (UInt8*)proc->code_url, sizeof(proc->code_url));
     }
 
     if (CFDictionaryGetValueIfPresent(code_info, kSecCodeInfoIdentifier, &value)) {

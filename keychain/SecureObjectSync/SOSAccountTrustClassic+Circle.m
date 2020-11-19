@@ -14,9 +14,14 @@
 #import "keychain/SecureObjectSync/SOSAccountTrustClassic+Retirement.h"
 
 #import "keychain/SecureObjectSync/SOSAccountGhost.h"
+#import "keychain/SecureObjectSync/SOSIntervalEvent.h"
 #import "keychain/SecureObjectSync/SOSViews.h"
+#import "Analytics/Clients/SOSAnalytics.h"
+
 
 @implementation SOSAccountTrustClassic (Circle)
+
+#define ICLOUDIDDATE @"iCloudIDDate"
 
 -(bool) isInCircleOnly:(CFErrorRef *)error
 {
@@ -239,6 +244,16 @@ static bool SOSCircleHasUpdatedPeerInfoWithOctagonKey(SOSCircleRef oldCircle, SO
     return hasUpdated;
 }
 
+// Check on the iCloud identity availability every 24-36 hours random interval
+- (SOSIntervalEvent *) iCloudCheckEventHandle: (SOSAccount *) account {
+    return [[SOSIntervalEvent alloc] initWithDefaults:account.settings dateDescription:@"iCloudIDCheck" earliest:60*60*24 latest:60*60*36];
+}
+
+// Cleanup unusable iCloud identities every 5-7 days random interval
+- (SOSIntervalEvent *) iCloudCleanerHandle: (SOSAccount *) account {
+    return [[SOSIntervalEvent alloc] initWithDefaults:account.settings dateDescription:@"iCloudCleanerCheck" earliest:60*60*24*5 latest:60*60*24*7];
+}
+
 -(bool) handleUpdateCircle:(SOSCircleRef) prospective_circle transport:(SOSKVSCircleStorageTransport*)circleTransport update:(bool) writeUpdate err:(CFErrorRef*)error
 {
     bool success = true;
@@ -333,44 +348,44 @@ static bool SOSCircleHasUpdatedPeerInfoWithOctagonKey(SOSCircleRef oldCircle, SO
                               old_circle_key, account.accountKey,
                                       me, error);
             
-            CFStringRef concStr = NULL;
-            switch(concstat) {
-                case kSOSConcordanceTrusted:
-                    circle_action = countersign;
-                    concStr = CFSTR("Trusted");
-                    break;
-                case kSOSConcordanceGenOld:
-                    circle_action = userTrustedOldCircle ? revert : ignore;
-                    concStr = CFSTR("Generation Old");
-                    break;
-                case kSOSConcordanceBadUserSig:
-                case kSOSConcordanceBadPeerSig:
-                    circle_action = userTrustedOldCircle ? revert : accept;
-                    concStr = CFSTR("Bad Signature");
-                    break;
-                case kSOSConcordanceNoUserSig:
-                    circle_action = userTrustedOldCircle ? revert : accept;
-                    concStr = CFSTR("No User Signature");
-                    break;
-                case kSOSConcordanceNoPeerSig:
-                    circle_action = accept; // We might like this one eventually but don't countersign.
-                    concStr = CFSTR("No trusted peer signature");
-                    secnotice("signing", "##### No trusted peer signature found, accepting hoping for concordance later");
-                    break;
-                case kSOSConcordanceNoPeer:
-                    circle_action = leave;
-                    leave_reason = kSOSLeftUntrustedCircle;
-                    concStr = CFSTR("No trusted peer left");
-                    break;
-                case kSOSConcordanceNoUserKey:
-                    secerror("##### No User Public Key Available, this shouldn't ever happen!!!");
-                    abort();
-                    break;
-                default:
-                    secerror("##### Bad Error Return from ConcordanceTrust");
-                    abort();
-                    break;
-            }
+    CFStringRef concStr = NULL;
+    switch(concstat) {
+        case kSOSConcordanceTrusted:
+            circle_action = countersign;
+            concStr = CFSTR("Trusted");
+            break;
+        case kSOSConcordanceGenOld:
+            circle_action = userTrustedOldCircle ? revert : ignore;
+            concStr = CFSTR("Generation Old");
+            break;
+        case kSOSConcordanceBadUserSig:
+        case kSOSConcordanceBadPeerSig:
+            circle_action = userTrustedOldCircle ? revert : accept;
+            concStr = CFSTR("Bad Signature");
+            break;
+        case kSOSConcordanceNoUserSig:
+            circle_action = userTrustedOldCircle ? revert : accept;
+            concStr = CFSTR("No User Signature");
+            break;
+        case kSOSConcordanceNoPeerSig:
+            circle_action = accept; // We might like this one eventually but don't countersign.
+            concStr = CFSTR("No trusted peer signature");
+            secnotice("signing", "##### No trusted peer signature found, accepting hoping for concordance later");
+            break;
+        case kSOSConcordanceNoPeer:
+            circle_action = leave;
+            leave_reason = kSOSLeftUntrustedCircle;
+            concStr = CFSTR("No trusted peer left");
+            break;
+        case kSOSConcordanceNoUserKey:
+            secerror("##### No User Public Key Available, this shouldn't ever happen!!!");
+            abort();
+            break;
+        default:
+            secerror("##### Bad Error Return from ConcordanceTrust");
+            abort();
+            break;
+    }
     
     secnotice("signing", "Decided on action [%s] based on concordance state [%@] and [%s] circle.  My PeerID is %@", actionstring[circle_action], concStr, userTrustedOldCircle ? "trusted" : "untrusted", myPeerID);
     
@@ -449,8 +464,7 @@ static bool SOSCircleHasUpdatedPeerInfoWithOctagonKey(SOSCircleRef oldCircle, SO
             && !(SOSCircleCountPeers(oldCircle) == 1 && SOSCircleHasPeer(oldCircle, me, NULL)) // If it was our offering, don't change ID to avoid ghosts
             && !SOSCircleHasPeer(newCircle, me, NULL) && !SOSCircleHasApplicant(newCircle, me, NULL)) {
             secnotice("circle", "Purging my peer (ID: %@) for circle '%@'!!!", SOSPeerInfoGetPeerID(me), SOSCircleGetName(oldCircle));
-            if (self.fullPeerInfo)
-                SOSFullPeerInfoPurgePersistentKey(self.fullPeerInfo, NULL);
+            [self purgeIdentity];
             me = NULL;
             me_full = NULL;
         }
@@ -461,8 +475,7 @@ static bool SOSCircleHasUpdatedPeerInfoWithOctagonKey(SOSCircleRef oldCircle, SO
                 secnotice("circle", "Rejected, Purging my applicant peer (ID: %@) for circle '%@'", SOSPeerInfoGetPeerID(me), SOSCircleGetName(oldCircle));
                 debugDumpCircle(CFSTR("oldCircle"), oldCircle);
                 debugDumpCircle(CFSTR("newCircle"), newCircle);
-                if (self.fullPeerInfo)
-                    SOSFullPeerInfoPurgePersistentKey(self.fullPeerInfo, NULL);
+                [self purgeIdentity];
                 me = NULL;
                 me_full = NULL;
             } else {
@@ -473,6 +486,21 @@ static bool SOSCircleHasUpdatedPeerInfoWithOctagonKey(SOSCircleRef oldCircle, SO
                 writeUpdate = true;
             }
             CFReleaseNull(reject);
+        }
+
+        if(me && account.accountKeyIsTrusted && SOSCircleHasPeer(newCircle, me, NULL)) {
+            // do this on daily interval +/- 8 hours random to keep all peers doing this at the same time
+            SOSIntervalEvent *iCloudCheckEvent = [self iCloudCheckEventHandle: account];
+            if([iCloudCheckEvent checkDate]) {
+                bool fixedIdentities = [self fixICloudIdentities:account circle:newCircle];
+                if(fixedIdentities) {
+                    writeUpdate = true;
+                    secnotice("circleOps", "Fixed iCloud Identity in circle");
+                } else {
+                    secnotice("circleOps", "Failed to fix broken icloud identity");
+                }
+                [iCloudCheckEvent followup];
+            }
         }
         
         CFRetainSafe(oldCircle);
@@ -583,12 +611,51 @@ fail:
     
 }
 
+// true means things changed.
+-(bool) fixICloudIdentities:(SOSAccount *) account circle: (SOSCircleRef) circle {
+    bool retval = false;
+    SOSFullPeerInfoRef icfpi = SOSCircleCopyiCloudFullPeerInfoRef(circle, NULL);
+    if(!icfpi) {
+        SOSAccountRestartPrivateCredentialTimer(account);
+        if((SOSAccountGetPrivateCredential(account, NULL) != NULL) || SOSAccountAssertStashedAccountCredential(account, NULL)) {
+            SecKeyRef privKey = SOSAccountGetPrivateCredential(account, NULL);
+            if(privKey) {
+                SOSIntervalEvent *iCloudCleanupEvent = [self iCloudCleanerHandle: account];
+                if([iCloudCleanupEvent checkDate]) {
+                    SOSAccountRemoveIncompleteiCloudIdentities(account, circle, privKey, NULL);
+                    [iCloudCleanupEvent followup];
+                }
+                CFErrorRef error = NULL;
+                bool identityAdded = [self addiCloudIdentity:circle key:privKey err:&error];
+                if(identityAdded) {
+                    account.notifyBackupOnExit = true;
+                    retval = true;
+                    [[SOSAnalytics logger] logSuccessForEventNamed:@"iCloudIdentityFix"];
+                } else {
+                    [[SOSAnalytics logger] logResultForEvent:@"iCloudIdentityFix" hardFailure:true result:(__bridge NSError * _Nullable)(error)];
+                }
+                CFReleaseNull(error);
+            } else {
+                NSDictionary *attr = @{ @"reason" : @"noPrivateKey" };
+                [[SOSAnalytics logger] logHardFailureForEventNamed:@"iCloudIdentityFix" withAttributes:attr];
+            }
+        } else {
+            NSDictionary *attr = @{ @"reason" : @"noPrivateKey" };
+            [[SOSAnalytics logger] logHardFailureForEventNamed:@"iCloudIdentityFix" withAttributes:attr];
+        }
+    } else {
+        // everything is fine.
+        CFReleaseNull(icfpi);
+    }
+    return retval;
+}
+
 -(void) generationSignatureUpdateWith:(SOSAccount*)account key:(SecKeyRef) privKey
 {
     // rdar://51233857 - don't gensign if there isn't a change in the userKey
     // also don't rebake the circle to fix the icloud identity if there isn't
     // a change as that will mess up piggybacking.
-    if(SOSAccountFullPeerInfoVerify(account, privKey, NULL) && SOSCircleVerify(account.trust.trustedCircle, account.accountKey, NULL)) {
+    if(account.trust.trustedCircle && SOSAccountFullPeerInfoVerify(account, privKey, NULL) && SOSCircleVerify(account.trust.trustedCircle, account.accountKey, NULL)) {
         secnotice("updatingGenSignature", "no change to userKey - skipping gensign");
         return;
     }
@@ -604,19 +671,11 @@ fail:
                 change |= SOSCircleGenerationSign(circle, privKey, self.fullPeerInfo, NULL);
                 [self setDepartureCode:kSOSNeverLeftCircle];
             } else if(iAmPeer) {
-                SOSFullPeerInfoRef icfpi = SOSCircleCopyiCloudFullPeerInfoRef(circle, NULL);
-                if(!icfpi) {
-                    SOSAccountRemoveIncompleteiCloudIdentities(account, circle, privKey, NULL);
-                    bool identityAdded = [self addiCloudIdentity:circle key:privKey err:NULL];
-                    if(identityAdded) {
-                        account.notifyBackupOnExit = true;
-                    }
-                    change |= identityAdded;
-                } else {
-                    CFReleaseNull(icfpi);
-                }
+                change |= [self fixICloudIdentities:account circle:circle];
             }
             secnotice("updatingGenSignature", "we changed the circle? %@", change ? CFSTR("YES") : CFSTR("NO"));
+            SOSIntervalEvent *iCloudCheckEvent = [self iCloudCheckEventHandle: account];
+            [iCloudCheckEvent followup];
             return change;
         }];
     }
@@ -635,12 +694,12 @@ fail:
     }
 }
 
--(bool) leaveCircleWithAccount:(SOSAccount*)account withAnalytics:(NSData*)parentEvent err:(CFErrorRef*) error
+-(bool) leaveCircleWithAccount:(SOSAccount*)account err:(CFErrorRef*) error
 {
     bool result = true;
     secnotice("circleOps", "leaveCircleWithAccount: Leaving circle by client request");
     result &= [self modifyCircle:account.circle_transport err:error action:^(SOSCircleRef circle) {
-        return sosAccountLeaveCircleWithAnalytics(account, circle, parentEvent, error);
+        return sosAccountLeaveCircle(account, circle, error);
     }];
 
     self.departureCode = kSOSWithdrewMembership;
@@ -663,9 +722,8 @@ fail:
 
 -(bool) resetToOffering:(SOSAccountTransaction*) aTxn key:(SecKeyRef)userKey err:(CFErrorRef*) error
 {
-    SOSFullPeerInfoPurgePersistentKey(self.fullPeerInfo, NULL);
-    self.fullPeerInfo = nil;
-    
+    [self purgeIdentity];
+
     secnotice("resetToOffering", "Resetting circle to offering by request from client");
     
     return userKey && [self resetCircleToOffering:aTxn userKey:userKey err:error];
@@ -680,7 +738,7 @@ fail:
     if(![self hasCircle:error])
         return result;
     
-    if(![self ensureFullPeerAvailable:(__bridge CFDictionaryRef)(account.gestalt) deviceID:(__bridge CFStringRef)(account.deviceID) backupKey:(__bridge CFDataRef)(account.backup_key) err:error])
+    if(![self ensureFullPeerAvailable:account err:error])
         return result;
     
     (void)[self resetAllRings:account err:error];
@@ -746,7 +804,7 @@ void SOSAccountForEachCirclePeerExceptMe(SOSAccount* account, void (^action)(SOS
     __block SOSFullPeerInfoRef cloud_full_peer = NULL;
     __block SOSAccount* account = aTxn.account;
     require_action_quiet(self.trustedCircle, fail, SOSCreateErrorWithFormat(kSOSErrorPeerNotFound, NULL, error, NULL, CFSTR("Don't have circle when joining???")));
-    require_quiet([self ensureFullPeerAvailable:(__bridge CFDictionaryRef)account.gestalt deviceID:(__bridge CFStringRef)account.deviceID backupKey:(__bridge CFDataRef)account.backup_key err:error], fail);
+    require_quiet([self ensureFullPeerAvailable:account err:error], fail);
     
     if (SOSCircleCountPeers(self.trustedCircle) == 0 || SOSAccountGhostResultsInReset(account)) {
         secnotice("resetToOffering", "Resetting circle to offering since there are no peers");

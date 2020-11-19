@@ -30,20 +30,29 @@
 #import <CloudKit/CloudKit.h>
 #import <CloudKit/CloudKit_Private.h>
 #import <CloudKit/CKContainer_Private.h>
-#import <OCMock/OCMock.h>
 
-#include "securityd/Regressions/SecdTestKeychainUtilities.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wquoted-include-in-framework-header"
+#import <OCMock/OCMock.h>
+#pragma clang diagnostic pop
+
+#import <TrustedPeers/TrustedPeers.h>
+#import <TrustedPeers/TPPBPolicyKeyViewMapping.h>
+#import <TrustedPeers/TPDictionaryMatchingRules.h>
+
+#include "keychain/securityd/Regressions/SecdTestKeychainUtilities.h"
 #include <utilities/SecFileLocations.h>
-#include <securityd/SecItemServer.h>
+#include "keychain/securityd/SecItemServer.h"
+#include "keychain/securityd/SecItemDataSource.h"
 
 #if NO_SERVER
-#include <securityd/spi.h>
+#include "keychain/securityd/spi.h"
 #endif
 
 #include <Security/SecureObjectSync/SOSViews.h>
 
 #include <utilities/SecDb.h>
-#include <securityd/SecItemServer.h>
+#include "keychain/securityd/SecItemServer.h"
 #include <keychain/ckks/CKKS.h>
 #include <keychain/ckks/CKKSViewManager.h>
 #include <keychain/ckks/CKKSKeychainView.h>
@@ -53,6 +62,9 @@
 #include "keychain/ckks/CKKSGroupOperation.h"
 #include "keychain/ckks/CKKSLockStateTracker.h"
 #include "keychain/ckks/CKKSReachabilityTracker.h"
+
+#include "keychain/ot/OT.h"
+#include "keychain/ot/OTManager.h"
 
 #import "tests/secdmockaks/mockaks.h"
 #import "utilities/SecTapToRadar.h"
@@ -71,20 +83,57 @@
 - (void)_checkSelfCloudServicesEntitlement;
 @end
 
+@implementation CKKSTestFailureLogger
+- (instancetype)init {
+    if((self = [super init])) {
+    }
+    return self;
+}
+
+- (void)testCase:(XCTestCase *)testCase didRecordIssue:(XCTIssue *)issue {
+    ckksnotice_global("ckkstests", "XCTest failure: (%@)%@:%lu error: %@ -- %@\n%@",
+                      testCase.name,
+                      issue.sourceCodeContext.location.fileURL,
+                      (long)issue.sourceCodeContext.location.lineNumber,
+                      issue.compactDescription,
+                      issue.detailedDescription,
+                      issue.sourceCodeContext.callStack);
+}
+@end
 
 @implementation CloudKitMockXCTest
 @synthesize aksLockState = _aksLockState;
+
+static CKKSTestFailureLogger* _testFailureLoggerVariable;
 
 + (void)setUp {
     // Turn on testing
     SecCKKSEnable();
     SecCKKSTestsEnable();
     SecCKKSSetReduceRateLimiting(true);
+
+    self.testFailureLogger = [[CKKSTestFailureLogger alloc] init];
+
+    [[XCTestObservationCenter sharedTestObservationCenter] addTestObserver:self.testFailureLogger];
+
     [super setUp];
 
 #if NO_SERVER
     securityd_init_local_spi();
 #endif
+}
+
++ (void)tearDown {
+    [super tearDown];
+    [[XCTestObservationCenter sharedTestObservationCenter] removeTestObserver:self.testFailureLogger];
+}
+
++ (CKKSTestFailureLogger*)testFailureLogger {
+    return _testFailureLoggerVariable;
+}
+
++ (void)setTestFailureLogger:(CKKSTestFailureLogger*)logger {
+    _testFailureLoggerVariable = logger;
 }
 
 - (BOOL)isRateLimited:(SecTapToRadar *)ttrRequest
@@ -120,9 +169,12 @@
     self.operationQueue = [[NSOperationQueue alloc] init];
     self.operationQueue.maxConcurrentOperationCount = 1;
 
-    self.zones = [[NSMutableDictionary alloc] init];
+    self.zones = self.zones ?: [[NSMutableDictionary alloc] init];
 
     self.apsEnvironment = @"fake APS push string";
+
+    // Static variables are a scourge. Let's reset this one...
+    [OctagonAPSReceiver resetGlobalDelegatePortMap];
 
     self.mockDatabaseExceptionCatcher = OCMStrictClassMock([CKDatabase class]);
     self.mockDatabase = OCMStrictClassMock([CKDatabase class]);
@@ -152,7 +204,7 @@
     // Inject a fake operation dependency so we won't respond with the CloudKit account status immediately
     // The CKKSAccountStateTracker won't send any login/logout calls without that information, so this blocks all CKKS setup
     self.ckaccountHoldOperation = [NSBlockOperation named:@"ckaccount-hold" withBlock:^{
-        secnotice("ckks", "CKKS CK account status test hold released");
+        ckksnotice_global("ckks", "CKKS CK account status test hold released");
     }];
 
     OCMStub([self.mockContainer accountStatusWithCompletionHandler:
@@ -300,6 +352,30 @@
         return matches;
     }]]);
 
+    OCMStub([self.mockDatabase addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKModifyRecordZonesOperation class]]) {
+            FakeCKModifyRecordZonesOperation *frzco = (FakeCKModifyRecordZonesOperation *)obj;
+            [frzco addNullableDependency:strongSelf.ckModifyRecordZonesHoldOperation];
+            [strongSelf.operationQueue addOperation: frzco];
+            matches = YES;
+        }
+        return matches;
+    }]]);
+
+    OCMStub([self.mockDatabase addOperation: [OCMArg checkWithBlock:^BOOL(id obj) {
+        __strong __typeof(self) strongSelf = weakSelf;
+        BOOL matches = NO;
+        if ([obj isKindOfClass: [FakeCKModifySubscriptionsOperation class]]) {
+            FakeCKModifySubscriptionsOperation *frzco = (FakeCKModifySubscriptionsOperation *)obj;
+            [frzco addNullableDependency:strongSelf.ckModifySubscriptionsHoldOperation];
+            [strongSelf.operationQueue addOperation: frzco];
+            matches = YES;
+        }
+        return matches;
+    }]]);
+
     self.testZoneID = [[CKRecordZoneID alloc] initWithZoneName:@"testzone" ownerName:CKCurrentUserDefaultName];
 
     // We don't want to use class mocks here, because they don't play well with partial mocks
@@ -313,18 +389,17 @@
                                                                 nsdistributednotificationCenterClass:[FakeNSDistributedNotificationCenter class]
                                                                                                                                      notifierClass:[FakeCKKSNotifier class]];
 
-    self.mockCKKSViewManager = OCMPartialMock(
-        [[CKKSViewManager alloc] initWithContainerName:SecCKKSContainerName
-                                                usePCS:SecCKKSContainerUsePCS
-                                            sosAdapter:self.mockSOSAdapter
-                             cloudKitClassDependencies:cloudKitClassDependencies]);
 
-    OCMStub([self.mockCKKSViewManager defaultViewList]).andCall(self, @selector(managedViewList));
-    OCMStub([self.mockCKKSViewManager syncBackupAndNotifyAboutSync]);
+    self.injectedOTManager = [self setUpOTManager:cloudKitClassDependencies];
+    [OTManager resetManager:false to:self.injectedOTManager];
 
+    self.mockCKKSViewManager = OCMPartialMock(self.injectedOTManager.viewManager);
     self.injectedManager = self.mockCKKSViewManager;
 
-    [CKKSViewManager resetManager:false setTo:self.injectedManager];
+    [self.mockCKKSViewManager setOverrideCKKSViewsFromPolicy:!self.setCKKSViewsFromPolicyToNo];
+    OCMStub([self.mockCKKSViewManager defaultViewList]).andCall(self, @selector(managedViewList));
+    OCMStub([self.mockCKKSViewManager syncBackupAndNotifyAboutSync]);
+    OCMStub([self.mockCKKSViewManager waitForTrustReady]).andReturn(YES);
 
     // Lie and say network is available
     [self.reachabilityTracker setNetworkReachability:true];
@@ -338,6 +413,20 @@
 
     // Actually load the database.
     kc_with_dbt(true, NULL, ^bool (SecDbConnectionRef dbt) { return false; });
+
+    if(!self.disableConfigureCKKSViewManagerWithViews) {
+        // Normally, the Octagon state machine calls this. But, since we won't be running that, help it out.
+        // CKKS might try to take a DB lock, so do this after the DB load above
+        [self.injectedManager setCurrentSyncingPolicy:self.viewSortingPolicyForManagedViewList];
+    }
+}
+
+- (OTManager*)setUpOTManager:(CKKSCloudKitClassDependencies*)cloudKitClassDependencies
+{
+    return [[OTManager alloc] initWithSOSAdapter:self.mockSOSAdapter
+                                lockStateTracker:[[CKKSLockStateTracker alloc] init]
+                            cloudKitClassDependencies:cloudKitClassDependencies];
+
 }
 
 - (SOSAccountStatus*)circleStatus {
@@ -353,11 +442,15 @@
 
 - (void)setAksLockState:(bool)aksLockState
 {
-
+    ckksnotice_global("ckkstests", "Setting mock AKS lock state to: %@", (aksLockState ? @"locked" : @"unlocked"));
     if(aksLockState) {
         [SecMockAKS lockClassA];
+
+        self.mockSOSAdapter.aksLocked = YES;
     } else {
         [SecMockAKS unlockAllClasses];
+
+        self.mockSOSAdapter.aksLocked = NO;
     }
     _aksLockState = aksLockState;
 }
@@ -395,12 +488,12 @@
     XCTAssertTrue(self.silentZoneDeletesAllowed, "Should be allowing zone deletes");
 }
 
--(CKKSAccountStateTracker*)accountStateTracker {
-    return self.injectedManager.accountTracker;
+- (CKKSAccountStateTracker*)accountStateTracker {
+    return self.injectedOTManager.accountStateTracker;
 }
 
 -(CKKSLockStateTracker*)lockStateTracker {
-    return self.injectedManager.lockStateTracker;
+    return self.injectedOTManager.lockStateTracker;
 }
 
 -(CKKSReachabilityTracker*)reachabilityTracker {
@@ -409,6 +502,36 @@
 
 -(NSSet*)managedViewList {
     return (NSSet*) CFBridgingRelease(SOSViewCopyViewSet(kViewSetCKKS));
+}
+
+- (TPSyncingPolicy*)viewSortingPolicyForManagedViewList
+{
+    return [self viewSortingPolicyForManagedViewListWithUserControllableViews:[NSSet set]
+                                                    syncUserControllableViews:TPPBPeerStableInfo_UserControllableViewStatus_ENABLED];
+}
+
+- (TPSyncingPolicy*)viewSortingPolicyForManagedViewListWithUserControllableViews:(NSSet<NSString*>*)ucv
+                                                       syncUserControllableViews:(TPPBPeerStableInfo_UserControllableViewStatus)syncUserControllableViews
+{
+    NSMutableArray<TPPBPolicyKeyViewMapping*>* rules = [NSMutableArray array];
+
+    for(NSString* viewName in self.managedViewList) {
+        TPPBPolicyKeyViewMapping* mapping = [[TPPBPolicyKeyViewMapping alloc] init];
+        mapping.view = viewName;
+        mapping.matchingRule = [TPDictionaryMatchingRule fieldMatch:@"vwht"
+                                                         fieldRegex:[NSString stringWithFormat:@"^%@$", viewName]];
+
+        [rules addObject:mapping];
+    }
+
+    TPSyncingPolicy* policy = [[TPSyncingPolicy alloc] initWithModel:@"test-policy"
+                                                             version:[[TPPolicyVersion alloc] initWithVersion:1 hash:@"fake-policy-for-views"]
+                                                            viewList:[self managedViewList]
+                                               userControllableViews:ucv
+                                           syncUserControllableViews:syncUserControllableViews
+                                                viewsToPiggybackTLKs:[NSSet set]
+                                                      keyViewMapping:rules];
+    return policy;
 }
 
 -(void)expectCKFetch {
@@ -519,7 +642,7 @@
 -(void)holdCloudKitModifications {
     XCTAssertFalse([self.ckModifyHoldOperation isPending], "Shouldn't already be a pending cloudkit modify hold operation");
     self.ckModifyHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
-        secnotice("ckks", "Released CloudKit modification hold.");
+        ckksnotice_global("ckks", "Released CloudKit modification hold.");
     }];
 }
 -(void)releaseCloudKitModificationHold {
@@ -531,12 +654,36 @@
 -(void)holdCloudKitFetches {
     XCTAssertFalse([self.ckFetchHoldOperation isPending], "Shouldn't already be a pending cloudkit fetch hold operation");
     self.ckFetchHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
-        secnotice("ckks", "Released CloudKit fetch hold.");
+        ckksnotice_global("ckks", "Released CloudKit fetch hold.");
     }];
 }
 -(void)releaseCloudKitFetchHold {
     if([self.ckFetchHoldOperation isPending]) {
         [self.operationQueue addOperation: self.ckFetchHoldOperation];
+    }
+}
+
+-(void)holdCloudKitModifyRecordZones {
+    XCTAssertFalse([self.ckModifyRecordZonesHoldOperation isPending], "Shouldn't already be a pending cloudkit zone create hold operation");
+    self.ckModifyRecordZonesHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
+        ckksnotice_global("ckks", "Released CloudKit zone create hold.");
+    }];
+}
+-(void)releaseCloudKitModifyRecordZonesHold {
+    if([self.ckModifyRecordZonesHoldOperation isPending]) {
+        [self.operationQueue addOperation: self.ckModifyRecordZonesHoldOperation];
+    }
+}
+
+-(void)holdCloudKitModifySubscription {
+    XCTAssertFalse([self.ckModifySubscriptionsHoldOperation isPending], "Shouldn't already be a pending cloudkit subscription hold operation");
+    self.ckModifySubscriptionsHoldOperation = [NSBlockOperation blockOperationWithBlock:^{
+        ckksnotice_global("ckks", "Released CloudKit zone create hold.");
+    }];
+}
+-(void)releaseCloudKitModifySubscriptionHold {
+    if([self.ckModifySubscriptionsHoldOperation isPending]) {
+        [self.operationQueue addOperation: self.ckModifySubscriptionsHoldOperation];
     }
 }
 
@@ -718,14 +865,14 @@
                 if(expectedRecordTypeCounts) {
                     matches &= !![modifiedRecordTypeCounts isEqual: filteredExpectedRecordTypeCounts];
                     if(!matches) {
-                        secnotice("fakecloudkit", "Record number mismatch: %@ %@", modifiedRecordTypeCounts, filteredExpectedRecordTypeCounts);
+                        secnotice("fakecloudkit", "Record number mismatch: attempted:%@ expected:%@", modifiedRecordTypeCounts, filteredExpectedRecordTypeCounts);
                         result = NO;
                         return;
                     }
                 } else {
                     matches &= op.recordsToSave.count == 0u;
                     if(!matches) {
-                        secnotice("fakecloudkit", "Record number mismatch: %@ 0", modifiedRecordTypeCounts);
+                        secnotice("fakecloudkit", "Record number mismatch: attempted:%@ expected:0", modifiedRecordTypeCounts);
                         result = NO;
                         return;
                     }
@@ -733,14 +880,14 @@
                 if(expectedDeletedRecordTypeCounts) {
                     matches &= !![deletedRecordTypeCounts  isEqual: expectedDeletedRecordTypeCounts];
                     if(!matches) {
-                        secnotice("fakecloudkit", "Deleted record number mismatch: %@ %@", deletedRecordTypeCounts, expectedDeletedRecordTypeCounts);
+                        secnotice("fakecloudkit", "Deleted record number mismatch: attempted:%@ expected:%@", deletedRecordTypeCounts, expectedDeletedRecordTypeCounts);
                         result = NO;
                         return;
                     }
                 } else {
                     matches &= op.recordIDsToDelete.count == 0u;
                     if(!matches) {
-                        secnotice("fakecloudkit", "Deleted record number mismatch: %@ 0", deletedRecordTypeCounts);
+                        secnotice("fakecloudkit", "Deleted record number mismatch: attempted:%@ expected:0", deletedRecordTypeCounts);
                         result = NO;
                         return;
                     }
@@ -764,6 +911,10 @@
                     // if you'd like to read the data from this write.
                     NSBlockOperation* ckop = [NSBlockOperation named:@"cloudkit-write" withBlock: ^{
                         @synchronized(zone.currentDatabase) {
+                            if(zone.blockBeforeWriteOperation) {
+                                zone.blockBeforeWriteOperation();
+                            }
+
                             NSMutableArray* savedRecords = [[NSMutableArray alloc] init];
                             for(CKRecord* record in op.recordsToSave) {
                                 CKRecord* reflectedRecord = [record copy];
@@ -1033,10 +1184,17 @@
     [super tearDown];
 
     [self.injectedManager cancelPendingOperations];
-    [CKKSViewManager resetManager:true setTo:nil];
+    [self.injectedManager clearAllViews];
     self.injectedManager = nil;
+
     [self.mockCKKSViewManager stopMocking];
     self.mockCKKSViewManager = nil;
+
+    self.injectedOTManager.viewManager = nil;
+
+    [self.injectedOTManager clearAllContexts];
+    self.injectedOTManager = nil;
+    [OTManager resetManager:true to:nil];
 
     [self.mockAccountStateTracker stopMocking];
     self.mockAccountStateTracker = nil;
@@ -1078,6 +1236,26 @@
     _mockSOSAdapter = nil;
     _mockOctagonAdapter = nil;
 
+    // Bring the database down and delete it
+
+    NSURL* keychainDir = (NSURL*)CFBridgingRelease(SecCopyHomeURL());
+
+    SecItemDataSourceFactoryReleaseAll();
+    SecKeychainDbForceClose();
+    SecKeychainDbReset(NULL);
+
+    // Only perform the desctructive step if the url matches what we expect!
+    if([keychainDir.path hasPrefix:[NSString stringWithFormat:@"/tmp/%@", testName]]) {
+        secnotice("ckkstest", "Removing test-specific keychain directory at %@", keychainDir);
+
+        NSError* removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtURL:keychainDir error:&removeError];
+
+        XCTAssertNil(removeError, "Should have been able to remove temporary files");
+     } else {
+         XCTFail("Unsure what happened to the keychain directory URL: %@", keychainDir);
+    }
+
     SecCKKSTestResetFlags();
 }
 
@@ -1094,26 +1272,7 @@
 }
 
 - (NSError*)ckInternalServerExtensionError:(NSInteger)code description:(NSString*)desc {
-    NSError* extensionError = [[CKPrettyError alloc] initWithDomain:@"CloudkitKeychainService"
-                                                               code:code
-                                                           userInfo:@{
-                                                                      CKErrorServerDescriptionKey: desc,
-                                                                      NSLocalizedDescriptionKey: desc,
-                                                                      }];
-    NSError* internalError = [[CKPrettyError alloc] initWithDomain:CKInternalErrorDomain
-                                                              code:CKErrorInternalPluginError
-                                                          userInfo:@{CKErrorServerDescriptionKey: desc,
-                                                                     NSLocalizedDescriptionKey: desc,
-                                                                     NSUnderlyingErrorKey: extensionError,
-                                                                     }];
-    NSError* error = [[CKPrettyError alloc] initWithDomain:CKErrorDomain
-                                                      code:CKErrorServerRejectedRequest
-                                                  userInfo:@{NSUnderlyingErrorKey: internalError,
-                                                             CKErrorServerDescriptionKey: desc,
-                                                             NSLocalizedDescriptionKey: desc,
-                                                             CKContainerIDKey: SecCKKSContainerName,
-                                                             }];
-    return error;
+    return [FakeCKZone internalPluginError:@"CloudkitKeychainService" code:code description:desc];
 }
 
 @end

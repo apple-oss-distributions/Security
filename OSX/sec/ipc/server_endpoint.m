@@ -32,7 +32,7 @@
 #include "ipc/server_entitlement_helpers.h"
 #include "ipc/server_endpoint.h"
 
-#include "securityd/SecItemServer.h"
+#include "keychain/securityd/SecItemServer.h"
 #include <Security/SecEntitlements.h>
 
 #pragma mark - Securityd Server
@@ -75,6 +75,8 @@
         self->_client.inMultiUser                            = existingClient->inMultiUser;
         self->_client.activeUser                             = existingClient->activeUser;
 #endif
+        self->_client.applicationIdentifier                  = CFRetainSafe(existingClient->applicationIdentifier);
+        self->_client.isAppClip                              = existingClient->isAppClip;
     }
     return self;
 }
@@ -88,6 +90,7 @@
     CFReleaseNull(self->_client.task);
     CFReleaseNull(self->_client.accessGroups);
     CFReleaseNull(self->_client.musr);
+    CFReleaseNull(self->_client.applicationIdentifier);
 }
 @end
 

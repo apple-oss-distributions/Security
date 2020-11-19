@@ -25,6 +25,15 @@
 #ifndef OTClique_h
 #define OTClique_h
 
+#if __OBJC2__
+
+#import <Foundation/Foundation.h>
+#import <Security/SecureObjectSync/SOSCloudCircleInternal.h>
+#import <Security/SecureObjectSync/SOSPeerInfo.h>
+#import <Security/SecureObjectSync/SOSTypes.h>
+#import <Security/OTConstants.h>
+#import <Security/SecRecoveryKey.h>
+
 typedef NS_ENUM(NSInteger, CliqueStatus) {
     CliqueStatusIn         = 0, /*There is a clique and I am in it*/
     CliqueStatusNotIn      = 1, /*There is a clique and I am not in it - you should get a voucher to join or tell another peer to trust us*/
@@ -34,37 +43,42 @@ typedef NS_ENUM(NSInteger, CliqueStatus) {
     CliqueStatusError      = -1 /*unable to determine circle status, inspect CFError to find out why */
 };
 
-#import <Security/SecRecoveryKey.h>
-
-#if __OBJC2__
-
-#import <Foundation/Foundation.h>
-#import <Security/SecureObjectSync/SOSCloudCircleInternal.h>
-#import <Security/SecureObjectSync/SOSPeerInfo.h>
-#import <Security/SecureObjectSync/SOSTypes.h>
+typedef NS_ENUM(NSInteger, OTCDPStatus) {
+    OTCDPStatusUnknown = 0,
+    OTCDPStatusDisabled = 1,
+    OTCDPStatusEnabled = 2,
+};
 
 NS_ASSUME_NONNULL_BEGIN
 
 NSString* OTCliqueStatusToString(CliqueStatus status);
 CliqueStatus OTCliqueStatusFromString(NSString* str);
+NSString* OTCDPStatusToString(OTCDPStatus status);
 
 @class KCPairingChannelContext;
 @class KCPairingChannel;
 @class OTPairingChannel;
 @class OTPairingChannelContext;
 @class OTControl;
+@class CKKSControl;
 
 extern NSString* kSecEntitlementPrivateOctagonEscrow;
 
 @interface OTConfigurationContext : NSObject
-@property (nonatomic, copy, nullable) NSString* context;
-@property (nonatomic, copy) NSString* dsid;
-@property (nonatomic, copy) NSString* altDSID;
-@property (nonatomic, strong, nullable) SFSignInAnalytics* analytics;
-
+@property (nonatomic, copy) NSString* context;
+@property (nonatomic, copy) NSString* containerName;
+@property (nonatomic, copy, nullable) NSString* dsid;
+@property (nonatomic, copy, nullable) NSString* altDSID;
+@property (nonatomic, copy, nullable) NSString* authenticationAppleID;
+@property (nonatomic, copy, nullable) NSString* passwordEquivalentToken;
+@property (nonatomic) BOOL overrideEscrowCache;
 
 // Use this to inject your own OTControl object. It must be configured as synchronous.
 @property (nullable, strong) OTControl* otControl;
+
+// Use this to inject your own CKKSControl object. It must be configured as synchronous.
+@property (nullable, strong) CKKSControl* ckksControl;
+
 // Use this to inject your own SecureBackup object. It must conform to the OctagonEscrowRecoverer protocol.
 @property (nullable, strong) id sbd;
 
@@ -85,11 +99,6 @@ extern NSString* kSecEntitlementPrivateOctagonEscrow;
 @property (nonatomic, assign) BOOL discretionaryNetwork;
 @property (nonatomic, assign) BOOL useCachedAccountStatus;
 @end
-
-typedef NSString* OTCliqueCFUType NS_STRING_ENUM;
-extern OTCliqueCFUType OTCliqueCFTypeRepair;
-extern OTCliqueCFUType OTCliqueCFTypePasscode;
-extern OTCliqueCFUType OTCliqueCFTypeUpgrade;
 
 typedef NSString* OTCliqueCDPContextType NS_STRING_ENUM;
 extern OTCliqueCDPContextType OTCliqueCDPContextTypeNone;
@@ -115,10 +124,10 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
 
 /* *
  * @abstract, initializes a clique object given a context.  A clique object enables octagon trust operations for a given context and dsid.
- * @param ctx, a unique string that is used as a way to retrieve current trust state
+ * @param ctx, a collection of arguments describing the world
  * @return an instance of octagon trust
  */
-- (instancetype _Nullable)initWithContextData:(OTConfigurationContext *)ctx error:(NSError * __autoreleasing * _Nonnull)error;
+- (instancetype)initWithContextData:(OTConfigurationContext *)ctx;
 
 /* *
  * @abstract   Establish a new clique, reset protected data
@@ -130,7 +139,20 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
  * @return  clique, returns a new clique instance
  * @param  error, error gets filled if something goes horribly wrong
  */
-+ (instancetype _Nullable)newFriendsWithContextData:(OTConfigurationContext*)data error:(NSError * __autoreleasing *)error;
++ (instancetype _Nullable)newFriendsWithContextData:(OTConfigurationContext*)data error:(NSError * __autoreleasing *)error __deprecated_msg("use newFriendsWithContextData:resetReason:error: instead");
+
+/* *
+* @abstract   Establish a new clique, reset protected data
+*   Reset the clique
+*   Delete backups
+*   Delete all CKKS data
+*
+* @param   ctx, context containing parameters to setup OTClique
+* @param    resetReason, a reason that drives cdp to perform a reset
+* @return  clique, returns a new clique instance
+* @param  error, error gets filled if something goes horribly wrong
+*/
++ (instancetype _Nullable)newFriendsWithContextData:(OTConfigurationContext*)data resetReason:(CuttlefishResetReason)resetReason error:(NSError * __autoreleasing *)error;
 
 /*
  * @abstract Perform a SecureBackup escrow/keychain recovery and attempt to use the information therein to join this account.
@@ -147,10 +169,8 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
 /* *
  * @abstract   Create pairing channel with
  *
- * @param ctx, context containing parameters to setup OTClique
- * @param pairingChannelContext, context containing parameters to setup the pairing channel as the initiator
- * @return  clique, An instance of an OTClique
- * @return  error, error gets filled if something goes horribly wrong
+ * @param ctx, context containing parameters to setup the pairing channel as the initiator
+ * @return  KCPairingChannel, An instance of a KCPairingCHannel
  */
 - (KCPairingChannel *)setupPairingChannelAsInitiator:(KCPairingChannelContext *)ctx;
 
@@ -159,10 +179,8 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
 /* *
  * @abstract   Configure this peer as the acceptor during piggybacking
  *
- * @param ctx, context containing parameters to setup OTClique
- * @param pairingChannelContext, context containing parameters to setup the pairing channel as the acceptor
- * @param error, error gets filled if something goes horribly wrong
- * @return  KCPairingChannel, An instance of an OTClique
+ * @param ctx, context containing parameters to setup the pairing channel as the acceptor
+ * @return  KCPairingChannel, An instance of a KCPairingChannel
  */
 - (KCPairingChannel *)setupPairingChannelAsAcceptor:(KCPairingChannelContext *)ctx;
 
@@ -224,21 +242,51 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
  */
 - (NSDictionary<NSString*,NSString*>* _Nullable)peerDeviceNamesByPeerID:(NSError * __autoreleasing *)error;
 
+/*
+ * CDP bit handling
+ */
 
++ (BOOL)setCDPEnabled:(OTConfigurationContext*)arguments
+                error:(NSError* __autoreleasing*)error;
+
++ (OTCDPStatus)getCDPStatus:(OTConfigurationContext*)arguments
+                      error:(NSError* __autoreleasing *)error;
+
+/*
+ * User view handling
+ */
+
+/* *
+ * @abstract Set the current status of user-controllable views. This is unavailable on TV and Watch, and will error.
+ * @param error, This will return an error if anything goes wrong
+ * @return success
+ */
+- (BOOL)setUserControllableViewsSyncStatus:(BOOL)enabled
+                                     error:(NSError* __autoreleasing *)error;
+
+/* *
+ * @abstract Fetch the current status of user-controllable views
+ * @param   error, This will return an error if anything goes wrong
+ * @return status, The status of syncing. Note that in the success case, this can be NO while error remains empty.
+ */
+- (BOOL)fetchUserControllableViewsSyncingEnabled:(NSError* __autoreleasing *)error __attribute__((swift_error(nonnull_error)));
 
 /* SOS glue */
 
 - (BOOL)joinAfterRestore:(NSError * __autoreleasing *)error;
 
-- (BOOL)safariPasswordSyncingEnabled:(NSError *__autoreleasing*)error;
+- (BOOL)safariPasswordSyncingEnabled:(NSError *__autoreleasing*)error
+API_DEPRECATED_WITH_REPLACEMENT("fetchUserControllableViewsSyncingEnabled",macos(10.15, 10.16), ios(13.0, 14.0), watchos(6.0, 7.0), tvos(13.0,14.0));
 
 - (BOOL)isLastFriend:(NSError *__autoreleasing*)error;
 
 - (BOOL)waitForInitialSync:(NSError *__autoreleasing*)error;
 
-- (NSArray*)copyViewUnawarePeerInfo:(NSError *__autoreleasing*)error;
+- (NSArray* _Nullable)copyViewUnawarePeerInfo:(NSError *__autoreleasing*)error;
 
-- (BOOL)viewSet:(NSSet*)enabledViews disabledViews:(NSSet*)disabledViews;
+- (BOOL)viewSet:(NSSet*)enabledViews disabledViews:(NSSet*)disabledViews
+API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15, 10.16), ios(13.0, 14.0), watchos(6.0, 7.0), tvos(13.0,14.0));
+
 
 - (BOOL)setUserCredentialsAndDSID:(NSString*)userLabel
                               password:(NSData*)userPassword
@@ -248,7 +296,7 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
                                         password:(NSData*)userPassword
                                         error:(NSError *__autoreleasing*)error;
 
-- (NSArray*)copyPeerPeerInfo:(NSError *__autoreleasing*)error;
+- (NSArray* _Nullable)copyPeerPeerInfo:(NSError *__autoreleasing*)error;
 
 - (BOOL)peersHaveViewsEnabled:(NSArray<NSString*>*)viewNames error:(NSError *__autoreleasing*)error;
 
@@ -313,6 +361,17 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeUpdatePasscode;
 // CoreCDP will call this function when they are upgrading an account from SA to HSA2
 - (BOOL)waitForOctagonUpgrade:(NSError** _Nullable)error;
 
+
+/*
+* @abstract CoreCDP to call this function when they need to reset protected data.
+*   This routine resets all circles, creates a new octagon and sos circle, then puts this device into each circle.
+*   This routine does not create a new escrow record
+*   This routine will need ensure OTConfigurationContext contains appleID and passwordEquivalentToken to delete all CDP records
+* @param data The OTClique configuration data
+* @param error Reports any error along the process
+* @return a new clique
+*/
++ (OTClique* _Nullable)resetProtectedData:(OTConfigurationContext*)data error:(NSError**)error;
 @end
 
 NS_ASSUME_NONNULL_END

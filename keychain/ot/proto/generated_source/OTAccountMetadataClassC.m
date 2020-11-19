@@ -34,7 +34,7 @@
 }
 - (BOOL)hasIcloudAccountState
 {
-    return _has.icloudAccountState;
+    return _has.icloudAccountState != 0;
 }
 - (NSString *)icloudAccountStateAsString:(OTAccountMetadataClassC_AccountState)value
 {
@@ -56,7 +56,7 @@
 }
 - (BOOL)hasEpoch
 {
-    return _has.epoch;
+    return _has.epoch != 0;
 }
 - (BOOL)hasAltDSID
 {
@@ -79,7 +79,7 @@
 }
 - (BOOL)hasTrustState
 {
-    return _has.trustState;
+    return _has.trustState != 0;
 }
 - (NSString *)trustStateAsString:(OTAccountMetadataClassC_TrustState)value
 {
@@ -101,7 +101,7 @@
 }
 - (BOOL)hasLastHealthCheckup
 {
-    return _has.lastHealthCheckup;
+    return _has.lastHealthCheckup != 0;
 }
 @synthesize attemptedJoin = _attemptedJoin;
 - (OTAccountMetadataClassC_AttemptedAJoinState)attemptedJoin
@@ -119,7 +119,7 @@
 }
 - (BOOL)hasAttemptedJoin
 {
-    return _has.attemptedJoin;
+    return _has.attemptedJoin != 0;
 }
 - (NSString *)attemptedJoinAsString:(OTAccountMetadataClassC_AttemptedAJoinState)value
 {
@@ -129,6 +129,47 @@
 {
     return StringAsOTAccountMetadataClassC_AttemptedAJoinState(str);
 }
+@synthesize cdpState = _cdpState;
+- (OTAccountMetadataClassC_CDPState)cdpState
+{
+    return _has.cdpState ? _cdpState : OTAccountMetadataClassC_CDPState_UNKNOWN;
+}
+- (void)setCdpState:(OTAccountMetadataClassC_CDPState)v
+{
+    _has.cdpState = YES;
+    _cdpState = v;
+}
+- (void)setHasCdpState:(BOOL)f
+{
+    _has.cdpState = f;
+}
+- (BOOL)hasCdpState
+{
+    return _has.cdpState != 0;
+}
+- (NSString *)cdpStateAsString:(OTAccountMetadataClassC_CDPState)value
+{
+    return OTAccountMetadataClassC_CDPStateAsString(value);
+}
+- (OTAccountMetadataClassC_CDPState)StringAsCdpState:(NSString *)str
+{
+    return StringAsOTAccountMetadataClassC_CDPState(str);
+}
+- (BOOL)hasSyncingPolicy
+{
+    return _syncingPolicy != nil;
+}
+@synthesize syncingPolicy = _syncingPolicy;
+- (BOOL)hasVoucher
+{
+    return _voucher != nil;
+}
+@synthesize voucher = _voucher;
+- (BOOL)hasVoucherSignature
+{
+    return _voucherSignature != nil;
+}
+@synthesize voucherSignature = _voucherSignature;
 
 - (NSString *)description
 {
@@ -165,6 +206,22 @@
     if (self->_has.attemptedJoin)
     {
         [dict setObject:OTAccountMetadataClassC_AttemptedAJoinStateAsString(self->_attemptedJoin) forKey:@"attemptedJoin"];
+    }
+    if (self->_has.cdpState)
+    {
+        [dict setObject:OTAccountMetadataClassC_CDPStateAsString(self->_cdpState) forKey:@"cdpState"];
+    }
+    if (self->_syncingPolicy)
+    {
+        [dict setObject:self->_syncingPolicy forKey:@"syncingPolicy"];
+    }
+    if (self->_voucher)
+    {
+        [dict setObject:self->_voucher forKey:@"voucher"];
+    }
+    if (self->_voucherSignature)
+    {
+        [dict setObject:self->_voucherSignature forKey:@"voucherSignature"];
     }
     return dict;
 }
@@ -225,6 +282,30 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             {
                 self->_has.attemptedJoin = YES;
                 self->_attemptedJoin = PBReaderReadInt32(reader);
+            }
+            break;
+            case 8 /* cdpState */:
+            {
+                self->_has.cdpState = YES;
+                self->_cdpState = PBReaderReadInt32(reader);
+            }
+            break;
+            case 11 /* syncingPolicy */:
+            {
+                NSData *new_syncingPolicy = PBReaderReadData(reader);
+                self->_syncingPolicy = new_syncingPolicy;
+            }
+            break;
+            case 12 /* voucher */:
+            {
+                NSData *new_voucher = PBReaderReadData(reader);
+                self->_voucher = new_voucher;
+            }
+            break;
+            case 13 /* voucherSignature */:
+            {
+                NSData *new_voucherSignature = PBReaderReadData(reader);
+                self->_voucherSignature = new_voucherSignature;
             }
             break;
             default:
@@ -291,6 +372,34 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             PBDataWriterWriteInt32Field(writer, self->_attemptedJoin, 7);
         }
     }
+    /* cdpState */
+    {
+        if (self->_has.cdpState)
+        {
+            PBDataWriterWriteInt32Field(writer, self->_cdpState, 8);
+        }
+    }
+    /* syncingPolicy */
+    {
+        if (self->_syncingPolicy)
+        {
+            PBDataWriterWriteDataField(writer, self->_syncingPolicy, 11);
+        }
+    }
+    /* voucher */
+    {
+        if (self->_voucher)
+        {
+            PBDataWriterWriteDataField(writer, self->_voucher, 12);
+        }
+    }
+    /* voucherSignature */
+    {
+        if (self->_voucherSignature)
+        {
+            PBDataWriterWriteDataField(writer, self->_voucherSignature, 13);
+        }
+    }
 }
 
 - (void)copyTo:(OTAccountMetadataClassC *)other
@@ -328,6 +437,23 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
         other->_attemptedJoin = _attemptedJoin;
         other->_has.attemptedJoin = YES;
     }
+    if (self->_has.cdpState)
+    {
+        other->_cdpState = _cdpState;
+        other->_has.cdpState = YES;
+    }
+    if (_syncingPolicy)
+    {
+        other.syncingPolicy = _syncingPolicy;
+    }
+    if (_voucher)
+    {
+        other.voucher = _voucher;
+    }
+    if (_voucherSignature)
+    {
+        other.voucherSignature = _voucherSignature;
+    }
 }
 
 - (id)copyWithZone:(NSZone *)zone
@@ -360,6 +486,14 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
         copy->_attemptedJoin = _attemptedJoin;
         copy->_has.attemptedJoin = YES;
     }
+    if (self->_has.cdpState)
+    {
+        copy->_cdpState = _cdpState;
+        copy->_has.cdpState = YES;
+    }
+    copy->_syncingPolicy = [_syncingPolicy copyWithZone:zone];
+    copy->_voucher = [_voucher copyWithZone:zone];
+    copy->_voucherSignature = [_voucherSignature copyWithZone:zone];
     return copy;
 }
 
@@ -381,6 +515,14 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     ((self->_has.lastHealthCheckup && other->_has.lastHealthCheckup && self->_lastHealthCheckup == other->_lastHealthCheckup) || (!self->_has.lastHealthCheckup && !other->_has.lastHealthCheckup))
     &&
     ((self->_has.attemptedJoin && other->_has.attemptedJoin && self->_attemptedJoin == other->_attemptedJoin) || (!self->_has.attemptedJoin && !other->_has.attemptedJoin))
+    &&
+    ((self->_has.cdpState && other->_has.cdpState && self->_cdpState == other->_cdpState) || (!self->_has.cdpState && !other->_has.cdpState))
+    &&
+    ((!self->_syncingPolicy && !other->_syncingPolicy) || [self->_syncingPolicy isEqual:other->_syncingPolicy])
+    &&
+    ((!self->_voucher && !other->_voucher) || [self->_voucher isEqual:other->_voucher])
+    &&
+    ((!self->_voucherSignature && !other->_voucherSignature) || [self->_voucherSignature isEqual:other->_voucherSignature])
     ;
 }
 
@@ -401,6 +543,14 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     (self->_has.lastHealthCheckup ? PBHashInt((NSUInteger)self->_lastHealthCheckup) : 0)
     ^
     (self->_has.attemptedJoin ? PBHashInt((NSUInteger)self->_attemptedJoin) : 0)
+    ^
+    (self->_has.cdpState ? PBHashInt((NSUInteger)self->_cdpState) : 0)
+    ^
+    [self->_syncingPolicy hash]
+    ^
+    [self->_voucher hash]
+    ^
+    [self->_voucherSignature hash]
     ;
 }
 
@@ -438,6 +588,23 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     {
         self->_attemptedJoin = other->_attemptedJoin;
         self->_has.attemptedJoin = YES;
+    }
+    if (other->_has.cdpState)
+    {
+        self->_cdpState = other->_cdpState;
+        self->_has.cdpState = YES;
+    }
+    if (other->_syncingPolicy)
+    {
+        [self setSyncingPolicy:other->_syncingPolicy];
+    }
+    if (other->_voucher)
+    {
+        [self setVoucher:other->_voucher];
+    }
+    if (other->_voucherSignature)
+    {
+        [self setVoucherSignature:other->_voucherSignature];
     }
 }
 

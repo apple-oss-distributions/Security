@@ -8,9 +8,10 @@
 #import <ProtocolBuffer/PBDataReader.h>
 
 #import "OTApplicantToSponsorRound2M1.h"
-#import "OTSOSMessage.h"
 #import "OTSponsorToApplicantRound1M2.h"
 #import "OTSponsorToApplicantRound2M2.h"
+#import "OTSupportOctagonMessage.h"
+#import "OTSupportSOSMessage.h"
 
 #if !__has_feature(objc_arc)
 # error This generated file depends on ARC but it is not enabled; turn on ARC, or use 'objc_use_arc' option to generate non-ARC code.
@@ -33,11 +34,16 @@
     return _voucher != nil;
 }
 @synthesize voucher = _voucher;
-- (BOOL)hasSosPairingMessage
+- (BOOL)hasSupportsOctagon
 {
-    return _sosPairingMessage != nil;
+    return _supportsOctagon != nil;
 }
-@synthesize sosPairingMessage = _sosPairingMessage;
+@synthesize supportsOctagon = _supportsOctagon;
+- (BOOL)hasSupportsSOS
+{
+    return _supportsSOS != nil;
+}
+@synthesize supportsSOS = _supportsSOS;
 
 - (NSString *)description
 {
@@ -59,9 +65,13 @@
     {
         [dict setObject:[_voucher dictionaryRepresentation] forKey:@"voucher"];
     }
-    if (self->_sosPairingMessage)
+    if (self->_supportsOctagon)
     {
-        [dict setObject:[_sosPairingMessage dictionaryRepresentation] forKey:@"sosPairingMessage"];
+        [dict setObject:[_supportsOctagon dictionaryRepresentation] forKey:@"supportsOctagon"];
+    }
+    if (self->_supportsSOS)
+    {
+        [dict setObject:[_supportsSOS dictionaryRepresentation] forKey:@"supportsSOS"];
     }
     return dict;
 }
@@ -136,22 +146,40 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
                 PBReaderRecallMark(reader, &mark_voucher);
             }
             break;
-            case 4 /* sosPairingMessage */:
+            case 5 /* supportsOctagon */:
             {
-                OTSOSMessage *new_sosPairingMessage = [[OTSOSMessage alloc] init];
-                self->_sosPairingMessage = new_sosPairingMessage;
-                PBDataReaderMark mark_sosPairingMessage;
-                BOOL markError = !PBReaderPlaceMark(reader, &mark_sosPairingMessage);
+                OTSupportOctagonMessage *new_supportsOctagon = [[OTSupportOctagonMessage alloc] init];
+                self->_supportsOctagon = new_supportsOctagon;
+                PBDataReaderMark mark_supportsOctagon;
+                BOOL markError = !PBReaderPlaceMark(reader, &mark_supportsOctagon);
                 if (markError)
                 {
                     return NO;
                 }
-                BOOL inError = !OTSOSMessageReadFrom(new_sosPairingMessage, reader);
+                BOOL inError = !OTSupportOctagonMessageReadFrom(new_supportsOctagon, reader);
                 if (inError)
                 {
                     return NO;
                 }
-                PBReaderRecallMark(reader, &mark_sosPairingMessage);
+                PBReaderRecallMark(reader, &mark_supportsOctagon);
+            }
+            break;
+            case 6 /* supportsSOS */:
+            {
+                OTSupportSOSMessage *new_supportsSOS = [[OTSupportSOSMessage alloc] init];
+                self->_supportsSOS = new_supportsSOS;
+                PBDataReaderMark mark_supportsSOS;
+                BOOL markError = !PBReaderPlaceMark(reader, &mark_supportsSOS);
+                if (markError)
+                {
+                    return NO;
+                }
+                BOOL inError = !OTSupportSOSMessageReadFrom(new_supportsSOS, reader);
+                if (inError)
+                {
+                    return NO;
+                }
+                PBReaderRecallMark(reader, &mark_supportsSOS);
             }
             break;
             default:
@@ -190,11 +218,18 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
             PBDataWriterWriteSubmessage(writer, self->_voucher, 3);
         }
     }
-    /* sosPairingMessage */
+    /* supportsOctagon */
     {
-        if (self->_sosPairingMessage != nil)
+        if (self->_supportsOctagon != nil)
         {
-            PBDataWriterWriteSubmessage(writer, self->_sosPairingMessage, 4);
+            PBDataWriterWriteSubmessage(writer, self->_supportsOctagon, 5);
+        }
+    }
+    /* supportsSOS */
+    {
+        if (self->_supportsSOS != nil)
+        {
+            PBDataWriterWriteSubmessage(writer, self->_supportsSOS, 6);
         }
     }
 }
@@ -213,9 +248,13 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
     {
         other.voucher = _voucher;
     }
-    if (_sosPairingMessage)
+    if (_supportsOctagon)
     {
-        other.sosPairingMessage = _sosPairingMessage;
+        other.supportsOctagon = _supportsOctagon;
+    }
+    if (_supportsSOS)
+    {
+        other.supportsSOS = _supportsSOS;
     }
 }
 
@@ -225,7 +264,8 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
     copy->_epoch = [_epoch copyWithZone:zone];
     copy->_prepare = [_prepare copyWithZone:zone];
     copy->_voucher = [_voucher copyWithZone:zone];
-    copy->_sosPairingMessage = [_sosPairingMessage copyWithZone:zone];
+    copy->_supportsOctagon = [_supportsOctagon copyWithZone:zone];
+    copy->_supportsSOS = [_supportsSOS copyWithZone:zone];
     return copy;
 }
 
@@ -240,7 +280,9 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
     &&
     ((!self->_voucher && !other->_voucher) || [self->_voucher isEqual:other->_voucher])
     &&
-    ((!self->_sosPairingMessage && !other->_sosPairingMessage) || [self->_sosPairingMessage isEqual:other->_sosPairingMessage])
+    ((!self->_supportsOctagon && !other->_supportsOctagon) || [self->_supportsOctagon isEqual:other->_supportsOctagon])
+    &&
+    ((!self->_supportsSOS && !other->_supportsSOS) || [self->_supportsSOS isEqual:other->_supportsSOS])
     ;
 }
 
@@ -254,7 +296,9 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
     ^
     [self->_voucher hash]
     ^
-    [self->_sosPairingMessage hash]
+    [self->_supportsOctagon hash]
+    ^
+    [self->_supportsSOS hash]
     ;
 }
 
@@ -284,13 +328,21 @@ BOOL OTPairingMessageReadFrom(__unsafe_unretained OTPairingMessage *self, __unsa
     {
         [self setVoucher:other->_voucher];
     }
-    if (self->_sosPairingMessage && other->_sosPairingMessage)
+    if (self->_supportsOctagon && other->_supportsOctagon)
     {
-        [self->_sosPairingMessage mergeFrom:other->_sosPairingMessage];
+        [self->_supportsOctagon mergeFrom:other->_supportsOctagon];
     }
-    else if (!self->_sosPairingMessage && other->_sosPairingMessage)
+    else if (!self->_supportsOctagon && other->_supportsOctagon)
     {
-        [self setSosPairingMessage:other->_sosPairingMessage];
+        [self setSupportsOctagon:other->_supportsOctagon];
+    }
+    if (self->_supportsSOS && other->_supportsSOS)
+    {
+        [self->_supportsSOS mergeFrom:other->_supportsSOS];
+    }
+    else if (!self->_supportsSOS && other->_supportsSOS)
+    {
+        [self setSupportsSOS:other->_supportsSOS];
     }
 }
 

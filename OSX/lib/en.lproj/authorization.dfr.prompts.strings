@@ -1,6 +1,6 @@
 "system.preferences.accounts" = "Touch ID to Unlock Users & Groups Preferences.";
 
-"com.apple.SoftwareUpdate.scan" = "Touch ID to Check for New Apple-provided Software.";
+"com.apple.SoftwareUpdate.scan" = "Touch ID to Check for New Apple Software.";
 
 "system.preferences.datetime" = "Touch ID to Unlock the Date & Time Preferences.";
 
@@ -48,15 +48,15 @@
 
 "system.preferences.energysaver" = "Touch ID to Unlock the Energy Saver Preferences.";
 
-"system.install.apple-software" = "Touch ID to Install Apple-provided Software.";
+"system.install.apple-software" = "Touch ID to Install Apple Software.";
 
-"system.install.apple-software.standard-user" = "Touch ID to Install Apple-provided software.";
+"system.install.apple-software.standard-user" = "Touch ID to Install Apple software.";
 
 "com.apple.security.assessment.update" = "Touch ID to Install an App from an Unidentified Developer.";
 
 "com.apple.docset.install" = "Touch ID to Update the Developer Documentation.";
 
-"com.apple.Safari.parental-controls" = "Touch ID to Modify the Parental Controls Settings for Safari.";
+"com.apple.Safari.parental-controls" = "Touch ID to Modify the Screen Time Settings for Safari.";
 
 "com.apple.Safari.allow-unsigned-app-extensions" = "Touch ID to Allow Unsigned Extensions.";
 
@@ -86,7 +86,7 @@
 
 "system.preferences.sharing" = "Touch ID to Unlock the Sharing Preferences.";
 
-"system.preferences.parental-controls" = "Touch ID to Unlock Parental Controls Preferences.";
+"system.preferences.parental-controls" = "Touch ID to Unlock Screen Time Preferences.";
 
 "system.preferences.security" = "Touch ID to Unlock Security & Privacy Preferences.";
 
@@ -144,7 +144,7 @@
 
 "com.apple.AOSNotification.FindMyMac.remove" = "Touch ID to Turn Off Find My Mac.";
 
-"com.apple.iBooksX.ParentalControl" = "Touch ID to Unlock Your Parental Controls Preferences.";
+"com.apple.iBooksX.ParentalControl" = "Touch ID to Unlock Your Screen Time Preferences.";
 
 "system.services.networkextension.vpn" = "Touch ID to Modify the VPN Configuration.";
 

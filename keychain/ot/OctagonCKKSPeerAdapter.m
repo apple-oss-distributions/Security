@@ -80,12 +80,19 @@
 @synthesize essential = _essential;
 @synthesize providerID = _providerID;
 
-- (instancetype)initWithPeerID:(NSString*)peerID operationDependencies:(OTOperationDependencies*)deps
+
+- (instancetype)initWithPeerID:(NSString*)peerID
+                 containerName:(NSString*)containerName
+                     contextID:(NSString*)contextID
+                 cuttlefishXPC:(CuttlefishXPCWrapper*)cuttlefishXPCWrapper
 {
     if((self = [super init])) {
         _providerID = [NSString stringWithFormat:@"[OctagonCKKSPeerAdapter:%@]", peerID];
         _peerID = peerID;
-        _deps = deps;
+
+        _containerName = containerName;
+        _contextID = contextID;
+        _cuttlefishXPCWrapper = cuttlefishXPCWrapper;
 
         _peerChangeListeners = [[CKKSListenerCollection alloc] initWithName:@"ckks-sos"];
 
@@ -104,7 +111,7 @@
 {
     // Async to sync again! No other option.
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    SFKeychainManager* keychainManager = [SFKeychainManager defaultManager];
+    SFKeychainManager* keychainManager = [SFKeychainManager defaultOverCommitManager];
 
     __block SFIdentity* identity = nil;
     __block NSError* localError = nil;
@@ -181,38 +188,32 @@
     __block NSMutableSet<id<CKKSRemotePeerProtocol>> * peers = nil;
 
     WEAKIFY(self);
-    [[self.deps.cuttlefishXPC synchronousRemoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-        localerror = error;
+    [self.cuttlefishXPCWrapper fetchTrustStateWithContainer:self.containerName
+                                                    context:self.contextID
+                                                      reply:^(TrustedPeersHelperPeerState * _Nullable selfPeerState,
+                                                              NSArray<TrustedPeersHelperPeer *> * _Nullable trustedPeers,
+                                                              NSError * _Nullable operror) {
+            STRONGIFY(self);
+            if(operror) {
+                secnotice("octagon", "Unable to fetch trusted peers for (%@,%@): %@", self.containerName, self.contextID, operror);
+                localerror = operror;
 
-    }] fetchTrustStateWithContainer:self.deps.containerName
-                            context:self.deps.contextID
-                              reply:^(TrustedPeersHelperPeerState * _Nullable selfPeerState,
-                                      NSArray<TrustedPeersHelperPeer *> * _Nullable trustedPeers,
-                                      NSError * _Nullable operror) {
-         STRONGIFY(self);
-         if(operror) {
-             secnotice("octagon", "Unable to fetch trusted peers for (%@,%@): %@", self.deps.containerName, self.deps.contextID, operror);
-             localerror = operror;
+            } else {
+                peers = [NSMutableSet set];
 
-         } else {
-             peers = [NSMutableSet set];
+                // Turn these peers into CKKSPeers
+                for(TrustedPeersHelperPeer* peer in trustedPeers) {
+                    SFECPublicKey* signingKey = [SFECPublicKey keyWithSubjectPublicKeyInfo:peer.signingSPKI];
+                    SFECPublicKey* encryptionKey = [SFECPublicKey keyWithSubjectPublicKeyInfo:peer.encryptionSPKI];
 
-             // Turn these peers into CKKSPeers
-             for(TrustedPeersHelperPeer* peer in trustedPeers) {
-                 SFECPublicKey* signingKey = [SFECPublicKey keyWithSubjectPublicKeyInfo:peer.signingSPKI];
-                 SFECPublicKey* encryptionKey = [SFECPublicKey keyWithSubjectPublicKeyInfo:peer.encryptionSPKI];
-
-                 CKKSActualPeer* ckkspeer = [[CKKSActualPeer alloc] initWithPeerID:peer.peerID
-                                                               encryptionPublicKey:encryptionKey
-                                                                  signingPublicKey:signingKey
-                                                                          viewList:peer.viewList];
-                 secnotice("octagon", "Have trusted peer %@", ckkspeer);
-
-                 [peers addObject:ckkspeer];
-             }
-         }
-     }];
+                    CKKSActualPeer* ckkspeer = [[CKKSActualPeer alloc] initWithPeerID:peer.peerID
+                                                                  encryptionPublicKey:encryptionKey
+                                                                     signingPublicKey:signingKey
+                                                                             viewList:peer.viewList];
+                    [peers addObject:ckkspeer];
+                }
+            }
+        }];
 
     if(error && localerror) {
         *error = localerror;
@@ -236,6 +237,11 @@
         [listener trustedPeerSetChanged: self];
     }];
 }
+
+- (nonnull CKKSPeerProviderState *)currentState {
+    return [CKKSPeerProviderState createFromProvider:self];
+}
+
 
 @end
 

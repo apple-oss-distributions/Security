@@ -36,32 +36,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithProtocolType:(NSString*)protocolType
                       uniqueDeviceID:(NSString*)uniqueDeviceID
                       uniqueClientID:(NSString*)uniqueClientID
-                       containerName:(NSString* _Nullable)containerName
-                           contextID:(NSString*)contextID
-                               epoch:(uint64_t)epoch
-                         isInitiator:(BOOL)isInitiator
-{
-    return [self initWithProtocolType:protocolType
-                       uniqueDeviceID:uniqueDeviceID
-                       uniqueClientID:uniqueClientID
-                          pairingUUID:[NSUUID UUID].UUIDString
-                        containerName:containerName
-                            contextID:contextID
-                                epoch:(uint64_t)epoch
-                          isInitiator:isInitiator];
-}
-
-- (instancetype)initWithProtocolType:(NSString*)protocolType
-                      uniqueDeviceID:(NSString*)uniqueDeviceID
-                      uniqueClientID:(NSString*)uniqueClientID
                          pairingUUID:(NSString* _Nullable)pairingUUID
                        containerName:(NSString* _Nullable)containerName
                            contextID:(NSString*)contextID
                                epoch:(uint64_t)epoch
                          isInitiator:(BOOL)isInitiator
 {
-    self = [super init];
-    if (self){
+    if ((self = [super init])) {
         self.protocolType = protocolType;
         self.uniqueDeviceID = uniqueDeviceID;
         self.uniqueClientID = uniqueClientID;
@@ -89,8 +70,7 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (nullable instancetype)initWithCoder:(nonnull NSCoder *)decoder {
-    self = [super init];
-    if (self) {
+    if ((self = [super init])) {
         _protocolType = [decoder decodeObjectOfClass:[NSString class] forKey:@"protocolType"];
         _uniqueClientID = [decoder decodeObjectOfClass:[NSString class] forKey:@"uniqueClientID"];
         _uniqueDeviceID = [decoder decodeObjectOfClass:[NSString class] forKey:@"uniqueDeviceID"];

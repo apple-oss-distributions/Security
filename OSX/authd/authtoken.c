@@ -13,6 +13,8 @@
 #include <Security/SecBase.h>
 #include <sandbox.h>
 
+#include <security_utilities/simulatecrash_assert.h>
+
 AUTHD_DEFINE_LOG
 
 static Boolean AuthTokenEqualCallBack(const void *value1, const void *value2)
@@ -395,7 +397,8 @@ auth_token_has_entitlement(auth_token_t auth, const char * entitlement)
             entitled = process_has_entitlement(auth->creator, entitlement);
         }
     });
-    
+    os_log_debug(AUTHD_LOG, "authtoken: PID %d is%{public}s entitled for %{public}s", auth->auditInfo.pid, entitled ? "":" not", entitlement);
+
     return entitled;
 }
 
@@ -409,7 +412,8 @@ auth_token_has_entitlement_for_right(auth_token_t auth, const char * right)
             entitled = process_has_entitlement_for_right(auth->creator, right);
         }
     });
-    
+    os_log_debug(AUTHD_LOG, "authtoken: PID %d is%{public}s entitled for right %{public}s", auth->auditInfo.pid, entitled ? "":" not", right);
+
     return entitled;
 }
 

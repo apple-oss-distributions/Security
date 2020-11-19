@@ -5,10 +5,11 @@
 #import <Foundation/Foundation.h>
 #import <ProtocolBuffer/PBCodable.h>
 
-@class OTSponsorToApplicantRound1M2;
 @class OTApplicantToSponsorRound2M1;
+@class OTSponsorToApplicantRound1M2;
 @class OTSponsorToApplicantRound2M2;
-@class OTSOSMessage;
+@class OTSupportOctagonMessage;
+@class OTSupportSOSMessage;
 
 #ifdef __cplusplus
 #define OTPAIRINGMESSAGE_FUNCTION extern "C" __attribute__((visibility("hidden")))
@@ -16,12 +17,17 @@
 #define OTPAIRINGMESSAGE_FUNCTION extern __attribute__((visibility("hidden")))
 #endif
 
+/**
+ * Claimed for a field, but never used
+ * reserved 3;
+ */
 __attribute__((visibility("hidden")))
 @interface OTPairingMessage : PBCodable <NSCopying>
 {
     OTSponsorToApplicantRound1M2 *_epoch;
     OTApplicantToSponsorRound2M1 *_prepare;
-    OTSOSMessage *_sosPairingMessage;
+    OTSupportOctagonMessage *_supportsOctagon;
+    OTSupportSOSMessage *_supportsSOS;
     OTSponsorToApplicantRound2M2 *_voucher;
 }
 
@@ -35,8 +41,11 @@ __attribute__((visibility("hidden")))
 @property (nonatomic, readonly) BOOL hasVoucher;
 @property (nonatomic, retain) OTSponsorToApplicantRound2M2 *voucher;
 
-@property (nonatomic, readonly) BOOL hasSosPairingMessage;
-@property (nonatomic, retain) OTSOSMessage *sosPairingMessage;
+@property (nonatomic, readonly) BOOL hasSupportsOctagon;
+@property (nonatomic, retain) OTSupportOctagonMessage *supportsOctagon;
+
+@property (nonatomic, readonly) BOOL hasSupportsSOS;
+@property (nonatomic, retain) OTSupportSOSMessage *supportsSOS;
 
 // Performs a shallow copy into other
 - (void)copyTo:(OTPairingMessage *)other;

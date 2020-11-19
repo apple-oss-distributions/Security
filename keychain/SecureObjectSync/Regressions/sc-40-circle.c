@@ -41,11 +41,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include <securityd/SOSCloudCircleServer.h>
+#include "keychain/securityd/SOSCloudCircleServer.h"
 
 #include "SOSCircle_regressions.h"
 
 #include "SOSRegressionUtilities.h"
+
+#if SOS_ENABLED
 
 static int kTestGenerationCount = 2;
 static void test_generation(void)
@@ -182,14 +184,16 @@ static void tests(void)
     CFReleaseNull(user_privkey);
     CFReleaseNull(circle);
 }
+#endif
 
 int sc_40_circle(int argc, char *const *argv)
 {
+#if SOS_ENABLED
     plan_tests(kTestGenerationCount + kTestTestCount);
-
     test_generation();
-
     tests();
-
+#else
+    plan_tests(0);
+#endif
 	return 0;
 }

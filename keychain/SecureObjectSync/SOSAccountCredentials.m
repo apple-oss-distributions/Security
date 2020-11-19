@@ -29,6 +29,7 @@
 #include "SOSTransport.h"
 #import "keychain/SecureObjectSync/SOSAccountTrust.h"
 #import "keychain/SecureObjectSync/SOSAccountTrustClassic+Circle.h"
+#import "keychain/SecureObjectSync/SOSAccountTrustClassic+Expansion.h"
 
 #define kPublicKeyAvailable "com.apple.security.publickeyavailable"
 //
@@ -110,7 +111,9 @@ static void SOSAccountSetTrustedUserPublicKey(SOSAccount* account, bool public_w
 
     CFReleaseNull(publicKey);
 
-	secnotice("circleOps", "trusting new public key: %@", account.accountKey);
+    CFStringRef keyid = SOSCopyIDOfKeyWithLength(account.accountKey, 8, NULL);
+	secnotice("circleOps", "trusting new public key: %@", keyid);
+    CFReleaseNull(keyid);
     notify_post(kPublicKeyAvailable);
 }
 
@@ -126,8 +129,9 @@ void SOSAccountSetUnTrustedUserPublicKey(SOSAccount* account, SecKeyRef publicKe
     if(!account.previousAccountKey) {
         account.previousAccountKey = account.accountKey;
     }
-    
-    secnotice("circleOps", "not trusting new public key: %@", account.accountKey);
+    CFStringRef keyid = SOSCopyIDOfKeyWithLength(account.accountKey, 8, NULL);
+    secnotice("circleOps", "not trusting new public key: %@", keyid);
+    CFReleaseNull(keyid);
 }
 
 
@@ -203,21 +207,6 @@ CFDataRef SOSAccountGetCachedPassword(SOSAccount* account, CFErrorRef* error)
 }
 static NSString *SOSUserCredentialAccount = @"SOSUserCredential";
 static NSString *SOSUserCredentialAccessGroup = @"com.apple.security.sos-usercredential";
-
-__unused static void SOSAccountDeleteStashedAccountKey(SOSAccount* account)
-{
-    NSString *dsid = (__bridge NSString *)SOSAccountGetValue(account, kSOSDSIDKey, NULL);
-    if (dsid == NULL)
-        return;
-
-    NSDictionary * attributes = @{
-        (__bridge id)kSecClass : (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecAttrAccount : SOSUserCredentialAccount,
-        (__bridge id)kSecAttrServer : dsid,
-        (__bridge id)kSecAttrAccessGroup : SOSUserCredentialAccessGroup,
-    };
-    (void)SecItemDelete((__bridge CFDictionaryRef)attributes);
-}
 
 void SOSAccountStashAccountKey(SOSAccount* account)
 {
@@ -324,8 +313,8 @@ static void sosAccountSetTrustedCredentials(SOSAccount* account, CFDataRef user_
 
 static SecKeyRef sosAccountCreateKeyIfPasswordIsCorrect(SOSAccount* account, CFDataRef user_password, CFErrorRef *error) {
     SecKeyRef user_private = NULL;
-    require_quiet(account.accountKey && account.accountKeyDerivationParamters, errOut);
-    user_private = SOSUserKeygen(user_password, (__bridge CFDataRef)(account.accountKeyDerivationParamters), error);
+    require_quiet(account.accountKey && account.accountKeyDerivationParameters, errOut);
+    user_private = SOSUserKeygen(user_password, (__bridge CFDataRef)(account.accountKeyDerivationParameters), error);
     require_quiet(user_private, errOut);
 
     require_action_quiet(SOSAccountValidateAccountCredential(account, user_private, error), errOut, CFReleaseNull(user_private));
@@ -336,7 +325,21 @@ errOut:
 static bool sosAccountValidatePasswordOrFail(SOSAccount* account, CFDataRef user_password, CFErrorRef *error) {
     SecKeyRef privKey = sosAccountCreateKeyIfPasswordIsCorrect(account, user_password, error);
     if(!privKey) {
-        if(account.accountKeyDerivationParamters) debugDumpUserParameters(CFSTR("sosAccountValidatePasswordOrFail"), (__bridge CFDataRef)(account.accountKeyDerivationParamters));
+        if(account.accountKeyDerivationParameters) {
+            SecKeyRef newKey = NULL;
+            CFDataRef pbkdfParams = NULL;
+            CFErrorRef localError = NULL;
+            if(SOSAccountRetrieveCloudParameters(account, &newKey, (__bridge CFDataRef)(account.accountKeyDerivationParameters), &pbkdfParams, &localError)) {
+                debugDumpUserParameters(CFSTR("sosAccountValidatePasswordOrFail"), pbkdfParams);
+            } else {
+                secnotice("circleOps", "Failed to retrieve cloud parameters - %@", localError);
+                if(error) {
+                    CFTransferRetained(*error, localError);
+                }
+            }
+            CFReleaseNull(newKey);
+            CFReleaseNull(pbkdfParams);
+        }
         SOSCreateError(kSOSErrorWrongPassword, CFSTR("Could not create correct key with password."), NULL, error);
         return false;
     }
@@ -346,7 +349,7 @@ static bool sosAccountValidatePasswordOrFail(SOSAccount* account, CFDataRef user
 }
 
 void SOSAccountSetParameters(SOSAccount* account, CFDataRef parameters) {
-    account.accountKeyDerivationParamters = (__bridge NSData *) parameters;
+    account.accountKeyDerivationParameters = (__bridge NSData *) parameters;
 }
 
 bool SOSAccountValidateAccountCredential(SOSAccount* account, SecKeyRef accountPrivateKey, CFErrorRef *error)
@@ -361,7 +364,7 @@ bool SOSAccountValidateAccountCredential(SOSAccount* account, SecKeyRef accountP
         CFStringRef accountHpub = SOSCopyIDOfKey(account.accountKey, NULL);
         CFStringRef candidateHpub = SOSCopyIDOfKey(publicCandidate, NULL);
         SOSCreateErrorWithFormat(kSOSErrorWrongPassword, NULL, &localError, NULL, CFSTR("Password generated pubkey doesn't match - candidate: %@  known: %@"), candidateHpub, accountHpub);
-        secnotice("circleop", "%@", localError);
+        secnotice("circleop", "Password generated pubkey doesn't match - candidate: %@  known: %@", candidateHpub, accountHpub);
         if (error) {
             *error = localError;
             localError = NULL;

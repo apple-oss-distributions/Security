@@ -33,6 +33,9 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol OctagonStateFlagHandler
 - (void)handleFlag:(OctagonFlag*)flag;
 - (void)handlePendingFlag:(OctagonPendingFlag*)pendingFlag;
+
+// If you've truly broken your queue ordering, then call this from whatever queue your flag handler is using.
+- (void)_onqueueHandleFlag:(OctagonFlag*)flag;
 @end
 
 @interface OctagonStateMachine : NSObject <OctagonStateFlagHandler, OctagonStateOnqueuePendingFlagHandler>
@@ -43,6 +46,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) id<OctagonFlagContainer> flags;
 
 @property NSMutableDictionary<OctagonState*, CKKSCondition*>* stateConditions;
+
 @property (readonly) CKKSCondition* paused;
 
 @property (readonly) NSSet* allowableStates;
@@ -54,10 +58,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithName:(NSString*)name
                       states:(NSSet<OctagonState*>*)possibleStates
+                       flags:(NSSet<OctagonFlag*>*)possibleFlags
                 initialState:(OctagonState*)initialState
                        queue:(dispatch_queue_t)queue
                  stateEngine:(id<OctagonStateMachineEngine>)stateEngine
-            lockStateTracker:(CKKSLockStateTracker* _Nullable)lockStateTracker;
+            lockStateTracker:(CKKSLockStateTracker*)lockStateTracker;
 
 - (void)startOperation;
 - (void)haltOperation;
@@ -68,6 +73,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // This will set the given flag, and ensure that the state machine spins to handle it.
 - (void)handleFlag:(OctagonFlag*)flag;
+- (void)_onqueueHandleFlag:(OctagonFlag*)flag;
 
 // This will schedule the flag for future addition
 - (void)handlePendingFlag:(OctagonPendingFlag *)pendingFlag;
@@ -78,17 +84,19 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)disablePendingFlags;
 
 - (void)handleExternalRequest:(OctagonStateTransitionRequest<CKKSResultOperation<OctagonStateTransitionOperationProtocol>*>*)request;
+
 - (void)registerStateTransitionWatcher:(OctagonStateTransitionWatcher*)watcher;
+- (void)registerMultiStateArrivalWatcher:(OctagonStateMultiStateArrivalWatcher*)watcher;
 
 - (void)doSimpleStateMachineRPC:(NSString*)name
                              op:(CKKSResultOperation<OctagonStateTransitionOperationProtocol>*)op
                    sourceStates:(NSSet<OctagonState*>*)sourceStates
                           reply:(nonnull void (^)(NSError * _Nullable))reply;
 
-- (void)doWatchedStateMachineRPC:(NSString*)name
-                    sourceStates:(NSSet<OctagonState*>*)sourceStates
-                            path:(OctagonStateTransitionPath*)path
-                           reply:(nonnull void (^)(NSError *error))reply;
+- (CKKSResultOperation*)doWatchedStateMachineRPC:(NSString*)name
+                                    sourceStates:(NSSet<OctagonState*>*)sourceStates
+                                            path:(OctagonStateTransitionPath*)path
+                                           reply:(nonnull void (^)(NSError *error))reply;
 - (void)setWatcherTimeout:(uint64_t)timeout;
 - (BOOL)isPaused;
 

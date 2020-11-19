@@ -24,7 +24,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Foundation/NSXPCConnection_Private.h>
-#import <securityd/SOSCloudCircleServer.h>
+#import "keychain/securityd/SOSCloudCircleServer.h"
 #import <Security/SecureObjectSync/SOSPeerInfo.h>
 #import <Security/SecureObjectSync/SOSCloudCircleInternal.h>
 #import <Security/SecureObjectSync/SOSViews.h>
@@ -67,8 +67,7 @@
 
 - (instancetype)initAsInitiator:(bool)initiator version:(KCPairingChannelContext *)peerVersionContext device:(SecRemoteDevice *)device
 {
-    self = [super init];
-    if (self) {
+    if ((self = [super init])) {
         self.remoteVersionContext = peerVersionContext;
         self.initiator = initiator;
         self.device = device;
@@ -109,42 +108,6 @@
 
 @implementation SecRemoteDevice
 
-- (void)secItemAdd:(NSDictionary *)input complete:(void (^)(OSStatus, NSDictionary *))reply
-{
-    NSMutableDictionary *attributes = [input mutableCopy];
-    CFTypeRef data = NULL;
-
-    attributes[(__bridge NSString *)kSecReturnAttributes] = @YES;
-    attributes[(__bridge NSString *)kSecReturnPersistentRef] = @YES;
-    attributes[(__bridge NSString *)kSecReturnData] = @YES;
-
-    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)attributes, &data);
-    NSDictionary *returnData = CFBridgingRelease(data);
-    
-    reply(status, returnData);
-}
-
-- (void)secItemCopyMatching:(NSDictionary *)input complete:(void (^)(OSStatus, NSArray<NSDictionary *>*))reply
-{
-    NSMutableDictionary *attributes = [input mutableCopy];
-    CFTypeRef data = NULL;
-
-    attributes[(__bridge NSString *)kSecReturnAttributes] = @YES;
-    attributes[(__bridge NSString *)kSecReturnData] = @YES;
-    attributes[(__bridge NSString *)kSecReturnPersistentRef] = @YES;
-    attributes[(__bridge NSString *)kSecMatchLimit] = (__bridge id)kSecMatchLimitAll;
-
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)attributes, &data);
-    NSArray<NSDictionary *>* array = CFBridgingRelease(data);
-    NSMutableArray *result = [NSMutableArray array];
-    for (NSDictionary *d in array) {
-        NSMutableDictionary *r = [d mutableCopy];
-        r[@"accc"] = nil;
-        [result addObject:r];
-    }
-
-    reply(status, result);
-}
 
 - (void)setUserCredentials:(NSString *)username password:(NSString *)password complete:(void (^)(bool success, NSError *error))complete
 {
@@ -171,7 +134,7 @@
 
 - (void)sosCircleStatus:(void(^)(SOSCCStatus status, NSError *error))complete
 {
-    SOSCloudKeychainFlush(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(CFDictionaryRef __unused returnedValues, CFErrorRef __unused sync_error) {
+    SOSCloudKeychainFlush(dispatch_get_global_queue(SOS_TRANSPORT_PRIORITY, 0), ^(CFDictionaryRef __unused returnedValues, CFErrorRef __unused sync_error) {
         CFErrorRef cferror = NULL;
         SOSCCStatus status = SOSCCThisDeviceIsInCircle(&cferror);
         complete(status, (__bridge NSError *)cferror);
@@ -181,7 +144,7 @@
 
 - (void)sosCircleStatusNonCached:(void(^)(SOSCCStatus status, NSError *error))complete
 {
-    SOSCloudKeychainFlush(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(CFDictionaryRef __unused returnedValues, CFErrorRef __unused sync_error) {
+    SOSCloudKeychainFlush(dispatch_get_global_queue(SOS_ACCOUNT_PRIORITY, 0), ^(CFDictionaryRef __unused returnedValues, CFErrorRef __unused sync_error) {
         CFErrorRef cferror = NULL;
         SOSCCStatus status = SOSCCThisDeviceIsInCircleNonCached(&cferror);
         complete(status, (__bridge NSError *)cferror);
@@ -367,16 +330,7 @@
 }
 
 - (void) deviceInfo:(nonnull void (^)(NSString * _Nullable, NSString * _Nullable, NSError * _Nullable))complete {
-#if SECD_SERVER
-    __block NSString *deviceSerial = @"";
-    [self sosPeerSerial:^(NSString * _Nullable peerSerial) {
-        deviceSerial = peerSerial;
-    }];
-    complete([SOSAuthKitHelpers machineID], deviceSerial, NULL);
-#else
     complete(@"", @"", NULL);
-#endif
-
 }
 
 
@@ -416,19 +370,13 @@
     }
 }
 
-// MARK: - CKKS
-- (void)selfPeersForView:(NSString *)view complete:(void (^)(NSArray<NSDictionary *> *result, NSError *error))complete
-{
-    complete(@[], NULL);
-}
-
 // MARK: - Octagon
 - (void)otReset:(NSString *)altDSID complete:(void (^)(bool success, NSError *_Nullable error))complete
 {
 #if OCTAGON
     OTControl *ot = [self OTControl];
 
-    [ot resetAndEstablish:nil context:OTDefaultContext altDSID:altDSID reply:^(NSError * _Nullable error) {
+    [ot resetAndEstablish:nil context:OTDefaultContext altDSID:altDSID resetReason:CuttlefishResetReasonTestGenerated reply:^(NSError * _Nullable error) {
         complete(error == NULL, error);
     }];
 #else

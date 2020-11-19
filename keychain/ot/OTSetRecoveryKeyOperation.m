@@ -58,10 +58,15 @@
     
     NSString* salt = nil;
 
-    if(self.deps.authKitAdapter.primaryiCloudAccountAltDSID){
-        salt = self.deps.authKitAdapter.primaryiCloudAccountAltDSID;
+    NSError *authKitError = nil;
+    NSString *altDSID = [self.deps.authKitAdapter primaryiCloudAccountAltDSID:&authKitError];
+
+    if (altDSID) {
+        salt = altDSID;
     }
     else {
+        secnotice("octagon", "authkit doesn't know about the altdsid, using stored value: %@", authKitError);
+
         NSError* accountError = nil;
         OTAccountMetadataClassC* account = [self.deps.stateHolder loadOrCreateAccountMetadata:&accountError];
 
@@ -76,7 +81,8 @@
 
     WEAKIFY(self);
 
-    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps];
+    OTFetchCKKSKeysOperation* fetchKeysOp = [[OTFetchCKKSKeysOperation alloc] initWithDependencies:self.deps
+                                                                                     refetchNeeded:NO];
     [self runBeforeGroupFinished:fetchKeysOp];
 
     CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"setting-recovery-tlks"
@@ -93,29 +99,30 @@
 {
     WEAKIFY(self);
 
-    [[self.deps.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        STRONGIFY(self);
-        secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-        [[CKKSAnalytics logger] logRecoverableError:error forEvent:OctagonEventRecoveryKey withAttributes:NULL];
-        self.error = error;
-        [self runBeforeGroupFinished:self.finishOp];
+    [self.deps.cuttlefishXPCWrapper setRecoveryKeyWithContainer:self.deps.containerName
+                                                        context:self.deps.contextID
+                                                    recoveryKey:self.recoveryKey
+                                                           salt:salt
+                                                       ckksKeys:viewKeySets
+                                                          reply:^(NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
+                                                                  NSError * _Nullable setError) {
+            STRONGIFY(self);
+            if(setError){
+                [[CKKSAnalytics logger] logResultForEvent:OctagonEventSetRecoveryKey hardFailure:true result:setError];
+                secerror("octagon: Error setting recovery key: %@", setError);
+                self.error = setError;
+                [self runBeforeGroupFinished:self.finishOp];
+            } else {
+                secnotice("octagon", "successfully set recovery key");
 
-    }]  setRecoveryKeyWithContainer:self.deps.containerName
-     context:self.deps.contextID
-     recoveryKey:self.recoveryKey
-     salt:salt
-     ckksKeys:viewKeySets
-     reply:^(NSError * _Nullable setError) {
-         if(setError){
-             [[CKKSAnalytics logger] logResultForEvent:OctagonEventSetRecoveryKey hardFailure:true result:setError];
-             secerror("octagon: Error setting recovery key: %@", setError);
-             self.error = setError;
-             [self runBeforeGroupFinished:self.finishOp];
-         } else {
-             secnotice("octagon", "successfully set recovery key");
-             [self runBeforeGroupFinished:self.finishOp];
-         }
-     }];
+                for (id key in self.deps.viewManager.views) {
+                    CKKSKeychainView* view = self.deps.viewManager.views[key];
+                    secnotice("octagon-ckks", "Providing setRecoveryKey() records to %@", view);
+                    [view receiveTLKUploadRecords:keyHierarchyRecords];
+                }
+                [self runBeforeGroupFinished:self.finishOp];
+            }
+        }];
 }
 
 @end

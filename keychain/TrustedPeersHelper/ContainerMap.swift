@@ -32,6 +32,50 @@ import Foundation
 
 let CuttlefishPushTopicBundleIdentifier = "com.apple.security.cuttlefish"
 
+struct CKInternalErrorMatcher {
+    let code: Int
+    let internalCode: Int
+}
+
+// Match a CKError/CKInternalError
+func ~= (pattern: CKInternalErrorMatcher, value: Error?) -> Bool {
+    guard let value = value else {
+        return false
+    }
+    let error = value as NSError
+    guard let underlyingError = error.userInfo[NSUnderlyingErrorKey] as? NSError else {
+        return false
+    }
+    return error.domain == CKErrorDomain && error.code == pattern.code &&
+        underlyingError.domain == CKInternalErrorDomain && underlyingError.code == pattern.internalCode
+}
+
+struct CKErrorMatcher {
+    let code: Int
+}
+
+// Match a CKError
+func ~= (pattern: CKErrorMatcher, value: Error?) -> Bool {
+    guard let value = value else {
+        return false
+    }
+    let error = value as NSError
+    return error.domain == CKErrorDomain && error.code == pattern.code
+}
+
+struct NSURLErrorMatcher {
+    let code: Int
+}
+
+// Match an NSURLError
+func ~= (pattern: NSURLErrorMatcher, value: Error?) -> Bool {
+    guard let value = value else {
+        return false
+    }
+    let error = value as NSError
+    return error.domain == NSURLErrorDomain && error.code == pattern.code
+}
+
 public class RetryingInvocable: CloudKitCode.Invocable {
     private let underlyingInvocable: CloudKitCode.Invocable
 
@@ -39,13 +83,17 @@ public class RetryingInvocable: CloudKitCode.Invocable {
         self.underlyingInvocable = retry
     }
 
-    private func retryableError(error: Error?) -> Bool {
+    public class func retryableError(error: Error?) -> Bool {
         switch error {
-        case let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut:
+        case NSURLErrorMatcher(code: NSURLErrorTimedOut):
             return true
-        case let error as NSError where error.domain == CKErrorDomain && error.code == CKError.networkFailure.rawValue:
+        case CKErrorMatcher(code: CKError.networkFailure.rawValue):
+            return true
+        case CKInternalErrorMatcher(code: CKError.serverRejectedRequest.rawValue, internalCode: CKInternalErrorCode.errorInternalServerInternalError.rawValue):
             return true
         case CuttlefishErrorMatcher(code: CuttlefishErrorCode.retryableServerFailure):
+            return true
+        case CuttlefishErrorMatcher(code: CuttlefishErrorCode.transactionalFailure):
             return true
         default:
             return false
@@ -54,7 +102,7 @@ public class RetryingInvocable: CloudKitCode.Invocable {
 
     public func invoke<RequestType, ResponseType>(function: String,
                                                   request: RequestType,
-                                                  completion: @escaping (ResponseType?, Error?) -> Void) where RequestType : Message, ResponseType : Message {
+                                                  completion: @escaping (ResponseType?, Error?) -> Void) where RequestType: Message, ResponseType: Message {
         let now = Date()
         let deadline = Date(timeInterval: 30, since: now)
         let delay = TimeInterval(5)
@@ -62,7 +110,7 @@ public class RetryingInvocable: CloudKitCode.Invocable {
         self.invokeRetry(function: function,
                          request: request,
                          deadline: deadline,
-                         delay: delay,
+                         minimumDelay: delay,
                          completion: completion)
     }
 
@@ -70,30 +118,35 @@ public class RetryingInvocable: CloudKitCode.Invocable {
         function: String,
         request: RequestType,
         deadline: Date,
-        delay: TimeInterval,
+        minimumDelay: TimeInterval,
         completion: @escaping (ResponseType?, Error?) -> Void) {
-
         self.underlyingInvocable.invoke(function: function,
                                         request: request) { (response: ResponseType?, error: Error?) in
-            if self.retryableError(error: error) {
-                let now = Date()
-                let cutoff = Date(timeInterval: delay, since: now)
-                guard cutoff.compare(deadline) == ComparisonResult.orderedDescending else {
-                    Thread.sleep(forTimeInterval: delay)
-                    os_log("%{public}@ error: %{public}@ (retrying, now=%{public}@, deadline=%{public}@)", log: tplogDebug,
-                           function,
-                           "\(String(describing: error))",
-                           "\(String(describing: now))",
-                           "\(String(describing: deadline))")
-                    self.invokeRetry(function: function,
-                                     request: request,
-                                     deadline: deadline,
-                                     delay: delay,
-                                     completion: completion)
-                    return
-                }
-            }
-            completion(response, error)
+                                            if let error = error, RetryingInvocable.retryableError(error: error) {
+                                                let now = Date()
+
+                                                // Check cuttlefish and CKError retry afters.
+                                                let cuttlefishDelay = CuttlefishRetryAfter(error: error)
+                                                let ckDelay = CKRetryAfterSecondsForError(error)
+                                                let delay = max(minimumDelay, cuttlefishDelay, ckDelay)
+                                                let cutoff = Date(timeInterval: delay, since: now)
+
+                                                guard cutoff.compare(deadline) == ComparisonResult.orderedDescending else {
+                                                    Thread.sleep(forTimeInterval: delay)
+                                                    os_log("%{public}@ error: %{public}@ (retrying, now=%{public}@, deadline=%{public}@)", log: tplogDebug,
+                                                           function,
+                                                           "\(String(describing: error))",
+                                                        "\(String(describing: now))",
+                                                        "\(String(describing: deadline))")
+                                                    self.invokeRetry(function: function,
+                                                                     request: request,
+                                                                     deadline: deadline,
+                                                                     minimumDelay: minimumDelay,
+                                                                     completion: completion)
+                                                    return
+                                                }
+                                            }
+                                            completion(response, error)
         }
     }
 }
@@ -118,10 +171,8 @@ public class MyCodeConnection: CloudKitCode.Invocable {
     public func invoke<RequestType: Message, ResponseType: Message>(
         function: String, request: RequestType,
         completion: @escaping (ResponseType?, Error?) -> Void) {
-
         // Hack to fool CloudKit, real solution is tracked in <rdar://problem/49086080>
         self.queue.async {
-
             let operation = CodeOperation<RequestType, ResponseType>(
                 service: self.serviceName,
                 functionName: function,
@@ -137,7 +188,7 @@ public class MyCodeConnection: CloudKitCode.Invocable {
             operation.requestCompletedBlock = requestCompletion
 
             let loggingCompletion = { (response: ResponseType?, error: Error?) -> Void in
-                os_log("%@(%@): %@, error: %@",
+                os_log("%{public}@(%{public}@): %{public}@, error: %{public}@",
                        log: tplogDebug,
                        function,
                        "\(String(describing: request))",
@@ -159,8 +210,7 @@ public class MyCodeConnection: CloudKitCode.Invocable {
             operation.configuration.discretionaryNetworkBehavior = .nonDiscretionary
             operation.configuration.automaticallyRetryNetworkFailures = false
             operation.configuration.isCloudKitSupportOperation = true
-
-            operation.configuration.sourceApplicationBundleIdentifier = CuttlefishPushTopicBundleIdentifier
+            operation.configuration.setApplicationBundleIdentifierOverride(CuttlefishPushTopicBundleIdentifier)
 
             let database = self.container.database(with: self.databaseScope)
 
@@ -180,7 +230,7 @@ class CKCodeCuttlefishInvocableCreator: ContainerNameToCuttlefishInvocable {
 
         // Cuttlefish is using its own push topic.
         // To register for this push topic, we need to issue CK operations with a specific bundle identifier
-        ckContainer.sourceApplicationBundleIdentifier = CuttlefishPushTopicBundleIdentifier
+        ckContainer.options.setApplicationBundleIdentifierOverride(CuttlefishPushTopicBundleIdentifier)
 
         let ckDatabase = ckContainer.privateCloudDatabase
         return MyCodeConnection(service: "Cuttlefish", container: ckContainer,
@@ -208,7 +258,6 @@ class ContainerMap {
             if let container = self.containers[name] {
                 return container
             } else {
-
                 // Set up Core Data stack
                 let persistentStoreURL = ContainerMap.urlForPersistentStore(name: name)
                 let description = NSPersistentStoreDescription(url: persistentStoreURL)
@@ -229,5 +278,20 @@ class ContainerMap {
     static func urlForPersistentStore(name: ContainerName) -> URL {
         let filename = name.container + "-" + name.context + ".TrustedPeersHelper.db"
         return SecCopyURLForFileInKeychainDirectory(filename as CFString) as URL
+    }
+
+    // To be called via test only
+    func removeAllContainers() {
+        queue.sync {
+            self.containers.removeAll()
+        }
+    }
+
+    func deleteAllPersistentStores() throws {
+        try queue.sync {
+            try self.containers.forEach {
+                try $0.value.deletePersistentStore()
+            }
+        }
     }
 }

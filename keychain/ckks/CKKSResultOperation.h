@@ -45,7 +45,7 @@ enum {
 @property (nullable) NSDate* finishDate;
 @property CKKSCondition* completionHandlerDidRunCondition;
 
-@property NSInteger descriptionErrorCode; // Set to non-0 for inclusion of this operation in NSError chains. Code is application-dependent.
+@property NSInteger descriptionErrorCode; // Set to non-0 for inclusion of this operation in NSError chains. Code is application-dependent, but will be -1 in cases of excessive recursion.
 
 // If you subclass CKKSResultOperation, this is the method corresponding to descriptionErrorCode. Fill it in to your heart's content.
 - (NSError* _Nullable)descriptionError;
@@ -66,8 +66,8 @@ enum {
 
 // Convenience constructor.
 + (instancetype)operationWithBlock:(void (^)(void))block;
-+ (instancetype)named:(NSString*)name withBlock:(void (^)(void))block;
-+ (instancetype)named:(NSString*)name withBlockTakingSelf:(void(^)(CKKSResultOperation* op))block;
++ (instancetype)named:(NSString*)name withBlock:(void (^)(void))block NS_SWIFT_NAME(init(name:block:));
++ (instancetype)named:(NSString*)name withBlockTakingSelf:(void(^)(CKKSResultOperation* op))block NS_SWIFT_NAME(init(name:blockTakingSelf:));
 
 // Determine if all these operations were successful, and set this operation's result if not.
 - (bool)allSuccessful:(NSArray<CKKSResultOperation*>*)operations;

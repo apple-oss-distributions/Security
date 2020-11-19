@@ -25,7 +25,12 @@
 #define CloudKitKeychainSyncingTestsBase_h
 
 #import <CloudKit/CloudKit.h>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wquoted-include-in-framework-header"
 #import <OCMock/OCMock.h>
+#pragma clang diagnostic pop
+
 #import <XCTest/XCTest.h>
 
 #include <Security/SecItemPriv.h>
@@ -52,9 +57,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, readonly) ZoneKeys* keychainZoneKeys;
 
 @property NSCalendar* utcCalendar;
-
-- (NSSet<NSString*>*)managedViewList;
-
 
 - (ZoneKeys*)keychainZoneKeys;
 

@@ -30,12 +30,14 @@
 
 #import "keychain/ckks/CKKS.h"
 #import "keychain/ckks/CKKSKey.h"
+#import "keychain/ckks/CKKSIncomingQueueEntry.h"
 #import "keychain/ckks/CKKSOutgoingQueueEntry.h"
+#import "keychain/ckks/CKKSIncomingQueueEntry.h"
 #import "keychain/ckks/CKKSZoneStateEntry.h"
 #import "keychain/ckks/CKKSDeviceStateEntry.h"
 #import "keychain/ckks/CKKSRateLimiter.h"
 
-#include <securityd/SecItemServer.h>
+#include "keychain/securityd/SecItemServer.h"
 
 @interface CloudKitKeychainSQLTests : CloudKitMockXCTest
 @end
@@ -97,11 +99,14 @@
                                                                          waitUntil:nil
                                                                        accessGroup:@"nope"];
 
-    NSError* error = nil;
-    [one saveToDatabase:&error];
-    [two saveToDatabase: &error];
-    [three saveToDatabase: &error];
-    XCTAssertNil(error, "no error saving ZoneStateEntries to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* error = nil;
+        [one saveToDatabase:&error];
+        [two saveToDatabase: &error];
+        [three saveToDatabase: &error];
+        XCTAssertNil(error, "no error saving ZoneStateEntries to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 }
 
 - (void)testCKKSOutgoingQueueEntry {
@@ -160,8 +165,12 @@
                                                                                state:SecCKKSStateError
                                                                            waitUntil:[NSDate date]
                                                                          accessGroup:@"nope"];
-    [other saveToDatabase:&nserror];
-    XCTAssertNil(nserror, "no error occurred saving to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [other saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     CKKSOutgoingQueueEntry * oqe = [CKKSOutgoingQueueEntry fromDatabase:testUUID state:@"unprocessed" zoneID:self.testZoneID error: &nserror];
     XCTAssertNil(nserror, "no error occurred creating from database");
@@ -177,7 +186,12 @@
     oqe.item.base64encitem = @"bW9yZW5vbnNlbnNlCg==";
     oqe.item.encver = 1;
 
-    XCTAssertTrue([oqe saveToDatabase: &nserror], "saving to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [oqe saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     CKKSOutgoingQueueEntry * oqe2 = [CKKSOutgoingQueueEntry fromDatabase:testUUID state:@"savedtocloud" zoneID:self.testZoneID error: &nserror];
     XCTAssertNil(nserror, "no error occurred");
@@ -207,8 +221,15 @@
 
     // Test row deletion
     nserror = nil;
-    [oqe2 deleteFromDatabase:&nserror];
-    XCTAssertNil(nserror, "No NSError exists when deleting existing item");
+
+
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* deleteError = nil;
+        [oqe2 deleteFromDatabase:&deleteError];
+        XCTAssertNil(deleteError, "no error occurred deleting existing item");
+        return CKKSDatabaseTransactionCommit;
+    }];
+
     oqe2 = [CKKSOutgoingQueueEntry fromDatabase:testUUID state:@"savedtocloud" zoneID:self.testZoneID error: &nserror];
     XCTAssertNil(oqe2, "Can't find a nonexisting object");
     XCTAssertNotNil(nserror, "NSError exists when things break");
@@ -221,12 +242,55 @@
     XCTAssertEqualObjects(other, other2, "loaded object is equal to object");
 }
 
+- (void)testOverwriteCKKSIncomingQueueEntry {
+    NSError* error = nil;
+
+    CKKSItem* baseitem = [[CKKSItem alloc] initWithUUID: [[NSUUID UUID] UUIDString]
+                                          parentKeyUUID:[[NSUUID UUID] UUIDString]
+                                                 zoneID:self.testZoneID
+                                                encItem:[@"nonsense" dataUsingEncoding:NSUTF8StringEncoding]
+                                             wrappedkey:[[CKKSWrappedAESSIVKey alloc]initWithBase64: @"KFfL58XtugiYNoD859EjG0StfrYd6eakm0CQrgX7iO+DEo4kio3WbEeA1kctCU0GaeTGsRFpbdy4oo6jXhVu7cZqB0svhUPGq55aGnszUjI="]
+                                        generationCount:0
+                                                 encver:0];
+    CKKSIncomingQueueEntry* delete = [[CKKSIncomingQueueEntry alloc] initWithCKKSItem:baseitem
+                                                                               action:SecCKKSActionDelete
+                                                                                state:SecCKKSStateNew];
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [delete saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving delete IQE to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
+
+    NSArray<CKKSIncomingQueueEntry*>* entries = [CKKSIncomingQueueEntry all:&error];
+    XCTAssertNil(error, "Should be no error fetching alll IQEs");
+    XCTAssertEqual(entries.count, 1u, "Should be one entry");
+    XCTAssertEqualObjects(entries[0].action, SecCKKSActionDelete, "Should have delete as an action");
+
+    CKKSIncomingQueueEntry* add = [[CKKSIncomingQueueEntry alloc] initWithCKKSItem:baseitem
+                                                                            action:SecCKKSActionAdd
+                                                                             state:SecCKKSStateNew];
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [add saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving add IQE to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
+
+    entries = [CKKSIncomingQueueEntry all:&error];
+    XCTAssertNil(error, "Should be no error fetching alll IQEs");
+    XCTAssertEqual(entries.count, 1u, "Should be one entry");
+    XCTAssertEqualObjects(entries[0].action, SecCKKSActionAdd, "Should have add as an action");
+}
+
 -(void)testCKKSZoneStateEntrySQL {
     CKKSZoneStateEntry* zse = [[CKKSZoneStateEntry alloc] initWithCKZone:@"sqltest"
                                                              zoneCreated:true
                                                           zoneSubscribed:true
                                                              changeToken:[@"nonsense" dataUsingEncoding:NSUTF8StringEncoding]
+                                                   moreRecordsInCloudKit:YES
                                                                lastFetch:[NSDate date]
+                                                                lastScan:[NSDate date]
                                                                lastFixup:CKKSCurrentFixupNumber
                                                       encodedRateLimiter:nil];
     zse.rateLimiter = [[CKKSRateLimiter alloc] init];
@@ -235,7 +299,9 @@
                                                                   zoneCreated:true
                                                                zoneSubscribed:true
                                                                   changeToken:[@"nonsense" dataUsingEncoding:NSUTF8StringEncoding]
+                                                        moreRecordsInCloudKit:YES
                                                                     lastFetch:zse.lastFetchTime
+                                                                     lastScan:zse.lastLocalKeychainScanTime
                                                                     lastFixup:CKKSCurrentFixupNumber
                                                            encodedRateLimiter:zse.encodedRateLimiter];
 
@@ -243,7 +309,9 @@
                                                                       zoneCreated:true
                                                                    zoneSubscribed:true
                                                                       changeToken:[@"allnonsense" dataUsingEncoding:NSUTF8StringEncoding]
+                                                            moreRecordsInCloudKit:NO
                                                                         lastFetch:zse.lastFetchTime
+                                                                         lastScan:zse.lastLocalKeychainScanTime
                                                                         lastFixup:CKKSCurrentFixupNumber
                                                                encodedRateLimiter:zse.encodedRateLimiter];
     XCTAssertEqualObjects(zse, zseClone, "CKKSZoneStateEntry isEqual of equal objects seems sane");
@@ -254,8 +322,12 @@
     XCTAssertNil(error, "No error trying to load nonexistent record");
     XCTAssertNil(loaded, "No record saved in database");
 
-    [zse saveToDatabase: &error];
-    XCTAssertNil(error, "no error saving CKKSZoneStateEntry to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [zse saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving CKKSZoneStateEntry to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     loaded = [CKKSZoneStateEntry tryFromDatabase: @"sqltest" error:&error];
     XCTAssertNil(error, "No error trying to load saved record");
@@ -266,8 +338,17 @@
     XCTAssertEqual       (zse.ckzonesubscribed,   loaded.ckzonesubscribed,    "ckzonesubscribed persisted through db save and load");
     XCTAssertEqualObjects(zse.encodedChangeToken, loaded.encodedChangeToken, "encodedChangeToken persisted through db save and load");
 
-    XCTAssert([[NSCalendar currentCalendar] isDate:zse.lastFetchTime equalToDate: loaded.lastFetchTime toUnitGranularity:NSCalendarUnitSecond],
+    secnotice("ckkstests", "zse.lastFetchTime: %@", zse.lastFetchTime);
+    secnotice("ckkstests", "loaded.lastFetchTime: %@", loaded.lastFetchTime);
+
+    secnotice("ckkstests", "equal?: %d", [zse.lastFetchTime isEqualToDate:loaded.lastFetchTime]);
+    secnotice("ckkstests", "equal to seconds?: %d", [[NSCalendar currentCalendar] isDate:zse.lastFetchTime equalToDate: loaded.lastFetchTime toUnitGranularity:NSCalendarUnitSecond]);
+
+    // We only compare to the minute level, as that's enough to test the save+load.
+    XCTAssert([[NSCalendar currentCalendar] isDate:zse.lastFetchTime equalToDate: loaded.lastFetchTime toUnitGranularity:NSCalendarUnitMinute],
                                                                    "lastFetchTime persisted through db save and load");
+    XCTAssert([[NSCalendar currentCalendar] isDate:zse.lastLocalKeychainScanTime equalToDate:loaded.lastLocalKeychainScanTime toUnitGranularity:NSCalendarUnitMinute],
+              "lastLocalKeychainScanTime persisted through db save and load");
 }
 
 -(void)testRoundtripCKKSDeviceStateEntry {
@@ -287,9 +368,12 @@
                                                                       zoneID:self.testZoneID
                                                              encodedCKRecord:nil];
     XCTAssertNotNil(cdse, "Constructor works");
-    NSError* saveError = nil;
-    [cdse saveToDatabase:&saveError];
-    XCTAssertNil(saveError, "No error saving cdse to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [cdse saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving cdse to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     NSError* loadError = nil;
     CKKSDeviceStateEntry* loadedCDSE = [CKKSDeviceStateEntry fromDatabase:testUUID zoneID:self.testZoneID error:&loadError];
@@ -366,8 +450,12 @@
                                       currentkey:true];
     XCTAssertNotNil(key, "could create key");
 
-    [key saveToDatabase: &error];
-    XCTAssertNil(error, "could save key to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [key saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving key to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
     error = nil;
 
     CKKSKey* key2 = [CKKSKey fromDatabase:testUUID zoneID:self.testZoneID error:&error];
@@ -394,8 +482,13 @@
                                                        zoneID:self.testZoneID
                                               encodedCKRecord: testCKRecord
                                                    currentkey: true];
-    XCTAssertTrue([tlk saveToDatabase: &error], "TLK saved to database");
-    XCTAssertNil(error, "no error saving TLK to database");
+
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [tlk saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving TLK to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     CKKSKey* wrappedKey = [[CKKSKey alloc] initWrappedBy: tlk
                                                   AESKey:[CKKSAESSIVKey randomKey:&error]
@@ -405,26 +498,60 @@
                                                   zoneID:self.testZoneID
                                          encodedCKRecord:testCKRecord
                                               currentkey:true];
-    XCTAssertTrue([wrappedKey saveToDatabase: &error], "key saved to database");
-    XCTAssertNil(error, "no error saving key to database");
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        [wrappedKey saveToDatabase:&saveError];
+        XCTAssertNil(saveError, "no error occurred saving key to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
+
+    NSString* secondUUID = @"8b2aeb7f-0000-0000-0000-70d5c728ebf7";
+    CKKSKey* secondtlk = [[CKKSKey alloc] initSelfWrappedWithAESKey:[[CKKSAESSIVKey alloc] initWithBase64: @"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="]
+                                                               uuid:secondUUID
+                                                           keyclass:SecCKKSKeyClassTLK
+                                                              state:SecCKKSProcessedStateLocal
+                                                             zoneID:self.testZoneID
+                                                    encodedCKRecord:testCKRecord
+                                                         currentkey:true];
+    [CKKSSQLDatabaseObject performCKKSTransaction:^CKKSDatabaseTransactionResult {
+        NSError* saveError = nil;
+        XCTAssertTrue([secondtlk saveToDatabase:&saveError], "Second TLK saved to database");
+        XCTAssertNil(saveError, "no error occurred saving second TLK to database");
+        return CKKSDatabaseTransactionCommit;
+    }];
 
     NSArray<CKKSKey*>* tlks = [CKKSKey allWhere: @{@"UUID": @"8b2aeb7f-4af3-43e9-b6e6-70d5c728ebf7"} error: &error];
     XCTAssertNotNil(tlks, "Returned some array from allWhere");
     XCTAssertNil(error, "no error back from allWhere");
     XCTAssertEqual([tlks count], 1ul, "Received one row (and expected one row)");
 
-    NSArray<CKKSKey*>* selfWrapped = [CKKSKey allWhere: @{@"parentKeyUUID": [CKKSSQLWhereObject op:@"=" string:@"uuid"]} error: &error];
+    NSArray<CKKSKey*>* selfWrapped = [CKKSKey allWhere: @{@"parentKeyUUID": [CKKSSQLWhereColumn op:CKKSSQLWhereComparatorEquals column:CKKSSQLWhereColumnNameUUID]} error: &error];
     XCTAssertNotNil(selfWrapped, "Returned some array from allWhere");
     XCTAssertNil(error, "no error back from allWhere");
-    XCTAssertEqual([selfWrapped count], 1ul, "Received one row (and expected one row)");
+    XCTAssertEqual([selfWrapped count], 2ul, "Should have recievied two rows");
 
-    // Try using CKKSSQLWhereObject alongside normal binds
-    NSArray<CKKSKey*>* selfWrapped2 = [CKKSKey allWhere: @{@"parentKeyUUID": [CKKSSQLWhereObject op:@"=" string:@"uuid"],
+    // Try using CKKSSQLWhereColumn alongside normal binds
+    NSArray<CKKSKey*>* selfWrapped2 = [CKKSKey allWhere: @{@"parentKeyUUID": [CKKSSQLWhereColumn op:CKKSSQLWhereComparatorEquals column:CKKSSQLWhereColumnNameUUID],
                                                            @"uuid": @"8b2aeb7f-4af3-43e9-b6e6-70d5c728ebf7"}
                                                   error: &error];
     XCTAssertNotNil(selfWrapped2, "Returned some array from allWhere");
     XCTAssertNil(error, "no error back from allWhere");
     XCTAssertEqual([selfWrapped2 count], 1ul, "Received one row (and expected one row)");
+    XCTAssertEqualObjects([selfWrapped2[0] uuid], @"8b2aeb7f-4af3-43e9-b6e6-70d5c728ebf7", "Should received first TLK UUID");
+
+    NSArray<CKKSKey*>* selfWrapped3 = [CKKSKey allWhere: @{@"parentKeyUUID": [CKKSSQLWhereColumn op:CKKSSQLWhereComparatorEquals column:CKKSSQLWhereColumnNameUUID],
+                                                           @"uuid": [CKKSSQLWhereValue op:CKKSSQLWhereComparatorNotEquals value:@"8b2aeb7f-4af3-43e9-b6e6-70d5c728ebf7"]}
+                                                  error: &error];
+    XCTAssertNotNil(selfWrapped3, "Returned some array from allWhere");
+    XCTAssertNil(error, "no error back from allWhere");
+    XCTAssertEqual([selfWrapped3 count], 1ul, "Should have received one rows");
+    XCTAssertEqualObjects([selfWrapped3[0] uuid], secondUUID, "Should received second TLK UUID");
+
+    NSArray<CKKSKey*>* whereFound = [CKKSKey allWhere: @{@"uuid": [[CKKSSQLWhereIn alloc] initWithValues:@[tlk.uuid, wrappedKey.uuid,  @"not-found"]]} error:&error];
+    XCTAssertNil(error, "no error back from search");
+    XCTAssertEqual([whereFound count], 2ul, "Should have received two rows");
+    XCTAssertEqualObjects([whereFound[1] uuid], tlk.uuid, "Should received TLK UUID");
+    XCTAssertEqualObjects([whereFound[0] uuid], wrappedKey.uuid, "Should received wrapped key UUID");
 }
 
 - (void)testGroupBy {
@@ -504,7 +631,7 @@
     while(count == 0 || uuid != nil) {
         uuid = nil;
         [CKKSSQLDatabaseObject queryDatabaseTable: [CKKSOutgoingQueueEntry sqlTable]
-                                            where: lastUUID ? @{@"UUID": [CKKSSQLWhereObject op:@">" stringValue:lastUUID]} : nil
+                                            where: lastUUID ? @{@"UUID": [CKKSSQLWhereValue op:CKKSSQLWhereComparatorGreaterThan value:lastUUID]} : nil
                                           columns: @[@"action", @"UUID"]
                                           groupBy:nil
                                           orderBy:@[@"uuid"]

@@ -41,9 +41,7 @@
 #import "keychain/ot/ObjCImprovements.h"
 
 #import "keychain/ot/OTConstants.h"
-#import "keychain/ot/OTContext.h"
 #import "keychain/ot/OTClientStateMachine.h"
-#import "keychain/ot/OTPrepareOperation.h"
 #import "keychain/ot/OTSOSAdapter.h"
 #import "keychain/ot/OTEpochOperation.h"
 #import "keychain/ot/OTClientVoucherOperation.h"
@@ -264,7 +262,6 @@ NSDictionary<OctagonState*, NSNumber*>* OctagonClientStateMap(void) {
         return [OctagonStateTransitionOperation named:@"octagon-voucher-prepared"
                                             intending:OctagonStateAcceptorDone
                                            errorState:OctagonStateError
-                                              timeout:10*NSEC_PER_SEC
                                   withBlockTakingSelf:^(OctagonStateTransitionOperation * _Nonnull op) {
             otclientnotice(self.clientScope, "moving to state done for %@", clientName);
             op.nextState = OctagonStateAcceptorDone;
@@ -289,7 +286,8 @@ NSDictionary<OctagonState*, NSNumber*>* OctagonClientStateMap(void) {
      osVersion:nil
      policyVersion:nil
      policySecrets:nil
-     reply:^(TrustedPeersHelperPeerState* peerState, NSError* error) {
+     syncUserControllableViews:nil
+     reply:^(TrustedPeersHelperPeerState* peerState, TPSyncingPolicy* policy, NSError* error) {
          if(error) {
              secerror("OTCuttlefishContext: updating errored: %@", error);
          } else {
@@ -304,9 +302,11 @@ NSDictionary<OctagonState*, NSNumber*>* OctagonClientStateMap(void) {
            reply:(void (^)(uint64_t epoch,
                            NSError * _Nullable error))reply
 {
-    OTEpochOperation* pendingOp = [[OTEpochOperation alloc] initForCuttlefishContext:cuttlefishContext
-                                                                       intendedState:OctagonStateAcceptorAwaitingIdentity
-                                                                          errorState:OctagonStateAcceptorDone];
+    OTEpochOperation* pendingOp = [[OTEpochOperation alloc] init:self.containerName
+                                                       contextID:self.contextID
+                                                   intendedState:OctagonStateAcceptorAwaitingIdentity
+                                                      errorState:OctagonStateAcceptorDone
+                                            cuttlefishXPCWrapper:cuttlefishContext.cuttlefishXPCWrapper];
 
     OctagonStateTransitionRequest<OTEpochOperation*>* request = [[OctagonStateTransitionRequest alloc] init:@"rpcEpoch"
                                                                                                sourceStates:[NSSet setWithArray:@[OctagonStateAcceptorBeginClientJoin]]

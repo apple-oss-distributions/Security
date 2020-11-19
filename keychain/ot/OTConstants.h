@@ -27,6 +27,7 @@
 #include <stdbool.h>
 
 bool OctagonIsEnabled(void);
+bool SecErrorIsNestedErrorCappingEnabled(void);
 
 #if __OBJC__
 
@@ -34,7 +35,7 @@ bool OctagonIsEnabled(void);
 
 extern NSString* OTDefaultContext;
 
-extern NSString* const OctagonErrorDomain;
+extern NSErrorDomain const OctagonErrorDomain;
 
 /* used for defaults writes */
 extern NSString* OTDefaultsDomain;
@@ -44,6 +45,7 @@ extern NSString* OTProtocolPairing;
 extern NSString* OTProtocolPiggybacking;
 
 extern const char * OTTrustStatusChangeNotification;
+extern NSString* OTEscrowRecordPrefix;
 
 
 BOOL OctagonPlatformSupportsSOS(void);
@@ -60,6 +62,33 @@ void OctagonRecoveryKeySetIsEnabled(BOOL value);
 
 BOOL OctagonAuthoritativeTrustIsEnabled(void);
 void OctagonAuthoritativeTrustSetIsEnabled(BOOL value);
+
+BOOL OctagonIsSOSFeatureEnabled(void);
+void OctagonSetSOSFeatureEnabled(BOOL value);
+
+BOOL OctagonIsOptimizationEnabled(void);
+void OctagonSetOptimizationEnabled(BOOL value);
+
+BOOL OctagonIsEscrowRecordFetchEnabled(void);
+void OctagonSetEscrowRecordFetchEnabled(BOOL value);
+
+BOOL SecKVSOnCloudKitIsEnabled(void);
+void SecKVSOnCloudKitSetOverrideIsEnabled(BOOL value);
+
+void SecErrorSetOverrideNestedErrorCappingIsEnabled(BOOL value);
+
+typedef NS_ENUM(NSInteger, CuttlefishResetReason) {
+    CuttlefishResetReasonUnknown = 0,
+    CuttlefishResetReasonUserInitiatedReset = 1,
+    CuttlefishResetReasonHealthCheck = 2,
+    CuttlefishResetReasonNoBottleDuringEscrowRecovery = 3,
+    CuttlefishResetReasonLegacyJoinCircle = 4,
+    CuttlefishResetReasonRecoveryKey = 5,
+    CuttlefishResetReasonTestGenerated = 6,
+};
+
+extern NSString* const CuttlefishErrorDomain;
+extern NSString* const CuttlefishErrorRetryAfterKey;
 
 #endif // __OBJC__
 

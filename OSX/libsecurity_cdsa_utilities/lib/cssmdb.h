@@ -199,8 +199,13 @@ public:
 	CssmDlDbHandle *handles() const { return CssmDlDbHandle::overlay(DLDBHandle); }
 	CssmDlDbHandle * &handles()	{ return CssmDlDbHandle::overlayVar(DLDBHandle); }
 
-	CssmDlDbHandle &operator [] (uint32 ix) const
-	{ assert(ix < count()); return CssmDlDbHandle::overlay(DLDBHandle[ix]); }
+	CssmDlDbHandle &operator [] (uint32 ix) const {
+		if (ix >= count()) {
+			secemergency("CssmDlDbList: attempt to index beyond bounds");
+			abort();
+		}
+		return CssmDlDbHandle::overlay(DLDBHandle[ix]);
+	}
 	
 	void setDlDbList(uint32 n, CSSM_DL_DB_HANDLE *list)
 	{ count() = n; handles() = CssmDlDbHandle::overlay(list); }
@@ -215,9 +220,7 @@ class CssmDLPolyData
 public:
 	CssmDLPolyData(const CSSM_DATA &data, CSSM_DB_ATTRIBUTE_FORMAT format)
 	: mData(CssmData::overlay(data))
-#ifndef NDEBUG
     , mFormat(format)
-#endif 
     {}
 
 	// @@@ Don't use assert, but throw an exception.
@@ -264,9 +267,7 @@ public:
 
 private:
 	const CssmData &mData;
-#ifndef NDEBUG
 	CSSM_DB_ATTRIBUTE_FORMAT mFormat;
-#endif
 };
 
 
@@ -345,8 +346,13 @@ public:
 	{ return CssmDbAttributeInfo::overlayVar(AttributeInfo); }
 	CssmDbAttributeInfo *attributes() const
 	{ return CssmDbAttributeInfo::overlay(AttributeInfo); }
-    CssmDbAttributeInfo &at(uint32 ix) const
-	{ assert(ix < size()); return attributes()[ix]; }
+    CssmDbAttributeInfo &at(uint32 ix) const {
+		if (ix >= size()) {
+			secemergency("CssmDbRecordAttributeInfo: attempt to index beyond bounds");
+			abort();
+		}
+		return attributes()[ix];
+	}
 
     CssmDbAttributeInfo &operator [] (uint32 ix) const { return at(ix); }
 };
@@ -481,8 +487,13 @@ public:
 	{ return CssmDbAttributeData::overlay(AttributeData); }
 
 	// Attributes by position
-    CssmDbAttributeData &at(unsigned int ix) const
-	{ assert(ix < size()); return attributes()[ix]; }
+    CssmDbAttributeData &at(unsigned int ix) const {
+		if (ix >= size()) {
+			secemergency("CssmDbRecordAttributeData: attempt to index beyond bounds");
+			abort();
+		}
+		return attributes()[ix];
+	}
 
     CssmDbAttributeData &operator [] (unsigned int ix) const { return at(ix); }
 
@@ -596,8 +607,13 @@ public:
 	CssmSelectionPredicate *predicates() const
 	{ return CssmSelectionPredicate::overlay(SelectionPredicate); }
 
-	CssmSelectionPredicate &at(uint32 ix) const
-	{ assert(ix < size()); return predicates()[ix]; }
+	CssmSelectionPredicate &at(uint32 ix) const {
+		if (ix >= size()) {
+		   secemergency("CssmDbRecordAttributeData: attempt to index beyond bounds");
+		   abort();
+		}
+		return predicates()[ix];
+	}
 
 	CssmSelectionPredicate &operator[] (uint32 ix) const { return at(ix); }
 	
@@ -666,6 +682,8 @@ public:
 		const CSSM_NET_ADDRESS *location = NULL)
 		: mImpl(new Impl(CssmSubserviceUid(guid, NULL, ssid, sstype), name, location)) { }
 
+    DLDbIdentifier(const DLDbIdentifier& i) : mImpl(i.mImpl) {}
+
 	// Conversion Operators
 	bool operator !() const { return !mImpl; }
 	operator bool() const { return mImpl; }
@@ -729,7 +747,10 @@ struct DLDbFlatIdentifier {
 		address(const_cast<CssmNetAddress *>(ident.dbLocation()))
 		{ }
 
-    operator DLDbIdentifier ()	{ return DLDbIdentifier(*uid, name, address); }
+    operator DLDbIdentifier ()	{
+        DLDbIdentifier db(*uid, name, address);
+        return db;
+    }
 };
 
 template<class Action>

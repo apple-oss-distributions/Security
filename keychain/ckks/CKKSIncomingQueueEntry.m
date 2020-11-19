@@ -30,8 +30,8 @@
 #import "CKKSKeychainView.h"
 
 #include <utilities/SecDb.h>
-#include <securityd/SecDbItem.h>
-#include <securityd/SecItemSchema.h>
+#include "keychain/securityd/SecDbItem.h"
+#include "keychain/securityd/SecItemSchema.h"
 
 #import <CloudKit/CloudKit.h>
 #import "CKKSIncomingQueueEntry.h"
@@ -84,11 +84,13 @@
 + (NSArray<CKKSIncomingQueueEntry*>*)fetch:(ssize_t)n
                             startingAtUUID:(NSString*)uuid
                                      state:(NSString*)state
+                                    action:(NSString* _Nullable)action
                                     zoneID:(CKRecordZoneID*)zoneID
                                      error: (NSError * __autoreleasing *) error {
     NSMutableDictionary* whereDict = [@{@"state": CKKSNilToNSNull(state), @"ckzone":CKKSNilToNSNull(zoneID.zoneName)} mutableCopy];
+    whereDict[@"action"] = action;
     if(uuid) {
-        whereDict[@"UUID"] = [CKKSSQLWhereObject op:@">" stringValue:uuid];
+        whereDict[@"UUID"] = [CKKSSQLWhereValue op:CKKSSQLWhereComparatorGreaterThan value:uuid];
     }
     return [self fetch:n
                  where:whereDict

@@ -36,14 +36,6 @@ typedef struct __OpaqueSecDbConnection *SecDbConnectionRef;
 typedef struct __OpaqueSecDbStatement *SecDbStatementRef;
 struct SOSDigestVector;
 
-// MARK: Configuration values, not used by clients directly.
-// TODO: Move this section to a private header
-enum {
-    kSecDbMaxReaders = 4,
-    kSecDbMaxWriters = 1,
-    kSecDbMaxIdleHandles = 3,
-};
-
 // MARK: SecDbTransactionType
 enum {
     kSecDbNoneTransactionType = 0,
@@ -124,6 +116,8 @@ bool SecDbPerformWrite(SecDbRef db, CFErrorRef *error, void (^perform)(SecDbConn
 // TODO: DEBUG only -> Private header
 CFIndex SecDbIdleConnectionCount(SecDbRef db);
 void SecDbReleaseAllConnections(SecDbRef db);
+
+void SecDbForceClose(SecDbRef db);
 
 CFStringRef SecDbGetPath(SecDbRef db);
 

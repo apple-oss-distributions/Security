@@ -38,6 +38,7 @@ extern NSString* const SFAnalyticsColumnSoftFailureCount;
 extern NSString* const SFAnalyticsColumnSampleValue;
 extern NSString* const SFAnalyticsColumnSampleName;
 
+extern NSString* const SFAnalyticsPostTime;
 extern NSString* const SFAnalyticsEventTime;
 extern NSString* const SFAnalyticsEventType;
 extern NSString* const SFAnalyticsEventTypeErrorEvent;
@@ -60,6 +61,7 @@ extern NSString* const SFAnalyticsTopicCloudServices;
 extern NSString* const SFAnalyticsTopicKeySync;
 extern NSString* const SFAnalyticsTopicTrust;
 extern NSString* const SFAnalyticsTopicTransparency;
+extern NSString* const SFAnalyticsTopicNetworking;
 
 typedef NS_ENUM(NSInteger, SFAnalyticsEventClass) {
     SFAnalyticsEventClassSuccess,

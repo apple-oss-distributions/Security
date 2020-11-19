@@ -26,21 +26,26 @@
 #import "keychain/ot/OTFetchViewsOperation.h"
 #import "keychain/ot/ObjCImprovements.h"
 #import "keychain/TrustedPeersHelper/TrustedPeersHelperProtocol.h"
+#import "keychain/ot/categories/OTAccountMetadataClassC+KeychainSupport.h"
 #import "keychain/ckks/CKKSAnalytics.h"
 
 @interface OTFetchViewsOperation ()
 @property OTOperationDependencies* deps;
-@property NSOperation* finishedOp;
-@property CKKSViewManager* ckm;
 @end
 
 @implementation OTFetchViewsOperation
+@synthesize intendedState = _intendedState;
+@synthesize nextState = _nextState;
 
 - (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
+                       intendedState:(OctagonState*)intendedState
+                          errorState:(OctagonState*)errorState
 {
     if ((self = [super init])) {
         _deps = dependencies;
-        _ckm = dependencies.viewManager;
+
+        _intendedState = intendedState;
+        _nextState = errorState;
     }
     return self;
 }
@@ -49,70 +54,41 @@
 {
     secnotice("octagon", "fetching views");
 
-    self.finishedOp = [[NSOperation alloc] init];
-    [self dependOnBeforeGroupFinished:self.finishedOp];
+    WEAKIFY(self);
+    [self.deps.cuttlefishXPCWrapper fetchCurrentPolicyWithContainer:self.deps.containerName
+                                                            context:self.deps.contextID
+                                                    modelIDOverride:nil
+                                                              reply:^(TPSyncingPolicy* _Nullable syncingPolicy,
+                                                                      TPPBPeerStableInfo_UserControllableViewStatus userControllableViewStatusOfPeers,
+                                                                      NSError* _Nullable error) {
+        STRONGIFY(self);
+        [[CKKSAnalytics logger] logResultForEvent:OctagonEventFetchViews hardFailure:true result:error];
 
-    NSSet<NSString*>* sosViewList = [self.ckm viewList];
-    self.policy = nil;
-    self.viewList = sosViewList;
-
-    if ([self.ckm useCKKSViewsFromPolicy]) {
-        WEAKIFY(self);
-        
-        NSXPCConnection<TrustedPeersHelperProtocol>* proxy = [self.deps.cuttlefishXPC remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-                STRONGIFY(self);
-                secerror("octagon: Can't talk with TrustedPeersHelper: %@", error);
-                [[CKKSAnalytics logger] logUnrecoverableError:error forEvent:OctagonEventFetchViews withAttributes:nil];
-                self.error = error;
-                [self runBeforeGroupFinished:self.finishedOp];
-            }];
-        if (proxy) {
-            [proxy fetchPolicyWithContainer:self.deps.containerName context:self.deps.contextID reply:^(TPPolicy* _Nullable policy, NSError* _Nullable error) {
-                    STRONGIFY(self);
-                    if (error) {
-                        secerror("octagon: failed to retrieve policy: %@", error);
-                        [[CKKSAnalytics logger] logResultForEvent:OctagonEventFetchViews hardFailure:true result:error];
-                        self.error = error;
-                        [self runBeforeGroupFinished:self.finishedOp];
-                    } else {
-                        if (policy == nil) {
-                            secerror("octagon: no policy returned");
-                        }
-                        self.policy = policy;
-                        WEAKIFY(self);
-                        NSArray<NSString*>* sosViews = [sosViewList allObjects];
-                        [proxy getViewsWithContainer:self.deps.containerName context:self.deps.contextID inViews:sosViews reply:^(NSArray<NSString*>* _Nullable outViews, NSError* _Nullable error) {
-                                STRONGIFY(self);
-                                if (error) {
-                                    secerror("octagon: failed to retrieve list of views: %@", error);
-                                    [[CKKSAnalytics logger] logResultForEvent:OctagonEventFetchViews hardFailure:true result:error];
-                                    self.error = error;
-                                    [self runBeforeGroupFinished:self.finishedOp];
-                                } else {
-                                    if (outViews == nil) {
-                                        secerror("octagon: bad results from getviews");
-                                    } else {
-                                        self.viewList = [NSSet setWithArray:outViews];
-                                    }
-                                    [self complete];
-                                }
-                            }];
-                    }
-                }];
+        if (error) {
+            secerror("octagon: failed to retrieve policy+views: %@", error);
+            self.error = error;
+            return;
         }
-    } else {
-        [self complete];
-    }
-}
 
-- (void)complete {
-    secnotice("octagon", "viewList: %@", self.viewList);
-    self.ckm.policy = self.policy;
-    self.ckm.viewList = self.viewList;
+        secnotice("octagon-ckks", "Received syncing policy %@ with view list: %@", syncingPolicy, syncingPolicy.viewList);
+        // Write them down before continuing
 
-    [self.ckm createViews];
-    [self.ckm beginCloudKitOperationOfAllViews];
-    [self runBeforeGroupFinished:self.finishedOp];
+        NSError* stateError = nil;
+        [self.deps.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nullable(OTAccountMetadataClassC * _Nonnull metadata) {
+            [metadata setTPSyncingPolicy:syncingPolicy];
+            return metadata;
+        } error:&stateError];
+
+        if(stateError) {
+            secerror("octagon: failed to save policy+views: %@", stateError);
+            self.error = stateError;
+            return;
+        }
+
+        [self.deps.viewManager setCurrentSyncingPolicy:syncingPolicy];
+
+        self.nextState = self.intendedState;
+    }];
 }
 
 @end

@@ -33,9 +33,11 @@ NS_ASSUME_NONNULL_BEGIN
 //   No iCloud Account (the state machine won't help at all)
 //   Untrusted (user interaction is required to resolve)
 //   WaitForHSA2 (there's some primary icloud account, but it's not HSA2 (yet))
+//   WaitForCDP (there's some HSA2 primary icloud account, but it's not CDP-enabled (yet)
 extern OctagonState* const OctagonStateNoAccount;
 extern OctagonState* const OctagonStateUntrusted;
 extern OctagonState* const OctagonStateWaitForHSA2;
+extern OctagonState* const OctagonStateWaitForCDP;
 
 // Entering this state will mark down that the device is untrusted, then go to OctagonStateUntrusted
 extern OctagonState* const OctagonStateBecomeUntrusted;
@@ -43,12 +45,23 @@ extern OctagonState* const OctagonStateBecomeUntrusted;
 // WaitForUnlock indicates that Octagon is waiting for the device to unlock before attempting the pended operation
 extern OctagonState* const OctagonStateWaitForUnlock;
 
+// Similar to the above, but we can't even be sure there's an account until the device unlocks for the first time.
+extern OctagonState* const OctagonStateWaitForClassCUnlock;
+
 // 'ready' indicates that this machine believes it is trusted by its peers
 // and has no pending things to do.
 extern OctagonState* const OctagonStateReady;
 
 // This state runs any final preparation to enter the Ready state
 extern OctagonState* const OctagonStateBecomeReady;
+
+// BecomeReady might go here, if it's not actually ready
+extern OctagonState* const OctagonStateRefetchCKKSPolicy;
+
+// Used in RPCs to set CKKS sync status
+extern OctagonState* const OctagonStateEnableUserControllableViews;
+extern OctagonState* const OctagonStateDisableUserControllableViews;
+extern OctagonState* const OctagonStateSetUserControllableViewsToPeerConsensus;
 
 // Enter this state if you'd like the state machine to double-check everything
 extern OctagonState* const OctagonStateEnsureConsistency;
@@ -59,23 +72,26 @@ extern OctagonState* const OctagonStateEnsureUpdatePreapprovals;
 extern OctagonState* const OctagonStateInitializing;
 extern OctagonState* const OctagonStateWaitingForCloudKitAccount;
 extern OctagonState* const OctagonStateCloudKitNewlyAvailable;
+extern OctagonState* const OctagonStateDetermineCDPState;
 extern OctagonState* const OctagonStateCheckTrustState;
 
 /*Piggybacking and ProximitySetup as Initiator, Octagon only*/
 extern OctagonState* const OctagonStateInitiatorAwaitingVoucher;
 
+extern OctagonState* const OctagonStateInitiatorSetCDPBit;
 extern OctagonState* const OctagonStateInitiatorUpdateDeviceList;
 extern OctagonState* const OctagonStateInitiatorJoin;
 extern OctagonState* const OctagonStateInitiatorJoinCKKSReset;
 extern OctagonState* const OctagonStateInitiatorJoinAfterCKKSReset;
 
-extern OctagonState* const OctagonStateInitiatorVouchWithBottle;
+extern OctagonState* const OctagonStateBottleJoinVouchWithBottle;
 extern OctagonState* const OctagonStateIdentityPrepared;
 // OctagonStateIdentityPrepared leads directly to
 extern OctagonState* const OctagonStateDeviceListUpdated;
 
 /* used for join with bottle */
-extern OctagonState* const OctagonStateInitiatorCreateIdentity;
+extern OctagonState* const OctagonStateBottleJoinCreateIdentity;
+extern OctagonState* const OctagonStateBottlePreloadOctagonKeysInSOS;
 
 /* used for join with recovery key */
 extern OctagonState* const OctagonStateCreateIdentityForRecoveryKey;
@@ -87,6 +103,7 @@ extern OctagonState* const OctagonStateVouchWithRecoveryKey;
 extern OctagonState* const OctagonStateResetBecomeUntrusted;
 extern OctagonState* const OctagonStateResetAndEstablish;
 extern OctagonState* const OctagonStateResetAnyMissingTLKCKKSViews;
+extern OctagonState* const OctagonStateEstablishEnableCDPBit;
 extern OctagonState* const OctagonStateReEnactDeviceList;
 extern OctagonState* const OctagonStateReEnactPrepare;
 extern OctagonState* const OctagonStateReEnactReadyToEstablish;
@@ -96,12 +113,17 @@ extern OctagonState* const OctagonStateEstablishAfterCKKSReset;
 
 /* used for trust health checks */
 extern OctagonState* const OctagonStateHSA2HealthCheck;
+extern OctagonState* const OctagonStateCDPHealthCheck;
 extern OctagonState* const OctagonStateSecurityTrustCheck;
 extern OctagonState* const OctagonStateTPHTrustCheck;
 extern OctagonState* const OctagonStateCuttlefishTrustCheck;
 extern OctagonState* const OctagonStatePostRepairCFU;
+extern OctagonState* const OctagonStateHealthCheckReset;
 
 // End of account reset state flow
+
+//Leave Clique
+extern OctagonState* const OctagonStateHealthCheckLeaveClique;
 
 // Part of the signout flow
 extern OctagonState* const OctagonStateNoAccountDoReset;
@@ -116,6 +138,7 @@ extern OctagonState* const OctagonStateUpdateSOSPreapprovals;
 extern OctagonState* const OctagonStateError;
 extern OctagonState* const OctagonStateDisabled;
 
+extern OctagonState* const OctagonStateAttemptSOSUpgradeDetermineCDPState;
 extern OctagonState* const OctagonStateAttemptSOSUpgrade;
 extern OctagonState* const OctagonStateSOSUpgradeCKKSReset;
 extern OctagonState* const OctagonStateSOSUpgradeAfterCKKSReset;
@@ -124,9 +147,14 @@ extern OctagonState* const OctagonStateDetermineiCloudAccountState;
 
 // CKKS sometimes needs an assist. These states are supposed to handle those cases
 extern OctagonState* const OctagonStateAssistCKKSTLKUpload;
+extern OctagonState* const OctagonStateAssistCKKSTLKUploadCKKSReset;
+extern OctagonState* const OctagonStateAssistCKKSTLKUploadAfterCKKSReset;
 
 // Call out to otpaird (KCPairing via IDS), then proceed to BecomeUntrusted
 extern OctagonState* const OctagonStateStartCompanionPairing;
+
+// Cuttlefish notification while waiting for CDP
+extern OctagonState* const OctagonStateWaitForCDPUpdated;
 
 // Untrusted cuttlefish notification.
 extern OctagonState* const OctagonStateUntrustedUpdated;
@@ -144,27 +172,41 @@ NSDictionary<NSNumber*, OctagonState*>* OctagonStateInverseMap(void);
 // <rdar://problem/54094162> Octagon: ensure Octagon operations can't occur on SA accounts
 NSSet<OctagonState*>* OctagonInAccountStates(void);
 NSSet<OctagonState *>* OctagonHealthSourceStates(void);
+NSSet<OctagonFlag *>* AllOctagonFlags(void);
 
 ////// State machine flags
+extern OctagonFlag* const OctagonFlagIDMSLevelChanged;
+
 extern OctagonFlag* const OctagonFlagEgoPeerPreapproved;
 
 extern OctagonFlag* const OctagonFlagCKKSRequestsTLKUpload;
+extern OctagonFlag* const OctagonFlagCKKSRequestsPolicyCheck;
+
+// Set by Octagon when the CKKS view set has changed. Indicates a need to re-tell CKKS if it's trusted or not.
+extern OctagonFlag* const OctagonFlagCKKSViewSetChanged;
 
 // We've received a change notification from cuttlefish; we should probably see what's new
-extern OctagonFlag* const OctagonFlagCuttlefishNotification;
+extern OctagonFlag* const OctagonFlagCuttlefishNotification NS_SWIFT_NAME(OctagonFlagCuttlefishNotification);
+
 
 extern OctagonFlag* const OctagonFlagFetchAuthKitMachineIDList;
 
 extern OctagonFlag* const OctagonFlagAccountIsAvailable;
+extern OctagonFlag* const OctagonFlagCDPEnabled;
 
 extern OctagonFlag* const OctagonFlagAttemptSOSUpgrade;
 extern OctagonFlag* const OctagonFlagUnlocked;
 
 extern OctagonFlag* const OctagonFlagAttemptSOSUpdatePreapprovals;
-
-extern OctagonFlag* const OctagonFlagPerformHealthCheck;
+extern OctagonFlag* const OctagonFlagAttemptSOSConsistency;
 
 extern OctagonFlag* const OctagonFlagEscrowRequestInformCloudServicesOperation;
+extern OctagonFlag* const OctagonFlagWarmEscrowRecordCache;
+
+extern OctagonFlag* const OctagonFlagAttemptBottleTLKExtraction;
+extern OctagonFlag* const OctagonFlagAttemptRecoveryKeyTLKExtraction;
+
+extern OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade;
 
 
 NS_ASSUME_NONNULL_END

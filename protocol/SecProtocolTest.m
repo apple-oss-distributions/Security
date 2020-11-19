@@ -682,6 +682,24 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
     });
 }
 
+- (void)test_sec_protocol_options_set_tls_encryption_level_update_block {
+    void (^update_block)(sec_protocol_tls_encryption_level_t, bool) = ^(__unused sec_protocol_tls_encryption_level_t level, __unused bool is_write) {
+        // pass
+    };
+
+    dispatch_queue_t update_queue = dispatch_queue_create("test_sec_protocol_options_set_tls_encryption_level_update_block_queue", DISPATCH_QUEUE_SERIAL);
+
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+    sec_protocol_options_set_tls_encryption_level_update_block(options, update_block, update_queue);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->tls_encryption_level_update_block == update_block);
+        XCTAssertTrue(content->tls_encryption_level_update_queue != nil);
+        return false;
+    });
+}
+
 - (void)test_sec_protocol_options_set_local_certificates {
     sec_protocol_options_t options = [self create_sec_protocol_options];
 
@@ -726,6 +744,30 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
         sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
         SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
         XCTAssertTrue(content->certificate_compression_enabled);
+        return true;
+    });
+}
+
+- (void)test_sec_protocol_options_set_peer_authentication_required {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    sec_protocol_options_set_peer_authentication_required(options, true);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->peer_authentication_required);
+        return true;
+    });
+}
+
+- (void)test_sec_protocol_options_set_peer_authentication_optional {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    sec_protocol_options_set_peer_authentication_optional(options, true);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->peer_authentication_optional);
         return true;
     });
 }
@@ -860,14 +902,87 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
     XCTAssertTrue(sec_protocol_options_are_equal(optionsA, optionsB));
 
     const char *application_protocolA = "h2";
-    const char *application_protocolB = "h3";
     sec_protocol_options_add_tls_application_protocol(optionsA, application_protocolA);
     XCTAssertFalse(sec_protocol_options_are_equal(optionsA, optionsB));
-    sec_protocol_options_add_tls_application_protocol(optionsB, application_protocolB);
+    sec_protocol_options_add_tls_application_protocol(optionsB, application_protocolA);
+    XCTAssertTrue(sec_protocol_options_are_equal(optionsA, optionsB));
+
+    const char *application_protocolB = "h3";
+	sec_protocol_options_add_transport_specific_application_protocol(optionsA, application_protocolB,
+																	 sec_protocol_transport_quic);
     XCTAssertFalse(sec_protocol_options_are_equal(optionsA, optionsB));
+	sec_protocol_options_add_transport_specific_application_protocol(optionsB, application_protocolB,
+																	 sec_protocol_transport_quic);
+    XCTAssertTrue(sec_protocol_options_are_equal(optionsA, optionsB));
+
 
     sec_protocol_options_append_tls_ciphersuite(optionsB, 7331);
     XCTAssertFalse(sec_protocol_options_are_equal(optionsA, optionsB));
+}
+
+- (void)test_sec_protocol_options_copy_transport_specific_application_protocol {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    const char *application_protocol_dummy = "dummy";
+    const char *application_protocol_h2 = "h2";
+    const char *application_protocol_h3 = "h3";
+
+    sec_protocol_options_add_transport_specific_application_protocol(options, application_protocol_h2, sec_protocol_transport_tcp);
+    xpc_object_t protocols = sec_protocol_options_copy_transport_specific_application_protocol(options, sec_protocol_transport_quic);
+    XCTAssertFalse(protocols != NULL);
+    if (protocols != NULL) {
+        return;
+    }
+
+    sec_protocol_options_add_tls_application_protocol(options, application_protocol_dummy);
+    sec_protocol_options_add_transport_specific_application_protocol(options, application_protocol_h3, sec_protocol_transport_quic);
+
+    for (sec_protocol_transport_t t = sec_protocol_transport_any; t <= sec_protocol_transport_quic; t++) {
+        protocols = sec_protocol_options_copy_transport_specific_application_protocol(options, t);
+        XCTAssertFalse(protocols == NULL);
+        if (protocols == NULL) {
+            return;
+        }
+
+        const char *application_protocols_for_any[]  = { application_protocol_h2, application_protocol_dummy, application_protocol_h3, };
+        // application_protocols_for_tcp includes application_protocol_dummy because "dummy" isn't tied to any transport.
+        const char *application_protocols_for_tcp[]  = { application_protocol_h2, application_protocol_dummy, };
+        const char *application_protocols_for_quic[] = { application_protocol_dummy, application_protocol_h3, };
+
+        size_t count_of_application_protocols_for_transport[] = {
+            [sec_protocol_transport_any]  = sizeof(application_protocols_for_any)/sizeof(application_protocols_for_any[0]),
+            [sec_protocol_transport_tcp]  = sizeof(application_protocols_for_tcp)/sizeof(application_protocols_for_tcp[0]),
+            [sec_protocol_transport_quic] = sizeof(application_protocols_for_quic)/sizeof(application_protocols_for_quic[0]),
+        };
+
+        XCTAssertFalse(xpc_get_type(protocols) != XPC_TYPE_ARRAY);
+        if (xpc_get_type(protocols) != XPC_TYPE_ARRAY) {
+            return;
+        }
+
+        size_t protocols_count = xpc_array_get_count(protocols);
+        XCTAssertFalse(protocols_count != count_of_application_protocols_for_transport[t]);
+        if (protocols_count != count_of_application_protocols_for_transport[t]) {
+            return;
+        }
+
+        const char **application_protocols_for_transport[] = {
+            [sec_protocol_transport_any]  = application_protocols_for_any,
+            [sec_protocol_transport_tcp]  = application_protocols_for_tcp,
+            [sec_protocol_transport_quic] = application_protocols_for_quic,
+        };
+
+        for (size_t i = 0; i < protocols_count; i++) {
+            const char *protocol_name = xpc_array_get_string(protocols, i);
+            const char *expected_protocol_name = application_protocols_for_transport[t][i];
+            bool protocol_match = (strcmp(protocol_name, expected_protocol_name) == 0);
+
+            XCTAssertFalse(protocol_match == false);
+            if (protocol_match == false) {
+                return;
+            }
+        }
+    }
 }
 
 - (void)test_sec_protocol_options_set_tls_server_name {
@@ -875,8 +990,7 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
     sec_protocol_options_t optionsB = [self create_sec_protocol_options];
 
     const char *server_nameA = "apple.com";
-    const char *server_nameB = "127.0.0.1";
-    const char *server_nameC = "example.com";
+    const char *server_nameB = "example.com";
 
     /*
      * Empty options should be equal.
@@ -898,18 +1012,10 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
     XCTAssertTrue(sec_protocol_options_are_equal(optionsA, optionsB));
 
     /*
-     * Try to set the name to nameB in optionsB.
-     * It should fail since nameB is invalid.
-     * Options A, B should still be equal.
-     */
-    sec_protocol_options_set_tls_server_name(optionsB, server_nameB);
-    XCTAssertTrue(sec_protocol_options_are_equal(optionsA, optionsB));
-
-    /*
      * Change the current name in B.
      * Comparison should fail.
      */
-    sec_protocol_options_set_tls_server_name(optionsB, server_nameC);
+    sec_protocol_options_set_tls_server_name(optionsB, server_nameB);
     XCTAssertFalse(sec_protocol_options_are_equal(optionsA, optionsB));
 }
 
@@ -976,31 +1082,6 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
                 xpc_dictionary_set_value(mismatched_config, key, value);
             } else {
                 xpc_dictionary_set_bool(mismatched_config, key, !enable_resumption);
-            }
-            return true;
-        });
-        XCTAssertFalse(sec_protocol_options_matches_config(options, mismatched_config));
-    }
-}
-
-- (void)test_sec_protocol_options_matches_config_with_mismatch_ciphersuites {
-    sec_protocol_options_t options = [self create_sec_protocol_options];
-
-    sec_protocol_options_append_tls_ciphersuite(options, 1);
-
-    xpc_object_t config = sec_protocol_options_create_config(options);
-    XCTAssertTrue(config != NULL);
-    if (config != NULL) {
-        // Flip a value in the config, and expect the match to fail
-        __block const char *ciphersuites_key = "ciphersuites";
-        xpc_object_t mismatched_config = xpc_dictionary_create(NULL, NULL, 0);
-        xpc_dictionary_apply(config, ^bool(const char * _Nonnull key, xpc_object_t  _Nonnull value) {
-            if (strncmp(key, ciphersuites_key, strlen(ciphersuites_key)) != 0) {
-                xpc_dictionary_set_value(mismatched_config, key, value);
-            } else {
-                xpc_object_t ciphersuites = xpc_array_create(NULL, 0);
-                xpc_array_set_uint64(ciphersuites, XPC_ARRAY_APPEND, 2);
-                xpc_dictionary_set_value(mismatched_config, key, ciphersuites);
             }
             return true;
         });
@@ -1105,6 +1186,114 @@ _sec_protocol_test_metadata_session_exporter(void *handle)
         XCTAssertTrue(sec_protocol_helper_dispatch_data_equal(identity, psk_identity_data), @"Expected PSK identity data match");
     });
     XCTAssertTrue(accessed, @"Expected sec_protocol_metadata_access_pre_shared_keys to traverse PSK list");
+}
+
+- (void)test_sec_protocol_options_set_tls_block_length_padding {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    sec_protocol_block_length_padding_t expected_block_length_padding = SEC_PROTOCOL_BLOCK_LENGTH_PADDING_DEFAULT;
+    sec_protocol_options_set_tls_block_length_padding(options, expected_block_length_padding);
+
+    __block sec_protocol_block_length_padding_t current_block_length_padding = SEC_PROTOCOL_BLOCK_LENGTH_PADDING_NONE;
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+
+        current_block_length_padding = content->tls_block_length_padding;
+        return true;
+    });
+
+    XCTAssertTrue(current_block_length_padding == expected_block_length_padding);
+}
+
+- (void)test_sec_protocol_experiment_identifier {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->experiment_identifier == NULL);
+        return true;
+    });
+
+    const char *identifier = "first_experiment";
+    sec_protocol_options_set_experiment_identifier(options, identifier);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->experiment_identifier != NULL);
+        XCTAssertTrue(strncmp(identifier, content->experiment_identifier, strlen(identifier)) == 0);
+        return true;
+    });
+
+    sec_protocol_metadata_t metadata = [self create_sec_protocol_metadata];
+    XCTAssertTrue(sec_protocol_metadata_get_experiment_identifier(metadata) == NULL);
+
+    (void)sec_protocol_metadata_access_handle(metadata, ^bool(void *handle) {
+        sec_protocol_metadata_content_t content = (sec_protocol_metadata_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        content->experiment_identifier = strdup(identifier);
+        return true;
+    });
+
+    XCTAssertTrue(strncmp(identifier, sec_protocol_metadata_get_experiment_identifier(metadata), strlen(identifier)) == 0);
+}
+
+- (void)test_sec_protocol_connection_id {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        uuid_t zeroes = {};
+        XCTAssertTrue(memcmp(zeroes, content->connection_id, sizeof(zeroes)) == 0);
+        return true;
+    });
+
+    uuid_t uuid = {};
+    __block uint8_t *uuid_ptr = uuid;
+    __block size_t uuid_len = sizeof(uuid);
+    (void)SecRandomCopyBytes(NULL, sizeof(uuid), uuid);
+    sec_protocol_options_set_connection_id(options, uuid);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(memcmp(content->connection_id, uuid_ptr, uuid_len) == 0);
+        return true;
+    });
+
+    sec_protocol_metadata_t metadata = [self create_sec_protocol_metadata];
+    (void)sec_protocol_metadata_access_handle(metadata, ^bool(void *handle) {
+        sec_protocol_metadata_content_t content = (sec_protocol_metadata_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        memcpy(content->connection_id, uuid_ptr, uuid_len);
+        return true;
+    });
+
+    uuid_t copied_metadata = {};
+    sec_protocol_metadata_copy_connection_id(metadata, copied_metadata);
+
+    XCTAssertTrue(memcmp(uuid, copied_metadata, sizeof(copied_metadata)) == 0);
+}
+
+- (void)test_sec_protocol_options_set_allow_unknown_alpn_protos {
+    sec_protocol_options_t options = [self create_sec_protocol_options];
+
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertFalse(content->allow_unknown_alpn_protos_override);
+        return true;
+    });
+
+    sec_protocol_options_set_allow_unknown_alpn_protos(options, true);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+        XCTAssertTrue(content->allow_unknown_alpn_protos);
+        XCTAssertTrue(content->allow_unknown_alpn_protos_override);
+        return true;
+    });
 }
 
 @end

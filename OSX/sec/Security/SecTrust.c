@@ -65,7 +65,7 @@
 
 #include <ipc/securityd_client.h>
 
-#include <securityd/SecTrustServer.h>
+#include "trust/trustd/SecTrustServer.h"
 
 #pragma clang diagnostic ignored "-Wformat=2"
 
@@ -1039,21 +1039,6 @@ static CFStringRef SecTrustCopyChainSummary(SecTrustRef trust) {
     return summary;
 }
 
-typedef enum {
-    kSecTrustErrorSubTypeBlocked,
-    kSecTrustErrorSubTypeRevoked,
-    kSecTrustErrorSubTypeKeySize,
-    kSecTrustErrorSubTypeWeakHash,
-    kSecTrustErrorSubTypeDenied,
-    kSecTrustErrorSubTypeCompliance,
-    kSecTrustErrorSubTypePinning,
-    kSecTrustErrorSubTypeTrust,
-    kSecTrustErrorSubTypeUsage,
-    kSecTrustErrorSubTypeName,
-    kSecTrustErrorSubTypeExpired,
-    kSecTrustErrorSubTypeInvalid,
-} SecTrustErrorSubType;
-
 #define SecCopyTrustString(KEY) SecFrameworkCopyLocalizedString(KEY, CFSTR("Trust"))
 
 struct checkmap_entry_s {
@@ -1065,18 +1050,6 @@ typedef struct checkmap_entry_s checkmap_entry_t;
 
 const checkmap_entry_t checkmap[] = {
 #undef POLICYCHECKMACRO
-#define __PC_SUBTYPE_   kSecTrustErrorSubTypeInvalid
-#define __PC_SUBTYPE_N  kSecTrustErrorSubTypeName
-#define __PC_SUBTYPE_E  kSecTrustErrorSubTypeExpired
-#define __PC_SUBTYPE_S  kSecTrustErrorSubTypeKeySize
-#define __PC_SUBTYPE_H  kSecTrustErrorSubTypeWeakHash
-#define __PC_SUBTYPE_U  kSecTrustErrorSubTypeUsage
-#define __PC_SUBTYPE_P  kSecTrustErrorSubTypePinning
-#define __PC_SUBTYPE_V  kSecTrustErrorSubTypeRevoked
-#define __PC_SUBTYPE_T  kSecTrustErrorSubTypeTrust
-#define __PC_SUBTYPE_C  kSecTrustErrorSubTypeCompliance
-#define __PC_SUBTYPE_D  kSecTrustErrorSubTypeDenied
-#define __PC_SUBTYPE_B  kSecTrustErrorSubTypeBlocked
 #define POLICYCHECKMACRO(NAME, TRUSTRESULT, SUBTYPE, LEAFCHECK, PATHCHECK, LEAFONLY, CSSMERR, OSSTATUS) \
 { __PC_SUBTYPE_##SUBTYPE , OSSTATUS, SEC_TRUST_ERROR_##NAME },
 #include "SecPolicyChecks.list"
@@ -1861,15 +1834,7 @@ CFStringRef SecTrustCopyFailureDescription(SecTrustRef trust) {
     return reason;
 }
 
-#if TARGET_OS_OSX
-/* On OS X we need SecTrustCopyPublicKey to give us a CDSA-based SecKeyRef,
-   so we will refer to this one internally as SecTrustCopyPublicKey_ios,
-   and call it from SecTrustCopyPublicKey.
- */
-SecKeyRef SecTrustCopyPublicKey_ios(SecTrustRef trust)
-#else
-SecKeyRef SecTrustCopyPublicKey(SecTrustRef trust)
-#endif
+SecKeyRef SecTrustCopyKey(SecTrustRef trust)
 {
     if (!trust) {
         return NULL;
@@ -1897,7 +1862,20 @@ SecKeyRef SecTrustCopyPublicKey(SecTrustRef trust)
             }
         });
     }
-	return publicKey;
+    return publicKey;
+}
+
+#if TARGET_OS_OSX
+/* On OS X we need SecTrustCopyPublicKey to give us a CDSA-based SecKeyRef,
+   so we will refer to this one internally as SecTrustCopyPublicKey_ios,
+   and call it from SecTrustCopyPublicKey.
+ */
+SecKeyRef SecTrustCopyPublicKey_ios(SecTrustRef trust)
+#else
+SecKeyRef SecTrustCopyPublicKey(SecTrustRef trust)
+#endif
+{
+    return SecTrustCopyKey(trust);
 }
 
 CFIndex SecTrustGetCertificateCount(SecTrustRef trust) {
@@ -2249,7 +2227,6 @@ static void applyDetailProperty(const void *_key, const void *_value,
     } else if (CFEqual(key, kSecPolicyCheckCriticalExtensions)) {
         tf->unknownCritExtn = true;
     } else if (CFEqual(key, kSecPolicyCheckAnchorTrusted)
-        || CFEqual(key, kSecPolicyCheckAnchorSHA1)
         || CFEqual(key, kSecPolicyCheckAnchorSHA256)
         || CFEqual(key, kSecPolicyCheckAnchorApple)) {
         tf->untrustedAnchor = true;
@@ -2601,6 +2578,18 @@ CFDictionaryRef SecTrustOTASecExperimentCopyAsset(CFErrorRef *error) {
         return result != NULL;
     });
     return result;
+}
+
+bool SecTrustTriggerValidUpdate(CFErrorRef *error) {
+    do_if_registered(sec_valid_update, error);
+
+    os_activity_t activity = os_activity_create("SecTrustTriggerValidUpdate", OS_ACTIVITY_CURRENT, OS_ACTIVITY_FLAG_DEFAULT);
+    os_activity_scope(activity);
+
+    uint64_t num = do_ota_pki_op(kSecXPCOpValidUpdate, error);
+
+    os_release(activity);
+    return num;
 }
 
 bool SecTrustReportTLSAnalytics(CFStringRef eventName, xpc_object_t eventAttributes, CFErrorRef *error) {

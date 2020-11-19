@@ -47,13 +47,13 @@
 
 #include <Security/SecEntitlements.h>
 #include <Security/SecItemPriv.h>
-#include <securityd/SecItemServer.h>
-#include <securityd/SecItemSchema.h>
-#include <securityd/SecItemDb.h>
+#include "keychain/securityd/SecItemServer.h"
+#include "keychain/securityd/SecItemSchema.h"
+#include "keychain/securityd/SecItemDb.h"
 
 #include "keychain/ckks/CKKSViewManager.h"
 
-#import "securityd/SecDbBackupManager.h"
+#import "keychain/securityd/SecDbBackupManager.h"
 
 @interface SecOSTransactionHolder : NSObject
 @property os_transaction_t transaction;
@@ -105,6 +105,20 @@
             CFReleaseNull(cferror);
             return;
         }
+    }
+
+    if(attributes[(id)kSecDataInetExtraNotes] ||
+       attributes[(id)kSecDataInetExtraHistory] ||
+       attributes[(id)kSecDataInetExtraClientDefined0] ||
+       attributes[(id)kSecDataInetExtraClientDefined1] ||
+       attributes[(id)kSecDataInetExtraClientDefined2] ||
+       attributes[(id)kSecDataInetExtraClientDefined3]) {
+        if(![self clientHasBooleanEntitlement:(__bridge NSString*)kSecEntitlementPrivateInetExpansionFields]) {
+              SecError(errSecMissingEntitlement, &cferror, CFSTR("SecItemAddAndNotifyOnSync: %@ does not have entitlement %@"), _client.task, kSecEntitlementPrivateInetExpansionFields);
+              complete(NULL, NULL, (__bridge NSError*) cferror);
+              CFReleaseNull(cferror);
+              return;
+          }
     }
 
     CFTypeRef cfresult = NULL;
@@ -363,7 +377,7 @@
                                   (__bridge NSString *)kSecAttrSynchronizable : (__bridge NSString *)kSecAttrSynchronizableAny,
                                   };
 
-    Query *q = query_create_with_limit((__bridge CFDictionaryRef)attributes, _client.musr, 0, &cferror);
+    Query *q = query_create_with_limit((__bridge CFDictionaryRef)attributes, _client.musr, 0, &(_client), &cferror);
     if (q == NULL) {
         SecError(errSecParam, &cferror, CFSTR("failed to build query: %@"), _client.task);
         complete(NULL, (__bridge NSError*) cferror);
@@ -423,6 +437,18 @@
                           completion:(void (^)(NSDictionary<NSString*, NSString*>* results, NSError* error))completion
 {
     [[SecDbBackupManager manager] verifyBackupIntegrity:lightweight completion:completion];
+}
+
+
+- (void)secItemDeleteForAppClipApplicationIdentifier:(NSString*)identifier
+                                              completion:(void (^)(OSStatus))completion
+{
+    if (![self clientHasBooleanEntitlement:(__bridge NSString*)kSecEntitlementPrivateAppClipDeletion]) {
+        completion(errSecMissingEntitlement);
+        return;
+    }
+
+    completion(SecServerDeleteForAppClipApplicationIdentifier((__bridge CFStringRef)identifier));
 }
 
 @end

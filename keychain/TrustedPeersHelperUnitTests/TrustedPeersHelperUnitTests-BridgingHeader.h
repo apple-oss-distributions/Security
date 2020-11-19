@@ -7,8 +7,8 @@
 #import "utilities/SecCFError.h"
 
 
-#import "securityd/SecItemServer.h"
-#import "securityd/spi.h"
+#import "keychain/securityd/SecItemServer.h"
+#import "keychain/securityd/spi.h"
 
 #import <Security/SecItemPriv.h>
 #import "keychain/ckks/CKKS.h"
@@ -19,5 +19,6 @@
 #import <SecurityFoundation/SFKey_Private.h>
 
 #import "keychain/TrustedPeersHelper/TrustedPeersHelper-Bridging-Header.h"
+#import "keychain/securityd/SecItemDataSource.h"
 
 #import "keychain/ckks/tests/MockCloudKit.h"
