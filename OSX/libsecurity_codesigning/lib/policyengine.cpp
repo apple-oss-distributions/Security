@@ -26,6 +26,7 @@
 #include "codesigning_dtrace.h"
 #include <security_utilities/cfmunge.h>
 #include <Security/Security.h>
+#include <Security/SecCertificatePriv.h>
 #include <Security/SecCodePriv.h>
 #include <Security/SecRequirementPriv.h>
 #include <Security/SecPolicyPriv.h>
@@ -389,7 +390,7 @@ void PolicyEngine::evaluateCode(CFURLRef path, AuthorityType type, SecAssessment
 	CFCopyRef<SecStaticCodeRef> code;
 	MacOSError::check(SecStaticCodeCreateWithPath(path, kSecCSDefaultFlags | kSecCSForceOnlineNotarizationCheck, &code.aref()));
 	
-	SecCSFlags validationFlags = kSecCSEnforceRevocationChecks | kSecCSCheckAllArchitectures;
+	SecCSFlags validationFlags = kSecCSEnforceRevocationChecks | kSecCSCheckAllArchitectures | kSecCSAllowNetworkAccess;
 	if (!(flags & kSecAssessmentFlagAllowWeak))
 		validationFlags |= kSecCSStrictValidate;
 	adjustValidation(code);

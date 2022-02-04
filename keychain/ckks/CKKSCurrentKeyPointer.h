@@ -43,22 +43,27 @@ NS_ASSUME_NONNULL_BEGIN
                       zoneID:(CKRecordZoneID*)zoneID
              encodedCKRecord:(NSData* _Nullable)encodedrecord;
 
-+ (instancetype)fromDatabase:(CKKSKeyClass*)keyclass zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
-+ (instancetype)tryFromDatabase:(CKKSKeyClass*)keyclass zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (instancetype _Nullable)fromDatabase:(CKKSKeyClass*)keyclass zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
++ (instancetype _Nullable)tryFromDatabase:(CKKSKeyClass*)keyclass zoneID:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
 
-+ (instancetype)forKeyClass:(CKKSKeyClass*)keyclass
-                withKeyUUID:(NSString*)keyUUID
-                     zoneID:(CKRecordZoneID*)zoneID
-                      error:(NSError* __autoreleasing*)error;
++ (instancetype _Nullable)forKeyClass:(CKKSKeyClass*)keyclass
+                          withKeyUUID:(NSString*)keyUUID
+                               zoneID:(CKRecordZoneID*)zoneID
+                                error:(NSError* __autoreleasing*)error;
 
 + (NSArray<CKKSCurrentKeyPointer*>*)all:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
 + (bool)deleteAll:(CKRecordZoneID*)zoneID error:(NSError* __autoreleasing*)error;
 
++ (BOOL)intransactionRecordChanged:(CKRecord*)record
+                            resync:(BOOL)resync
+                       flagHandler:(id<OctagonStateFlagHandler> _Nullable)flagHandler
+                             error:(NSError**)error;
++ (BOOL)intransactionRecordDeleted:(CKRecordID*)recordID
+                             error:(NSError**)error;
 @end
 
 @interface CKKSCurrentKeySet : NSObject
-
-@property NSString* viewName;
+@property CKRecordZoneID* zoneID;
 @property (nullable) NSError* error;
 @property (nullable) CKKSKey* tlk;
 @property (nullable) CKKSKey* classA;
@@ -67,16 +72,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable) CKKSCurrentKeyPointer* currentClassAPointer;
 @property (nullable) CKKSCurrentKeyPointer* currentClassCPointer;
 
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithZoneID:(CKRecordZoneID*)zoneID;
+
 // Set to true if this is a 'proposed' key set, i.e., not yet uploaded to CloudKit
 @property BOOL proposed;
 
-// The tlkShares property holds all existing tlkShares for this key
-@property NSArray<CKKSTLKShareRecord*>* tlkShares;
-
 // This array (if present) holds any new TLKShares that should be uploaded
 @property (nullable) NSArray<CKKSTLKShareRecord*>* pendingTLKShares;
-
-- (instancetype)initForZoneName:(NSString*)zoneName;
 
 + (CKKSCurrentKeySet*)loadForZone:(CKRecordZoneID*)zoneID;
 

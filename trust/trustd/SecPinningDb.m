@@ -32,13 +32,7 @@
 #import <notify.h>
 #import <os/lock.h>
 
-#if !TARGET_OS_BRIDGE
-#import <MobileAsset/MAAsset.h>
-#import <MobileAsset/MAAssetQuery.h>
-#endif
-
 #if TARGET_OS_OSX
-#import <MobileAsset/MobileAsset.h>
 #include <sys/csr.h>
 #endif
 
@@ -47,6 +41,8 @@
 #import "trust/trustd/OTATrustUtilities.h"
 #import "trust/trustd/SecPinningDb.h"
 #import "trust/trustd/SecTrustLoggingServer.h"
+#import "trust/trustd/trustdFileLocations.h"
+#import "trust/trustd/trustdVariants.h"
 
 #include "utilities/debugging.h"
 #include "utilities/sqlutils.h"
@@ -59,24 +55,30 @@
 #include "utilities/sec_action.h"
 
 #define kSecPinningDbFileName       "pinningrules.sqlite3"
+#define PINNING_CACHE_MAX_ENTRIES   4
 
-const uint64_t PinningDbSchemaVersion = 2;
+const uint64_t PinningDbSchemaVersion = 3;
+
+/* Keys for pinning plist */
 const NSString *PinningDbPolicyNameKey = @"policyName"; /* key for a string value */
 const NSString *PinningDbDomainsKey = @"domains"; /* key for an array of dictionaries */
 const NSString *PinningDbPoliciesKey = @"rules"; /* key for an array of dictionaries */
 const NSString *PinningDbDomainSuffixKey = @"suffix"; /* key for a string */
 const NSString *PinningDbLabelRegexKey = @"labelRegex"; /* key for a regex string */
+const NSString *PinningDbTransparentConnection = @"transparentConnection"; /* key for transparent connection */
 
+/* Keys for result/cached results */
 const CFStringRef kSecPinningDbKeyHostname = CFSTR("PinningHostname");
 const CFStringRef kSecPinningDbKeyPolicyName = CFSTR("PinningPolicyName");
 const CFStringRef kSecPinningDbKeyRules = CFSTR("PinningRules");
+const CFStringRef kSecPinningDbKeyTransparentConnection = CFSTR("PinningTransparentConnection");
 
-@interface SecPinningDb : NSObject
-@property (assign) SecDbRef db;
+@interface SecPinningDb()
 @property dispatch_queue_t queue;
 @property NSURL *dbPath;
 @property (assign) os_unfair_lock regexCacheLock;
 @property NSMutableDictionary *regexCache;
+@property NSMutableArray *regexCacheList;
 - (instancetype) init;
 - ( NSDictionary * _Nullable ) queryForDomain:(NSString *)domain;
 - ( NSDictionary * _Nullable ) queryForPolicyName:(NSString *)policyName;
@@ -98,9 +100,9 @@ static inline bool isNSDictionary(id nsType) {
 #define getSchemaVersionSQL CFSTR("PRAGMA user_version")
 #define selectVersionSQL CFSTR("SELECT ival FROM admin WHERE key='version'")
 #define insertAdminSQL CFSTR("INSERT OR REPLACE INTO admin (key,ival,value) VALUES (?,?,?)")
-#define selectDomainSQL CFSTR("SELECT DISTINCT labelRegex,policyName,policies FROM rules WHERE domainSuffix=?")
-#define selectPolicyNameSQL CFSTR("SELECT DISTINCT policies FROM rules WHERE policyName=?")
-#define insertRuleSQL CFSTR("INSERT OR REPLACE INTO rules (policyName,domainSuffix,labelRegex,policies) VALUES (?,?,?,?) ")
+#define selectDomainSQL CFSTR("SELECT DISTINCT labelRegex,policyName,policies,transparentConnection FROM rules WHERE domainSuffix=?")
+#define selectPolicyNameSQL CFSTR("SELECT DISTINCT policies,transparentConnection FROM rules WHERE policyName=?")
+#define insertRuleSQL CFSTR("INSERT OR REPLACE INTO rules (policyName,domainSuffix,labelRegex,policies,transparentConnection) VALUES (?,?,?,?,?) ")
 #define removeAllRulesSQL CFSTR("DELETE FROM rules;")
 
 - (NSNumber *)getSchemaVersion:(SecDbConnectionRef)dbconn error:(CFErrorRef *)error {
@@ -133,8 +135,8 @@ static inline bool isNSDictionary(id nsType) {
     __block NSNumber *version = nil;
     ok &= SecDbWithSQL(dbconn, selectVersionSQL, error, ^bool(sqlite3_stmt *selectVersion) {
         ok &= SecDbStep(dbconn, selectVersion, error, ^(bool *stop) {
-            uint64_t ival = sqlite3_column_int64(selectVersion, 0);
-            version = [NSNumber numberWithUnsignedLongLong:ival];
+            int64_t ival = sqlite3_column_int64(selectVersion, 0);
+            version = [NSNumber numberWithLongLong:ival];
         });
         return ok;
     });
@@ -146,7 +148,7 @@ static inline bool isNSDictionary(id nsType) {
     ok &= SecDbWithSQL(dbconn, insertAdminSQL, error, ^bool(sqlite3_stmt *insertAdmin) {
         const char *versionKey = "version";
         ok &= SecDbBindText(insertAdmin, 1, versionKey, strlen(versionKey), SQLITE_TRANSIENT, error);
-        ok &= SecDbBindInt64(insertAdmin, 2, [version unsignedLongLongValue], error);
+        ok &= SecDbBindInt64(insertAdmin, 2, [version longLongValue], error);
         ok &= SecDbStep(dbconn, insertAdmin, error, NULL);
         return ok;
     });
@@ -160,7 +162,7 @@ static inline bool isNSDictionary(id nsType) {
     __block CFErrorRef error = NULL;
     __block BOOL ok = YES;
     __block BOOL newer = NO;
-    ok &= SecDbPerformRead(_db, &error, ^(SecDbConnectionRef dbconn) {
+    ok &= SecDbPerformRead(self.db, &error, ^(SecDbConnectionRef dbconn) {
         NSNumber *db_version = [self getContentVersion:dbconn error:&error];
         if (!db_version || [new_version compare:db_version] == NSOrderedDescending) {
             newer = YES;
@@ -179,6 +181,7 @@ static inline bool isNSDictionary(id nsType) {
                domainSuffix:(NSString *)domainSuffix
                  labelRegex:(NSString *)labelRegex
                    policies:(NSArray *)policies
+      transparentConnection:(NSNumber *)transparentConnection
                dbConnection:(SecDbConnectionRef)dbconn
                       error:(CFErrorRef *)error{
     /* @@@ This insertion mechanism assumes that the input is trusted -- namely, that the new rules
@@ -200,6 +203,7 @@ static inline bool isNSDictionary(id nsType) {
             ok = false;
         }
         ok &= SecDbBindBlob(insertRule, 4, [xmlPolicies bytes], [xmlPolicies length], SQLITE_TRANSIENT, error);
+        ok &= SecDbBindInt(insertRule, 5, [transparentConnection intValue], error);
         ok &= SecDbStep(dbconn, insertRule, error, NULL);
         return ok;
     });
@@ -222,29 +226,36 @@ static inline bool isNSDictionary(id nsType) {
         __block NSString *policyName = [rule objectForKey:PinningDbPolicyNameKey];
         NSArray *domains = [rule objectForKey:PinningDbDomainsKey];
         __block NSArray *policies = [rule objectForKey:PinningDbPoliciesKey];
+        NSNumber *transparentConnection = [rule objectForKey:PinningDbTransparentConnection];
+        if (!transparentConnection) {
+            transparentConnection = @(0);
+        }
 
-        if (!policyName || !domains || !policies) {
+        if (!policyName || !domains || !policies || !transparentConnection) {
             secerror("SecPinningDb: failed to get required fields from rule entry %lu", (unsigned long)idx);
             ok = false;
             return;
         }
 
-        [domains enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-            if (!isNSDictionary(obj)) {
-                secerror("SecPinningDb: domain entry %lu for %@ in pinning rule is wrong class", (unsigned long)idx, policyName);
+        [domains enumerateObjectsUsingBlock:^(id  _Nonnull domain, NSUInteger index, BOOL * _Nonnull domainStop) {
+            if (!isNSDictionary(domain)) {
+                secerror("SecPinningDb: domain entry %lu for %@ in pinning rule is wrong class", (unsigned long)index, policyName);
                 ok = false;
                 return;
             }
-            NSDictionary *domain = obj;
             NSString *suffix = [domain objectForKey:PinningDbDomainSuffixKey];
             NSString *labelRegex = [domain objectForKey:PinningDbLabelRegexKey];
 
             if (!suffix || !labelRegex) {
-                secerror("SecPinningDb: failed to get required fields for entry %lu for %@", (unsigned long)idx, policyName);
+                secerror("SecPinningDb: failed to get required fields for entry %lu for %@", (unsigned long)index, policyName);
                 ok = false;
                 return;
             }
-            ok &= [self insertRuleWithName:policyName domainSuffix:suffix labelRegex:labelRegex policies:policies
+            ok &= [self insertRuleWithName:policyName
+                              domainSuffix:suffix
+                                labelRegex:labelRegex
+                                  policies:policies
+                     transparentConnection:transparentConnection
                               dbConnection:dbconn error:error];
         }];
     }];
@@ -290,18 +301,25 @@ static inline bool isNSDictionary(id nsType) {
                           "domainSuffix TEXT NOT NULL,"
                           "labelRegex TEXT NOT NULL,"
                           "policies BLOB NOT NULL,"
+                          "transparentConnection INTEGER,"
                           "UNIQUE(policyName, domainSuffix, labelRegex)"
                           ");"),
                     error);
     ok &= SecDbExec(dbconn, CFSTR("CREATE INDEX IF NOT EXISTS idomain ON rules(domainSuffix);"), error);
     ok &= SecDbExec(dbconn, CFSTR("CREATE INDEX IF NOT EXISTS ipolicy ON rules(policyName);"), error);
+
+    NSNumber *schemaVersion = [self getSchemaVersion:dbconn error:error];
+    if (schemaVersion && ([schemaVersion intValue] > 0)) { // Not a new DB
+        if ([schemaVersion intValue] < 3) {
+            ok &= SecDbExec(dbconn, CFSTR("ALTER TABLE rules ADD COLUMN transparentConnection INTEGER"), error);
+        }
+    }
     if (!ok) {
         secerror("SecPinningDb: failed to create rules table: %@", error ? *error : nil);
     }
     return ok;
 }
 
-#if !TARGET_OS_BRIDGE
 - (BOOL) installDbFromURL:(NSURL *)localURL error:(NSError **)nserror {
     if (!localURL) {
         secerror("SecPinningDb: missing url for downloaded asset");
@@ -332,26 +350,21 @@ static inline bool isNSDictionary(id nsType) {
         ok &= SecDbPerformWrite(self->_db, &error, ^(SecDbConnectionRef dbconn) {
             ok &= [self updateDb:dbconn error:&error pinningList:pinningList updateSchema:NO updateContent:YES];
         });
-#if !TARGET_OS_WATCH
         /* We changed the database, so clear the database cache */
         [self clearCache];
-#endif
     });
 
     if (!ok || error) {
         secerror("SecPinningDb: error installing updated pinning list version %@: %@", [pinningList objectAtIndex:0], error);
-#if ENABLE_TRUSTD_ANALYTICS
         [[TrustAnalytics logger] logHardError:(__bridge NSError *)error
                                        withEventName:TrustdHealthAnalyticsEventDatabaseEvent
                                       withAttributes:@{TrustdHealthAnalyticsAttributeAffectedDatabase : @(TAPinningDb),
                                                        TrustdHealthAnalyticsAttributeDatabaseOperation : @(TAOperationWrite) }];
-#endif // ENABLE_TRUSTD_ANALYTICS
         if (nserror && error) { *nserror = CFBridgingRelease(error); }
     }
 
     return ok;
 }
-#endif /* !TARGET_OS_BRIDGE */
 
 - (NSArray *) copySystemPinningList {
     NSArray *pinningList = nil;
@@ -363,6 +376,7 @@ static inline bool isNSDictionary(id nsType) {
         CFReleaseNull(otapkiref);
         if (!pinningListURL) {
             secerror("SecPinningDb: failed to get pinning plist URL");
+            return pinningList;
         }
         NSError *error = nil;
         pinningList = [NSArray arrayWithContentsOfURL:pinningListURL error:&error];
@@ -460,6 +474,7 @@ static inline bool isNSDictionary(id nsType) {
                      secnotice("pinningDb", "Updating pinning database schema from version %@ to version %@",
                                schema_version, current_version);
                      updateSchema = true;
+                     updateContent = true; // Reload the content into the new schema
                  }
 
                  if (updateContent || updateSchema) {
@@ -470,12 +485,10 @@ static inline bool isNSDictionary(id nsType) {
                  }
                  if (!ok) {
                      secerror("SecPinningDb: %s failed: %@", didCreate ? "Create" : "Open", error ? *error : NULL);
-#if ENABLE_TRUSTD_ANALYTICS
                      [[TrustAnalytics logger] logHardError:(error ? (__bridge NSError *)*error : nil)
                                                     withEventName:TrustdHealthAnalyticsEventDatabaseEvent
                                                    withAttributes:@{TrustdHealthAnalyticsAttributeAffectedDatabase : @(TAPinningDb),
                                                                     TrustdHealthAnalyticsAttributeDatabaseOperation : didCreate ? @(TAOperationCreate) : @(TAOperationOpen)}];
-#endif // ENABLE_TRUSTD_ANALYTICS
                  }
              });
              return ok;
@@ -485,27 +498,14 @@ static inline bool isNSDictionary(id nsType) {
     return result;
 }
 
-static void verify_create_path(const char *path)
-{
-    int ret = mkpath_np(path, 0755);
-    if (!(ret == 0 || ret ==  EEXIST)) {
-        secerror("could not create path: %s (%s)", path, strerror(ret));
-    }
-}
-
-- (NSURL *)pinningDbPath {
-    /* Make sure the /Library/Keychains directory is there */
-    NSURL *directory = CFBridgingRelease(SecCopyURLForFileInSystemKeychainDirectory(nil));
-    verify_create_path([directory fileSystemRepresentation]);
-
-    /* Get the full path of the pinning DB */
-    return [directory URLByAppendingPathComponent:@kSecPinningDbFileName];
++ (NSURL *)pinningDbPath {
+    return CFBridgingRelease(SecCopyURLForFileInProtectedTrustdDirectory(CFSTR(kSecPinningDbFileName)));
 }
 
 - (void) initializedDb {
     dispatch_sync(_queue, ^{
         if (!self->_db) {
-            self->_dbPath = [self pinningDbPath];
+            self->_dbPath = [SecPinningDb pinningDbPath];
             self->_db = [self createAtPath];
         }
     });
@@ -514,10 +514,11 @@ static void verify_create_path(const char *path)
 - (instancetype) init {
     if (self = [super init]) {
         _queue = dispatch_queue_create("Pinning DB Queue", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
-#if !TARGET_OS_WATCH
-        _regexCache = [NSMutableDictionary dictionary];
-        _regexCacheLock = OS_UNFAIR_LOCK_INIT;
-#endif
+        if (!TrustdVariantLowMemoryDevice()) {
+            _regexCache = [NSMutableDictionary dictionary];
+            _regexCacheList = [NSMutableArray array];
+            _regexCacheLock = OS_UNFAIR_LOCK_INIT;
+        }
         [self initializedDb];
     }
     return self;
@@ -528,33 +529,45 @@ static void verify_create_path(const char *path)
 }
 
 /* MARK: DB Cache
- * The cache is represented a dictionary defined as { suffix : { regex : resultsDictionary } }
- * The cache is not used on watchOS to reduce memory overhead. */
-#if !TARGET_OS_WATCH
+ * The cache is represented a dictionary defined as { suffix : { regex : resultsDictionary } } */
 - (void) clearCache {
+    if (TrustdVariantLowMemoryDevice()) {
+        return;
+    }
     os_unfair_lock_lock(&_regexCacheLock);
     self.regexCache = [NSMutableDictionary dictionary];
+    self.regexCacheList = [NSMutableArray array];
     os_unfair_lock_unlock(&_regexCacheLock);
 }
-#endif // !TARGET_OS_WATCH
 
-#if !TARGET_OS_WATCH
 - (void) addSuffixToCache:(NSString *)suffix entry:(NSDictionary <NSRegularExpression *, NSDictionary *> *)entry {
+    if (TrustdVariantLowMemoryDevice()) {
+        return;
+    }
     os_unfair_lock_lock(&_regexCacheLock);
     secinfo("SecPinningDb", "adding %llu entries for %@ to cache", (unsigned long long)[entry count], suffix);
+    if ([self.regexCache count] >= PINNING_CACHE_MAX_ENTRIES) {
+        NSString *lruSuffix = [self.regexCacheList lastObject];
+        secinfo("SecPinningDb", "purging LRU suffix: %@", lruSuffix);
+        [self.regexCache removeObjectForKey:lruSuffix];
+        [self.regexCacheList removeLastObject];
+    }
     self.regexCache[suffix] = entry;
+    [self.regexCacheList insertObject:suffix atIndex:0];
     os_unfair_lock_unlock(&_regexCacheLock);
 }
-#endif // !TARGET_OS_WATCH
 
-#if !TARGET_OS_WATCH
 /* Because we iterate over all DB entries for a suffix, even if we find a match, we guarantee
  * that the cache, if the cache has an entry for a suffix, it has all the entries for that suffix */
-- (BOOL) queryCacheForSuffix:(NSString *)suffix firstLabel:(NSString *)firstLabel results:(NSDictionary * __autoreleasing *)results{
+- (BOOL) queryCacheForSuffix:(NSString *)suffix firstLabel:(NSString *)firstLabel results:(NSDictionary * __autoreleasing *)results {
+    if (TrustdVariantLowMemoryDevice()) {
+        return NO;
+    }
     __block BOOL foundSuffix = NO;
     os_unfair_lock_lock(&_regexCacheLock);
     NSDictionary <NSRegularExpression *, NSDictionary *> *cacheEntry;
     if (NULL != (cacheEntry = self.regexCache[suffix])) {
+        [self.regexCacheList insertObject:suffix atIndex:0]; // mark as Most Recently Used
         foundSuffix = YES;
         for (NSRegularExpression *regex in cacheEntry) {
             NSUInteger numMatches = [regex numberOfMatchesInString:firstLabel
@@ -584,7 +597,6 @@ static void verify_create_path(const char *path)
 
     return foundSuffix;
 }
-#endif // !TARGET_OS_WATCH
 
 - (BOOL) isPinningDisabled:(NSString * _Nullable)policy {
     static dispatch_once_t once;
@@ -630,22 +642,19 @@ static void verify_create_path(const char *path)
     __block NSString *firstLabel = [domain substringToIndex:firstDot.location];
     __block NSString *suffix = [domain substringFromIndex:(firstDot.location + 1)];
 
-#if !TARGET_OS_WATCH
     /* Search cache */
     NSDictionary *cacheResult = nil;
     if ([self queryCacheForSuffix:suffix firstLabel:firstLabel results:&cacheResult]) {
         return cacheResult;
     }
-#endif
 
     /* Cache miss. Perform SELECT */
     __block bool ok = true;
     __block CFErrorRef error = NULL;
     __block NSMutableArray *resultRules = [NSMutableArray array];
     __block NSString *resultName = nil;
-#if !TARGET_OS_WATCH
+    __block NSNumber *resultTC = @(0);
     __block NSMutableDictionary <NSRegularExpression *, NSDictionary *> *newCacheEntry = [NSMutableDictionary dictionary];
-#endif
     ok &= SecDbPerformRead(_db, &error, ^(SecDbConnectionRef dbconn) {
         ok &= SecDbWithSQL(dbconn, selectDomainSQL, &error, ^bool(sqlite3_stmt *selectDomain) {
             ok &= SecDbBindText(selectDomain, 1, [suffix UTF8String], [suffix length], SQLITE_TRANSIENT, &error);
@@ -665,17 +674,21 @@ static void verify_create_path(const char *path)
                     const uint8_t *policyName = sqlite3_column_text(selectDomain, 1);
                     NSString *policyNameStr = [NSString stringWithUTF8String:(const char *)policyName];
                     // Policies
-                    NSData *xmlPolicies = [NSData dataWithBytes:sqlite3_column_blob(selectDomain, 2) length:sqlite3_column_bytes(selectDomain, 2)];
+                    verify_action(sqlite3_column_bytes(selectDomain, 2) > 0, return);
+                    NSData *xmlPolicies = [NSData dataWithBytes:sqlite3_column_blob(selectDomain, 2) length:(NSUInteger)sqlite3_column_bytes(selectDomain, 2)];
                     verify_action(xmlPolicies, return);
                     id policies = [NSPropertyListSerialization propertyListWithData:xmlPolicies options:0 format:nil error:nil];
                     verify_action(isNSArray(policies), return);
+                    // TransparentConnection
+                    bool transparentConnection = (sqlite3_column_int(selectDomain, 3) > 0) ? true : false;
 
-#if !TARGET_OS_WATCH
                     /* Add to cache entry */
-                    [newCacheEntry setObject:@{(__bridge NSString*)kSecPinningDbKeyPolicyName:policyNameStr,
-                                               (__bridge NSString*)kSecPinningDbKeyRules:policies}
-                                      forKey:regularExpression];
-#endif
+                    if (!TrustdVariantLowMemoryDevice()) {
+                        [newCacheEntry setObject:@{(__bridge NSString*)kSecPinningDbKeyPolicyName:policyNameStr,
+                                                   (__bridge NSString*)kSecPinningDbKeyRules:policies,
+                                                   (__bridge NSString*)kSecPinningDbKeyTransparentConnection:@(transparentConnection)}
+                                          forKey:regularExpression];
+                    }
 
                     /* Match the labelRegex */
                     NSUInteger numMatches = [regularExpression numberOfMatchesInString:firstLabel
@@ -690,6 +703,7 @@ static void verify_create_path(const char *path)
                      * @@@ Assumes there is only one rule with matching suffix/label pairs. */
                     [resultRules addObjectsFromArray:(NSArray *)policies];
                     resultName = policyNameStr;
+                    resultTC = @(transparentConnection);
                 }
             });
             return ok;
@@ -698,21 +712,17 @@ static void verify_create_path(const char *path)
 
     if (!ok || error) {
         secerror("SecPinningDb: error querying DB for hostname: %@", error);
-#if ENABLE_TRUSTD_ANALYTICS
         [[TrustAnalytics logger] logHardError:(__bridge NSError *)error
                                        withEventName:TrustdHealthAnalyticsEventDatabaseEvent
                                       withAttributes:@{TrustdHealthAnalyticsAttributeAffectedDatabase : @(TAPinningDb),
                                                        TrustdHealthAnalyticsAttributeDatabaseOperation : @(TAOperationRead)}];
-#endif // ENABLE_TRUSTD_ANALYTICS
         CFReleaseNull(error);
     }
 
-#if !TARGET_OS_WATCH
     /* Add new cache entry to cache. */
     if ([newCacheEntry count] > 0) {
         [self addSuffixToCache:suffix entry:newCacheEntry];
     }
-#endif
 
     /* Return results if found */
     if ([resultRules count] > 0) {
@@ -725,7 +735,9 @@ static void verify_create_path(const char *path)
         }
 
         return @{(__bridge NSString*)kSecPinningDbKeyRules:resultRules,
-                 (__bridge NSString*)kSecPinningDbKeyPolicyName:resultName};
+                 (__bridge NSString*)kSecPinningDbKeyPolicyName:resultName,
+                 (__bridge NSString*)kSecPinningDbKeyTransparentConnection:resultTC,
+        };
     }
     return nil;
 }
@@ -750,6 +762,7 @@ static void verify_create_path(const char *path)
     __block bool ok = true;
     __block CFErrorRef error = NULL;
     __block NSMutableArray *resultRules = [NSMutableArray array];
+    __block NSNumber *resultTC = @(0);
     ok &= SecDbPerformRead(_db, &error, ^(SecDbConnectionRef dbconn) {
         ok &= SecDbWithSQL(dbconn, selectPolicyNameSQL, &error, ^bool(sqlite3_stmt *selectPolicyName) {
             ok &= SecDbBindText(selectPolicyName, 1, [policyName UTF8String], [policyName length], SQLITE_TRANSIENT, &error);
@@ -758,13 +771,19 @@ static void verify_create_path(const char *path)
                     secinfo("SecPinningDb", "found matching rule for %@ policy", policyName);
 
                     /* Deserialize the policies and return */
-                    NSData *xmlPolicies = [NSData dataWithBytes:sqlite3_column_blob(selectPolicyName, 0) length:sqlite3_column_bytes(selectPolicyName, 0)];
+                    if (sqlite3_column_bytes(selectPolicyName, 0) < 0) {
+                        return;
+                    };
+                    NSData *xmlPolicies = [NSData dataWithBytes:sqlite3_column_blob(selectPolicyName, 0) length:(NSUInteger)sqlite3_column_bytes(selectPolicyName, 0)];
                     if (!xmlPolicies) { return; }
                     id policies = [NSPropertyListSerialization propertyListWithData:xmlPolicies options:0 format:nil error:nil];
                     if (!isNSArray(policies)) {
                         return;
                     }
                     [resultRules addObjectsFromArray:(NSArray *)policies];
+
+                    bool transparentConnection = (sqlite3_column_int(selectPolicyName, 1) > 0) ? true : false;
+                    resultTC = @(transparentConnection);
                 }
             });
             return ok;
@@ -773,18 +792,18 @@ static void verify_create_path(const char *path)
 
     if (!ok || error) {
         secerror("SecPinningDb: error querying DB for policyName: %@", error);
-#if ENABLE_TRUSTD_ANALYTICS
         [[TrustAnalytics logger] logHardError:(__bridge NSError *)error
                                        withEventName:TrustdHealthAnalyticsEventDatabaseEvent
                                       withAttributes:@{TrustdHealthAnalyticsAttributeAffectedDatabase : @(TAPinningDb),
                                                        TrustdHealthAnalyticsAttributeDatabaseOperation : @(TAOperationRead)}];
-#endif // ENABLE_TRUSTD_ANALYTICS
         CFReleaseNull(error);
     }
 
     if ([resultRules count] > 0) {
         NSDictionary *results = @{(__bridge NSString*)kSecPinningDbKeyRules:resultRules,
-                                  (__bridge NSString*)kSecPinningDbKeyPolicyName:policyName};
+                                  (__bridge NSString*)kSecPinningDbKeyPolicyName:policyName,
+                                  (__bridge NSString*)kSecPinningDbKeyTransparentConnection:resultTC,
+        };
         return results;
     }
     return nil;
@@ -798,6 +817,9 @@ void SecPinningDbInitialize(void) {
     /* Create the pinning object once per launch */
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        if (!TrustdVariantAllowsFileWrite()) {
+            return;
+        }
         @autoreleasepool {
             pinningDb = [[SecPinningDb alloc] init];
             __block CFErrorRef error = NULL;
@@ -808,12 +830,10 @@ void SecPinningDbInitialize(void) {
             });
             if (!ok || error) {
                 secerror("SecPinningDb: unable to initialize db: %@", error);
-#if ENABLE_TRUSTD_ANALYTICS
                 [[TrustAnalytics logger] logHardError:(__bridge NSError *)error
                                                withEventName:TrustdHealthAnalyticsEventDatabaseEvent
                                               withAttributes:@{TrustdHealthAnalyticsAttributeAffectedDatabase : @(TAPinningDb),
                                                                TrustdHealthAnalyticsAttributeDatabaseOperation : @(TAOperationRead)}];
-#endif // ENABLE_TRUSTD_ANALYTICS
             }
             CFReleaseNull(error);
         }
@@ -839,15 +859,18 @@ CFDictionaryRef _Nullable SecPinningDbCopyMatching(CFDictionaryRef query) {
     }
 }
 
-#if !TARGET_OS_BRIDGE
 bool SecPinningDbUpdateFromURL(NSURL *url, NSError **error) {
-    SecPinningDbInitialize();
-
-    return [pinningDb installDbFromURL:url error:error];
+    if (TrustdVariantAllowsFileWrite()) {
+        SecPinningDbInitialize();
+        return [pinningDb installDbFromURL:url error:error];
+    }
+    return false;
 }
-#endif
 
 CFNumberRef SecPinningDbCopyContentVersion(void) {
+    if (!TrustdVariantAllowsFileWrite()) {
+        return CFBridgingRetain(@(0));
+    }
     @autoreleasepool {
         __block CFErrorRef error = NULL;
         __block NSNumber *contentVersion = nil;

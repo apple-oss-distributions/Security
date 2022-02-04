@@ -26,7 +26,7 @@
 #define _DER_PLIST_INTERNAL_H_
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <utilities/SecCFError.h>
+#include "utilities/SecCFError.h"
 
 // Always returns false, to satisfy static analysis
 #define SecCFDERCreateError(errorCode, descriptionString, previousError, newError) \
@@ -40,6 +40,9 @@ size_t der_sizeof_array(CFArrayRef array, CFErrorRef *error);
 
 uint8_t* der_encode_array(CFArrayRef array, CFErrorRef *error,
                           const uint8_t *der, uint8_t *der_end);
+uint8_t* der_encode_array_repair(CFArrayRef array, CFErrorRef *error,
+                                 bool repair,
+                                 const uint8_t *der, uint8_t *der_end);
 
 const uint8_t* der_decode_array(CFAllocatorRef allocator,
                                 CFArrayRef* array, CFErrorRef *error,
@@ -76,6 +79,12 @@ const uint8_t* der_decode_data(CFAllocatorRef allocator,
                                CFDataRef* data, CFErrorRef *error,
                                const uint8_t* der, const uint8_t *der_end);
 
+// CoreEntitlements -> CFData
+// This is an opaque type
+const uint8_t* der_decode_core_entitlements_data(CFAllocatorRef allocator,
+                                                 CFDataRef* data, CFErrorRef *error,
+                                                 const uint8_t* der, const uint8_t *der_end);
+
 // CFDate <-> DER
 size_t der_sizeof_date(CFDateRef date, CFErrorRef *error);
 
@@ -89,12 +98,18 @@ const uint8_t* der_decode_date(CFAllocatorRef allocator,
                                CFDateRef* date, CFErrorRef *error,
                                const uint8_t* der, const uint8_t *der_end);
 
+const uint8_t* der_decode_utc_time(CFAllocatorRef allocator,
+                                   CFDateRef* date, CFErrorRef *error,
+                                   const uint8_t* der, const uint8_t *der_end);
+
 
 // CFDictionary <-> DER
 size_t der_sizeof_dictionary(CFDictionaryRef dictionary, CFErrorRef *error);
 
 uint8_t* der_encode_dictionary(CFDictionaryRef dictionary, CFErrorRef *error,
                                const uint8_t *der, uint8_t *der_end);
+uint8_t* der_encode_dictionary_repair(CFDictionaryRef dictionary, CFErrorRef *error,
+                                      bool repair, const uint8_t *der, uint8_t *der_end);
 
 const uint8_t* der_decode_dictionary(CFAllocatorRef allocator,
                                      CFDictionaryRef* dictionary, CFErrorRef *error,
@@ -121,11 +136,17 @@ const uint8_t* der_decode_string(CFAllocatorRef allocator,
                                  CFStringRef* string, CFErrorRef *error,
                                  const uint8_t* der, const uint8_t *der_end);
 
+const uint8_t* der_decode_numeric_string(CFAllocatorRef allocator,
+                                 CFStringRef* string, CFErrorRef *error,
+                                 const uint8_t* der, const uint8_t *der_end);
+
 // CFSet <-> DER
 size_t der_sizeof_set(CFSetRef dict, CFErrorRef *error);
 
 uint8_t* der_encode_set(CFSetRef set, CFErrorRef *error,
                         const uint8_t *der, uint8_t *der_end);
+uint8_t* der_encode_set_repair(CFSetRef set, CFErrorRef *error,
+                               bool repair, const uint8_t *der, uint8_t *der_end);
 
 const uint8_t* der_decode_set(CFAllocatorRef allocator,
                               CFSetRef* set, CFErrorRef *error,

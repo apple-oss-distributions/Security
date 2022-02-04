@@ -90,6 +90,14 @@ static inline void SOSAccountPeerGotInSync_wTxn(SOSAccount* acct, SOSPeerInfoRef
     }];
 }
 
+static inline CFArrayRef SOSAccountCopyViewUnawarePeers_wTxn(SOSAccount* acct, CFErrorRef* error) {
+    __block CFArrayRef result = false;
+    [acct performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+        result = SOSAccountCopyViewUnaware(txn.account, error);
+    }];
+    return result;
+}
+
 static inline bool SOSAccountSetBackupPublicKey_wTxn(SOSAccount* acct, CFDataRef backupKey, CFErrorRef* error)
 {
     __block bool result = false;
@@ -188,7 +196,8 @@ static SOSAccount* SOSAccountCreateBasicTest(CFAllocatorRef allocator,
                                                SOSDataSourceFactoryRef factory) {
     SOSAccount* a;
     a =  SOSAccountCreate(kCFAllocatorDefault, gestalt, factory);
-    
+    a.sosTestmode = true;
+
     return a;
 }
 
@@ -216,6 +225,7 @@ static SOSAccount* SOSAccountCreateTestFromData(CFAllocatorRef allocator,
         a = SOSAccountCreate(allocator, gestalt, factory);
         CFReleaseNull(gestalt);
     }
+    a.sosTestmode = true;
     
     SOSAccountResetToTest(a, accountName);
     if(a)
@@ -238,8 +248,6 @@ static inline bool SOSAccountAssertUserCredentialsAndUpdate(SOSAccount* account,
 done:
     return success;
 }
-
-
 
 static void unretired_peers_is_subset(const char* label, CFArrayRef peers, CFSetRef allowed_peers)
 {
@@ -656,17 +664,6 @@ static inline int ProcessChangesUntilNoChange(CFMutableDictionaryRef changes, ..
 // MARK: Account creation
 //
 
-static CFStringRef modelFromType(SOSPeerInfoDeviceClass cls) {
-    switch(cls) {
-        case SOSPeerInfo_macOS: return CFSTR("Mac Pro");
-        case SOSPeerInfo_iOS: return CFSTR("iPhone");
-        case SOSPeerInfo_iCloud: return CFSTR("iCloud");
-        case SOSPeerInfo_watchOS: return CFSTR("needWatchOSDeviceName");
-        case SOSPeerInfo_tvOS: return CFSTR("needTVOSDeviceName");
-        default: return CFSTR("GENERICOSTHING");
-    }
-}
-
 static inline SOSAccount* CreateAccountForLocalChangesWithStartingAttributes(CFStringRef name, CFStringRef data_source_name, SOSPeerInfoDeviceClass devclass, CFStringRef serial, CFBooleanRef preferIDS, CFBooleanRef preferIDSFragmentation, CFBooleanRef preferIDSACKModel, CFStringRef transportType, CFStringRef deviceID) {
     
     SOSDataSourceFactoryRef factory = SOSTestDataSourceFactoryCreate();
@@ -677,7 +674,7 @@ static inline SOSAccount* CreateAccountForLocalChangesWithStartingAttributes(CFS
     
     CFMutableDictionaryRef gestalt = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
     CFDictionaryAddValue(gestalt, kPIUserDefinedDeviceNameKey, name);
-    CFDictionaryAddValue(gestalt, kPIDeviceModelNameKey, modelFromType(devclass));
+    CFDictionaryAddValue(gestalt, kPIDeviceModelNameKey, SOSModelFromType(devclass));
     CFDictionaryAddValue(gestalt, kPIOSVersionKey, CFSTR("TESTRUN"));
     
     CFMutableDictionaryRef testV2dict = CFDictionaryCreateMutableForCFTypes(kCFAllocatorDefault);
@@ -726,7 +723,6 @@ static inline SOSAccount* CreateAccountForLocalChanges(CFStringRef name, CFStrin
     CFStringRef randomDevID = CFStringCreateRandomHexWithLength(16);
     SOSAccount* retval = CreateAccountForLocalChangesWithStartingAttributes(name, data_source_name, SOSPeerInfo_iOS, randomSerial,
                                                               kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, SOSTransportMessageTypeKVS, randomDevID);
-
     CFReleaseNull(randomSerial);
     CFReleaseNull(randomDevID);
     return retval;

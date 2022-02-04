@@ -40,10 +40,11 @@ extern "C" {
  *	Private constants for SecCodeCopySigningInformation.
  */
 extern const CFStringRef kSecCodeInfoCdHashesFull;          /* Internal */
-extern const CFStringRef kSecCodeInfoCodeDirectory;			/* Internal */
-extern const CFStringRef kSecCodeInfoCodeOffset;			/* Internal */
+extern const CFStringRef kSecCodeInfoCodeDirectory;         /* Internal */
+extern const CFStringRef kSecCodeInfoCodeOffset;            /* Internal */
 extern const CFStringRef kSecCodeInfoDiskRepInfo;           /* Internal */
-extern const CFStringRef kSecCodeInfoResourceDirectory;		/* Internal */
+extern const CFStringRef kSecCodeInfoEntitlementsDER;       /* Internal */
+extern const CFStringRef kSecCodeInfoResourceDirectory;     /* Internal */
 extern const CFStringRef kSecCodeInfoNotarizationDate;      /* Internal */
 extern const CFStringRef kSecCodeInfoCMSDigestHashType;     /* Internal */
 extern const CFStringRef kSecCodeInfoCMSDigest;             /* Internal */
@@ -201,7 +202,16 @@ OSStatus SecCodeSetDetachedSignature(SecStaticCodeRef code, CFDataRef signature,
  		containing the slot data.
  */
 CFDataRef SecCodeCopyComponent(SecCodeRef code, int slot, CFDataRef hash);
-    
+
+/*
+     @function SecCodeSpecialSlotIsPresent
+     For a SecStaticCodeRef, checks if the slot is present in the code directory
+     
+     @param code A StaticCode object.
+     @param slot The (positive) special slot number requested.
+     @result false if anything went wrong (including a missing slot), true otherwise
+ */
+CFBooleanRef SecCodeSpecialSlotIsPresent(SecStaticCodeRef code, int slot);
     
 /*
     @function SecCodeValidateFileResource
@@ -233,7 +243,7 @@ CF_ENUM(uint32_t) {
 	// NOTE: These values needs to align with the public definitions for static code validity too.
 	kSecCSStrictValidateStructure = 1 << 13,
 	kSecCSSkipRootVolumeExceptions = 1 << 14,
-
+    kSecCSSkipXattrFiles = 1 << 15,
 };
 
 #if TARGET_OS_OSX

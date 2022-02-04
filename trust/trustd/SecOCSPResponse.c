@@ -31,6 +31,7 @@
 #include <AssertMacros.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <Security/SecCertificateInternal.h>
+#include <Security/SecTrustPriv.h>
 #include <Security/SecFramework.h>
 #include <Security/SecKeyPriv.h>
 #include <security_asn1/SecAsn1Coder.h>
@@ -208,8 +209,6 @@ errOut:
     return NULL;
 }
 
-#define LEEWAY (4500.0)
-
 /* Calculate temporal validity; set latestNextUpdate and expireTime.
    Returns true if valid, else returns false. */
 bool SecOCSPResponseCalculateValidity(SecOCSPResponseRef this,
@@ -218,7 +217,7 @@ bool SecOCSPResponseCalculateValidity(SecOCSPResponseRef this,
     bool ok = false;
 	this->latestNextUpdate = NULL_TIME;
 
-    if (this->producedAt > verifyTime + LEEWAY) {
+    if (this->producedAt > verifyTime + TRUST_TIME_LEEWAY) {
         secnotice("ocsp", "OCSPResponse: producedAt more than 1:15 from now");
         goto exit;
     }
@@ -231,7 +230,7 @@ bool SecOCSPResponseCalculateValidity(SecOCSPResponseRef this,
 
 		/* thisUpdate later than 'now' invalidates the whole response. */
 		CFAbsoluteTime thisUpdate = genTimeToCFAbsTime(&resp->thisUpdate);
-		if (thisUpdate > verifyTime + LEEWAY) {
+		if (thisUpdate > verifyTime + TRUST_TIME_LEEWAY) {
 			secnotice("ocsp","OCSPResponse: thisUpdate more than 1:15 from now");
             goto exit;
 		}
@@ -292,7 +291,7 @@ bool SecOCSPResponseCalculateValidity(SecOCSPResponseRef this,
         /* See comment above on RFC 5019 section 2.2.4. */
 		/* Absolute expire time = current time plus defaultTTL */
 		this->expireTime = verifyTime + defaultTTL;
-	} else if (this->latestNextUpdate < verifyTime - LEEWAY) {
+	} else if (this->latestNextUpdate < verifyTime - TRUST_TIME_LEEWAY) {
         secnotice("ocsp", "OCSPResponse: latestNextUpdate more than 1:15 ago");
         goto exit;
     } else if (maxAge > 0) {
@@ -332,6 +331,7 @@ SecOCSPResponseRef SecOCSPResponseCreateWithID(CFDataRef ocspResponse, int64_t r
     SecOCSPResponseRef this = NULL;
 
     require(ocspResponse, errOut);
+    require(CFDataGetLength(ocspResponse) > 0, errOut);
     require(this = (SecOCSPResponseRef)calloc(1, sizeof(struct __SecOCSPResponse)),
         errOut);
     require_noerr(SecAsn1CoderCreate(&this->coder), errOut);
@@ -341,7 +341,7 @@ SecOCSPResponseRef SecOCSPResponseCreateWithID(CFDataRef ocspResponse, int64_t r
     CFRetain(ocspResponse);
 
     SecAsn1Item resp;
-    resp.Length = CFDataGetLength(ocspResponse);
+    resp.Length = (size_t)CFDataGetLength(ocspResponse);
     resp.Data = (uint8_t *)CFDataGetBytePtr(ocspResponse);
 	if (SecAsn1DecodeData(this->coder, &resp, kSecAsn1OCSPResponseTemplate,
         &topResp)) {
@@ -478,7 +478,8 @@ CFArrayRef SecOCSPResponseCopySigners(SecOCSPResponseRef this) {
     SecAsn1Item **certs;
     for (certs = this->basicResponse.certs; certs && *certs; ++certs) {
         SecCertificateRef cert = NULL;
-        cert = SecCertificateCreateWithBytes(kCFAllocatorDefault, (*certs)->Data, (*certs)->Length);
+        if ((*certs)->Length > LONG_MAX) { continue; }
+        cert = SecCertificateCreateWithBytes(kCFAllocatorDefault, (*certs)->Data, (CFIndex)(*certs)->Length);
         if (cert) {
             CFArrayAppendValue(result, cert);
             CFReleaseNull(cert);
@@ -505,13 +506,13 @@ static CFAbsoluteTime SecOCSPSingleResponseComputedNextUpdate(SecOCSPSingleRespo
 }
 
 bool SecOCSPSingleResponseCalculateValidity(SecOCSPSingleResponseRef this, CFTimeInterval defaultTTL, CFAbsoluteTime verifyTime) {
-    if (this->thisUpdate > verifyTime + LEEWAY) {
+    if (this->thisUpdate > verifyTime + TRUST_TIME_LEEWAY) {
         ocspdErrorLog("OCSPSingleResponse: thisUpdate more than 1:15 from now");
         return false;
     }
 
     CFAbsoluteTime cnu = SecOCSPSingleResponseComputedNextUpdate(this, defaultTTL);
-    if (verifyTime - LEEWAY > cnu) {
+    if (verifyTime - TRUST_TIME_LEEWAY > cnu) {
         ocspdErrorLog("OCSPSingleResponse: %s %.2f days ago", this->nextUpdate ? "nextUpdate" : "thisUpdate + defaultTTL", (verifyTime - cnu) / 86400);
         return false;
     }
@@ -530,8 +531,9 @@ SecOCSPSingleResponseRef SecOCSPResponseCopySingleResponse(
     SecOCSPSingleResponseRef sr = NULL;
 
     if (!request) { return sr; }
-    CFDataRef issuer = SecCertificateCopyIssuerSequence(request->certificate);
     const DERItem *publicKey = SecCertificateGetPublicKeyData(request->issuer);
+    if (publicKey->length > LONG_MAX) { return sr; }
+    CFDataRef issuer = SecCertificateCopyIssuerSequence(request->certificate);
     CFDataRef serial = SecCertificateCopySerialNumberData(request->certificate, NULL);
     CFDataRef issuerNameHash = NULL;
     CFDataRef issuerPubKeyHash = NULL;
@@ -562,7 +564,7 @@ SecOCSPSingleResponseRef SecOCSPResponseCopySingleResponse(
             issuerNameHash = SecDigestCreate(kCFAllocatorDefault, algorithm,
                 parameters, CFDataGetBytePtr(issuer), CFDataGetLength(issuer));
             issuerPubKeyHash = SecDigestCreate(kCFAllocatorDefault, algorithm,
-                parameters, publicKey->data, publicKey->length);
+                parameters, publicKey->data, (CFIndex)publicKey->length);
         }
 
         if (!issuerNameHash || !issuerPubKeyHash) {
@@ -668,8 +670,8 @@ SecCertificateRef SecOCSPResponseCopySigner(SecOCSPResponseRef this, SecCertific
      * which one signed the response. */
     SecAsn1Item **certs;
     for (certs = this->basicResponse.certs; certs && *certs; ++certs) {
-        SecCertificateRef cert = SecCertificateCreateWithBytes(
-                                    kCFAllocatorDefault, (*certs)->Data, (*certs)->Length);
+        if ((*certs)->Length > LONG_MAX) { continue; }
+        SecCertificateRef cert = SecCertificateCreateWithBytes(kCFAllocatorDefault, (*certs)->Data, (CFIndex)(*certs)->Length);
         if (cert) {
             if (SecOCSPResponseIsIssuer(this, cert)) {
                 return cert;

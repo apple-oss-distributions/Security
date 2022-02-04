@@ -30,6 +30,8 @@ SECURITY_COMMAND("item", keychain_item,
                  "-u Update item in keychain (require query to match)\n"
                  "-D Delete item from keychain\n"
                  "-j When printing results, print JSON\n"
+                 "-p Get persistent reference\n"
+                 "-P Find an item based on a persistent reference\n"
                  "Add, query, update or delete items from the keychain.  Extra attr=value pairs after options always apply to the query\n"
                  "class=[genp|inet|cert|keys] is required for the query\n"
                  "To search the synchronizable items (not searched by default) use sync=1 as an attr=value pair.\n"
@@ -246,3 +248,38 @@ SECURITY_COMMAND("show-ca-revocation-checking", show_ca_revocation_checking,
                  "                      Default is the additions for this tool. Overridden by -a.\n"
                  "   -c             Output CA revocation additions (as certificate SPKI hash).\n",
                  "Display CA revocation checking additions in json.")
+
+SECURITY_COMMAND("add-trust-config", add_trust_config,
+                 "-t <configurationType> [options]\n"
+                 "   -t configurationType Config type to add, one of:\n"
+                 "                              \"ct-exceptions\",\n"
+                 "                              \"ca-revocation-checking\",\n"
+                 "                              \"transparent-connection-pins\"\n"
+                 "   -d domain  For \"ct-exceptions\" only, domain to add.\n"
+                 "                  Can be specified multiple times.\n"
+                 "   -c cert    Cert for which specified configuration type should be enabled.\n"
+                 "                 Can be specified multiple times.\n"
+                 "   -p plist   plist containing entries to enable specified configuration type.\n"
+                 "                 Resets existing entries, if present.\n"
+                 "                 Overrides -c and -d \n"
+                 "                 For detailed specification, see SecTrustSettingsPriv.h.\n"
+                 "   -r which   Reset configuration for \"domain\" (for ct-exceptions only),\n"
+                 "                                      \"cert\", or\n"
+                 "                                      \"all\".\n"
+                 "                 Overrides -d, -c, and -p\n",
+                 "Set trust evaluation configuration")
+
+SECURITY_COMMAND("show-trust-config", show_trust_config,
+                 "-t <configurationType> [options]\n"
+                 "   -t configurationType Config type to add, one of:\n"
+                 "                              \"ct-exceptions\",\n"
+                 "                              \"ca-revocation-checking\",\n"
+                 "                              \"transparent-connection-pins\"\n"
+                 "   -a             Output all combined configuration.\n"
+                 "   -i identifier  Output configuration for specified identifier.\n"
+                 "                      Default is configuration for this tool. Overridden by -a.\n"
+                 "   -d             For \"ct-exceptions\" only, output domain exceptions.\n"
+                 "                      Default is both domains and certs.\n"
+                 "   -c             Output certificate exceptions (as SPKI hash).\n"
+                 "                      Default is both domains and certs.\n",
+                 "Display trust evaluation configuration in json.")

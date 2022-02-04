@@ -26,6 +26,7 @@
  */
 
 #include "trust/trustd/SecTrustServer.h"
+#include "trust/trustd/SecTrustStoreServer.h"
 #include "trust/trustd/SecPolicyServer.h"
 #include "trust/trustd/SecTrustLoggingServer.h"
 #include "trust/trustd/SecCertificateSource.h"
@@ -33,6 +34,7 @@
 #include "trust/trustd/SecCertificateServer.h"
 #include "trust/trustd/SecPinningDb.h"
 #include "trust/trustd/md.h"
+#include "trust/trustd/trustdVariants.h"
 
 #include <utilities/SecIOFormat.h>
 #include <utilities/SecDispatchRelease.h>
@@ -154,14 +156,11 @@ struct SecPathBuilder {
 static bool SecPathBuilderProcessLeaf(SecPathBuilderRef builder);
 static bool SecPathBuilderGetNext(SecPathBuilderRef builder);
 static bool SecPathBuilderValidatePath(SecPathBuilderRef builder);
-static bool SecPathBuilderDidValidatePath(SecPathBuilderRef builder);
 static bool SecPathBuilderComputeDetails(SecPathBuilderRef builder);
-static bool SecPathBuilderReportResult(SecPathBuilderRef builder);
 
 /* Forward declarations. */
 static bool SecPathBuilderIsAnchor(SecPathBuilderRef builder,
 	SecCertificateRef certificate, SecCertificateSourceRef *foundInSource);
-static void SecPathBuilderSetPath(SecPathBuilderRef builder, SecCertificatePathVCRef path);
 
 static void SecPathBuilderInit(SecPathBuilderRef builder, dispatch_queue_t builderQueue,
     CFDataRef clientAuditToken, CFArrayRef certificates,
@@ -188,10 +187,7 @@ static void SecPathBuilderInit(SecPathBuilderRef builder, dispatch_queue_t build
     }
 
     builder->nextParentSource = 1;
-#if !TARGET_OS_WATCH
-    /* <rdar://32728029> */
-    builder->canAccessNetwork = true;
-#endif
+    builder->canAccessNetwork = TrustdVariantAllowsNetwork();
     atomic_init(&builder->asyncJobCount, 0);
 
     builder->anchorSources = CFArrayCreateMutable(allocator, 0, NULL);
@@ -225,44 +221,35 @@ static void SecPathBuilderInit(SecPathBuilderRef builder, dispatch_queue_t build
      ** The order here avoids the most expensive methods if the cheaper methods
      ** produce an acceptable chain: client-provided, keychains, network-fetched.
      **/
-#if !TARGET_OS_BRIDGE
     CFArrayAppendValue(builder->parentSources, builder->certificateSource);
-    builder->itemCertificateSource = SecItemCertificateSourceCreate(accessGroups);
-    if (keychainsAllowed) {
+    if (TrustdVariantAllowsKeychain() && keychainsAllowed) {
+        builder->itemCertificateSource = SecItemCertificateSourceCreate(accessGroups);
         CFArrayAppendValue(builder->parentSources, builder->itemCertificateSource);
- #if TARGET_OS_OSX
+#if TARGET_OS_OSX
         /* On OS X, need additional parent source to search legacy keychain files. */
         if (kSecLegacyCertificateSource->contains && kSecLegacyCertificateSource->copyParents) {
             CFArrayAppendValue(builder->parentSources, kSecLegacyCertificateSource);
         }
- #endif
+#endif
     }
     if (anchorsOnly) {
         /* Add the Apple, system, and user anchor certificate db to the search list
          if we don't explicitly trust them. */
         CFArrayAppendValue(builder->parentSources, builder->appleAnchorSource);
-        CFArrayAppendValue(builder->parentSources, kSecSystemAnchorSource);
+        if (TrustdVariantHasCertificatesBundle()) {
+            CFArrayAppendValue(builder->parentSources, kSecSystemAnchorSource);
+        }
         CFArrayAppendValue(builder->parentSources, kSecUserAnchorSource);
     }
-    if (keychainsAllowed && builder->canAccessNetwork) {
+    if (TrustdVariantAllowsNetwork() && keychainsAllowed && builder->canAccessNetwork) {
         CFArrayAppendValue(builder->parentSources, kSecCAIssuerSource);
     }
-#else /* TARGET_OS_BRIDGE */
-    /* Bridge can only access memory sources. */
-    CFArrayAppendValue(builder->parentSources, builder->certificateSource);
-    if (anchorsOnly) {
-        /* Add the Apple, system, and user anchor certificate db to the search list
-         if we don't explicitly trust them. */
-        CFArrayAppendValue(builder->parentSources, builder->appleAnchorSource);
-    }
-#endif /* !TARGET_OS_BRIDGE */
 
     /** Anchor Sources
      ** The order here allows a client-provided anchor to overrule
      ** a user or admin trust setting which can overrule the system anchors.
      ** Apple's anchors cannot be overriden by a trust setting.
      **/
-#if !TARGET_OS_BRIDGE
     if (builder->anchorSource) {
         CFArrayAppendValue(builder->anchorSources, builder->anchorSource);
     }
@@ -270,25 +257,18 @@ static void SecPathBuilderInit(SecPathBuilderRef builder, dispatch_queue_t build
         /* Only add the system and user anchor certificate db to the
          anchorSources if we are supposed to trust them. */
         CFArrayAppendValue(builder->anchorSources, builder->appleAnchorSource);
-        if (keychainsAllowed) {
+        if (TrustdVariantAllowsKeychain() && keychainsAllowed) {
 #if TARGET_OS_OSX
             if (kSecLegacyAnchorSource->contains && kSecLegacyAnchorSource->copyParents) {
                 CFArrayAppendValue(builder->anchorSources, kSecLegacyAnchorSource);
             }
 #endif
-            CFArrayAppendValue(builder->anchorSources, kSecUserAnchorSource);
         }
-        CFArrayAppendValue(builder->anchorSources, kSecSystemAnchorSource);
+        CFArrayAppendValue(builder->anchorSources, kSecUserAnchorSource);
+        if (TrustdVariantHasCertificatesBundle()) {
+            CFArrayAppendValue(builder->anchorSources, kSecSystemAnchorSource);
+        }
     }
-#else /* TARGET_OS_BRIDGE */
-    /* Bridge can only access memory sources. */
-    if (builder->anchorSource) {
-        CFArrayAppendValue(builder->anchorSources, builder->anchorSource);
-    }
-    if (!anchorsOnly) {
-        CFArrayAppendValue(builder->anchorSources, builder->appleAnchorSource);
-    }
-#endif /* !TARGET_OS_BRIDGE */
 
     builder->ocspResponses = CFRetainSafe(ocspResponses);
     builder->signedCertificateTimestamps = CFRetainSafe(signedCertificateTimestamps);
@@ -342,7 +322,7 @@ static void SecPathBuilderForEachPVC(SecPathBuilderRef builder,void (^operation)
     }
 }
 
-static void SecPathBuilderDestroy(SecPathBuilderRef builder) {
+void SecPathBuilderDestroy(SecPathBuilderRef builder) {
     secdebug("alloc", "destroy builder %p", builder);
     dispatch_release_null(builder->queue);
     if (builder->anchorSource) {
@@ -392,7 +372,7 @@ static void SecPathBuilderDestroy(SecPathBuilderRef builder) {
     }
 }
 
-static void SecPathBuilderSetPath(SecPathBuilderRef builder, SecCertificatePathVCRef path) {
+void SecPathBuilderSetPath(SecPathBuilderRef builder, SecCertificatePathVCRef path) {
     bool samePath = ((!path && !builder->path) || (path && builder->path && CFEqual(path, builder->path)));
     if (!samePath) {
         CFRetainAssign(builder->path, path);
@@ -413,23 +393,23 @@ void SecPathBuilderSetCanAccessNetwork(SecPathBuilderRef builder, bool allow) {
     if (builder->canAccessNetwork != allow) {
         builder->canAccessNetwork = allow;
         if (allow) {
-#if !TARGET_OS_WATCH
-            secinfo("http", "network access re-enabled by policy");
-            /* re-enabling network_access re-adds kSecCAIssuerSource as
-               a parent source. */
-            CFArrayAppendValue(builder->parentSources, kSecCAIssuerSource);
-#else
-            /* <rdar://32728029> */
-            secnotice("http", "network access not allowed on WatchOS");
-            builder->canAccessNetwork = false;
-#endif
+            if (TrustdVariantAllowsNetwork()) {
+                secinfo("http", "network access re-enabled by policy");
+                /* re-enabling network_access re-adds kSecCAIssuerSource as
+                 a parent source. */
+                CFArrayAppendValue(builder->parentSources, kSecCAIssuerSource);
+            } else {
+                /* <rdar://32728029> */
+                secnotice("http", "network access not allowed in this environment");
+                builder->canAccessNetwork = false;
+            }
         } else {
             secinfo("http", "network access disabled by policy");
             /* disabling network_access removes kSecCAIssuerSource from
-               the list of parent sources. */
+             the list of parent sources. */
             CFIndex ix = CFArrayGetFirstIndexOfValue(builder->parentSources,
-                CFRangeMake(0, CFArrayGetCount(builder->parentSources)),
-                kSecCAIssuerSource);
+                                                     CFRangeMake(0, CFArrayGetCount(builder->parentSources)),
+                                                     kSecCAIssuerSource);
             if (ix >= 0)
                 CFArrayRemoveValueAtIndex(builder->parentSources, ix);
         }
@@ -717,6 +697,53 @@ static void addOptionsToPolicy(SecPolicyRef policy, CFDictionaryRef newOptions) 
     CFAssignRetained(policy->_options, oldOptions);
 }
 
+static CF_RETURNS_RETAINED CFArrayRef addTransparentConnectionsRules(CFArrayRef rules, CFNumberRef transparentConnection) {
+    /* Not a Transparent Connection, no change */
+    int transparentConnectionValue = 0;
+    if (!transparentConnection || !CFNumberGetValue(transparentConnection, kCFNumberIntType, &transparentConnectionValue) || transparentConnectionValue != 1) {
+        return CFRetainSafe(rules);
+    }
+    /* Transparent Connections not configured on this device, no change */
+    CFArrayRef pins = _SecTrustStoreCopyTransparentConnectionPins(NULL, NULL);
+    if (!pins || CFArrayGetCount(pins) == 0) {
+        CFReleaseNull(pins);
+        return CFRetainSafe(rules);
+    }
+
+    /* Create the transparent connection rules */
+    CFMutableDictionaryRef transparentConnectionOptions = CFDictionaryCreateMutable(NULL, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFMutableArrayRef caSPKIsha256s = CFArrayCreateMutable(NULL, CFArrayGetCount(pins), &kCFTypeArrayCallBacks);
+    CFArrayForEach(pins, ^(const void *value) {
+        CFDictionaryRef pin = (CFDictionaryRef)value;
+        CFStringRef hashAlgorithm = CFDictionaryGetValue(pin, kSecTrustStoreHashAlgorithmKey);
+        if (!hashAlgorithm || !isString(hashAlgorithm) ||
+            CFStringCompare(CFSTR("sha256"), hashAlgorithm, 0) != kCFCompareEqualTo) {
+            return;
+        }
+        CFDataRef hash = CFDictionaryGetValue(pin, kSecTrustStoreSPKIHashKey);
+        if (!hash || !isData(hash)) {
+            return;
+        }
+        CFArrayAppendValue(caSPKIsha256s, hash);
+    });
+    if (CFArrayGetCount(caSPKIsha256s) == 0) {
+        CFReleaseNull(caSPKIsha256s);
+        CFReleaseNull(transparentConnectionOptions);
+        CFReleaseNull(pins);
+        return CFRetainSafe(rules);
+    }
+    secnotice("SecPinningDb", "Adding %lu CA pins for Transparent Connection", CFArrayGetCount(caSPKIsha256s));
+    CFDictionaryAddValue(transparentConnectionOptions, kSecPolicyCheckCAspkiSHA256, caSPKIsha256s);
+    CFReleaseNull(caSPKIsha256s);
+
+    /* Add the transparent connection rules as another option in the rules */
+    CFMutableArrayRef newRules = CFArrayCreateMutableCopy(NULL, CFArrayGetCount(rules) + 1, rules);
+    CFArrayAppendValue(newRules, transparentConnectionOptions);
+    CFReleaseNull(transparentConnectionOptions);
+    CFReleaseNull(pins);
+    return newRules;
+}
+
 static void SecPathBuilderAddPinningPolicies(SecPathBuilderRef builder) {
     CFIndex ix, initialPVCCount = builder->pvcCount;
     for (ix = 0; ix < initialPVCCount; ix++) {
@@ -734,13 +761,16 @@ static void SecPathBuilderAddPinningPolicies(SecPathBuilderRef builder) {
             CFDictionaryAddValue(query, kSecPinningDbKeyHostname, hostname);
             CFDictionaryRef results = SecPinningDbCopyMatching(query);
             CFReleaseNull(query);
-            if (!results) { continue; } //No rules for this hostname or policyName
+            if (!results) { continue; } // No rules for this hostname or policyName
 
             /* Found pinning policies. Apply them to the path builder. */
             CFArrayRef newRules = CFDictionaryGetValue(results, kSecPinningDbKeyRules);
             CFStringRef dbPolicyName = CFDictionaryGetValue(results, kSecPinningDbKeyPolicyName);
+            CFNumberRef transparentConnection = CFDictionaryGetValue(results, kSecPinningDbKeyTransparentConnection);
             secinfo("SecPinningDb", "found pinning %lu %@ policies for hostname %@, policyName %@",
                     (unsigned long)CFArrayGetCount(newRules), dbPolicyName, hostname, policyName);
+            /* If, applicable, add transparent connection rules to the new rules */
+            newRules = addTransparentConnectionsRules(newRules, transparentConnection);
             CFIndex newRulesIX;
             for (newRulesIX = 0; newRulesIX < CFArrayGetCount(newRules); newRulesIX++) {
                 if (!isDictionary(CFArrayGetValueAtIndex(newRules, newRulesIX))) {
@@ -760,10 +790,10 @@ static void SecPathBuilderAddPinningPolicies(SecPathBuilderRef builder) {
                 if (newRulesIX == 0) {
                     /* For the first set of pinning rules, replace this PVC's policies */
                     CFRetainAssign(builder->pvcs[ix]->policies, newPolicies);
-                } else {
+                } else if (builder->pvcCount > 0 || builder->pvcCount < (long)((LONG_MAX / sizeof(SecPVCRef)) - 1)) {
                     /* If there were two or more dictionaries of rules, we need to treat them as an "OR".
                      * Create another PVC for this dicitionary. */
-                    builder->pvcs = realloc(builder->pvcs, (builder->pvcCount + 1) * sizeof(SecPVCRef));
+                    builder->pvcs = realloc(builder->pvcs, (size_t)(builder->pvcCount + 1) * sizeof(SecPVCRef));
                     builder->pvcs[builder->pvcCount] = malloc(sizeof(struct OpaqueSecPVC));
                     SecPVCInit(builder->pvcs[builder->pvcCount], builder, newPolicies);
                     builder->pvcCount++;
@@ -772,6 +802,7 @@ static void SecPathBuilderAddPinningPolicies(SecPathBuilderRef builder) {
                 CFReleaseNull(newPolicies);
             }
             CFReleaseNull(results);
+            CFReleaseNull(newRules);
         }
         CFReleaseNull(policies);
     }
@@ -1104,7 +1135,7 @@ static bool SecPathBuilderValidatePath(SecPathBuilderRef builder) {
     return completed;
 }
 
-static bool SecPathBuilderDidValidatePath(SecPathBuilderRef builder) {
+bool SecPathBuilderDidValidatePath(SecPathBuilderRef builder) {
     /* We perform the revocation required policy checks here because
      * this is the state we call back into once all the asynchronous
      * revocation check calls are done. */
@@ -1153,25 +1184,96 @@ static bool SecPathBuilderComputeDetails(SecPathBuilderRef builder) {
     return completed;
 }
 
-static bool SecPathBuilderReportResult(SecPathBuilderRef builder) {
+static CFAbsoluteTime SecPathBuilderCalculateTrustNotBefore(SecPathBuilderRef builder) {
+    CFMutableArrayRef notBefores = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+
+    /* Collect all sources of notBefore dates */
+    CFDateRef beforeLeeway = CFDateCreate(NULL, CFAbsoluteTimeGetCurrent() - TRUST_TIME_LEEWAY);
+    CFArrayAppendValue(notBefores, beforeLeeway);
+
+    CFArrayRef certNotBefores = SecCertificatePathVCCopyNotBefores(builder->bestPath);
+    CFArrayAppendAll(notBefores, certNotBefores);
+
+    CFArrayRef ocspNotBefores = SecCertificatePathVCCopyThisUpdates(builder->bestPath);
+    CFArrayAppendAll(notBefores, ocspNotBefores);
+
+    CFReleaseNull(ocspNotBefores);
+    CFReleaseNull(beforeLeeway);
+    CFReleaseNull(certNotBefores);
+
+    /* Pick the nearest notBefore that's in the past */
+    __block CFAbsoluteTime trustNotBefore = -DBL_MAX;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFArrayForEach(notBefores, ^(const void *value) {
+        CFAbsoluteTime notBefore = CFDateGetAbsoluteTime((CFDateRef)value);
+        if (notBefore < now && notBefore > trustNotBefore) {
+            trustNotBefore = notBefore;
+        }
+    });
+
+    CFReleaseNull(notBefores);
+    return trustNotBefore;
+}
+
+static CFAbsoluteTime SecPathBuilderCalculateTrustNotAfter(SecPathBuilderRef builder) {
+    CFMutableArrayRef notAfters = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+
+    /* Collect all sources of notAfter dates */
+    CFDateRef afterLeeway = CFDateCreate(NULL, CFAbsoluteTimeGetCurrent() + TRUST_TIME_LEEWAY);
+    CFArrayAppendValue(notAfters, afterLeeway);
+
+    CFArrayRef certNotAfters = SecCertificatePathVCCopyNotAfters(builder->bestPath);
+    CFArrayAppendAll(notAfters, certNotAfters);
+
+    CFArrayRef ocspNotAfters = SecCertificatePathVCCopyNextUpdates(builder->bestPath);
+    CFArrayAppendAll(notAfters, ocspNotAfters);
+
+    CFReleaseNull(ocspNotAfters);
+    CFReleaseNull(afterLeeway);
+    CFReleaseNull(certNotAfters);
+
+    /* Pick the nearest notAfter that's in the future */
+    __block CFAbsoluteTime trustNotAfter = DBL_MAX;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFArrayForEach(notAfters, ^(const void *value) {
+        CFAbsoluteTime notAfter = CFDateGetAbsoluteTime((CFDateRef)value);
+        if (notAfter > now && notAfter < trustNotAfter) {
+            trustNotAfter = notAfter;
+        }
+    });
+
+    CFReleaseNull(notAfters);
+    return trustNotAfter;
+}
+
+static void SecPathBuilderReportTrustValidityPeriod(SecPathBuilderRef builder) {
+    if (!builder->info) {
+        return;
+    }
+
+    CFAbsoluteTime resultNotBefore = SecPathBuilderCalculateTrustNotBefore(builder);
+    CFAbsoluteTime resultNotAfter = SecPathBuilderCalculateTrustNotAfter(builder);
+    CFDateRef notBeforeDate = CFDateCreate(NULL, resultNotBefore);
+    CFDateRef notAfterDate = CFDateCreate(NULL, resultNotAfter);
+    CFDictionarySetValue(builder->info, kSecTrustInfoResultNotBefore, notBeforeDate);
+    CFDictionarySetValue(builder->info, kSecTrustInfoResultNotAfter, notAfterDate);
+    CFReleaseNull(notBeforeDate);
+    CFReleaseNull(notAfterDate);
+
+}
+
+bool SecPathBuilderReportResult(SecPathBuilderRef builder) {
     builder->info = CFDictionaryCreateMutable(kCFAllocatorDefault,
                                               0, &kCFTypeDictionaryKeyCallBacks,
                                               &kCFTypeDictionaryValueCallBacks);
 
-
+    SecPathBuilderReportTrustValidityPeriod(builder);
     /* isEV is not set unless also CT verified. Here, we need to check that we
      * got a revocation response as well. */
     if (builder->info && SecCertificatePathVCIsEV(builder->bestPath) && SecPathBuilderIsOkResult(builder)) {
-#if !TARGET_OS_WATCH
-        /* <rdar://32728029> We don't do networking on watchOS, so we can't require OCSP for EV */
-        if (SecCertificatePathVCIsRevocationDone(builder->bestPath))
-#endif
-        {
-#if !TARGET_OS_WATCH
+        if (SecCertificatePathVCIsRevocationDone(builder->bestPath) || !TrustdVariantAllowsNetwork()) {
             CFAbsoluteTime nextUpdate = SecCertificatePathVCGetEarliestNextUpdate(builder->bestPath);
-            if (nextUpdate != 0)
-#endif
-            {
+            if (!TrustdVariantAllowsNetwork() || (nextUpdate != 0)) {
                 /* Successful revocation check, so this cert is EV */
                 CFDictionarySetValue(builder->info, kSecTrustInfoExtendedValidationKey,
                                      kCFBooleanTrue); /* iOS key */
@@ -1380,13 +1482,16 @@ static CFDataRef SecTrustServerCopySelfAuditToken(void)
 
 
 // NO_SERVER Shim code only, xpc interface should call SecTrustServerEvaluateBlock() directly
-SecTrustResultType SecTrustServerEvaluate(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFArrayRef *pdetails, CFDictionaryRef *pinfo, CFArrayRef *pchain, CFErrorRef *perror) {
+SecTrustResultType SecTrustServerEvaluate(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFDataRef inAuditToken, CFArrayRef *pdetails, CFDictionaryRef *pinfo, CFArrayRef *pchain, CFErrorRef *perror) {
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     __block SecTrustResultType result = kSecTrustResultInvalid;
     __block dispatch_queue_t queue = dispatch_queue_create("com.apple.trustd.evaluation.recursive", DISPATCH_QUEUE_SERIAL);
 
-    /* make an audit token for ourselves */
-    CFDataRef audit_token = SecTrustServerCopySelfAuditToken();
+    /* make an audit token for ourselves if none passed in */
+    CFDataRef audit_token = CFRetainSafe(inAuditToken);
+    if (!audit_token) {
+        audit_token = SecTrustServerCopySelfAuditToken();
+    }
 
     /* We need to use the async call with the semaphore here instead of a synchronous call because we may return from
      * SecPathBuilderStep while waiting for an asynchronous network call in order to complete the evaluation. That return

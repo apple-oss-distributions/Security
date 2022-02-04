@@ -10,7 +10,6 @@
 #import "keychain/securityd/SecItemServer.h"
 #import "keychain/securityd/spi.h"
 
-#import <Security/SecItemPriv.h>
 #import "keychain/ckks/CKKS.h"
 
 #import <SecurityFoundation/SFKeychain.h>

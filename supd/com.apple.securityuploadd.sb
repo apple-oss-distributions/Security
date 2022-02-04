@@ -40,7 +40,7 @@
 (allow file-read*
     (literal "/usr/libexec")
     (literal "/usr/libexec/securityuploadd")
-    (subpath "/Library/Keychains/SupplementalsAssets/")
+    (subpath "/private/var/protected/trustd/SupplementalsAssets/")
     (literal "/Library/Application Support/CrashReporter/DiagnosticMessagesHistory.plist")
     (regex "/private/var/db/mds/messages/([A-Za-z0-9]+/)?se_SecurityMessages"))
 
@@ -66,7 +66,8 @@
     (global-name "com.apple.AppSSO.service-xpc")
     (global-name "com.apple.dnssd.service")
     (global-name "com.apple.usymptomsd")
-    (global-name "com.apple.ak.auth.xpc"))
+    (global-name "com.apple.ak.auth.xpc")
+    (global-name "com.apple.nesessionmanager.content-filter"))
 
 ;; Legacy SecKey operations
 (allow file-read* file-write*

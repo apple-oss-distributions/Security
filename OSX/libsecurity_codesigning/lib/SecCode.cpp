@@ -262,6 +262,8 @@ OSStatus SecCodeCheckValidityWithErrors(SecCodeRef codeRef, SecCSFlags flags,
 		| kSecCSStrictValidateStructure
 		| kSecCSRestrictSidebandData
 		| kSecCSEnforceRevocationChecks
+		| kSecCSAllowNetworkAccess
+		| kSecCSNoNetworkAccess
 	);
 	SecPointer<SecCode> code = SecCode::required(codeRef);
 	code->checkValidity(flags);
@@ -311,6 +313,7 @@ const CFStringRef kSecCodeInfoRuntimeVersion = 	CFSTR("runtime-version");
 const CFStringRef kSecCodeInfoCodeDirectory =	CFSTR("CodeDirectory");
 const CFStringRef kSecCodeInfoCodeOffset =		CFSTR("CodeOffset");
 const CFStringRef kSecCodeInfoDiskRepInfo =     CFSTR("DiskRepInfo");
+const CFStringRef kSecCodeInfoEntitlementsDER =	CFSTR("entitlements-DER");
 const CFStringRef kSecCodeInfoResourceDirectory = CFSTR("ResourceDirectory");
 const CFStringRef kSecCodeInfoNotarizationDate = CFSTR("NotarizationDate");
 const CFStringRef kSecCodeInfoCMSDigestHashType = CFSTR("CMSDigestHashType");
@@ -335,7 +338,7 @@ OSStatus SecCodeCopySigningInformation(SecStaticCodeRef codeRef, SecCSFlags flag
 		| kSecCSRequirementInformation
 		| kSecCSDynamicInformation
 		| kSecCSContentInformation
-        | kSecCSSkipResourceDirectory
+		| kSecCSSkipResourceDirectory
 		| kSecCSCalculateCMSDigest);
 
 	SecPointer<SecStaticCode> code = SecStaticCode::requiredStatic(codeRef);

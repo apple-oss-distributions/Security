@@ -239,7 +239,6 @@ static void tests(bool recKeyFirst)
     
     ok(SOSAccountIsMyPeerInBackupAndCurrentInView_wTxn(alice_account, kTestView1), "Bob left the circle, Alice is in the backup");
 
-    //ok(testAccountPersistence(alice_account), "Test Account->DER->Account Equivalence");
     SOSAccountTrustClassic* bobTrust = bob_account.trust;
     ok(!SOSAccountIsPeerInBackupAndCurrentInView_wTxn(alice_account, bobTrust.peerInfo, kTestView1), "Bob is still in the backup!");
     
@@ -316,7 +315,7 @@ static void tests(bool recKeyFirst)
     bskb = SOSAccountBackupSliceKeyBagForView_wTxn(alice_account, kTestView1, &error);
     CFReleaseNull(error);
     
-    ok(!SOSBSKBHasRecoveryKey(bskb), "BSKB should not have recovery key");
+    ok(SOSBSKBHasRecoveryKey(bskb), "BSKB will still have recovery key");
 
     //=========
     
@@ -346,6 +345,7 @@ int secd_66_account_recovery(int argc, char *const *argv) {
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     tests(true);
     tests(false);
+    secd_test_teardown_delete_temp_keychain(__FUNCTION__);
 #else
     plan_tests(0);
 #endif

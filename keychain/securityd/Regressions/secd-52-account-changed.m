@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "secd_regressions.h"
+#include "SOSAccountTesting.h"
 #include "SOSTestDataSource.h"
 
 #include "SOSRegressionUtilities.h"
@@ -44,7 +45,6 @@
 #include "keychain/securityd/SOSCloudCircleServer.h"
 
 #include "SecdTestKeychainUtilities.h"
-#include "SOSAccountTesting.h"
 
 #if SOS_ENABLED
 
@@ -210,6 +210,7 @@ int secd_52_account_changed(int argc, char *const *argv)
     plan_tests(113);
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     tests();
+    secd_test_teardown_delete_temp_keychain(__FUNCTION__);
 #else
     plan_tests(0);
 #endif

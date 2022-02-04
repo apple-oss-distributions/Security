@@ -332,7 +332,7 @@ bool SOSCircleVerify(SOSCircleRef circle, SecKeyRef pubKey, CFErrorRef *error) {
     if(!signature) return false;
 
     return SecError(SecKeyRawVerify(pubKey, kSecPaddingNone, hash_result, di->output_size,
-                                    CFDataGetBytePtr(signature), CFDataGetLength(signature)), error, CFSTR("Signature verification failed."));;
+                                    CFDataGetBytePtr(signature), CFDataGetLength(signature)), error, CFSTR("Signature verification failed."));
 }
 
 bool SOSCircleVerifyPeerSignatureExists(SOSCircleRef circle, SOSPeerInfoRef peer) {
@@ -1497,7 +1497,11 @@ bool SOSCircleAcceptPeerFromHSA2(SOSCircleRef circle, SecKeyRef userKey, SOSGenC
     // Gen sign first, then add signature from our approver - remember gensign removes all existing sigs.
     res = SOSCircleGenerationSignWithGenCount(circle, userKey, fpi, gencount, error);
     if (!res) {
-        secnotice("circleOps", "Failed to regenerate circle with new gen count: %@", error ? *error : NULL);
+        CFStringRef newGenString = SOSGenerationCountCopyDescription(gencount);
+        CFStringRef currentGenString = SOSGenerationCountCopyDescription(SOSCircleGetGeneration(circle));
+        secnotice("circleOps", "Failed to regenerate circle with new gen count: %@  current gencount: %@  error: %@", newGenString, currentGenString, error ? *error : NULL);
+        CFReleaseNull(newGenString);
+        CFReleaseNull(currentGenString);
         return res;
     }
     res = SOSCircleSetSignature(circle, pPubKey, signature, error);
@@ -1578,3 +1582,14 @@ void SOSCircleLogState(char *category, SOSCircleRef circle, SecKeyRef pubKey, CF
     CFReleaseNull(genString);
 }
 
+bool SOSCircleIsLegacy(SOSCircleRef circle, SecKeyRef userPubKey) {
+    __block bool retval = false;
+    secnotice("SOSMonitorMode", "Checking if circle %@ is legacy", circle);
+    if(circle && userPubKey) {
+        SOSCircleForEachValidSyncingPeer(circle, userPubKey, ^(SOSPeerInfoRef peer) {
+            retval |= SOSPeerInfoIsLegacy(peer);
+        });
+    }
+    secnotice("SOSMonitorMode", "END: Circle is %s", retval ? "Legacy": "Not Legacy");
+    return retval;
+}

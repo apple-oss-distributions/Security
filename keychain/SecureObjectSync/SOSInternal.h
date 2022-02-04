@@ -29,11 +29,11 @@
 
 #include <Security/SecKey.h>
 
-#include <Security/SecItemShim.h>
+#include "Security/SecItemShim.h"
 
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
 
-#include <utilities/SecCFWrappers.h>
+#include "utilities/SecCFWrappers.h"
 
 #include <corecrypto/ccec.h>
 
@@ -96,6 +96,9 @@ extern const SOSCCStatus kSOSNoCachedValue;
 extern const CFStringRef kSOSCountKey;
 
 dispatch_queue_t SOSCCCredentialQueue(void);
+bool SOSDoWithCredentialsWhileUnlocked(CFErrorRef *error, bool (^action)(CFErrorRef* error));
+
+bool SOSVisibleKeychainNotAllowed(void);
 
 // Returns false unless errorCode is 0.
 bool SOSErrorCreate(CFIndex errorCode, CFErrorRef *error, CFDictionaryRef formatOptions, CFStringRef descriptionString, ...);

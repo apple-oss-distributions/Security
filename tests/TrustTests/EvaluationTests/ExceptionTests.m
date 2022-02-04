@@ -35,10 +35,12 @@ static NSDate *date = nil;
     CFReleaseNull(cert1);
 }
 
-#if !TARGET_OS_BRIDGE
-// bridgeOS doesn't have a system root store
 - (void)testPassingTrust
 {
+#if TARGET_OS_BRIDGE
+    // bridgeOS doesn't have a system root store
+    XCTSkip();
+#endif
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("store.apple.com"));
     ok_status(SecTrustCreateWithCertificates((__bridge CFArrayRef)certs, policy, &trust), "create trust");
@@ -59,7 +61,6 @@ static NSDate *date = nil;
     CFReleaseNull(policy);
     CFReleaseNull(exceptions);
 }
-#endif
 
 - (void)testFailingTrust
 {
@@ -113,10 +114,12 @@ static NSDate *date = nil;
     CFReleaseNull(exceptions);
 }
 
-#if !TARGET_OS_BRIDGE
-// bridgeOS always has an AnchorTrusted error due to lack of a system root store
 - (void)testIntroduceNewAnchorTrustedFailure
 {
+#if TARGET_OS_BRIDGE
+    // bridgeOS doesn't have a system root store
+    XCTSkip();
+#endif
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("badstore.apple.com"));
     ok_status(SecTrustCreateWithCertificates((__bridge CFArrayRef)certs, policy, &trust), "create trust");
@@ -146,7 +149,6 @@ static NSDate *date = nil;
     CFReleaseNull(policy);
     CFReleaseNull(exceptions);
 }
-#endif
 
 - (void)testIntroduceNewExpiredFailure
 {
@@ -269,9 +271,12 @@ static NSDate *date = nil;
     CFReleaseNull(exceptions);
 }
 
-#if TARGET_OS_IPHONE
-- (void)testExtensionsEpoch
+- (void)testExceptionsEpoch
 {
+#if TARGET_OS_BRIDGE
+    // bridgeOS doesn't support the exceptions epoch
+    XCTSkip();
+#endif
     SecTrustRef trust = NULL;
     SecTrustResultType trustResult;
     CFDataRef exceptions = NULL;
@@ -285,15 +290,16 @@ static NSDate *date = nil;
     CFErrorRef exceptionResetCountError = NULL;
     uint64_t exceptionResetCount = SecTrustGetExceptionResetCount(&exceptionResetCountError);
     ok(exceptionResetCount == 0, "exception reset count is uninitialized");
+    CFReleaseNull(exceptionResetCountError);
     is(SecTrustGetExceptionResetCount(&exceptionResetCountError), exceptionResetCount, "SecTrustGetExceptionResetCount is idempotent");
     ok(SecTrustSetExceptions(trust, exceptions), "set exceptions");
     ok_status(SecTrustGetTrustResult(trust, &trustResult), "evaluate trust");
     is_status(trustResult, kSecTrustResultProceed, "trust is kSecTrustResultProceed");
 
     /* Test increasing the extensions epoch. */
-    exceptionResetCountError = NULL;
+    CFReleaseNull(exceptionResetCountError);
     ok_status(SecTrustIncrementExceptionResetCount(&exceptionResetCountError), "increase exception reset count");
-    exceptionResetCountError = NULL;
+    CFReleaseNull(exceptionResetCountError);
     is(SecTrustGetExceptionResetCount(&exceptionResetCountError), 1 + exceptionResetCount, "exception reset count is 1 + previous count");
 
     /* Test trust evaluation under a future extensions epoch. */
@@ -305,12 +311,13 @@ static NSDate *date = nil;
     CFReleaseNull(policy);
     CFReleaseNull(exceptions);
 }
-#endif
 
-#if !TARGET_OS_BRIDGE
-// bridgeOS doesn't support Valid
 - (void)testFatalResultsNonOverride
 {
+#if TARGET_OS_BRIDGE
+    // bridgeOS doesn't support Valid
+    XCTSkip();
+#endif
     id root = [self SecCertificateCreateFromPEMResource:@"ca-ki" subdirectory:@"si-88-sectrust-valid-data"];
     id revokedLeaf = [self SecCertificateCreateFromPEMResource:@"leaf-ki-revoked1" subdirectory:@"si-88-sectrust-valid-data"];
     TestTrustEvaluation *eval = [[TestTrustEvaluation alloc] initWithCertificates:@[revokedLeaf, root] policies:nil];
@@ -326,6 +333,5 @@ static NSDate *date = nil;
     XCTAssertFalse([eval evaluate:nil]);
     XCTAssertEqual(eval.trustResult, kSecTrustResultFatalTrustFailure);
 }
-#endif
 
 @end

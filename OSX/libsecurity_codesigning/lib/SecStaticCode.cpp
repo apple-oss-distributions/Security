@@ -127,6 +127,8 @@ OSStatus SecStaticCodeCheckValidityWithErrors(SecStaticCodeRef staticCodeRef, Se
 		| kSecCSSingleThreaded
 		| kSecCSApplyEmbeddedPolicy
 		| kSecCSSkipRootVolumeExceptions
+		| kSecCSSkipXattrFiles
+		| kSecCSAllowNetworkAccess
 	);
 
 	if (errors)
@@ -157,6 +159,30 @@ OSStatus SecStaticCodeCheckValidityWithErrors(SecStaticCodeRef staticCodeRef, Se
 	END_CSAPI_ERRORS
 }
 
+OSStatus SecStaticCodeValidateResourceWithErrors(SecStaticCodeRef staticCodeRef, CFURLRef resourcePath, SecCSFlags flags, CFErrorRef *errors)
+{
+	BEGIN_CSAPI
+
+	checkFlags(flags,
+		  kSecCSCheckAllArchitectures
+		| kSecCSConsiderExpiration
+		| kSecCSEnforceRevocationChecks
+		| kSecCSNoNetworkAccess
+		| kSecCSStrictValidate
+		| kSecCSStrictValidateStructure
+		| kSecCSRestrictSidebandData
+		| kSecCSCheckGatekeeperArchitectures
+		| kSecCSSkipRootVolumeExceptions
+		| kSecCSAllowNetworkAccess
+		| kSecCSFastExecutableValidation
+	);
+
+	SecPointer<SecStaticCode> code = SecStaticCode::requiredStatic(staticCodeRef);
+	code->setValidationFlags(flags);
+	code->staticValidateResource(cfString(resourcePath), flags, NULL);
+
+	END_CSAPI_ERRORS
+}
 
 //
 // ====================================================================================
@@ -338,6 +364,37 @@ CFDataRef SecCodeCopyComponent(SecCodeRef codeRef, int slot, CFDataRef hash)
 	END_CSAPI1(NULL)
 }
 
+//
+//  Check if a special slot exists
+//
+CFBooleanRef SecCodeSpecialSlotIsPresent(SecStaticCodeRef codeRef, int slot)
+{
+	BEGIN_CSAPI
+	
+	SecStaticCode* code = SecStaticCode::requiredStatic(codeRef);
+	return code->codeDirectory()->slotIsPresent(-slot) ? kCFBooleanTrue : kCFBooleanFalse ;
+	
+	END_CSAPI1(kCFBooleanFalse)
+}
+
+//
+// Updates the flags to indicate whether this object wants to enable online notarization checks.
+//
+OSStatus SecStaticCodeEnableOnlineNotarizationCheck(SecStaticCodeRef codeRef, Boolean enable)
+{
+	BEGIN_CSAPI
+
+	SecStaticCode* code = SecStaticCode::requiredStatic(codeRef);
+	SecCSFlags flags = code->getFlags();
+	if (enable) {
+		flags = addFlags(flags, kSecCSForceOnlineNotarizationCheck);
+	} else {
+		flags = clearFlags(flags, kSecCSForceOnlineNotarizationCheck);
+	}
+	code->setFlags(flags);
+
+	END_CSAPI
+}
 
 //
 // Validate a single plain file's resource seal against a memory copy.

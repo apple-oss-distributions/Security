@@ -589,6 +589,8 @@ See remaining rules for examples.
 				<string>entitled</string>
 				<string>authenticate-admin</string>
 			</array>
+            <key>version</key>
+            <integer>1</integer>
 		</dict>
 		<key>com.apple.trust-settings.user</key>
 		<dict>
@@ -1011,6 +1013,31 @@ See remaining rules for examples.
 			<string>use-login-window-ui</string>
 			<key>version</key>
 			<integer>1</integer>
+		</dict>
+		<key>system.login.screensaver.unlock</key>
+		<dict>
+			<key>class</key>
+			<string>evaluate-mechanisms</string>
+			<key>comment</key>
+			<string>Do not modify. Performs unlock operations for screensaver.</string>
+			<key>mechanisms</key>
+			<array>
+				<string>CryptoTokenKit:login</string>
+				<string>builtin:kcunlock</string>
+			</array>
+		</dict>
+		<key>system.login.screensaver.new</key>
+		<dict>
+			<key>class</key>
+			<string>rule</string>
+            <key>comment</key>
+            <string>This right may be modified by a 3rd parties.</string>
+			<key>rule</key>
+			<array>
+				<string>authenticate-session-owner</string>
+			</array>
+			<key>version</key>
+			<integer>2</integer>
 		</dict>
 		<key>system.login.tty</key>
 		<dict>
@@ -1775,6 +1802,17 @@ See remaining rules for examples.
             <key>shared</key>
             <false/>
         </dict>
+        <key>com.apple.system-migration.launch-password</key>
+        <dict>
+            <key>comment</key>
+            <string>Used by Migration Assistant.</string>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin-nonshared-password</string>
+            <key>shared</key>
+            <false/>
+        </dict>
         <key>com.apple.system-migration.cleanup</key>
         <dict>
             <key>comment</key>
@@ -1879,6 +1917,21 @@ See remaining rules for examples.
 			<key>version</key>
 			<integer>1</integer>
 		</dict>
+        <key>authenticate-admin-nonshared-password</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>comment</key>
+            <string>Authenticate as an administrator with the password.</string>
+            <key>group</key>
+            <string>admin</string>
+            <key>password-only</key>
+            <true/>
+            <key>timeout</key>
+            <integer>30</integer>
+            <key>version</key>
+            <integer>1</integer>
+        </dict>
         <key>_mbsetupuser-nonshared</key>
         <dict>
             <key>class</key>

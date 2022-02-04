@@ -207,8 +207,8 @@ boolean_t Server::handle(mach_msg_header_t *in, mach_msg_header_t *out)
 // Everything at and below that level is constructed. This is straight-forward except
 // in the case of session re-initialization (see below).
 //
-void Server::setupConnection(ConnectLevel type, Port replyPort, Port taskPort,
-    const audit_token_t &auditToken, const ClientSetupInfo *info)
+void Server::setupConnection(ConnectLevel type, Port replyPort, TaskPort taskPort,
+    Bootstrap bootstrapPort, const audit_token_t &auditToken, const ClientSetupInfo *info)
 {
 	Security::CommonCriteria::AuditToken audit(auditToken);
 	
@@ -227,7 +227,7 @@ void Server::setupConnection(ConnectLevel type, Port replyPort, Port taskPort,
 		if (type == connectNewThread)	// client error (or attack)
 			CssmError::throwMe(CSSM_ERRCODE_INTERNAL_ERROR);
 		assert(info);
-		proc = new Process(taskPort, info, audit);
+		proc = new Process(taskPort, bootstrapPort, info, audit);
 		notifyIfDead(taskPort);
 		mPids[proc->pid()] = proc;
 	}
@@ -298,13 +298,12 @@ void Server::notifyNoSenders(Port port, mach_port_mscount_t)
 // the signal handler environment.
 //
 kern_return_t self_server_handleSignal(mach_port_t sport,
-	mach_port_t taskPort, int sig)
+	audit_token_t auditToken, int sig)
 {
     try {
         secnotice("SecServer", "signal handled %d", sig);
-        if (taskPort != mach_task_self()) {
+        if (audit_token_to_pid(auditToken) != getpid()) {
             Syslog::error("handleSignal: received from someone other than myself");
-            mach_port_deallocate(mach_task_self(), taskPort);
 			return KERN_SUCCESS;
 		}
 		switch (sig) {
@@ -338,18 +337,16 @@ kern_return_t self_server_handleSignal(mach_port_t sport,
     } catch(...) {
 		secnotice("SecServer", "exception handling a signal (ignored)");
 	}
-    mach_port_deallocate(mach_task_self(), taskPort);
     return KERN_SUCCESS;
 }
 
 
 kern_return_t self_server_handleSession(mach_port_t sport,
-	mach_port_t taskPort, uint32_t event, uint64_t ident)
+	audit_token_t auditToken, uint32_t event, uint64_t ident)
 {
     try {
-        if (taskPort != mach_task_self()) {
+        if (audit_token_to_pid(auditToken) != getpid()) {
             Syslog::error("handleSession: received from someone other than myself");
-            mach_port_deallocate(mach_task_self(), taskPort);
 			return KERN_SUCCESS;
 		}
 		if (event == AUE_SESSION_END)
@@ -357,7 +354,6 @@ kern_return_t self_server_handleSession(mach_port_t sport,
     } catch(...) {
 		secnotice("SecServer", "exception handling a signal (ignored)");
 	}
-    mach_port_deallocate(mach_task_self(), taskPort);
     return KERN_SUCCESS;
 }
 

@@ -16,6 +16,8 @@
 	<dict>
 		<key>com.apple.security.octagon</key>
 		<true/>
+		<key>com.apple.security.tribeca</key>
+		<true/>
 		<key>com.apple.secd</key>
 		<true/>
 		<key>com.apple.securityd.xpc</key>
@@ -55,14 +57,21 @@
 				<key>Interval</key>
 				<real>86400</real>
 			</dict>
+			<key>com.apple.securityd.entropyhealth</key>
+			<dict>
+				<key>Priority</key>
+				<string>Utility</string>
+				<key>Interval</key>
+				<real>86400</real>
+			</dict>
 			<key>com.apple.securityd.prng</key>
 			<dict>
 				<key>Priority</key>
 				<string>Maintenance</string>
 				<key>Interval</key>
 				<real>3600</real>
-                <key>RequiresClassC</key>
-                <false/>
+				<key>RequiresClassC</key>
+				<false/>
 			</dict>
 		</dict>
 	</dict>

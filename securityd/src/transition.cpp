@@ -49,8 +49,10 @@
 #include <security_utilities/logging.h>
 #include <security_utilities/casts.h>
 #include <Security/AuthorizationTagsPriv.h>
+#define __ASSERT_MACROS_DEFINE_VERSIONS_WITHOUT_UNDERSCORES 0
 #include <AssertMacros.h>
 #include <security_utilities/errors.h>
+#include <security_utilities/mach++.h>
 #include <Security/SecEntitlements.h>
 
 #include <CoreFoundation/CFNumber.h>
@@ -236,30 +238,41 @@ static void checkPathLength(char const *str) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
 
-kern_return_t ucsp_server_setup(UCSP_ARGS, mach_port_t taskPort, ClientSetupInfo info, const char *identity)
+kern_return_t
+ucsp_server_setupWithBootstrap(UCSP_ARGS, mach_port_t bootstrap, ClientSetupInfo info, const char *identity)
 {
-	BEGIN_IPCN
-    secinfo("SecServer", "request entry: setup");
-	Server::active().setupConnection(Server::connectNewProcess, replyPort,
-		taskPort, auditToken, &info);
-	END_IPCN(CSSM)
-	if (*rcode)
-		Syslog::notice("setup(%s) failed rcode=%d", identity ? identity : "<NULL>", *rcode);
-	mach_port_deallocate(mach_task_self(), taskPort);
-	return KERN_SUCCESS;
+    mach_port_t taskName = MACH_PORT_NULL;
+    secinfo("SecServer", "request entry: setupWithBootstrap");
+    BEGIN_IPCN
+    kern_return_t kr = task_name_for_pid(mach_task_self(), audit_token_to_pid(auditToken), &taskName);
+    MachPlusPlus::check(kr);
+    Server::active().setupConnection(Server::connectNewProcess, replyPort,
+        taskName, bootstrap, auditToken, &info);
+    END_IPCN(CSSM)
+    if (*rcode) {
+        Syslog::notice("setupWithBootstrap(%s) failed rcode=%d", identity ? identity : "<NULL>", *rcode);
+    }
+    mach_port_deallocate(mach_task_self(), taskName);
+    mach_port_deallocate(mach_task_self(), bootstrap);
+    return KERN_SUCCESS;
 }
 
-
-kern_return_t ucsp_server_setupThread(UCSP_ARGS, mach_port_t taskPort)
+kern_return_t
+ucsp_server_setupThreadWithBootstrap(UCSP_ARGS, mach_port_t bootstrap)
 {
-    secinfo("SecServer", "request entry: setupThread");
-	BEGIN_IPCN
-	Server::active().setupConnection(Server::connectNewThread, replyPort, taskPort, auditToken);
-	END_IPCN(CSSM)
-	if (*rcode)
-		Syslog::notice("setupThread failed rcode=%d", *rcode);
-	mach_port_deallocate(mach_task_self(), taskPort);
-	return KERN_SUCCESS;
+    mach_port_t taskName = MACH_PORT_NULL;
+    secinfo("SecServer", "request entry: setupThreadWithBootstrap");
+    BEGIN_IPCN
+    kern_return_t kr = task_name_for_pid(mach_task_self(), audit_token_to_pid(auditToken), &taskName);
+    MachPlusPlus::check(kr);
+    Server::active().setupConnection(Server::connectNewThread, replyPort, taskName, bootstrap, auditToken);
+    END_IPCN(CSSM)
+    if (*rcode) {
+        Syslog::notice("setupThreadWithBootstrap failed rcode=%d", *rcode);
+    }
+    mach_port_deallocate(mach_task_self(), taskName);
+    mach_port_deallocate(mach_task_self(), bootstrap);
+    return KERN_SUCCESS;
 }
 
 kern_return_t ucsp_server_verifyPrivileged(UCSP_ARGS)
@@ -729,14 +742,14 @@ static void check_stash_entitlement(Process & proc)
     bool entitled = false;
 
     status = proc.copySigningInfo(kSecCSRequirementInformation, &code_info);
-    require_noerr(status, done);
+    __Require_noErr(status, done);
 
     if (CFDictionaryGetValueIfPresent(code_info, kSecCodeInfoEntitlementsDict, &value)) {
         if (CFGetTypeID(value) == CFDictionaryGetTypeID()) {
             entitlements = (CFDictionaryRef)value;
         }
     }
-    require(entitlements != NULL, done);
+    __Require(entitlements != NULL, done);
 
     if (CFDictionaryGetValueIfPresent(entitlements, kSecEntitlementPrivateStash, &value)) {
         if (CFGetTypeID(value) && CFBooleanGetTypeID()) {
@@ -1341,6 +1354,17 @@ kern_return_t ucsp_server_getUserPromptAttempts(UCSP_ARGS, uint32* attempts)
     *attempts = KeychainPromptAclSubject::getPromptAttempts() + KeychainDatabase::getInteractiveUnlockAttempts();
 
     END_IPC(DL)
+}
+
+kern_return_t ucsp_server_setup(UCSP_ARGS, mach_port_t taskToken, ClientSetupInfo info, const char *identity)
+{
+    return KERN_FAILURE;
+}
+
+
+kern_return_t ucsp_server_setupThread(UCSP_ARGS, mach_port_t taskToken)
+{
+    return KERN_FAILURE;
 }
 
 #pragma clang diagnostic pop

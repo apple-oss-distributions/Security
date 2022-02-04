@@ -108,7 +108,7 @@ _credential_create()
     require(cred != NULL, done);
     
     cred->creationTime = CFAbsoluteTimeGetCurrent();
-    cred->cachedGroups = CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks);;
+    cred->cachedGroups = CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks);
     
 done:
     return cred;
@@ -144,7 +144,7 @@ done:
 }
 
 credential_t
-credential_create_lwos(auth_items_t context, bool session)
+credential_create_fvunlock(auth_items_t context, bool session)
 {
     credential_t cred = NULL;
     
@@ -243,8 +243,8 @@ credential_check_membership(credential_t cred, const char* group)
 {
     bool result = false;
     
-    if (isInLWOS()) {
-       return false; // cannot succeed in LWOS as we do not have group data
+    if (isInFVUnlockOrRecovery()) {
+       return false; // cannot succeed in FVUnlock as we do not have group data
     }
     
     CFStringRef cachedGroup = NULL;

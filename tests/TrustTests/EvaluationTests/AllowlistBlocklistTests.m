@@ -30,6 +30,7 @@
 #include <Security/SecTrust.h>
 #include <Security/SecTrustPriv.h>
 #include <utilities/SecCFRelease.h>
+#include <utilities/SecCFWrappers.h>
 
 #import "../TestMacroConversions.h"
 #import "TrustEvaluationTestCase.h"
@@ -48,7 +49,7 @@
     SecPolicyRef policy = SecPolicyCreateSSL(false, NULL);
     CFArrayRef certs = NULL;
 
-    isnt(cert = SecCertificateCreateWithBytes(NULL, data, len),
+    isnt(cert = SecCertificateCreateWithBytes(NULL, data, (CFIndex)len),
         NULL, "create cert");
     isnt(root = SecCertificateCreateWithBytes(NULL, UTNHardware_cer, sizeof(UTNHardware_cer)), NULL);
     certs = CFArrayCreate(NULL, (const void **)&cert, 1, NULL);
@@ -84,6 +85,31 @@
     [self validate_one_cert:www_google_com_cer length:sizeof(www_google_com_cer) chain_length:2 trustResult:kSecTrustResultFatalTrustFailure];
 }
 
+- (void)testDigicertMalaysia {
+    SecPolicyRef sslPolicy = SecPolicyCreateSSL(false, 0);
+    NSDate *testDate = CFBridgingRelease(CFDateCreateForGregorianZuluDay(NULL, 2011, 9, 1));
+
+    /* Run the tests. */
+    [self runCertificateTestForDirectory:sslPolicy subDirectory:@"DigicertMalaysia" verifyDate:testDate];
+
+    CFReleaseSafe(sslPolicy);
+}
+
+- (void)testDigiNotar {
+#if TARGET_OS_BRIDGE
+    /* BridgeOS doesn't have Valid -- the other Blocklist tests happen to pass because the certs fail for other
+     * reasons (no root store, missing EKU, disallowed hash or key size). */
+    XCTSkip();
+#endif
+    SecPolicyRef sslPolicy = SecPolicyCreateSSL(false, 0);
+    NSDate *testDate = CFBridgingRelease(CFDateCreateForGregorianZuluDay(NULL, 2011, 9, 1));
+
+    /* Run the tests. */
+    [self runCertificateTestForDirectory:sslPolicy subDirectory:@"DigiNotar" verifyDate:testDate];
+
+    CFReleaseSafe(sslPolicy);
+}
+
 @end
 
 @interface AllowlistTests : TrustEvaluationTestCase
@@ -91,7 +117,6 @@
 
 @implementation AllowlistTests
 
-#if !TARGET_OS_BRIDGE
 static SecCertificateRef createCertFromStaticData(const UInt8 *certData, CFIndex certLength)
 {
     SecCertificateRef cert = NULL;
@@ -105,6 +130,10 @@ static SecCertificateRef createCertFromStaticData(const UInt8 *certData, CFIndex
 
 - (void)testLeafOnAllowList
 {
+#if TARGET_OS_BRIDGE
+    /* Allowlists are provided by Valid, which is not supported on bridgeOS */
+    XCTSkip();
+#endif
     SecCertificateRef certs[3];
     SecPolicyRef policy = NULL;
     SecTrustRef trust = NULL;
@@ -155,6 +184,9 @@ static SecCertificateRef createCertFromStaticData(const UInt8 *certData, CFIndex
 
 - (void)testLeafNotOnAllowList
 {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
     SecCertificateRef certs[3];
     SecPolicyRef policy = NULL;
     SecTrustRef trust = NULL;
@@ -205,6 +237,9 @@ static SecCertificateRef createCertFromStaticData(const UInt8 *certData, CFIndex
 
 - (void)testAllowListForRootCA
 {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
     SecCertificateRef certs[3];
     SecPolicyRef policy = NULL;
     SecTrustRef trust = NULL;
@@ -256,6 +291,9 @@ static SecCertificateRef createCertFromStaticData(const UInt8 *certData, CFIndex
 
 - (void)testDateBasedAllowListForRootCA
 {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
     SecCertificateRef root = NULL, beforeInt = NULL, afterInt = NULL,
     beforeLeaf = NULL, afterLeaf = NULL;
     SecPolicyRef policy = NULL;
@@ -344,6 +382,9 @@ out:
 
 - (void)testLeafOnAllowListOtherFailures
 {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
     SecCertificateRef certs[3];
     SecPolicyRef policy = NULL;
     SecTrustRef trust = NULL;
@@ -398,12 +439,5 @@ out:
     CFReleaseNull(policy);
     CFReleaseNull(trust);
 }
-#else /* TARGET_OS_BRIDGE */
-/* Allowlists are provided by Valid, which is not supported on bridgeOS */
-- (void)testSkipTests
-{
-    XCTAssert(true);
-}
-#endif
 
 @end

@@ -1,3 +1,4 @@
+#include <TargetConditionals.h>
 
 #if TARGET_OS_IPHONE
 // Currently only supported for iOS
@@ -31,7 +32,9 @@
 
 #include <Security/SecRSAKey.h>
 
-#include "testlist.h"
+#include <utilities/array_size.h>
+
+#include "ssl_regressions.h"
 
 /*
     SSL CipherSuite tests
@@ -480,7 +483,7 @@ static SSLContextRef make_ssl_ref(bool server, bool client_side_auth, bool dh_an
         require_noerr(SSLNewContext(server, &ctx), out);
     require_noerr(SSLSetIOFuncs(ctx,
         (SSLReadFunc)SocketRead, (SSLWriteFunc)SocketWrite), out);
-    require_noerr(SSLSetConnection(ctx, (SSLConnectionRef)sock), out);
+    require_noerr(SSLSetConnection(ctx, (SSLConnectionRef)(intptr_t)sock), out);
     static const char *peer_domain_name = "localhost";
     require_noerr(SSLSetPeerDomainName(ctx, peer_domain_name,
         strlen(peer_domain_name)), out);
@@ -545,16 +548,9 @@ static void *securetransport_ssl_thread(void *arg)
             /* this won't verify without setting up a trusted anchor */
             require_noerr(SecTrustEvaluate(trust, &trust_result), out);
 
-            CFIndex n_certs = SecTrustGetCertificateCount(trust);
-            /*fprintf(stderr, "%ld certs; trust_eval: %d\n", n_certs, trust_result); */
-
-            CFMutableArrayRef peer_cert_array =
-                CFArrayCreateMutable(NULL, n_certs, &kCFTypeArrayCallBacks);
+            CFArrayRef peer_cert_array = SecTrustCopyCertificateChain(trust);
             CFMutableArrayRef orig_peer_cert_array =
-                CFArrayCreateMutableCopy(NULL, n_certs, ssl->certs);
-            while (n_certs--)
-                CFArrayInsertValueAtIndex(peer_cert_array, 0,
-                    SecTrustGetCertificateAtIndex(trust, n_certs));
+                CFArrayCreateMutableCopy(NULL, CFArrayGetCount(peer_cert_array), ssl->certs);
 
             SecIdentityRef ident =
                 (SecIdentityRef)CFArrayGetValueAtIndex(orig_peer_cert_array, 0);

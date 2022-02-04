@@ -244,7 +244,10 @@ _SOSViewsGetV0SubviewSet
 _SOSViewsGetV0ViewSet
 _SOSViewsIsV0Subview
 _SOSViewsQuery
+_SOSPeerInfoIsViewPermitted
 _SOSViewsSetTestViewsSet
+_SOSViewSetIntersectsV0
+_SOSPeerInfoV0ViewsEnabled
 _SOSViewsXlateAction
 
 //
@@ -384,6 +387,7 @@ _SOSCircleVerifyPeerSigned
 _SOSCircleVerifySignatureExists
 _SOSCircleVerifyPeerSignatureExists
 _SOSCircleWithdrawRequest
+_SOSCircleIsLegacy
 _debugDumpCircle
 
 _SOSFullPeerInfoCopyDeviceKey
@@ -486,6 +490,8 @@ _SOSCreateErrorWithFormatAndArguments
 _SOSDateCreate
 _SOSErrorCreate
 _SOSCCCredentialQueue
+_SOSDoWithCredentialsWhileUnlocked
+_SOSVisibleKeychainNotAllowed
 _SOSGenerateDeviceBackupFullKey
 _SOSGetBackupKeyCurveParameters
 _SOSItemsChangedCopyDescription
@@ -500,6 +506,7 @@ _kSOSCountKey
 _SOSPeerGestaltGetAnswer
 _SOSPeerGestaltGetName
 _SOSPeerGetGestalt
+_SOSPeerInfoIsLegacy
 
 _CreateXPCObjectWithCFSetRef
 

@@ -21,14 +21,6 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-/*
- * This is to fool os services to not provide the Keychain manager
- * interface tht doens't work since we don't have unified headers
- * between iOS and OS X. rdar://23405418/
- */
-#define __KEYCHAINCORE__ 1
-
-
 #import "secd_regressions.h"
 
 #import <Foundation/Foundation.h>
@@ -99,7 +91,7 @@ static void *do_add(void *arg)
 
 int secd_05_corrupted_items(int argc, char *const *argv)
 {
-    plan_tests(1 + N_THREADS*(N_ADDS+1) + N_ITEMS*4 + kSecdTestSetupTestCount);
+    plan_tests(2 + N_THREADS*(N_ADDS+1) + N_ITEMS*4 + kSecdTestSetupTestCount);
     
     /* custom keychain dir */
     secd_test_setup_temp_keychain("secd_05_corrupted_items", NULL);
@@ -123,8 +115,7 @@ int secd_05_corrupted_items(int argc, char *const *argv)
         CFReleaseNull(port);
     }
 
-
-
+    SecKeychainDbForceClose();
     SecKeychainDbReset(^{
         /* corrupt all the password */
         NSString *keychain_path = CFBridgingRelease(__SecKeychainCopyPath());
@@ -137,6 +128,9 @@ int secd_05_corrupted_items(int argc, char *const *argv)
             ok_unix(snprintf(corrupt_item_sql, sizeof(corrupt_item_sql), "UPDATE inet SET data=X'12345678' WHERE rowid=%d", i));
             is(sqlite3_exec(db, corrupt_item_sql, NULL, NULL, NULL), SQLITE_OK, "corrupting keychain item");
         }
+
+        is(sqlite3_close_v2(db), SQLITE_OK,
+           "Should be able to close db");
     });
 
     /* start the adder threads */
@@ -166,5 +160,7 @@ int secd_05_corrupted_items(int argc, char *const *argv)
 
     CFReleaseNull(pwdata);
     CFReleaseNull(query);
+
+    secd_test_teardown_delete_temp_keychain("secd_05_corrupted_items");
     return 0;
 }

@@ -31,6 +31,8 @@
 #define _H_CSUTILITIES
 
 #include <Security/Security.h>
+#include <Security/CSCommon.h>
+#include <Security/SecAsn1Types.h>
 #include <security_utilities/dispatch.h>
 #include <security_utilities/hashing.h>
 #include <security_utilities/unix++.h>
@@ -125,8 +127,9 @@ size_t hashFileData(const char *path, _Hash *hasher)
 // even ones not recognized by the local CL. It does not return any value, only presence.
 //
 
-#if TARGET_OS_OSX
 bool certificateHasField(SecCertificateRef cert, const CSSM_OID &oid);
+
+#if TARGET_OS_OSX
 bool certificateHasPolicy(SecCertificateRef cert, const CSSM_OID &policyOid);
 CFDateRef certificateCopyFieldDate(SecCertificateRef cert, const CSSM_OID &policyOid);
 #endif
@@ -228,6 +231,36 @@ private:
 // Check if the path is on the root filesystem, protected by the OS.
 bool isOnRootFilesystem(const char *path);
 
+// Check if a path exists.
+bool pathExists(const char *path);
+
+// Check if the path name represents an extended attribute file (on file systems which don't support
+// them natively).
+bool pathMatchesXattrFilenameSpec(const char *path);
+
+// Check if path is a regular file.
+bool pathIsRegularFile(const char *path);
+
+// Check if a path has any extended attributes.
+bool pathHasXattrs(const char *path);
+
+// Check if the path is on a file system that requires files to store extended attributes.
+bool pathFileSystemUsesXattrFiles(const char *path);
+
+// Check if path is a valid extended attribute file.
+bool pathIsValidXattrFile(const string fullPath, const char *scope = "csutilities");
+
+// Check whether the provided fullPath is prefixed by the prefixPath on a directory boundary.
+// Also rejects if the prefixPath is a perfect match since its no longer a strict prefix.
+bool isPathPrefix(string prefixPath, string fullPath);
+
+// Retrieves the path remaining of fullPath after the prefixPath is removed, including any leading /'s.
+string pathRemaining(string fullPath, string prefix);
+
+// Iterates the path by removing the last path component and calling the handler, which returns
+// whether to continue iterating.  Returns whether any pathHandler call resulted
+// in stopping the iteration.
+bool iterateLargestSubpaths(string path, bool (^pathHandler)(string));
 
 } // end namespace CodeSigning
 } // end namespace Security

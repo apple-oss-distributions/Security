@@ -58,6 +58,7 @@
 #include "smartcards.h"
 #include "translocate.h"
 #include "requirement.h"
+#include "fvunlock.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -638,12 +639,11 @@ const command commands[] =
 	  "    -q                  Quiet.\n"
 	  "    -R revCheckOption   Perform revocation checking with one of the following options:\n"
 	  "                            ocsp     Check revocation status using OCSP method.\n"
-	  "                            crl      Check revocation status using CRL method.\n"
 	  "                            require  Require a positive response for successful verification.\n"
 	  "                            offline  Consult cached responses only (no network requests).\n"
 	  "                        Can be specified multiple times; e.g. to enable revocation checking\n"
-	  "                        via either OCSP or CRL methods and require a positive response, use\n"
-	  "                        \"-R ocsp -R crl -R require\".\n"
+	  "                        via the OCSP method and require a positive response, use\n"
+	  "                        \"-R ocsp -R require\".\n"
 	  "    -P                  Output the constructed certificate chain in PEM format.\n"
 	  "    -t                  Output certificate contents as text.\n"
 	  "    -v                  Specify verbose output, including per-certificate trust results.\n"
@@ -745,7 +745,16 @@ const command commands[] =
         "<requirements> [<DER certificate file> ...]\n"
         "Evaluates the given requirement string against the given cert chain.",
         "Evaluate a requirement against a cert chain." },
-
+#if TARGET_OS_OSX && TARGET_CPU_ARM64
+    { "filevault" , fvunlock,
+        "skip-sc-enforcement <data volume UUID> <operation>\n"
+        "  data volume UUID can by obtained by running diskutil apfs list"
+        "  operation is one of the following:"
+        "     set        Sets SmartCard enforcement to be skipped for the next boot\n"
+        "     reset      Resets any SmartCard overrides\n"
+        "     status     Tells the current state of the SmartCard overrides\n",
+        "Handles FileVault specific settings and overrides."},
+#endif
     {}
 };
 

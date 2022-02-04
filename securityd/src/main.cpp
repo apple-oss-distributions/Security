@@ -236,7 +236,7 @@ int main(int argc, char *argv[])
 	
 	// create a monitor thread to watch for audit session events
 	AuditMonitor audits(gMainServerPort);
-	audits.run();
+	audits.threadRun();
     
     // install MDS (if needed) and initialize the local CSSM
     server.loadCssm(mdsIsInstalled);
@@ -272,9 +272,6 @@ static void usage(const char *me)
 	exit(2);
 }
 
-const CFStringRef kTKSmartCardPreferencesDomain = CFSTR("com.apple.security.smartcard");
-const CFStringRef kTKLegacyTokendPreferencesKey  = CFSTR("Legacy");
-
 //
 // Handle signals.
 // We send ourselves a message (through the "self" service), so actual
@@ -283,5 +280,5 @@ const CFStringRef kTKLegacyTokendPreferencesKey  = CFSTR("Legacy");
 //
 static void handleSignals(int sig)
 {
-	(void)self_client_handleSignal(gMainServerPort, mach_task_self(), sig);
+	(void)self_client_handleSignal(gMainServerPort, sig);
 }

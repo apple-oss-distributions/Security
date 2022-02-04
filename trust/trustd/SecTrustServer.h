@@ -68,6 +68,11 @@ SecPathBuilderRef SecPathBuilderCreate(dispatch_queue_t builderQueue, CFDataRef 
     CFArrayRef signedCertificateTimestamps, CFArrayRef trustedLogs,
     CFAbsoluteTime verifyTime, CFArrayRef accessGroups, CFArrayRef exceptions,
     SecPathBuilderCompleted completed, const void *userData);
+void SecPathBuilderDestroy(SecPathBuilderRef builder);
+
+/* engine states exposed for testing */
+bool SecPathBuilderDidValidatePath(SecPathBuilderRef builder);
+bool SecPathBuilderReportResult(SecPathBuilderRef builder);
 
 /* Returns true if it's ok to perform network operations for this builder. */
 bool SecPathBuilderCanAccessNetwork(SecPathBuilderRef builder);
@@ -84,6 +89,7 @@ CFDictionaryRef SecPathBuilderCopyTrustedLogs(SecPathBuilderRef builder);
 CFSetRef SecPathBuilderGetAllPaths(SecPathBuilderRef builder);
 SecCertificatePathVCRef SecPathBuilderGetPath(SecPathBuilderRef builder);
 SecCertificatePathVCRef SecPathBuilderGetBestPath(SecPathBuilderRef builder);
+void SecPathBuilderSetPath(SecPathBuilderRef builder, SecCertificatePathVCRef path);
 CFAbsoluteTime SecPathBuilderGetVerifyTime(SecPathBuilderRef builder);
 CFIndex SecPathBuilderGetCertificateCount(SecPathBuilderRef builder);
 SecCertificateRef SecPathBuilderGetCertificateAtIndex(SecPathBuilderRef builder, CFIndex ix);
@@ -143,27 +149,13 @@ CFDataRef SecPathBuilderCopyClientAuditToken(SecPathBuilderRef builder);
 void SecTrustServerEvaluateBlock(dispatch_queue_t builderQueue, CFDataRef clientAuditToken, CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, void (^evaluated)(SecTrustResultType tr, CFArrayRef details, CFDictionaryRef info, CFArrayRef chain, CFErrorRef error));
 
 /* Synchronously invoke SecTrustServerEvaluateBlock. */
-SecTrustResultType SecTrustServerEvaluate(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFArrayRef *details, CFDictionaryRef *info, CFArrayRef *chain, CFErrorRef *error);
+SecTrustResultType SecTrustServerEvaluate(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFDataRef auditToken, CFArrayRef *details, CFDictionaryRef *info, CFArrayRef *chain, CFErrorRef *error);
 
 /* TrustAnalytics builder types */
 typedef CF_OPTIONS(uint8_t, TA_SCTSource) {
     TA_SCTEmbedded  = 1 << 0,
     TA_SCT_OCSP     = 1 << 1,
     TA_SCT_TLS      = 1 << 2,
-};
-
-typedef CF_ENUM(uint8_t, TA_CTFailureReason) {
-    TA_CTNoFailure = 0,
-    TA_CTNoSCTs = 1,
-    TA_CTMissingLogs = 2,
-    TA_CTNoCurrentSCTsUnknownLog = 3,
-    TA_CTNoCurrentSCTsDisqualifiedLog = 4,
-    TA_CTPresentedNotEnoughUnknown = 5,
-    TA_CTPresentedNotEnoughDisqualified = 6,
-    TA_CTPresentedNotEnough = 7,
-    TA_CTEmbeddedNotEnoughUnknown = 8,
-    TA_CTEmbeddedNotEnoughDisqualified = 9,
-    TA_CTEmbeddedNotEnough = 10,
 };
 
 typedef CF_OPTIONS(uint8_t, TAValidStatus) {
@@ -185,7 +177,6 @@ typedef struct {
     TA_SCTSource sct_sources;
     uint32_t number_scts;
     uint32_t number_trusted_scts;
-    TA_CTFailureReason ct_failure_reason;
     bool ct_one_current;
     // CAIssuer
     bool ca_issuer_cache_hit;

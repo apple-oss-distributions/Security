@@ -116,6 +116,9 @@ bool SecCertificatePathVCHasWeakHash(SecCertificatePathVCRef certificatePath);
 
 bool SecCertificatePathVCHasWeakKeySize(SecCertificatePathVCRef certificatePath);
 
+CF_RETURNS_RETAINED CFArrayRef SecCertificatePathVCCopyNotBefores(SecCertificatePathVCRef certificatePath);
+CF_RETURNS_RETAINED CFArrayRef SecCertificatePathVCCopyNotAfters(SecCertificatePathVCRef certificatePath);
+
 /* Score */
 CFIndex SecCertificatePathVCScore(SecCertificatePathVCRef certificatePath,
                                 CFAbsoluteTime verifyTime);
@@ -128,6 +131,8 @@ void SecCertificatePathVCDeleteRVCs(SecCertificatePathVCRef path);
 bool SecCertificatePathVCIsRevocationDone(SecCertificatePathVCRef certificatePath);
 void SecCertificatePathVCAllocateRVCs(SecCertificatePathVCRef certificatePath, CFIndex certCount);
 CFAbsoluteTime SecCertificatePathVCGetEarliestNextUpdate(SecCertificatePathVCRef path);
+CF_RETURNS_RETAINED CFArrayRef SecCertificatePathVCCopyNextUpdates(SecCertificatePathVCRef path);
+CF_RETURNS_RETAINED CFArrayRef SecCertificatePathVCCopyThisUpdates(SecCertificatePathVCRef path);
 void *SecCertificatePathVCGetRVCAtIndex(SecCertificatePathVCRef certificatePath, CFIndex ix); // Returns a SecRVCRef
 bool SecCertificatePathVCRevocationCheckedAllCerts(SecCertificatePathVCRef path);
 bool SecCertificatePathVCIsRevocationRequiredForCertificateAtIndex(SecCertificatePathVCRef certificatePath,

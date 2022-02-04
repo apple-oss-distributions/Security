@@ -19,6 +19,8 @@
 	<string>com.apple.securityd</string>
 	<key>MachServices</key>
 	<dict>
+		<key>com.apple.security.tribeca</key>
+		<true/>
 		<key>com.apple.security.octagon</key>
 		<true/>
 		<key>com.apple.securityd</key>
@@ -67,18 +69,35 @@
 				<key>NetworkTransferDirection</key>
 				<string>Bidirectional</string>
 			</dict>
+			<key>com.apple.securityd.entropyhealth</key>
+			<dict>
+				<key>Priority</key>
+				<string>Utility</string>
+				<key>Interval</key>
+				<real>86400</real>
+			</dict>
 			<key>com.apple.securityd.prng</key>
 			<dict>
 				<key>Priority</key>
 				<string>Maintenance</string>
 				<key>Interval</key>
 				<real>3600</real>
-                <key>RequiresClassC</key>
-                <false/>
+				<key>RequiresClassC</key>
+				<false/>
 			</dict>
 		</dict>
 		<key>com.apple.notifyd.matching</key>
 		<dict>
+			<key>com.apple.system.clock_set</key>
+			<dict>
+				<key>Notification</key>
+				<string>com.apple.system.clock_set</string>
+			</dict>
+			<key>com.apple.springboard.lockstate</key>
+			<dict>
+				<key>Notification</key>
+				<string>com.apple.springboard.lockstate</string>
+			</dict>
 			<key>kSOSCCHoldLockForInitialSync</key>
 			<dict>
 				<key>Notification</key>

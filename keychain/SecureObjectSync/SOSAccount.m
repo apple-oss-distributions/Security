@@ -59,7 +59,8 @@
 #include "keychain/SecureObjectSync/generated_source/SOSAccountConfiguration.h"
 
 
-#import "SecdWatchdog.h"
+#import "ipc/SecdWatchdog.h"
+#import "Analytics/Clients/SOSAnalytics.h"
 
 #include <utilities/SecCFWrappers.h>
 #include <utilities/SecCFError.h>
@@ -67,6 +68,7 @@
 
 #include <os/activity.h>
 #include <os/state_private.h>
+#import <os/feature_private.h>
 
 #include <utilities/SecCoreCrypto.h>
 
@@ -199,7 +201,7 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
 -(void)ensureOctagonPeerKeys
 {
 #if OCTAGON
-    CKKSLockStateTracker *tracker = [CKKSViewManager manager].lockStateTracker;
+    CKKSLockStateTracker *tracker = [CKKSLockStateTracker globalTracker];
     if (tracker && tracker.isLocked == false) {
         [self.trust ensureOctagonPeerKeys:self.circle_transport];
     }
@@ -250,11 +252,13 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
         self.saveBlock = nil;
 
         self.settings =  [[NSUserDefaults alloc] initWithSuiteName:SOSAccountUserDefaultsSuite];
+        [self sosIsEnabled];
 
         [self ensureFactoryCircles];
         SOSAccountEnsureUUID(self);
         self.accountIsChanging = false;
-
+        self.sosTestmode = false;
+        self.consolidateKeyInterest = false;
 #if OCTAGON
         [self setupStateMachine];
 #endif
@@ -449,8 +453,8 @@ static bool Flush(CFErrorRef *error) {
 }
 - (void)stashAccountCredential:(NSData *)credential complete:(void(^)(bool success, NSError *error))complete
 {
-
-    dispatch_sync(SOSCCCredentialQueue(), ^{
+    CFErrorRef localError = NULL;
+    SOSDoWithCredentialsWhileUnlocked(&localError, ^bool(CFErrorRef *error) {
         CFErrorRef syncerror = NULL;
 
         if (![self syncWaitAndFlush:&syncerror]) {
@@ -503,7 +507,12 @@ static bool Flush(CFErrorRef *error) {
                 CFReleaseNull(localError);
             }
         }
+        return true;
     });
+    if(localError) {
+        secnotice("pairing", "Failed to process credentials %@", localError);
+    }
+    CFReleaseNull(localError);
 }
 
 - (void)myPeerInfo:(void (^)(NSData *, NSError *))complete
@@ -900,6 +909,90 @@ static bool Flush(CFErrorRef *error) {
         complete([NSError errorWithDomain:@"com.apple.securityd.watchdog" code:1 userInfo:@{NSLocalizedDescriptionKey : @"failed to lookup SecdWatchdog class from ObjC runtime"}]);
     }
 }
+
+- (void)removeV0Peers:(void (^)(bool, NSError *))reply {
+    [self performTransaction:^(SOSAccountTransaction *txn) {
+        CFErrorRef localError = NULL;
+        bool result = SOSAccountRemoveV0Clients(txn.account, &localError);
+        reply(result, (__bridge NSError *)localError);
+        CFReleaseNull(localError);
+    }];
+}
+
+- (void) sosEnableValidityCheck {
+    id valuePresent = [self.settings objectForKey: @"SOSEnabled"];
+    if(!valuePresent) {
+        [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSInitialized"];
+        secnotice("SOSMonitorMode", "No value found for SOSMonitorMode initializing to Active");
+        [self sosEnable];
+    }
+}
+
+- (void) sosDisable {
+    if(os_feature_enabled(Security, SOSMonitorMode)) {
+        secnotice("SOSMonitorMode", "Putting SOS into monitor mode");
+        [self.settings setBool: NO forKey: @"SOSEnabled"];
+    } else {
+        secnotice("SOSMonitorMode", "SOSMonitorMode is not turned on for this platform");
+    }
+}
+
+- (void) sosEnable {
+    secnotice("SOSMonitorMode", "Setting SOS to active");
+    [self.settings setBool: YES forKey: @"SOSEnabled"];
+}
+
+- (void) sosIsEnabledCB: (void(^)(bool result)) complete {
+    complete([self sosIsEnabled]);
+}
+
+- (bool)sosIsEnabled {
+    [self sosEnableValidityCheck];
+    return [self.settings boolForKey: @"SOSEnabled"];
+}
+
+- (NSString *) sosIsEnabledString {
+    return [self sosIsEnabled] ? @"[SOS is active]": @"[SOS is monitoring]";
+}
+
+/*
+     If we trust the circle and it's legacy, enable SOS, otherwise disable.
+    We're still listening to circle / keyparm changes (trust) so if changes happen there we'll re-enable if legacy
+ */
+- (bool) sosEvaluateIfNeeded {
+    if(!os_feature_enabled(Security, SOSMonitorMode)) {
+        if(![self sosIsEnabled]) {
+            // make sure SOS wasn't accidentally turned off
+            secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - Turning on SOS since monitor mode is unavailable");
+            [self sosEnable];
+            [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSEnable"];
+        }
+    } else {
+        // SOSMonitorMode is go
+        secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - checking circle");
+        if(!self.accountKeyIsTrusted) {
+            if([self sosIsEnabled]) {
+                secnotice("SOSMonitorMode", "SOS is in monitor mode since the account key isn't trusted");
+                [self sosDisable];
+                [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSDisable"];
+            }
+        } else if(SOSCircleIsLegacy(self.trust.trustedCircle, self.accountKey)) {
+            if(![self sosIsEnabled]) {
+                secnotice("SOSMonitorMode", "Putting SOS into active mode for circle change");
+                [self sosEnable];
+                [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSEnable"];
+            }
+        } else {
+            if([self sosIsEnabled]) {
+                secnotice("SOSMonitorMode", "Putting SOS into monitor mode due to circle change");
+                [self sosDisable];
+                [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSDisable"];
+            }
+        }
+    }
+    return [self sosIsEnabled];
+}
+
 
 //
 // MARK: Save Block
@@ -1429,61 +1522,22 @@ bool SOSAccountRemoveIncompleteiCloudIdentities(SOSAccount*  account, SOSCircleR
 // MARK: start backups
 //
 
-
-- (bool)_onQueueEnsureInBackupRings {
-    __block bool result = false;
-    __block CFErrorRef error = NULL;
-    secnotice("backup", "Ensuring in rings");
+// This needs to be called within a transaction.  It only processes one view at a time
+// this will return true if work was done.
+- (bool)_onQueueEnsureInBackupRings: (CFStringRef) viewName {
+    __block bool workDone = false;
 
     dispatch_assert_queue(self.queue);
 
-    if(!self.backup_key){
-        return true;
-    }
-
-    if(!SOSBSKBIsGoodBackupPublic((__bridge CFDataRef)self.backup_key, &error)){
-        secnotice("backupkey", "account backup key isn't valid: %@", error);
-        self.backup_key = nil;
-        CFReleaseNull(error);
-        return false;
-    }
-
-    NSData *peerBackupKey = (__bridge_transfer NSData*)SOSPeerInfoCopyBackupKey(self.peerInfo);
-    if(![peerBackupKey isEqual:self.backup_key]) {
-        result = SOSAccountUpdatePeerInfo(self, CFSTR("Backup public key"), &error, ^bool(SOSFullPeerInfoRef fpi, CFErrorRef *error) {
-            return SOSFullPeerInfoUpdateBackupKey(fpi, (__bridge CFDataRef)(self.backup_key), error);
-        });
-        if (!result) {
-            secnotice("backupkey", "Failed to setup backup public key in peerInfo from account: %@", error);
-            CFReleaseNull(error);
-            return result;
-        }
-    }
-
-    // It's a good key, we're going with it. Stop backing up the old way.
-    CFErrorRef localError = NULL;
-    if (!SOSDeleteV0Keybag(&localError)) {
-        secerror("Failed to delete v0 keybag: %@", localError);
-    }
-    CFReleaseNull(localError);
-
     // Setup backups the new way.
-    SOSAccountForEachBackupView(self, ^(const void *value) {
-        CFStringRef viewName = asString(value, NULL);
-        bool resetRing = SOSAccountValidateBackupRingForView(self, viewName, NULL);
-        if(resetRing) {
-            SOSAccountUpdateBackupRing(self, viewName, NULL, ^SOSRingRef(SOSRingRef existing, CFErrorRef *error) {
-                SOSRingRef newRing = SOSAccountCreateBackupRingForView(self, viewName, error);
-                return newRing;
-            });
-        }
-    });
-
-    if (!result) {
-        secnotice("backupkey", "Failed to setup backup public key: %@", error);
+    if(SOSAccountValidateBackupRingForView(self, viewName, NULL)) {
+        workDone = SOSAccountUpdateBackupRing(self, viewName, NULL, ^SOSRingRef(SOSRingRef existing, CFErrorRef *error) {
+            SOSRingRef newRing = SOSAccountCreateBackupRingForView(self, viewName, error);
+            secnotice("backup", "Reset backup ring %@ %s", viewName, (newRing) ? "success": "failed");
+            return newRing;
+        });
     }
-    CFReleaseNull(error);
-    return result;
+    return workDone;
 }
 
 //
@@ -1633,6 +1687,11 @@ bool SOSAccountRemovePeersFromCircle(SOSAccount*  account, CFArrayRef peers, CFE
 {
     bool result = false;
     CFMutableSetRef peersToRemove = NULL;
+    
+    CFStringArrayPerformWithDescription(peers, ^(CFStringRef description) {
+        secnotice("circleOps", "Attempting to remove peer set %@", description);
+    });
+    
     SecKeyRef user_key = SOSAccountGetPrivateCredential(account, error);
     if (!user_key) {
         secnotice("circleOps", "Can't remove without userKey");
@@ -1828,6 +1887,10 @@ bool SOSAccountEnsurePeerRegistration(SOSAccount*  account, CFErrorRef *error) {
     // If we are not in the circle, there is no point in setting up peers
     if(!SOSAccountIsMyPeerActive(account, NULL)) {
         return result;
+    }
+    
+    if(![account sosIsEnabled]) {
+        return true;
     }
 
     // This code only uses the SOSFullPeerInfoRef for two things:
@@ -2068,7 +2131,7 @@ AddStrippedTLKs(NSMutableArray* results, NSArray<CKKSKeychainBackedKey*>* tlks, 
 {
     for(CKKSKeychainBackedKey* tlk in tlks) {
         NSError* localerror = nil;
-        CKKSAESSIVKey* keyBytes = [tlk ensureKeyLoaded:&localerror];
+        CKKSAESSIVKey* keyBytes = [tlk ensureKeyLoadedFromKeychain:&localerror];
 
         if(!keyBytes || localerror) {
             secnotice("piggy", "Failed to load TLK %@: %@", tlk, localerror);
@@ -2489,13 +2552,15 @@ static void pbNotice(CFStringRef operation, SOSAccount*  account, SOSGenCountRef
         accountName = CFSTR("Unavailable");
     }
     CFStringRef circleHash = SOSCircleCopyHashString(account.trust.trustedCircle);
+    CFStringRef genString = SOSGenerationCountCopyDescription(gencount);
 
     secnotice("circleOps",
               "%@: Joining blob for account: %@ for piggyback (V%d) gencount: %@  pubkey: %@ signatureID: %@  starting circle hash: %@",
-              operation, accountName, version, gencount, pkeyID, sigID, circleHash);
+              operation, accountName, version, genString, pkeyID, sigID, circleHash);
     CFReleaseNull(pkeyID);
     CFReleaseNull(sigID);
     CFReleaseNull(circleHash);
+    CFReleaseNull(genString);
 }
 
 CFDataRef SOSAccountCopyCircleJoiningBlob(SOSAccount*  account, SOSPeerInfoRef applicant, CFErrorRef *error) {
@@ -2597,7 +2662,7 @@ bool SOSAccountJoinWithCircleJoiningBlob(SOSAccount*  account, CFDataRef joining
                                            gencount,
                                            pubKey,
                                            signature,
-                                           trust.fullPeerInfo, error);;
+                                           trust.fullPeerInfo, error);
     }];
     
     CFReleaseNull(gencount);
@@ -2624,10 +2689,11 @@ void SOSAccountLogState(SOSAccount*  account) {
 
     secnotice(ACCOUNTLOGSTATE, "Start");
 
-    secnotice(ACCOUNTLOGSTATE, "ACCOUNT: [keyStatus: %c%c%c hpub %@] [SOSCCStatus: %@] [UID: %d  EUID: %d]",
+    secnotice(ACCOUNTLOGSTATE, "ACCOUNT: [keyStatus: %c%c%c hpub %@] [SOSCCStatus: %@] [UID: %d  EUID: %d] %@",
               boolToChars(hasPubKey, 'U', 'u'), boolToChars(pubTrusted, 'T', 't'), boolToChars(hasPriv, 'I', 'i'),
               userPubKeyID,
-              SOSAccountGetSOSCCStatusString(stat), getuid(), geteuid()
+              SOSAccountGetSOSCCStatusString(stat), getuid(), geteuid(),
+              [account sosIsEnabledString]
               );
     CFReleaseNull(userPubKeyID);
     if(trust.trustedCircle)  SOSCircleLogState(ACCOUNTLOGSTATE, trust.trustedCircle, account.accountKey, (__bridge CFStringRef)(account.peerID));
@@ -2801,7 +2867,8 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
                                                      initialState:SOSStateReady
                                                             queue:self.stateMachineQueue
                                                       stateEngine:self
-                                                 lockStateTracker:[CKKSLockStateTracker globalTracker]];
+                                                 lockStateTracker:[CKKSLockStateTracker globalTracker]
+                                              reachabilityTracker:nil];
 
 
     self.performBackups = [[CKKSNearFutureScheduler alloc] initWithName:@"performBackups"
@@ -2815,9 +2882,9 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
     }];
 
     self.performRingUpdates = [[CKKSNearFutureScheduler alloc] initWithName:@"performRingUpdates"
-                                                               initialDelay:5*NSEC_PER_SEC
+                                                               initialDelay:1*NSEC_PER_SEC
                                                            expontialBackoff:2.0
-                                                               maximumDelay:15*60*NSEC_PER_SEC
+                                                               maximumDelay:10*NSEC_PER_SEC
                                                            keepProcessAlive:YES
                                                   dependencyDescriptionCode:CKKSResultDescriptionNone
                                                                       block:^{
@@ -2881,6 +2948,11 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
 
 - (void)triggerRingUpdate
 {
+    // this is a guard, it shouldn't be necessary, but let's do it
+    if(self.consolidateKeyInterest) {
+        return;
+    }
+    
     WEAKIFY(self);
     dispatch_async(self.stateMachineQueue, ^{
         STRONGIFY(self);
@@ -2925,6 +2997,9 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
                                        errorState:SOSStateError
                               withBlockTakingSelf:^void(OctagonStateTransitionOperation * _Nonnull op) {
         STRONGIFY(self);
+        __block bool goodPubKey = false;
+        __block CFMutableSetRef myBackupViews = NULL;
+        __block bool changesMade = false;
 
         SOSAccountConfiguration *storage = self.accountConfiguration.storage;
         storage.ringUpdateFlag = NO;
@@ -2932,21 +3007,65 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
 
         [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
             if([self accountKeyIsTrusted] && [self isInCircle:NULL]) {
-
                 [self _onQueueRecordRetiredPeersInCircle];
-
                 SOSAccountEnsureRecoveryRing(self);
-                [self _onQueueEnsureInBackupRings];
-
-                CFErrorRef localError = NULL;
-                if(![self.circle_transport flushChanges:&localError]){
-                    secerror("flush circle failed %@", localError);
+                
+                CFErrorRef error = NULL;
+                
+                // if we have a backup key but it isn't good clear it.  goodPubKey becomes false.
+                // if we have nil then we're resetting the pubkey.
+                goodPubKey = SOSAccountBackupKeyConsistencyCheck(self, &error);
+                
+                if(goodPubKey) {
+                    // It's a good key, we're going with it. Stop backing up the old way.
+                    CFErrorRef localError = NULL;
+                    if (!SOSDeleteV0Keybag(&localError)) {
+                        secerror("Failed to delete v0 keybag: %@", localError);
+                    } else {
+                        changesMade = true;
+                    }
+                    CFReleaseNull(localError);
+                                        
+                    if (self.peerInfo) {
+                        myBackupViews = CFSetCreateMutableCopy(kCFAllocatorDefault, 0, SOSPeerInfoGetPermittedViews(self.peerInfo));
+                    }
                 }
-                CFReleaseNull(localError);
+            }
+        }];
+        
+        [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+            self.consolidateKeyInterest = true;
+        }];
+        
+        if(goodPubKey && myBackupViews && !CFSetIsEmpty(myBackupViews)) {
+            CFSetForEach(myBackupViews, ^(const void *value) {
+                CFStringRef viewName = asString(value, NULL);
+                [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+                    if([self _onQueueEnsureInBackupRings: viewName]) {
+                        changesMade = true;
+                    }
+                }];
+            });
+        }
+        CFReleaseNull(myBackupViews);
+        
+        [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+            self.consolidateKeyInterest = false;
+        }];
 
-                if(!SecCKKSTestDisableSOS()) {
-                    SOSAccountNotifyEngines(self);
-                }
+        // This is where circle and ring flushes happen now.
+        // If a circle or ring has been Pushed in handleUpdate routines we need them to get out now.
+        // It isn't just the work up above that can do that push.  It could simply be signing
+        // an existing circle/ring.
+        [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+            CFErrorRef localError = NULL;
+            if(![self.circle_transport flushChanges:&localError]){
+                secnotice("circleOps", "flush circles/rings failed %@", localError);
+            }
+            CFReleaseNull(localError);
+
+            if(!SecCKKSTestDisableSOS()) {
+                SOSAccountNotifyEngines(self);
             }
         }];
 

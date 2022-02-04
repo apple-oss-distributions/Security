@@ -319,8 +319,10 @@
     CFReleaseNull(cert1);
 }
 
-#if !TARGET_OS_BRIDGE // bridgeOS doesn't have a CT log list
 -(void)testCopyTrustedCTLogs {
+#if TARGET_OS_BRIDGE // bridgeOS doesn't have a CT log list
+    XCTSkip();
+#endif
     __block CFDictionaryRef trustedLogs = NULL;
     __block int matched = 0;
 
@@ -341,10 +343,11 @@
 errOut:
     CFReleaseSafe(trustedLogs);
 }
-#endif // !TARGET_OS_BRIDGE
 
-#if !TARGET_OS_BRIDGE // bridgeOS doesn't have a CT log list
 -(void)testCopyCTLogForKeyID {
+#if TARGET_OS_BRIDGE // bridgeOS doesn't have a CT log list
+    XCTSkip();
+#endif
     int matched = 0;
     /* look for some known CT log ids to ensure functionality */
     for (int ix = 0; ix < CTLOG_KEYID_COUNT; ix++) {
@@ -371,7 +374,6 @@ errContinue:
 errOut:
     return;
 }
-#endif // !TARGET_OS_BRIDGE
 
 - (void)testDeveloperIdDate {
     SecCertificateRef old_devid = SecCertificateCreateWithBytes(NULL, _old_developer_cert, sizeof(_old_developer_cert));
@@ -398,6 +400,8 @@ errOut:
         "a1.example.com",
         "example.xn--3hcrj9c",
         "example.xn--80ao21a",
+        /* underscore in a DNS name is now allowed for compatibility (70721372) */
+        "_foo.example.com",
     };
 
     const char *invalid_names[] = {
@@ -412,8 +416,6 @@ errOut:
         "example.--3hcrj9c",
         /* Error: TLD ends with a hyphen. */
         "example.80ao21a--",
-        /* Error: Label has invalid characters. */
-        "_foo.example.com",
     };
 
     size_t i;
@@ -449,7 +451,7 @@ errOut:
         "apple.com.1", /* invalid characters */
         "284.321.1.1", /* IPv4 octet values > 255 */
         "192.168.254.0/24", /* CIDR notation; not for SAN values */
-        "2606:4700:4700::1111::1" /* multiple IPv6 expansions */
+        "2606:4700:4700::1111::1", /* multiple IPv6 expansions */
         "[2606:4700:4700:[0:0:0:0]:1111]", /* too many brackets */
         "...1", /* not enough fields for IPv4 */
         "23.45.56.67.78", /* too many fields */
@@ -535,5 +537,88 @@ errOut:
     XCTAssert([commonName isEqualToString:@"certxauthsplit"]);
     CFReleaseNull(multipleValues);
 }
+
+- (void)testCopyProperties {
+    SecCertificateRef cert = SecCertificateCreateWithBytes(NULL, _c1, sizeof(_c1));
+
+    NSArray *properties = CFBridgingRelease(SecCertificateCopyProperties(cert));
+    XCTAssertNotNil(properties);
+
+    NSArray *localizedProperties = CFBridgingRelease(SecCertificateCopyLocalizedProperties(cert, true));
+    XCTAssertNotNil(localizedProperties);
+
+    // If we're on a en-us device, these should match
+    XCTAssertEqualObjects(properties, localizedProperties);
+
+    CFReleaseNull(cert);
+}
+
+- (void)testSignatureHashAlgorithm
+{
+    SecCertificateRef cert=NULL;
+    SecSignatureHashAlgorithm alg=0;
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSA_MD2, sizeof(RSA_MD2)),
+         NULL, "create RSA_MD2");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmMD2, "expected kSecSignatureHashAlgorithmMD2 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSA_MD5, sizeof(RSA_MD5)),
+         NULL, "create RSA_MD5");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmMD5, "expected kSecSignatureHashAlgorithmMD5 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSA_SHA1, sizeof(RSA_SHA1)),
+         NULL, "create RSA_SHA1");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA1, "expected kSecSignatureHashAlgorithmSHA1 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSA_SHA256, sizeof(RSA_SHA256)),
+         NULL, "create RSA_SHA256");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA256, "expected kSecSignatureHashAlgorithmSHA256 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSA_SHA512, sizeof(RSA_SHA512)),
+         NULL, "create RSA_SHA512");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA512, "expected kSecSignatureHashAlgorithmSHA512 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, DSA_SHA1, sizeof(DSA_SHA1)),
+         NULL, "create DSA_SHA1");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA1, "expected kSecSignatureHashAlgorithmSHA1 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, ECDSA_SHA1, sizeof(ECDSA_SHA1)),
+         NULL, "create ECDSA_SHA1");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA1, "expected kSecSignatureHashAlgorithmSHA1 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, ECDSA_SHA256, sizeof(ECDSA_SHA256)),
+         NULL, "create ECDSA_SHA256");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA256, "expected kSecSignatureHashAlgorithmSHA256 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    isnt(cert = SecCertificateCreateWithBytes(NULL, ECDSA_SHA384, sizeof(ECDSA_SHA384)),
+         NULL, "create ECDSA_SHA384");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmSHA384, "expected kSecSignatureHashAlgorithmSHA384 (got %d)", (int)alg);
+    CFReleaseNull(cert);
+
+    /* %%% RSAPSS is not yet supported; change this test when it is. <rdar://19356971> */
+    isnt(cert = SecCertificateCreateWithBytes(NULL, RSAPSS_SHA256, sizeof(RSAPSS_SHA256)),
+         NULL, "create RSAPSS_SHA256");
+    alg = SecCertificateGetSignatureHashAlgorithm(cert);
+    ok(alg == kSecSignatureHashAlgorithmUnknown, "expected kSecSignatureHashAlgorithmUnknown (got %d)", (int)alg);
+    CFReleaseNull(cert);
+}
+
 
 @end

@@ -58,3 +58,26 @@ extension SignedPeerDynamicInfo {
         return TPPeerDynamicInfo(data: self.peerDynamicInfo, sig: self.sig)
     }
 }
+
+extension SignedCustodianRecoveryKey {
+    init(_ crk: CustodianRecoveryKey) {
+        self.custodianRecoveryKey = crk.tpCustodian.data
+        self.sig = crk.tpCustodian.sig
+    }
+
+    func toCustodianRecoveryKey() -> TPCustodianRecoveryKey? {
+        return TPCustodianRecoveryKey(data: self.custodianRecoveryKey,
+                                      sig: self.sig,
+                                      keyFactory: TPECPublicKeyFactory())
+    }
+}
+
+extension TPPolicyVersion: Comparable {
+    public static func < (lhs: TPPolicyVersion, rhs: TPPolicyVersion) -> Bool {
+        if lhs.versionNumber != rhs.versionNumber {
+            return lhs.versionNumber < rhs.versionNumber
+        } else {
+            return lhs.policyHash < rhs.policyHash
+        }
+    }
+}

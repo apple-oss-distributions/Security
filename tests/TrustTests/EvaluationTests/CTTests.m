@@ -505,7 +505,7 @@ errOut:
 @end
 
 @implementation CTExceptionsTests
-#if !TARGET_OS_BRIDGE // bridgeOS doesn't permit CT exceptions
+
 + (void)setUp {
     [super setUp];
     NSURL *trustedLogsURL = [[NSBundle bundleForClass:[self class]] URLForResource:@"CTlogs"
@@ -518,6 +518,10 @@ errOut:
 }
 
 - (void)testSetCTExceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     CFErrorRef error = NULL;
     const CFStringRef TrustTestsAppID = CFSTR("com.apple.trusttests");
     const CFStringRef AnotherAppID = CFSTR("com.apple.security.not-this-one");
@@ -599,7 +603,7 @@ errOut:
     ok(SecTrustStoreSetCTExceptions(TrustTestsAppID, (__bridge CFDictionaryRef)empty, &error),
        "failed to set empty exceptions");
 
-    /* Copy exceptiosn to ensure no change */
+    /* Copy exceptions to ensure no change */
     ok(copiedExceptions = SecTrustStoreCopyCTExceptions(TrustTestsAppID, &error),
        "failed to copy TrustTests' exceptions: %@", error);
     ok([exceptions2 isEqualToDictionary:(__bridge NSDictionary*)copiedExceptions],
@@ -631,6 +635,7 @@ errOut:
 #define check_errSecParam \
 if (error) { \
 is(CFErrorGetCode(error), errSecParam, "bad input produced unxpected error code: %ld", (long)CFErrorGetCode(error)); \
+CFReleaseNull(error); \
 } else { \
 fail("expected failure to set NULL exceptions"); \
 }
@@ -713,6 +718,10 @@ fail("expected failure to set NULL exceptions"); \
     CFReleaseNull(error);
 
 - (void) testSpecificDomainExceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL, system_server_after = NULL, system_server_after_with_CT = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -777,6 +786,10 @@ errOut:
 }
 
 - (void) testSubdomainExceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL, system_server_after = NULL, system_server_after_with_CT = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -833,6 +846,10 @@ errOut:
 }
 
 - (void) testMixedDomainExceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL, system_server_after = NULL, system_server_after_with_CT = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -889,6 +906,10 @@ errOut:
 }
 
 - (void) test_ct_leaf_exceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL, system_server_after = NULL, system_server_after_with_CT = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -952,6 +973,10 @@ errOut:
 }
 
 - (void) test_ct_unconstrained_ca_exceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef root = NULL, subca = NULL;
     SecCertificateRef server_matching = NULL, server_matching_with_CT = NULL, server_partial = NULL, server_no_match = NULL, server_no_org = NULL;
     SecTrustRef trust = NULL;
@@ -1038,6 +1063,10 @@ errOut:
 }
 
 - (void) test_ct_constrained_ca_exceptions {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef root = NULL, org_constrained_subca = NULL;
     SecCertificateRef constraint_pass_server = NULL, constraint_pass_server_ct = NULL, constraint_fail_server = NULL;
     SecCertificateRef dn_constrained_subca = NULL, dn_constrained_server = NULL, dn_constrained_server_mismatch = NULL;
@@ -1161,12 +1190,6 @@ errOut:
     CFReleaseNull(error);
 }
 
-#else // TARGET_OS_BRIDGE
-- (void)testSkipTests
-{
-    XCTAssert(true);
-}
-#endif // TARGET_OS_BRIDGE
 @end
 
 // MARK: -
@@ -1184,13 +1207,13 @@ static NSArray *keychainCerts = nil;
                                                                      withExtension:@"plist"
                                                                       subdirectory:@"si-82-sectrust-ct-data"];
     trustedCTLogs = [NSArray arrayWithContentsOfURL:trustedLogsURL];
+}
 
+- (void)setUp {
     // set test root to be a fake system root
-    SecCertificateRef system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"];
     NSData *rootHash = [NSData dataWithBytes:_system_root_hash length:sizeof(_system_root_hash)];
     CFPreferencesSetAppValue(CFSTR("TestCTRequiredSystemRoot"), (__bridge CFDataRef)rootHash, CFSTR("com.apple.security"));
     CFPreferencesAppSynchronize(CFSTR("com.apple.security"));
-    CFReleaseNull(system_root);
 }
 
 #if !TARGET_OS_BRIDGE
@@ -1228,8 +1251,13 @@ errOut:
     CFReleaseNull(policy);
     CFReleaseNull(trust);
 }
+#endif // !TARGET_OS_BRIDGE
 
 - (void)testKillSwitch {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL,  system_server_after = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -1263,6 +1291,10 @@ errOut:
 }
 
 - (void) testWithMACheckIn {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL,  system_server_after = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -1299,7 +1331,6 @@ errOut:
     CFReleaseNull(trust);
     CFReleaseNull(error);
 }
-#endif // !TARGET_OS_BRIDGE
 
 - (void)testWithTrustedLogs {
     SecCertificateRef system_root = NULL,  system_server_after = NULL;
@@ -1507,9 +1538,12 @@ errOut:
     CFReleaseNull(error);
 }
 
-#if !TARGET_OS_BRIDGE
 /* bridgeOS doens't have trust settings */
 - (void) testLeafTrustSettings {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef system_root = NULL,  system_server_after = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -1540,7 +1574,6 @@ errOut:
     CFReleaseNull(trust);
     CFReleaseNull(error);
 }
-#endif // !TARGET_OS_BRIDGE
 
 - (void) testEAPPolicy {
     SecCertificateRef system_root = NULL,  system_server_after = NULL;
@@ -1660,9 +1693,12 @@ errOut:
     CFReleaseNull(trust);
 }
 
-#if !TARGET_OS_BRIDGE
 // test enterprise (non-public) after date without CT passes, except on bridgeOS which doesn't have trust settings
 - (void) testEnterpriseCA {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
     SecCertificateRef user_root = NULL, user_server_after = NULL;
     SecTrustRef trust = NULL;
     SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("ct.test.apple.com"));
@@ -1687,7 +1723,6 @@ errOut:
     CFReleaseNull(policy);
     CFReleaseNull(trust);
 }
-#endif // !TARGET_OS_BRIDGE
 
 // test app anchor (non-public) after date without CT passes
 - (void) testAppCA {
@@ -1941,6 +1976,288 @@ errOut:
     CFReleaseNull(trust);
     CFReleaseNull(error);
 
+}
+
+- (void)testCTPolicyV2 {
+    SecCertificateRef system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_root"];
+    SecCertificateRef six_month_leaf_1 = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_six_months_1_sct"];
+    SecCertificateRef six_month_leaf_2 = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_six_months_2_scts"];
+    SecCertificateRef one_year_leaf_2_before = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_one_year_2_scts_before"];
+    SecCertificateRef one_year_leaf_2_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_one_year_2_scts_after"];
+    SecCertificateRef one_year_leaf_3_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"policyv2_one_year_3_scts_after"];
+
+    SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("example.com"));
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:641000000.0]; // April 24, 2021 at 4:33:20 PM PDT
+
+    // Set root as system root
+    CFDataRef rootHash = SecCertificateCopySHA256Digest(system_root);
+    CFPreferencesSetAppValue(CFSTR("TestCTRequiredSystemRoot"), rootHash, CFSTR("com.apple.security"));
+    CFPreferencesAppSynchronize(CFSTR("com.apple.security"));
+    CFReleaseNull(rootHash);
+
+    // < 180 days, after, 1 SCT -> fail
+    TestTrustEvaluation *test = [[TestTrustEvaluation alloc] initWithCertificates:@[(__bridge id)six_month_leaf_1]
+                                                                         policies:@[(__bridge id)policy]];
+    [test setAnchors:@[(__bridge id)system_root]];
+    [test setVerifyDate:date];
+    [test setTrustedCTLogs:trustedCTLogs];
+#if !TARGET_OS_BRIDGE
+    XCTAssertFalse([test evaluate:nil]);
+#else
+    XCTAssertTrue([test evaluate:nil]);
+#endif
+
+    // < 180 days, after, 2 SCTs -> success
+    test = [[TestTrustEvaluation alloc] initWithCertificates:@[(__bridge id)six_month_leaf_2]
+                                                    policies:@[(__bridge id)policy]];
+    [test setAnchors:@[(__bridge id)system_root]];
+    [test setVerifyDate:date];
+    [test setTrustedCTLogs:trustedCTLogs];
+    XCTAssertTrue([test evaluate:nil]);
+
+    // > 180 days, < 15 months, before, 2 SCTs -> success
+    test = [[TestTrustEvaluation alloc] initWithCertificates:@[(__bridge id)one_year_leaf_2_before]
+                                                    policies:@[(__bridge id)policy]];
+    [test setAnchors:@[(__bridge id)system_root]];
+    [test setVerifyDate:date];
+    [test setTrustedCTLogs:trustedCTLogs];
+    XCTAssertTrue([test evaluate:nil]);
+
+    // > 180 days, < 15 months, after, 2 SCTs -> success
+    test = [[TestTrustEvaluation alloc] initWithCertificates:@[(__bridge id)one_year_leaf_2_after]
+                                                    policies:@[(__bridge id)policy]];
+    [test setAnchors:@[(__bridge id)system_root]];
+    [test setVerifyDate:date];
+    [test setTrustedCTLogs:trustedCTLogs];
+#if !TARGET_OS_BRIDGE
+    XCTAssertFalse([test evaluate:nil]);
+#else
+    XCTAssertTrue([test evaluate:nil]);
+#endif
+
+    // > 180 days, < 15 months, before, 3 SCTs -> success
+    test = [[TestTrustEvaluation alloc] initWithCertificates:@[(__bridge id)one_year_leaf_3_after]
+                                                    policies:@[(__bridge id)policy]];
+    [test setAnchors:@[(__bridge id)system_root]];
+    [test setVerifyDate:date];
+    [test setTrustedCTLogs:trustedCTLogs];
+    XCTAssertTrue([test evaluate:nil]);
+
+    CFReleaseNull(system_root);
+    CFReleaseNull(six_month_leaf_1);
+    CFReleaseNull(six_month_leaf_2);
+    CFReleaseNull(one_year_leaf_2_before);
+    CFReleaseNull(one_year_leaf_2_after);
+    CFReleaseNull(one_year_leaf_3_after);
+    CFReleaseNull(policy);
+}
+
+@end
+
+// MARK: -
+// MARK: Non-TLS CT tests
+
+@interface NonTlsCTTests : TrustEvaluationTestCase
+@end
+
+@implementation NonTlsCTTests
++ (void)setUp {
+    [super setUp];
+    NSURL *trustedLogsURL = [[NSBundle bundleForClass:[self class]] URLForResource:@"CTlogs"
+                                                                     withExtension:@"plist"
+                                                                      subdirectory:@"si-82-sectrust-ct-data"];
+    trustedCTLogs = [NSArray arrayWithContentsOfURL:trustedLogsURL];
+}
+
+- (SecPolicyRef)nonTlsCTRequiredPolicy
+{
+    SecPolicyRef policy = SecPolicyCreateBasicX509();
+    SecPolicySetOptionsValue(policy, kSecPolicyCheckNonTlsCTRequired, kCFBooleanTrue);
+    return policy;
+}
+
+#if !TARGET_OS_BRIDGE
+/* Skip CT tests on bridgeOS where we don't do MobileAsset updates */
+- (void)testNoMACheckIn {
+    SecCertificateRef system_root = NULL,  system_server_after = NULL;
+    SecTrustRef trust = NULL;
+    SecPolicyRef policy = [self nonTlsCTRequiredPolicy];
+    NSArray *enforce_anchors = nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:562340800.0]; // October 27, 2018 at 6:46:40 AM PDT
+
+    /* Mock a failing MobileAsset so we don't enforce via MobileAsset */
+    id mockFailedMA = OCMClassMock([MAAsset class]);
+    OCMStub([mockFailedMA startCatalogDownload:[OCMArg any]
+                                       options:[OCMArg any]
+                                          then:([OCMArg invokeBlockWithArgs:OCMOCK_VALUE((NSInteger){MADownloadFailed}), nil])]);
+    SecOTAPKIResetCurrentAssetVersion(NULL);
+
+    require_action(system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"],
+                   errOut, fail("failed to create system root"));
+    require_action(system_server_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_server_after"],
+                   errOut, fail("failed to create server cert"));
+
+    enforce_anchors = @[ (__bridge id)system_root ];
+    require_noerr_action(SecTrustCreateWithCertificates(system_server_after, policy, &trust), errOut, fail("failed to create trust"));
+    require_noerr_action(SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)enforce_anchors), errOut, fail("failed to set anchors"));
+    require_noerr_action(SecTrustSetVerifyDate(trust, (__bridge CFDateRef)date), errOut, fail("failed to set verify date"));
+
+    // Out-of-date asset, test cert without CT passes
+    ok(SecTrustEvaluateWithError(trust, NULL), "non-CT cert failed with out-of-date asset");
+
+errOut:
+    CFReleaseNull(system_root);
+    CFReleaseNull(system_server_after);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+}
+#endif // !TARGET_OS_BRIDGE
+
+- (void)testKillSwitch {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
+    SecCertificateRef system_root = NULL,  system_server_after = NULL;
+    SecTrustRef trust = NULL;
+    SecPolicyRef policy = [self nonTlsCTRequiredPolicy];
+    NSArray *enforce_anchors = nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:562340800.0]; // October 27, 2018 at 6:46:40 AM PDT
+
+    /* Mock setting a kill switch */
+    UpdateKillSwitch((__bridge NSString *)kOTAPKIKillSwitchNonTLSCT, true);
+
+    require_action(system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"],
+                   errOut, fail("failed to create system root"));
+    require_action(system_server_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_server_after"],
+                   errOut, fail("failed to create system server cert"));
+
+    enforce_anchors = @[ (__bridge id)system_root ];
+    require_noerr_action(SecTrustCreateWithCertificates(system_server_after, policy, &trust), errOut, fail("failed to create trust"));
+    require_noerr_action(SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)enforce_anchors), errOut, fail("failed to set anchors"));
+    require_noerr_action(SecTrustSetVerifyDate(trust, (__bridge CFDateRef)date), errOut, fail("failed to set verify date"));
+
+    // CT kill switch enabled so test cert without CT passes
+    ok(SecTrustEvaluateWithError(trust, NULL), "non-CT cert failed with kill switch enabled");
+
+    /* Remove the kill switch */
+    UpdateKillSwitch((__bridge NSString *)kOTAPKIKillSwitchNonTLSCT, false);
+
+errOut:
+    CFReleaseNull(system_root);
+    CFReleaseNull(system_server_after);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+}
+
+- (void) testWithMACheckIn {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
+    SecCertificateRef system_root = NULL,  system_server_after = NULL;
+    SecTrustRef trust = NULL;
+    SecPolicyRef policy = [self nonTlsCTRequiredPolicy];
+    NSArray *enforce_anchors = nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:562340800.0]; // October 27, 2018 at 6:46:40 AM PDT
+    CFErrorRef error = nil;
+
+    /* Mock a successful mobile asset check-in so that we enforce CT */
+    XCTAssertTrue(UpdateOTACheckInDate(), "failed to set check-in date as now");
+
+    require_action(system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"],
+                   errOut, fail("failed to create system root"));
+    require_action(system_server_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_server_after"],
+                   errOut, fail("failed to create system server cert"));
+
+    enforce_anchors = @[ (__bridge id)system_root ];
+    require_noerr_action(SecTrustCreateWithCertificates(system_server_after, policy, &trust), errOut, fail("failed to create trust"));
+    require_noerr_action(SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)enforce_anchors), errOut, fail("failed to set anchors"));
+    require_noerr_action(SecTrustSetVerifyDate(trust, (__bridge CFDateRef)date), errOut, fail("failed to set verify date"));
+
+    // test system cert after date without CT fails (with check-in)
+    is(SecTrustEvaluateWithError(trust, &error), false, "non-CT cert with in-date asset succeeded");
+    if (error) {
+        is(CFErrorGetCode(error), errSecVerifyActionFailed, "got wrong error code for non-ct cert, got %ld, expected %d",
+           (long)CFErrorGetCode(error), (int)errSecVerifyActionFailed);
+    } else {
+        fail("expected trust evaluation to fail and it did not.");
+    }
+
+errOut:
+    CFReleaseNull(system_root);
+    CFReleaseNull(system_server_after);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    CFReleaseNull(error);
+}
+
+- (void)testWithTrustedLogs {
+#if TARGET_OS_BRIDGE
+    XCTSkip();
+#endif
+
+    SecCertificateRef system_root = NULL,  system_server_after = NULL;
+    SecTrustRef trust = NULL;
+    SecPolicyRef policy = [self nonTlsCTRequiredPolicy];
+    NSArray *enforce_anchors = nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:562340800.0]; // October 27, 2018 at 6:46:40 AM PDT
+    CFErrorRef error = nil;
+
+    require_action(system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"],
+                   errOut, fail("failed to create system root"));
+    require_action(system_server_after = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_server_after"],
+                   errOut, fail("failed to create system server cert"));
+
+    enforce_anchors = @[ (__bridge id)system_root ];
+    require_noerr_action(SecTrustCreateWithCertificates(system_server_after, policy, &trust), errOut, fail("failed to create trust"));
+    require_noerr_action(SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)enforce_anchors), errOut, fail("failed to set anchors"));
+    require_noerr_action(SecTrustSetVerifyDate(trust, (__bridge CFDateRef)date), errOut, fail("failed to set verify date"));
+
+    // set trusted logs to trigger enforcing behavior
+    require_noerr_action(SecTrustSetTrustedLogs(trust, (__bridge CFArrayRef)trustedCTLogs), errOut, fail("failed to set trusted logs"));
+
+    // test system cert without CT fails (with trusted logs)
+    is(SecTrustEvaluateWithError(trust, &error), false, "non-CT cert with trusted logs succeeded");
+    if (error) {
+        is(CFErrorGetCode(error), errSecVerifyActionFailed, "got wrong error code for non-ct cert, got %ld, expected %d",
+           (long)CFErrorGetCode(error), (int)errSecVerifyActionFailed);
+    } else {
+        fail("expected trust evaluation to fail and it did not.");
+    }
+
+errOut:
+    CFReleaseNull(system_root);
+    CFReleaseNull(system_server_after);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    CFReleaseNull(error);
+}
+
+- (void) testSuccess {
+    SecCertificateRef system_root = NULL, leaf = NULL;
+    SecTrustRef trust = NULL;
+    SecPolicyRef policy = [self nonTlsCTRequiredPolicy];
+    NSArray *enforce_anchors = nil;
+    NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:562340800.0]; // October 27, 2018 at 6:46:40 AM PDT
+
+    require_action(system_root = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_root"],
+                   errOut, fail("failed to create system root"));
+    require_action(leaf = (__bridge SecCertificateRef)[CTTests SecCertificateCreateFromResource:@"enforcement_system_server_after_scts"],
+                   errOut, fail("failed to create system server cert"));
+
+    enforce_anchors = @[ (__bridge id)system_root ];
+    require_noerr_action(SecTrustCreateWithCertificates(leaf, policy, &trust), errOut, fail("failed to create trust"));
+    require_noerr_action(SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)enforce_anchors), errOut, fail("failed to set anchors"));
+    require_noerr_action(SecTrustSetVerifyDate(trust, (__bridge CFDateRef)date), errOut, fail("failed to set verify date"));
+    require_noerr_action(SecTrustSetTrustedLogs(trust, (__bridge CFArrayRef)trustedCTLogs), errOut, fail("failed to set trusted logs"));
+    ok(SecTrustEvaluateWithError(trust, NULL), "CT cert failed");
+
+errOut:
+    CFReleaseNull(system_root);
+    CFReleaseNull(leaf);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
 }
 
 @end

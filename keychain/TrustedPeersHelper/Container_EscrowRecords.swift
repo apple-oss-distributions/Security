@@ -38,6 +38,8 @@ extension Container {
             e.remainingAttempts = UInt64(record.remainingAttempts)
             e.silentAttemptAllowed = UInt64(record.silentAttemptAllowed)
             e.recordStatus = record.recordStatus == 0 ? .RECORD_STATUS_VALID : .RECORD_STATUS_INVALID
+            e.federationId = record.federationID ?? ""
+            e.expectedFederationId = record.expectedFederationID ?? ""
 
             switch viability {
             case .full:
@@ -105,7 +107,9 @@ extension Container {
         escrowRecordMO.silentAttemptAllowed = Int64(record.silentAttemptAllowed)
         escrowRecordMO.recordStatus = Int64(record.recordStatus.rawValue)
         escrowRecordMO.sosViability = Int64(record.viabilityStatus.rawValue)
-        
+        escrowRecordMO.federationID = record.federationID
+        escrowRecordMO.expectedFederationID = record.expectedFederationID
+
         let escrowRecordMetadataMO = EscrowMetadataMO(context: self.moc)
         escrowRecordMetadataMO.backupKeybagDigest = record.escrowInformationMetadata.backupKeybagDigest
         escrowRecordMetadataMO.secureBackupUsesMultipleiCSCS = Int64(record.escrowInformationMetadata.secureBackupUsesMultipleIcscs)
@@ -136,13 +140,10 @@ extension Container {
         switch viability {
         case .full:
             self.containerMO.addToFullyViableEscrowRecords(escrowRecordMO)
-            break
         case .partial:
             self.containerMO.addToPartiallyViableEscrowRecords(escrowRecordMO)
-            break
         case .none:
             self.containerMO.addToLegacyEscrowRecords(escrowRecordMO)
-            break
         }
     }
 

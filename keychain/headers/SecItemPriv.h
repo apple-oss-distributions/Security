@@ -387,6 +387,7 @@ extern const CFStringRef kSecAttrViewHintHealth;
 extern const CFStringRef kSecAttrViewHintApplePay;
 extern const CFStringRef kSecAttrViewHintHome;
 extern const CFStringRef kSecAttrViewHintLimitedPeersAllowed;
+extern const CFStringRef kSecAttrViewHintMFi;
 
 
 extern const CFStringRef kSecUseSystemKeychain
@@ -440,9 +441,9 @@ extern const CFStringRef kSecUseSyncBubbleKeychain
 extern const CFStringRef kSecUseTombstones
     __OSX_AVAILABLE_STARTING(__MAC_10_9, __IPHONE_7_0);
 extern const CFStringRef kSecUseCredentialReference
-    __OSX_AVAILABLE_STARTING(__MAC_10_10, __IPHONE_8_0);
+    SPI_DEPRECATED("Use kSecUseAuthenticationContext", macos(10.10, 12.0), ios(8.0, 15.0), tvos(8.0, 15.0), watchos(1.0, 8.0));
 extern const CFStringRef kSecUseCallerName
-    __OSX_AVAILABLE(10.11.4) __IOS_AVAILABLE(9.3) __TVOS_AVAILABLE(9.3) __WATCHOS_AVAILABLE(2.3);
+    SPI_DEPRECATED("Use kSecUseAuthenticationContext and set its optionCallerName property instead of kSecUseCallerName", macos(10.10, 12.0), ios(8.0, 15.0), tvos(8.0, 15.0), watchos(1.0, 8.0));
 extern const CFStringRef kSecUseTokenRawItems
     __OSX_AVAILABLE(10.13) __IOS_AVAILABLE(11.0) __TVOS_AVAILABLE(11.0) __WATCHOS_AVAILABLE(4.0);
 extern const CFStringRef kSecUseCertificatesWithMatchIssuers
@@ -474,6 +475,23 @@ extern const CFStringRef kSecNetworkExtensionAccessGroupSuffix;
     @result A result code. See "Security Error Codes" (SecBase.h).
 */
 OSStatus SecItemDeleteAll(void);
+
+/*!
+    @function SecItemPersistKeychainWritesAtHighPerformanceCost
+    @abstract Attempts to ensure that all previous writes to the keychain are durably committed to disk.
+            This overrides existing performance and device disk durability tradeoffs, so you should
+            not use this SPI until you have a full understanding of how data loss resulting from power loss
+            impacts your distributed system.
+
+            Note: This SPI is not guaranteed to work on macOS, if the user is in a non-standard hardware configuration
+            or is using network home folders.
+
+            Note: on macOS, this will only affect the data protection keychain. Legacy macOS keychains are untouched.
+    @param error An error returned, if any.
+    @result A result code.
+ */
+OSStatus SecItemPersistKeychainWritesAtHighPerformanceCost(CFErrorRef* CF_RETURNS_RETAINED error)
+    API_AVAILABLE(macos(11.3), ios(14.5), tvos(14.5), watchos(7.4));
 
 /*!
     @function _SecItemAddAndNotifyOnSync

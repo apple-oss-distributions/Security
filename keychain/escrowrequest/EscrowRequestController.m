@@ -45,7 +45,8 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
                                                      initialState:EscrowRequestStateNothingToDo
                                                             queue:_queue
                                                       stateEngine:self
-                                                 lockStateTracker:lockStateTracker];
+                                                 lockStateTracker:lockStateTracker
+                                              reachabilityTracker:nil];
 
         _forceIgnoreCloudServicesRateLimiting = false;
     }
@@ -144,6 +145,7 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
 }
 
 - (void)triggerEscrowUpdateRPC:(nonnull NSString *)reason
+                       options:(NSDictionary *)options
                          reply:(nonnull void (^)(NSError * _Nullable))reply
 {
     [self.stateMachine startOperation];
@@ -159,6 +161,16 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
 
     secnotice("escrowrequest", "Investigating a new escrow request");
 
+    SecureBackupEscrowReason *escrowReason = nil;
+
+    NSString *federationMove = options[SecEscrowRequestOptionFederationMove];
+    if (federationMove != nil) {
+        secnotice("escrowrequest", "Move requested to federation %@", federationMove);
+        escrowReason = [[SecureBackupEscrowReason alloc] init];
+        escrowReason.reason = SecureBackupEscrowReason_Reason_FEDERATION_MOVE;
+        escrowReason.expectedFederationID = federationMove;
+    }
+
     BOOL escrowRequestExists = NO;
     for(SecEscrowPendingRecord* existingRecord in records) {
         if(existingRecord.uploadCompleted) {
@@ -172,6 +184,7 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
         secnotice("escrowrequest", "Retriggering an existing escrow request: %@", existingRecord);
         existingRecord.hasCertCached = false;
         existingRecord.serializedPrerecord = nil;
+        existingRecord.serializedReason = escrowReason.data;
 
         [existingRecord saveToKeychain:&error];
         if(error) {
@@ -191,6 +204,7 @@ OctagonState* const EscrowRequestStateWaitForUnlock = (OctagonState*)@"wait_for_
         record.uuid = [[NSUUID UUID] UUIDString];
         record.altDSID = nil;
         record.triggerRequestTime = ((uint64_t)[[NSDate date] timeIntervalSince1970] * 1000);
+        record.serializedReason = escrowReason.data;
         secnotice("escrowrequest", "beginning a new escrow request (%@)", record.uuid);
 
         [record saveToKeychain:&error];

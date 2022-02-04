@@ -141,6 +141,7 @@ extern const char *kSecXPCKeyPeerInfo;
 extern const char *kSecXPCLimitInMinutes;
 extern const char *kSecXPCKeyQuery;
 extern const char *kSecXPCKeyAttributesToUpdate;
+extern const char *kSecXPCKeyAuthExternalForm; // AuthorizationExternalForm
 extern const char *kSecXPCKeyDomain;
 extern const char *kSecXPCKeyDigest;
 extern const char *kSecXPCKeyCertificate;
@@ -291,8 +292,17 @@ enum SecXPCOperation {
     kSecXPCOpSetCARevocationAdditions,
     kSecXPCOpCopyCARevocationAdditions,
     kSecXPCOpValidUpdate,
+    kSecXPCOpSetTransparentConnectionPins,
+    kSecXPCOpCopyTransparentConnectionPins,
+    sec_trust_settings_set_data_id,
+    sec_trust_settings_copy_data_id,
+    sec_truststore_remove_all_id,
 };
 
+#define KEYCHAIN_SUPPORTS_PERSONA_MULTIUSER (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_OSX)
+#define KEYCHAIN_SUPPORTS_EDU_MODE_MULTIUSER (TARGET_OS_IOS)
+
+#define KEYCHAIN_SUPPORTS_SINGLE_DATABASE_MULTIUSER (KEYCHAIN_SUPPORTS_PERSONA_MULTIUSER || KEYCHAIN_SUPPORTS_EDU_MODE_MULTIUSER)
 
 typedef struct SecurityClient {
     SecTaskRef task;
@@ -306,8 +316,10 @@ typedef struct SecurityClient {
 #if (TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR) && TARGET_HAS_KEYSTORE
     keybag_handle_t keybag;
 #endif
-#if TARGET_OS_IPHONE
+#if KEYCHAIN_SUPPORTS_SINGLE_DATABASE_MULTIUSER
     bool inMultiUser;
+#endif
+#if KEYCHAIN_SUPPORTS_EDU_MODE_MULTIUSER
     int activeUser;
 #endif
     bool isAppClip;
@@ -316,7 +328,7 @@ typedef struct SecurityClient {
 
 
 extern SecurityClient * SecSecurityClientGet(void);
-#if TARGET_OS_IOS
+#if KEYCHAIN_SUPPORTS_SINGLE_DATABASE_MULTIUSER
 void SecSecuritySetMusrMode(bool mode, uid_t uid, int activeUser);
 void SecSecuritySetPersonaMusr(CFStringRef uuid);
 #endif
@@ -407,6 +419,7 @@ struct securityd {
     bool (*soscc_SOSCCMessageFromPeerIsPending)(SOSPeerInfoRef peer, CFErrorRef* error);
     bool (*soscc_SOSCCSendToPeerIsPending)(SOSPeerInfoRef peer, CFErrorRef* error);
     CFTypeRef (*soscc_status)(void);
+    bool (*sec_fill_security_client_muser)(SecurityClient *client);
     /* otherstuff */
     CFTypeRef secd_xpc_server;
 };
@@ -415,11 +428,11 @@ extern struct securityd *gSecurityd;
 
 struct trustd {
     SecTrustStoreRef (*sec_trust_store_for_domain)(CFStringRef domainName, CFErrorRef* error);
-    bool (*sec_trust_store_contains)(SecTrustStoreRef ts, CFDataRef digest, bool *contains, CFErrorRef* error);
+    bool (*sec_trust_store_contains)(SecTrustStoreRef ts, SecCertificateRef certificate, bool *contains, CFErrorRef* error);
     bool (*sec_trust_store_set_trust_settings)(SecTrustStoreRef ts, SecCertificateRef certificate, CFTypeRef trustSettingsDictOrArray, CFErrorRef* error);
-    bool (*sec_trust_store_remove_certificate)(SecTrustStoreRef ts, CFDataRef digest, CFErrorRef* error);
+    bool (*sec_trust_store_remove_certificate)(SecTrustStoreRef ts, SecCertificateRef certificate, CFErrorRef* error);
     bool (*sec_truststore_remove_all)(SecTrustStoreRef ts, CFErrorRef* error);
-    SecTrustResultType (*sec_trust_evaluate)(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFArrayRef *details, CFDictionaryRef *info, CFArrayRef *chain, CFErrorRef *error);
+    SecTrustResultType (*sec_trust_evaluate)(CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, CFDataRef auditToken, CFArrayRef *details, CFDictionaryRef *info, CFArrayRef *chain, CFErrorRef *error);
     uint64_t (*sec_ota_pki_trust_store_version)(CFErrorRef* error);
     uint64_t (*sec_ota_pki_asset_version)(CFErrorRef* error);
     CFArrayRef (*ota_CopyEscrowCertificates)(uint32_t escrowRootType, CFErrorRef* error);
@@ -429,18 +442,20 @@ struct trustd {
     CFDictionaryRef (*sec_ota_pki_copy_trusted_ct_logs)(CFErrorRef *error);
     CFDictionaryRef (*sec_ota_pki_copy_ct_log_for_keyid)(CFDataRef keyID, CFErrorRef *error);
     bool (*sec_trust_store_copy_all)(SecTrustStoreRef ts, CFArrayRef *trustStoreContents, CFErrorRef *error);
-    bool (*sec_trust_store_copy_usage_constraints)(SecTrustStoreRef ts, CFDataRef digest, CFArrayRef *usageConstraints, CFErrorRef *error);
+    bool (*sec_trust_store_copy_usage_constraints)(SecTrustStoreRef ts, SecCertificateRef certificate, CFArrayRef *usageConstraints, CFErrorRef *error);
     bool (*sec_ocsp_cache_flush)(CFErrorRef *error);
     bool (*sec_networking_analytics_report)(CFStringRef event_name, xpc_object_t tls_analytics_attributes, CFErrorRef *error);
     bool (*sec_trust_store_set_ct_exceptions)(CFStringRef appID, CFDictionaryRef exceptions, CFErrorRef *error);
     CFDictionaryRef (*sec_trust_store_copy_ct_exceptions)(CFStringRef appID, CFErrorRef *error);
-#if TARGET_OS_IPHONE
     bool (*sec_trust_increment_exception_reset_count)(CFErrorRef *error);
     uint64_t (*sec_trust_get_exception_reset_count)(CFErrorRef *error);
-#endif
     bool (*sec_trust_store_set_ca_revocation_additions)(CFStringRef appID, CFDictionaryRef additions, CFErrorRef *error);
     CFDictionaryRef (*sec_trust_store_copy_ca_revocation_additions)(CFStringRef appID, CFErrorRef *error);
     bool (*sec_valid_update)(CFErrorRef *error);
+    bool (*sec_trust_store_set_transparent_connection_pins)(CFStringRef appID, CFArrayRef exceptions, CFErrorRef *error);
+    CFArrayRef (*sec_trust_store_copy_transparent_connection_pins)(CFStringRef appID, CFErrorRef *error);
+    bool (*sec_trust_settings_set_data)(uid_t uid, CFStringRef domain, CFDataRef auth, CFDataRef trustSettings, CFErrorRef* error);
+    bool (*sec_trust_settings_copy_data)(uid_t uid, CFStringRef domain, CFDataRef *trustSettings, CFErrorRef* error);
 };
 
 extern struct trustd *gTrustd;
@@ -533,6 +548,11 @@ typedef void (^SecBoolNSErrorCallback) (bool, NSError*);
 // Delete all items from the keychain where agrp==identifier and clip==1. Requires App Clip deletion entitlement.
 - (void)secItemDeleteForAppClipApplicationIdentifier:(NSString*)identifier
                                           completion:(void (^)(OSStatus status))completion;
+
+// Ask the keychain to durably persist its database to disk, at whatever guarantees the existing filesystem provides.
+// On Apple hardware with an APFS-formatted physical disk, this should succeed. On any sort of network home folder, no guarantee is provided.
+// This is an expensive operation.
+- (void)secItemPersistKeychainWritesAtHighPerformanceCost:(void (^)(OSStatus status, NSError* error))completion;
 @end
 
 // Call this to receive a proxy object conforming to SecuritydXPCProtocol that you can call methods on.

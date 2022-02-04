@@ -36,9 +36,6 @@ __BEGIN_DECLS
 // Opaque type that holds the data for a specific version of the OTA PKI assets
 typedef struct _OpaqueSecOTAPKI *SecOTAPKIRef;
 
-// Returns a boolean for whether the current instance is the system trustd
-bool SecOTAPKIIsSystemTrustd(void);
-
 // Returns the trust server workloop
 dispatch_queue_t SecTrustServerGetWorkloop(void);
 
@@ -74,7 +71,7 @@ CFArrayRef SecOTAPKICopyAllowListForAuthKeyID(SecOTAPKIRef otapkiRef, CFStringRe
 // Accessor to retrieve a copy of the current trusted certificate transparency logs.
 // Caller is responsible for releasing the returned CFArrayRef
 CF_EXPORT
-CFDictionaryRef SecOTAPKICopyTrustedCTLogs(SecOTAPKIRef otapkiRef);
+CFDictionaryRef SecOTAPKICopyTrustedCTLogs(void);
 
 // Accessor to retrieve the path of the current pinning list.
 // Caller is responsible for releasing the returned CFURLRef
@@ -138,31 +135,36 @@ uint64_t SecOTAPKIGetAssetVersion(SecOTAPKIRef otapkiRef);
 
 // Accessors to retrieve the last check in time for the OTAPKI asset
 CF_EXPORT
-CFDateRef SecOTAPKICopyLastAssetCheckInDate(SecOTAPKIRef otapkiRef);
+CFDateRef SecOTAPKICopyLastAssetCheckInDate(void);
 
 #define kSecOTAPKIAssetStalenessAtRisk (60*60*24*30) // 30 days
 #define kSecOTAPKIAssetStalenessWarning (60*60*24*45) // 45 days
 #define kSecOTAPKIAssetStalenessDisable (60*60*24*60) // 60 days
-bool SecOTAPKIAssetStalenessLessThanSeconds(SecOTAPKIRef otapkiRef, CFTimeInterval seconds);
+bool SecOTAPKIAssetStalenessLessThanSeconds(CFTimeInterval seconds);
 
 #if __OBJC__
 // SPI to return the current sampling rate for the event name
 // This rate is actually n where we sample 1 out of every n
-NSNumber *SecOTAPKIGetSamplingRateForEvent(SecOTAPKIRef otapkiRef, NSString *eventName);
+NSNumber *SecOTAPKIGetSamplingRateForEvent(NSString *eventName);
 #endif // __OBJC__
 
-CFArrayRef SecOTAPKICopyAppleCertificateAuthorities(SecOTAPKIRef otapkiRef);
+CFArrayRef SecOTAPKICopyAppleCertificateAuthorities(void);
 
 extern const CFStringRef kOTAPKIKillSwitchCT;
-bool SecOTAPKIKillSwitchEnabled(SecOTAPKIRef otapkiRef, CFStringRef switchKey);
+extern const CFStringRef kOTAPKIKillSwitchNonTLSCT;
+bool SecOTAPKIKillSwitchEnabled(CFStringRef switchKey);
 
 // SPI to return the array of currently trusted Escrow certificates
 CF_EXPORT
 CFArrayRef SecOTAPKICopyCurrentEscrowCertificates(uint32_t escrowRootType, CFErrorRef* error);
 
-// SPI to return the array of currently trusted CT logs
+// SPI to return the array of currently (TLS) trusted CT logs
 CF_EXPORT
 CFDictionaryRef SecOTAPKICopyCurrentTrustedCTLogs(CFErrorRef* error);
+
+// SPI to return the array of currently non-TLS trusted CT logs
+CF_EXPORT
+CFDictionaryRef SecOTAPKICopyNonTlsTrustedCTLogs(void);
 
 // SPI to return dictionary of CT log matching specified key id */
 CF_EXPORT
@@ -203,7 +205,7 @@ CF_EXPORT
 CFDictionaryRef SecOTASecExperimentCopyAsset(CFErrorRef* error);
 
 /* "Internal" interfaces for tests */
-#if !TARGET_OS_BRIDGE && __OBJC__
+#if __OBJC__
 BOOL UpdateOTACheckInDate(void);
 void UpdateKillSwitch(NSString *key, bool value);
 #endif

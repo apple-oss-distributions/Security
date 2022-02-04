@@ -80,7 +80,7 @@ public:
 	virtual CFArrayRef modifiedFiles();						// list of files modified by signing [main execcutable only]
 	virtual UnixPlusPlus::FileDesc &fd() = 0;				// a cached file descriptor for main executable file
 	virtual void flush();									// flush caches (refetch as needed)
-    virtual CFDictionaryRef diskRepInformation();           // information from diskrep
+    virtual CFDictionaryRef copyDiskRepInformation();		// information from diskrep
 
 	virtual void registerStapledTicket();
 
@@ -213,10 +213,23 @@ public:
 	void codeDirectory(const CodeDirectory *cd, CodeDirectory::SpecialSlot slot)
 		{ component(slot, CFTempData(cd->data(), cd->length())); }
 
+	bool getPreserveAFSC() {
 #if TARGET_OS_OSX
-	bool getPreserveAFSC()					{ return mPreserveAFSC; }
-	void setPreserveAFSC(bool flag)			{ mPreserveAFSC = flag; }
+		return mPreserveAFSC;
+#else
+		// AFSC is only valid on macOS targets.
+		return false;
 #endif
+	}
+
+	void setPreserveAFSC(bool flag) {
+#if TARGET_OS_OSX
+		mPreserveAFSC = flag;
+#else
+		// AFSC is only valid on macOS targets.
+		MacOSError::throwMe(errSecUnimplemented);
+#endif
+	}
 
 private:
 	Architecture mArch;

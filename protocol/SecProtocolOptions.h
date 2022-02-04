@@ -34,6 +34,8 @@
 #include <dispatch/dispatch.h>
 #include <os/object.h>
 
+#define SEC_PROTOCOL_CERT_COMPRESSION_DEFAULT 1
+
 /*!
  * The following diagram shows how clients interact with sec_protocol_options
  * and sec_protocol_metadata when configuring and using network security protocols.
@@ -278,6 +280,31 @@ sec_protocol_options_get_default_max_tls_protocol_version(void);
 API_AVAILABLE(macos(10.15), ios(13.0), watchos(6.0), tvos(13.0))
 tls_protocol_version_t
 sec_protocol_options_get_default_max_dtls_protocol_version(void);
+
+/*!
+ * @function sec_protocol_options_get_enable_encrypted_client_hello
+ *
+ * @abstract
+ *      For experimental use only. Find out whether Encrypted Client Hello has been enabled.
+ *
+ * @return A boolean that indicates whether or not Encrypted Client Hello has been enabled.
+ */
+SPI_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0), tvos(14.0))
+bool
+sec_protocol_options_get_enable_encrypted_client_hello(sec_protocol_options_t options);
+
+/*!
+ * @function sec_protocol_options_get_quic_use_legacy_codepoint
+ *
+ * @abstract
+ *      Check whether the QUIC legacy codepoint has been enabled.
+ *
+ * @return A boolean that indicates whether or not the QUIC legacy codepoint has been
+ *         enabled.
+ */
+SPI_AVAILABLE(macos(12.0), ios(15.0), watchos(8.0), tvos(15.0))
+bool
+sec_protocol_options_get_quic_use_legacy_codepoint(sec_protocol_options_t options);
 
 /*!
  * @function sec_protocol_options_add_tls_application_protocol
@@ -554,8 +581,8 @@ sec_protocol_options_set_peer_authentication_required(sec_protocol_options_t opt
  *
  * @abstract
  *      When this is enabled, the endpoint requests the peer certificate, but if none is provided, the
- *      endpoint still proceeds with the connection. Default false for servers; always false for clients (this
- *      function is a no-op for clients). If peer_authentication_required is set to true via
+ *      endpoint still proceeds with the connection. Default false for servers; always false for clients (clients ignore
+ *      this option). If peer_authentication_required is set to true via
  *      sec_protocol_options_set_peer_authentication_required(), peer_authentication_optional will be disregarded
  *      and the peer certificate will be required.
  *
@@ -568,6 +595,39 @@ sec_protocol_options_set_peer_authentication_required(sec_protocol_options_t opt
 SPI_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0), tvos(14.0))
 void
 sec_protocol_options_set_peer_authentication_optional(sec_protocol_options_t options, bool peer_authentication_optional);
+
+/*!
+ * @function sec_protocol_options_set_enable_encrypted_client_hello
+ *
+ * @abstract
+ *      For experimental use only. When this is enabled, the Encrypted Client Hello extension will be sent on the Client
+ *      Hello if TLS 1.3 is among the supported TLS versions. Default false.
+ *
+ * @param options
+ *      A `sec_protocol_options_t` instance.
+ *
+ * @param peer_authentication_optional
+ *      Flag to enable or disable Encrypted Client Hello.
+ */
+SPI_AVAILABLE(macos(12.0), ios(15.0), watchos(8.0), tvos(15.0))
+void
+sec_protocol_options_set_enable_encrypted_client_hello(sec_protocol_options_t options, bool enable_encrypted_client_hello);
+
+/*!
+ * @function sec_protocol_options_set_quic_use_legacy_codepoint
+ *
+ * @abstract
+ *      Set QUIC to use the legacy codepoint. Defaults to true.
+ *
+ * @param options
+ *      A `sec_protocol_options_t` instance.
+ *
+ * @param quic_use_legacy_codepoint
+ *      A boolean to enable/disable the legacy codepoint.
+ */
+SPI_AVAILABLE(macos(12.0), ios(15.0), watchos(8.0), tvos(15.0))
+void
+sec_protocol_options_set_quic_use_legacy_codepoint(sec_protocol_options_t options, bool quic_use_legacy_codepoint);
 
 #ifdef __BLOCKS__
 

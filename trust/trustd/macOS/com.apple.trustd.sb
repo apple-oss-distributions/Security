@@ -19,6 +19,11 @@
 (allow process-info-pidinfo)
 (allow file-read*)
 
+;; For validating client authorization to modify trust settings
+(allow authorization-right-obtain
+    (right-name "com.apple.trust-settings.user")
+    (right-name "com.apple.trust-settings.admin"))
+
 ;; ${PRODUCT_NAME}’s preference domain.
 (allow user-preference-read user-preference-write
     (preference-domain "com.apple.trustd"))
@@ -53,19 +58,23 @@
 
 (allow file-map-executable
     (regex #"/CoreServicesInternal")
-    (regex #"/csparser"))
+    (regex #"/csparser")
+    (regex #"/ldapdl"))
 
 (allow mach-lookup
 	(global-name "com.apple.ocspd")
 	(global-name "com.apple.SecurityServer")
 	(global-name "com.apple.SystemConfiguration.configd")
+    (global-name "com.apple.mobileassetd")
 	(global-name "com.apple.mobileassetd.v2")
     (global-name "com.apple.securityd.xpc")
     (global-name "com.apple.cfnetwork.cfnetworkagent")
     (global-name "com.apple.nsurlsessiond")
     (global-name "com.apple.dnssd.service")
     (xpc-service-name "com.apple.powerlog.plxpclogger.xpc")
-    (global-name "com.apple.nesessionmanager.content-filter"))
+    (global-name "com.apple.nesessionmanager.content-filter")
+    (global-name "com.apple.trustdFileHelper")
+    (global-name "com.apple.AppSSO.service-xpc"))
 
 (allow ipc-posix-shm
 	(ipc-posix-name "com.apple.AppleDatabaseChanged"))
@@ -82,7 +91,8 @@
     (iokit-property "chip-id")
     (iokit-property "unique-chip-id")
     (iokit-property "boot-manifest-hash")
-    (iokit-property "crypto-hash-method"))
+    (iokit-property "crypto-hash-method")
+    (iokit-property "boot-objects-path"))
 
 (allow network-outbound)
 (allow system-socket)

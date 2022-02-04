@@ -21,13 +21,6 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-/*
- * This is to fool os services to not provide the Keychain manager
- * interface that doesn't work since we don't have unified headers
- * between iOS and OS X. rdar://23405418/
- */
-#define __KEYCHAINCORE__ 1
-
 #import <Foundation/Foundation.h>
 #import <Foundation/NSXPCConnection_Private.h>
 #import <Security/Security.h>
@@ -186,6 +179,8 @@ command_sos_control(__unused int argc, __unused char * const * argv)
         bool circleHash = false;
         bool triggerRingUpdate = false;
         bool iCloudIdentityStatus = false;
+        bool removeV0Peers = false;
+        bool sosQueryEnabled = false;
 
         static struct option long_options[] =
         {
@@ -202,10 +197,12 @@ command_sos_control(__unused int argc, __unused char * const * argv)
             {"ghostbustInfo",   optional_argument, NULL, 'G'},
             {"ghostbustTriggered",   optional_argument, NULL, 'T'},
             {"icloudIdentityStatus",   optional_argument, NULL, 'i'},
+            {"removeV0Peers",   optional_argument, NULL, 'V'},
+            {"querySOSMode",   no_argument, NULL, 'Q'},
             {0, 0, 0, 0}
         };
 
-        while ((ch = getopt_long(argc, argv, "as:AB:GHIMRSTi", long_options, &option_index)) != -1) {
+        while ((ch = getopt_long(argc, argv, "as:AB:GHIMQRSTiV", long_options, &option_index)) != -1) {
             switch  (ch) {
                 case 'a': {
                     assertStashAccountKey = true;
@@ -233,6 +230,10 @@ command_sos_control(__unused int argc, __unused char * const * argv)
                         }
                         [backupPeers addObject:[NSString stringWithUTF8String:optarg]];
                     }
+                    break;
+                }
+                case 'Q': {
+                    sosQueryEnabled = true;
                     break;
                 }
                 case 'G': {
@@ -263,6 +264,9 @@ command_sos_control(__unused int argc, __unused char * const * argv)
                     break;
                 case 'i':
                     iCloudIdentityStatus = true;
+                    break;
+                case 'V':
+                    removeV0Peers = true;
                     break;
                 case '?':
                 default:
@@ -370,8 +374,22 @@ command_sos_control(__unused int argc, __unused char * const * argv)
                 }
             }];
 
+        } else if (removeV0Peers) {
+            [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
+                printControlFailureMessage(error);
+            }] removeV0Peers:^(bool removedV0Peer, NSError *error) {
+                printf("removed v0 peers:%d\n", removedV0Peer);
+                if (error) {
+                    printf("%s", [[NSString stringWithFormat:@"failed to remove V0 Peers: %@\n", error] UTF8String]);
+                }
+            }];
+        } else if (sosQueryEnabled == true) {
+            [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
+                printControlFailureMessage(error);
+            }] sosIsEnabledCB:^(bool result) {
+                printf("SOS Is %s\n", result ? "Active": "Monitoring");
+            }];
         } else {
-
             [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
                 printControlFailureMessage(error);
             }] userPublicKey:^(BOOL trusted, NSData *spki, NSError *error) {

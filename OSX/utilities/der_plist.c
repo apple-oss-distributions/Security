@@ -30,7 +30,8 @@
 
 #include <corecrypto/ccder.h>
 #include <CoreFoundation/CoreFoundation.h>
-
+#define CORE_ENTITLEMENTS_I_KNOW_WHAT_IM_DOING
+#include <CoreEntitlements/CoreEntitlementsPriv.h>
 #include "utilities/simulatecrash_assert.h"
 
 //
@@ -72,10 +73,16 @@ const uint8_t* der_decode_plist(CFAllocatorRef allocator,
             return der_decode_boolean(allocator, (CFBooleanRef*)pl, error, der, der_end);
         case CCDER_OCTET_STRING:
             return der_decode_data(allocator, (CFDataRef*)pl, error, der, der_end);
+        case CCDER_ENTITLEMENTS:
+            return der_decode_core_entitlements_data(allocator, (CFDataRef*)pl, error, der, der_end);
         case CCDER_GENERALIZED_TIME:
             return der_decode_date(allocator, (CFDateRef*)pl, error, der, der_end);
+        case CCDER_UTC_TIME:
+            return der_decode_utc_time(allocator, (CFDateRef*)pl, error, der, der_end);
         case CCDER_CONSTRUCTED_SEQUENCE:
             return der_decode_array(allocator, (CFArrayRef*)pl, error, der, der_end);
+        case CCDER_NUMERIC_STRING:
+            return der_decode_numeric_string(allocator, (CFStringRef*)pl, error, der, der_end);
         case CCDER_UTF8_STRING:
             return der_decode_string(allocator, (CFStringRef*)pl, error, der, der_end);
         case CCDER_INTEGER:
@@ -141,7 +148,7 @@ uint8_t* der_encode_plist_repair(CFPropertyListRef pl, CFErrorRef *error,
     CFTypeID  dataType = CFGetTypeID(pl);
 
     if (CFArrayGetTypeID() == dataType)
-        return der_encode_array((CFArrayRef) pl, error, der, der_end);
+        return der_encode_array_repair((CFArrayRef) pl, error, repair, der, der_end);
     else if (CFBooleanGetTypeID() == dataType)
         return der_encode_boolean((CFBooleanRef) pl, error, der, der_end);
     else if (CFDataGetTypeID() == dataType)
@@ -149,9 +156,9 @@ uint8_t* der_encode_plist_repair(CFPropertyListRef pl, CFErrorRef *error,
     else if (CFDateGetTypeID() == dataType)
         return der_encode_date_repair((CFDateRef) pl, error, repair, der, der_end);
     else if (CFDictionaryGetTypeID() == dataType)
-        return der_encode_dictionary((CFDictionaryRef) pl, error, der, der_end);
+        return der_encode_dictionary_repair((CFDictionaryRef) pl, error, repair, der, der_end);
     else if (CFSetGetTypeID() == dataType)
-        return der_encode_set((CFSetRef) pl, error, der, der_end);
+        return der_encode_set_repair((CFSetRef) pl, error, repair, der, der_end);
     else if (CFStringGetTypeID() == dataType)
         return der_encode_string((CFStringRef) pl, error, der, der_end);
     else if (CFNumberGetTypeID() == dataType)
@@ -186,7 +193,7 @@ CFPropertyListRef CFPropertyListCreateWithDERData(CFAllocatorRef allocator, CFDa
     CFPropertyListRef plist = NULL;
     const uint8_t *der = CFDataGetBytePtr(data);
     const uint8_t *der_end = der + CFDataGetLength(data);
-    der = der_decode_plist(0, &plist, error, der, der_end);
+    der = der_decode_plist(allocator, &plist, error, der, der_end);
     if (der && der != der_end) {
         SecCFDERCreateError(kSecDERErrorUnknownEncoding, CFSTR("trailing garbage after plist item"), NULL, error);
         CFReleaseNull(plist);

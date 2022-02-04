@@ -21,7 +21,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#if TARGET_DARWINOS
+#if defined(TARGET_DARWINOS) && TARGET_DARWINOS
 #undef OCTAGON
 #undef SECUREOBJECTSYNC
 #undef SHAREDWEBCREDENTIALS
@@ -144,6 +144,7 @@ void securityd_init_local_spi(void) {
 #endif
     // You're trying to bring up a (non-trustd) 'securityd'. Create the local handler for securityd XPCs.
     securityd_spi.secd_xpc_server = SecCreateLocalCFSecuritydXPCServer();
+    securityd_spi.sec_fill_security_client_muser = SecFillSecurityClientMuser;
 }
 
 void securityd_init_server(void) {
@@ -166,7 +167,7 @@ void securityd_init_server(void) {
 
 void securityd_init(CFURLRef home_path) {
     if (home_path) {
-        SetCustomHomeURL(home_path);
+        SecSetCustomHomeURL(home_path);
     }
 
     securityd_init_server();

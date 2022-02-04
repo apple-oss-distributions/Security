@@ -28,6 +28,7 @@
 
 #include "trust/trustd/SecCAIssuerCache.h"
 #include "trust/trustd/SecTrustLoggingServer.h"
+#include "trust/trustd/trustdFileLocations.h"
 #include <utilities/debugging.h>
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecFramework.h>
@@ -46,7 +47,6 @@
 #include "utilities/iOSforOSX.h"
 
 #include <CoreFoundation/CFUtilities.h>
-#include <utilities/SecFileLocations.h>
 #include <utilities/SecCFWrappers.h>
 
 static const char expireSQL[] = "DELETE FROM issuers WHERE expires<?";
@@ -119,7 +119,12 @@ static int sec_sqlite3_open(const char *db_name, sqlite3 **s3h,
                             bool create_path)
 {
 	int s3e;
-	s3e = sqlite3_open(db_name, s3h);
+#if TARGET_OS_IPHONE
+    int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FILEPROTECTION_NONE;
+#else
+    int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+#endif
+    s3e = sqlite3_open_v2(db_name, s3h, flags, NULL);
 	if (s3e == SQLITE_CANTOPEN && create_path) {
 		/* Make sure the path to db_name exists and is writable, then
          try again. */
@@ -254,19 +259,13 @@ errOut:
 }
 
 static void SecCAIssuerCacheInit(void) {
-#if TARGET_OS_IPHONE
-    WithPathInKeychainDirectory(CFSTR(kSecCAIssuerFileName), ^(const char *utf8String) {
+    WithPathInPrivateUserTrustdDirectory(CFSTR(kSecCAIssuerFileName), ^(const char *utf8String) {
         kSecCAIssuerCache = SecCAIssuerCacheCreate(utf8String);
     });
-#else
-    /* macOS caches should be in user cache dir */
-    WithPathInUserCacheDirectory(CFSTR(kSecCAIssuerFileName), ^(const char *utf8String) {
-        kSecCAIssuerCache = SecCAIssuerCacheCreate(utf8String);
-    });
-#endif
 
-    if (kSecCAIssuerCache)
+    if (kSecCAIssuerCache) {
         atexit(SecCAIssuerCacheGC);
+    }
 }
 
 static CF_RETURNS_RETAINED CFDataRef convertArrayOfCertsToData(CFArrayRef certificates) {
@@ -286,14 +285,14 @@ static CF_RETURNS_RETAINED CFDataRef convertArrayOfCertsToData(CFArrayRef certif
     return output;
 }
 
-static CF_RETURNS_RETAINED CFArrayRef convertDataToArrayOfCerts(uint8_t *data, size_t dataLen) {
+static CF_RETURNS_RETAINED CFArrayRef convertDataToArrayOfCerts(uint8_t *data, int dataLen) {
     if  (!data || dataLen == 0) {
         return NULL;
     }
 
     CFMutableArrayRef output = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
     uint8_t *nextCertPtr = data;
-    size_t remainingDataLen = dataLen;
+    int remainingDataLen = dataLen;
     while (nextCertPtr < data + dataLen) {
         SecCertificateRef cert = SecCertificateCreateWithBytes(NULL, nextCertPtr, remainingDataLen);
         if (cert) {
@@ -328,9 +327,10 @@ static void _SecCAIssuerCacheAddCertificates(SecCAIssuerCacheRef this,
     /* issuer.uri */
     require_action(uriData = CFURLCreateData(kCFAllocatorDefault, uri,
         kCFStringEncodingUTF8, false), errOut, s3e = SQLITE_NOMEM);
+    require_action(CFDataGetLength(uriData) > 0, errOut, s3e = SQLITE_NOMEM);
     s3e = sqlite3_bind_blob_wrapper(this->insertIssuer, 1,
-        CFDataGetBytePtr(uriData), CFDataGetLength(uriData), SQLITE_TRANSIENT);
-    CFRelease(uriData);
+        CFDataGetBytePtr(uriData), (size_t)CFDataGetLength(uriData), SQLITE_TRANSIENT);
+    CFReleaseNull(uriData);
 
     /* issuer.expires */
     if (!s3e) s3e = sqlite3_bind_double(this->insertIssuer, 2, expires);
@@ -338,10 +338,11 @@ static void _SecCAIssuerCacheAddCertificates(SecCAIssuerCacheRef this,
     /* issuer.certificate */
     require_action(certsData = convertArrayOfCertsToData(certificates), errOut,
                    s3e = SQLITE_NOMEM);
+    require_action(CFDataGetLength(certsData) > 0, errOut, s3e = SQLITE_NOMEM);
     if (!s3e) {
         s3e = sqlite3_bind_blob_wrapper(this->insertIssuer, 3,
                                         CFDataGetBytePtr(certsData),
-                                        CFDataGetLength(certsData), SQLITE_TRANSIENT);
+                                        (size_t)CFDataGetLength(certsData), SQLITE_TRANSIENT);
     }
     CFReleaseNull(certsData);
 
@@ -350,6 +351,8 @@ static void _SecCAIssuerCacheAddCertificates(SecCAIssuerCacheRef this,
     require_noerr(s3e = sec_sqlite3_reset(this->insertIssuer, s3e), errOut);
 
 errOut:
+    CFReleaseNull(uriData);
+    CFReleaseNull(certsData);
     if (s3e != SQLITE_OK) {
         secerror("caissuer cache add failed: %s", sqlite3_errmsg(this->s3h));
         TrustdHealthAnalyticsLogErrorCodeForDatabase(TACAIssuerCache, TAOperationWrite, TAFatalError, s3e);
@@ -365,9 +368,10 @@ static CFArrayRef _SecCAIssuerCacheCopyMatching(SecCAIssuerCacheRef this,
     CFDataRef uriData = NULL;
     require(uriData = CFURLCreateData(kCFAllocatorDefault, uri,
                                       kCFStringEncodingUTF8, false), errOut);
+    require_action(CFDataGetLength(uriData) > 0, errOut, s3e = SQLITE_NOMEM);
     s3e = sqlite3_bind_blob_wrapper(this->selectIssuer, 1, CFDataGetBytePtr(uriData),
-                            CFDataGetLength(uriData), SQLITE_TRANSIENT);
-    CFRelease(uriData);
+                            (size_t)CFDataGetLength(uriData), SQLITE_TRANSIENT);
+    CFReleaseNull(uriData);
 
     if (!s3e) s3e = sqlite3_step(this->selectIssuer);
     if (s3e == SQLITE_ROW) {
@@ -382,6 +386,7 @@ static CFArrayRef _SecCAIssuerCacheCopyMatching(SecCAIssuerCacheRef this,
     require_noerr(s3e = sec_sqlite3_reset(this->selectIssuer, s3e), errOut);
 
 errOut:
+    CFReleaseNull(uriData);
     if (s3e != SQLITE_OK) {
         if (s3e != SQLITE_DONE) {
             secerror("caissuer cache lookup failed: %s", sqlite3_errmsg(this->s3h));

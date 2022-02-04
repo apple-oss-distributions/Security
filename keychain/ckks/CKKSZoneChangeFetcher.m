@@ -40,15 +40,18 @@
 
 CKKSFetchBecause* const CKKSFetchBecauseAPNS = (CKKSFetchBecause*) @"apns";
 CKKSFetchBecause* const CKKSFetchBecauseAPIFetchRequest = (CKKSFetchBecause*) @"api";
+CKKSFetchBecause* const CKKSFetchBecauseSEAPIFetchRequest = (CKKSFetchBecause*) @"se-api";
+CKKSFetchBecause* const CKKSFetchBecauseKeySetFetchRequest = (CKKSFetchBecause*) @"keyset";
 CKKSFetchBecause* const CKKSFetchBecauseCurrentItemFetchRequest = (CKKSFetchBecause*) @"currentitemcheck";
 CKKSFetchBecause* const CKKSFetchBecauseInitialStart = (CKKSFetchBecause*) @"initialfetch";
-CKKSFetchBecause* const CKKSFetchBecauseSecuritydRestart = (CKKSFetchBecause*) @"restart";
 CKKSFetchBecause* const CKKSFetchBecausePreviousFetchFailed = (CKKSFetchBecause*) @"fetchfailed";
 CKKSFetchBecause* const CKKSFetchBecauseNetwork = (CKKSFetchBecause*) @"network";
 CKKSFetchBecause* const CKKSFetchBecauseKeyHierarchy = (CKKSFetchBecause*) @"keyhierarchy";
 CKKSFetchBecause* const CKKSFetchBecauseTesting = (CKKSFetchBecause*) @"testing";
 CKKSFetchBecause* const CKKSFetchBecauseResync = (CKKSFetchBecause*) @"resync";
 CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-coming";
+CKKSFetchBecause* const CKKSFetchBecauseResolvingConflict = (CKKSFetchBecause*) @"conflict";
+CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"periodic";
 
 #pragma mark - CKKSZoneChangeFetchDependencyOperation
 @interface CKKSZoneChangeFetchDependencyOperation : CKKSResultOperation
@@ -91,6 +94,7 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
 @property NSString* name;
 @property NSOperationQueue* operationQueue;
 @property dispatch_queue_t queue;
+@property BOOL halted;
 
 @property NSError* lastCKFetchError;
 
@@ -165,19 +169,22 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
     }
 }
 
-- (void)registerClient:(id<CKKSChangeFetcherClient>)client
+- (void)registerClient:(id<CKKSChangeFetcherClient>)client zoneID:(CKRecordZoneID*)zoneID
 {
     @synchronized(self.clientMap) {
-        [self.clientMap setObject:client forKey:client.zoneID];
+        [self.clientMap setObject:client forKey:zoneID];
     }
 }
 
-- (NSArray<id<CKKSChangeFetcherClient>>*)clients {
-    NSMutableArray<id<CKKSChangeFetcherClient>> *clients = [NSMutableArray array];
+- (NSDictionary<CKRecordZoneID*, id<CKKSChangeFetcherClient>>*)strongClientMap
+{
+    NSMutableDictionary<CKRecordZoneID*, id<CKKSChangeFetcherClient>>* clients = [NSMutableDictionary dictionary];
     @synchronized (self.clientMap) {
-        for(id<CKKSChangeFetcherClient> client in [self.clientMap objectEnumerator]) {
-            if (client) {
-                [clients addObject:client];
+        for(CKRecordZoneID* key in [self.clientMap keyEnumerator]) {
+            id<CKKSChangeFetcherClient> client = [self.clientMap objectForKey:key];
+
+            if(client) {
+                clients[key] = client;
             }
         }
     }
@@ -201,10 +208,11 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
     // make sure we don't hold the self.queue when we call out to clients since that will lead
     // to lock inversions
 
-    NSArray<id<CKKSChangeFetcherClient>> *clients = [self clients];
+    NSDictionary<CKRecordZoneID*, id<CKKSChangeFetcherClient>>* clients = [self strongClientMap];
 
-    for(id<CKKSChangeFetcherClient> client in clients) {
-        if([client zoneIsReadyForFetching]) {
+    for(CKRecordZoneID* zoneID in clients.allKeys) {
+        id<CKKSChangeFetcherClient> client = clients[zoneID];
+        if([client zoneIsReadyForFetching:zoneID]) {
             notReady = NO;
             break;
         }
@@ -280,6 +288,12 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
 
 -(void)maybeCreateNewFetchOnQueue {
     dispatch_assert_queue(self.queue);
+
+    if(self.halted) {
+        ckksnotice_global("ckksfetcher", "Halted; not starting a new fetch");
+        return;
+    }
+
     if(self.newRequests &&
        (self.currentFetch == nil || [self.currentFetch isFinished]) &&
        (self.currentProcessResult == nil || [self.currentProcessResult isFinished])) {
@@ -313,16 +327,16 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
 
     CKOperationGroup* operationGroup = [CKOperationGroup CKKSGroupWithName: reasonsString];
 
-    NSArray<id<CKKSChangeFetcherClient>> *clients = [self clients];
+    NSDictionary<CKRecordZoneID*, id<CKKSChangeFetcherClient>>* clientMap = [self strongClientMap];
 
-    if(clients.count == 0u) {
+    if(clientMap.count == 0u) {
         ckksnotice_global("ckksfetcher", "No clients");
         // Nothing to do, really.
     }
 
     CKKSFetchAllRecordZoneChangesOperation* fetchAllChanges = [[CKKSFetchAllRecordZoneChangesOperation alloc] initWithContainer:self.container
                                                                                                                      fetchClass:self.fetchRecordZoneChangesOperationClass
-                                                                                                                        clients:clients
+                                                                                                                      clientMap:clientMap
                                                                                                                    fetchReasons:lastFetchReasons
                                                                                                                      apnsPushes:lastAPNSPushes
                                                                                                                     forceResync:false
@@ -350,7 +364,8 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
                 for(CKRecordZoneID* zoneID in fetchAllChanges.fetchedZoneIDs) {
                     id<CKKSChangeFetcherClient> client = [self.clientMap objectForKey:zoneID];
                     if(client) {
-                        attemptAnotherFetch |= [client shouldRetryAfterFetchError:fetchAllChanges.error];
+                        attemptAnotherFetch |= [client shouldRetryAfterFetchError:fetchAllChanges.error
+                                                                           zoneID:zoneID];
                     }
                 }
             }
@@ -433,6 +448,21 @@ CKKSFetchBecause* const CKKSFetchBecauseMoreComing = (CKKSFetchBecause*) @"more-
 
 -(void)cancel {
     [self.fetchScheduler cancel];
+}
+
+- (void)halt
+{
+    [self.fetchScheduler cancel];
+    dispatch_sync(self.queue, ^{
+        self.halted = YES;
+    });
+
+    [self.currentFetch cancel];
+    if(self.holdOperation) {
+        [self.currentFetch removeDependency:self.holdOperation];
+    }
+    [self.currentFetch waitUntilFinished];
+    [self.currentProcessResult waitUntilFinished];
 }
 
 @end

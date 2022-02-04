@@ -36,6 +36,7 @@
 #include <Security/SecTrust.h>
 #include <CoreFoundation/CFData.h>
 #include <security_utilities/dispatch.h>
+#include <CoreEntitlements/CoreEntitlements.h>
 
 namespace Security {
 namespace CodeSigning {
@@ -140,7 +141,7 @@ public:
 	std::string signatureSource();
  	virtual CFDataRef component(CodeDirectory::SpecialSlot slot, OSStatus fail = errSecCSSignatureFailed);
  	virtual CFDictionaryRef infoDictionary();
-	CFDictionaryRef diskRepInformation();
+	CFDictionaryRef copyDiskRepInformation();
 
 	CFDictionaryRef entitlements();
 	CFDataRef copyComponent(CodeDirectory::SpecialSlot slot, CFDataRef hash);
@@ -156,7 +157,9 @@ public:
 	void setMonitor(SecCodeCallback monitor) { mMonitor = monitor; }
 	CFTypeRef reportEvent(CFStringRef stage, CFDictionaryRef info);
 	void reportProgress(unsigned amount = 1);
-	
+
+	SecCSFlags getFlags() { return mFlags; }
+	void setFlags(SecCSFlags flags) { mFlags = flags; }
 	void setValidationFlags(SecCSFlags flags) { mValidationFlags = flags; }
 	void setValidationModifiers(CFDictionaryRef modifiers);
 	
@@ -180,6 +183,8 @@ public:
 	void validateResources(SecCSFlags flags);
 	void validateExecutable();
 	void validateNestedCode(CFURLRef path, const ResourceSeal &seal, SecCSFlags flags, bool isFramework);
+	void checkRevocationOnNestedBinary(UnixPlusPlus::FileDesc &fd, CFURLRef url, SecCSFlags flags);
+	bool validationCannotUseNetwork();
 	
 	void validatePlainMemoryResource(string path, CFDataRef fileData, SecCSFlags flags);
 	
@@ -209,6 +214,7 @@ public:
 public:
 	void staticValidate(SecCSFlags flags, const SecRequirement *req);
 	void staticValidateCore(SecCSFlags flags, const SecRequirement *req);
+	void staticValidateResource(string resourcePath, SecCSFlags flags, const SecRequirement *req);
 	
 protected:
 	bool loadCodeDirectories(CodeDirectoryMap& cdMap) const;
@@ -289,6 +295,8 @@ private:
 	CFRef<CFDataRef> mCDHash;			// hash of chosen CodeDirectory
 	CFRef<CFArrayRef> mCDHashes;		// hashes of all CodeDirectories (in digest type code order)
 	CFRef<CFDictionaryRef> mCDHashFullDict;	// untruncated hashes of CodeDirectories (as dictionary)
+	CEQueryContext_t mCEQueryContext; // Reference to the CoreEntitlements object associated with this Code's entitlements
+	CFRef<CFDataRef> mCEReconstitutedEnts; // XML entitlements blob that has been reconsituted, used where the raw form IS NOT needed
 
 	bool mGotResourceBase;				// asked mRep for resourceBasePath
 	CFRef<CFURLRef> mResourceBase;		// URL form of resource base directory
@@ -297,16 +305,16 @@ private:
 
 	LimitedAsync *mLimitedAsync;		// limited async workers for verification
 
-	uint32_t mFlags;					// flags from creation
+	SecCSFlags mFlags;					// flags from creation
 	bool mNotarizationChecked;			// ensure notarization check only performed once
 	bool mStaplingChecked;				// ensure stapling check only performed once
 	double mNotarizationDate;			// the notarization ticket's date, if online check failed
+	bool mNetworkEnabledByDefault;		// whether this code object uses the network by default
 
 	// signature verification outcome (mTrust == NULL => not done yet)
 	CFRef<SecTrustRef> mTrust;			// outcome of crypto validation (valid or not)
 	CFRef<CFArrayRef> mCertChain;
     bool mTrustedSigningCertChain;
-
 };
 
 

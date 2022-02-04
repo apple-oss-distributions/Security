@@ -28,6 +28,8 @@
 #import "keychain/ot/OTDefines.h"
 #import "keychain/ot/OTConstants.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
+#import "keychain/ckks/CloudKitCategories.h"
+#import "keychain/ckks/CKKS.h"
 
 OctagonState* const OctagonStateMachineNotStarted = (OctagonState*) @"not_started";
 OctagonState* const OctagonStateMachineHalted = (OctagonState*) @"halted";
@@ -173,6 +175,21 @@ OctagonState* const OctagonStateMachineHalted = (OctagonState*) @"halted";
     });
 
     return self;
+}
+
+@end
+
+@implementation NSError (OctagonRetry)
+
+- (NSTimeInterval)overallCuttlefishRetry {
+    NSTimeInterval baseDelay = SecCKKSTestsEnabled() ? 2 : 30;
+    NSTimeInterval ckDelay = CKRetryAfterSecondsForError(self);
+    NSTimeInterval cuttlefishDelay = [self cuttlefishRetryAfter];
+    NSTimeInterval delay = MAX(ckDelay, cuttlefishDelay);
+    if (delay == 0) {
+        delay = baseDelay;
+    }
+    return delay;
 }
 
 @end

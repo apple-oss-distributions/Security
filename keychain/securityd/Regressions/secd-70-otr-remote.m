@@ -107,7 +107,7 @@ static void tests(void)
     SOSAccountJoinCircles_wTxn(bob_account, &testError);
     
     NSData* alice_account_data = [alice_account encodedData:&ns_testError];
-    NSData* bob_account_data = [bob_account encodedData:&ns_testError];;
+    NSData* bob_account_data = [bob_account encodedData:&ns_testError];
     
     CFArrayRef alice_peers = SOSAccountCopyPeers(alice_account, &testError);
     CFArrayRef bob_peers = SOSAccountCopyPeers(bob_account, &testError);
@@ -189,6 +189,7 @@ int secd_70_otr_remote(int argc, char *const *argv)
     plan_tests(kTestTestCount);
     secd_test_setup_temp_keychain(__FUNCTION__, NULL);
     tests();
+    secd_test_teardown_delete_temp_keychain(__FUNCTION__);
 #else
     plan_tests(0);
 #endif

@@ -390,9 +390,9 @@ static bool SecSystemAnchorSourceContains(SecCertificateSourceRef source,
                 CFIndex  aCert_Length = CFDataGetLength(cert_data);
                 const UInt8*  aCert_Data_Ptr = CFDataGetBytePtr(cert_data);
 
-                if (aCert_Length == cert_length)
+                if (aCert_Length == cert_length && cert_length > 0)
                 {
-                    if (!memcmp(cert_data_ptr, aCert_Data_Ptr, cert_length))
+                    if (!memcmp(cert_data_ptr, aCert_Data_Ptr, (size_t)cert_length))
                     {
                         result = true;
                         break;
@@ -432,12 +432,9 @@ static bool SecUserAnchorSourceCopyParents(SecCertificateSourceRef source, SecCe
 
 static CFArrayRef SecUserAnchorSourceCopyUsageConstraints(SecCertificateSourceRef source,
                                                           SecCertificateRef certificate) {
-    CFDataRef digest = SecCertificateGetSHA1Digest(certificate);
-    if (!digest)
-        return NULL;
     CFArrayRef usageConstraints = NULL;
     bool ok = _SecTrustStoreCopyUsageConstraints(SecTrustStoreForDomain(kSecTrustStoreDomainUser),
-                                                 digest, &usageConstraints, NULL);
+                                                 certificate, &usageConstraints, NULL);
     if (ok) {
         return usageConstraints;
     } else {

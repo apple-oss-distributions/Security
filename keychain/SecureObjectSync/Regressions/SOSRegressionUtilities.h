@@ -33,7 +33,10 @@
 #include <CoreFoundation/CFError.h>
 #include <Security/SecKey.h>
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
+#include "keychain/SecureObjectSync/SOSPeerInfoPriv.h"
 #include "keychain/SecureObjectSync/SOSFullPeerInfo.h"
+#include "keychain/SecureObjectSync/SOSCircle.h"
+#include "keychain/SecureObjectSync/SOSCirclePriv.h"
 #include <TargetConditionals.h>
 
 __BEGIN_DECLS
@@ -77,6 +80,15 @@ SOSCreateFullPeerInfoFromName(CFStringRef name,
                               SecKeyRef* outOctagonSigningKey,
                               SecKeyRef* outOctagonEncryptionKey,
                               CFErrorRef *error);
+
+SOSFullPeerInfoRef SOSTestV0FullPeerInfo(CFStringRef name, SecKeyRef userKey, CFStringRef OSName, SOSPeerInfoDeviceClass devclass);
+SOSFullPeerInfoRef SOSTestFullPeerInfo(CFStringRef name, SecKeyRef userKey, CFStringRef OSName, SOSPeerInfoDeviceClass devclass);
+SOSCircleRef SOSTestCircle(SecKeyRef userKey, void * firstFpiv, ... );
+SecKeyRef SOSMakeUserKeyForPassword(const char *passwd);
+bool SOSPeerValidityCheck(SOSFullPeerInfoRef fpi, SecKeyRef userKey, CFErrorRef *error);
+
+
+CFStringRef SOSModelFromType(SOSPeerInfoDeviceClass cls);
 
 __END_DECLS
 

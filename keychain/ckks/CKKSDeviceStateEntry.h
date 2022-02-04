@@ -27,7 +27,7 @@
 #if OCTAGON
 
 #include "keychain/securityd/SecDbItem.h"
-#include <utilities/SecDb.h>
+#include "utilities/SecDb.h"
 
 #import <CloudKit/CloudKit.h>
 #import "keychain/ckks/CKKS.h"
@@ -47,6 +47,8 @@ NS_ASSUME_NONNULL_BEGIN
  *   - This will be uploaded to CloudKit
  *   - We will have receive such records from other devices
  */
+
+@class CKKSKeychainViewState;
 
 @interface CKKSDeviceStateEntry : CKKSCKRecordHolder
 @property NSString* device;
@@ -88,6 +90,15 @@ NS_ASSUME_NONNULL_BEGIN
             currentClassCUUID:(NSString* _Nullable)currentClassCUUID
                        zoneID:(CKRecordZoneID*)zoneID
               encodedCKRecord:(NSData* _Nullable)encodedrecord;
+
++ (CKKSDeviceStateEntry* _Nullable)intransactionCreateDeviceStateForView:(CKKSKeychainViewState*)viewState
+                                                          accountTracker:(CKKSAccountStateTracker*)accountTracker
+                                                        lockStateTracker:(CKKSLockStateTracker*)lockStateTracker
+                                                                   error:(NSError**)error;
+
++ (BOOL)intransactionRecordChanged:(CKRecord*)record resync:(BOOL)resync error:(NSError**)error;
++ (BOOL)intransactionRecordDeleted:(CKRecordID*)recordID resync:(BOOL)resync error:(NSError**)error;
+
 @end
 
 NS_ASSUME_NONNULL_END
