@@ -43,7 +43,7 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         [interface setClasses:errClasses forSelector:@selector(removeAllowedMachineIDsWithContainer:context:machineIDs:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchAllowedMachineIDsWithContainer:context:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchEgoEpochWithContainer:context:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(prepareWithContainer:context:epoch:machineID:bottleSalt:bottleID:modelID:deviceName:serialNumber:osVersion:policyVersion:policySecrets:syncUserControllableViews:secureElementIdentity:signingPrivKeyPersistentRef:encPrivKeyPersistentRef:reply:) argumentIndex:6 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(prepareWithContainer:context:epoch:machineID:bottleSalt:bottleID:modelID:deviceName:serialNumber:osVersion:policyVersion:policySecrets:syncUserControllableViews:secureElementIdentity:setting:signingPrivKeyPersistentRef:encPrivKeyPersistentRef:reply:) argumentIndex:6 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(prepareInheritancePeerWithContainer:context:epoch:machineID:bottleSalt:bottleID:modelID:deviceName:serialNumber:osVersion:policyVersion:policySecrets:syncUserControllableViews:secureElementIdentity:signingPrivKeyPersistentRef:encPrivKeyPersistentRef:crk:reply:) argumentIndex:7 ofReply:YES];
 
         [interface setClasses:errClasses forSelector:@selector(establishWithContainer:context:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:3 ofReply:YES];
@@ -73,7 +73,7 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         [interface setClasses:errClasses forSelector:@selector(removeCustodianRecoveryKeyWithContainer:context:uuid:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(reportHealthWithContainer:context:stateMachineState:trustState:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(pushHealthInquiryWithContainer:context:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(requestHealthCheckWithContainer:context:requiresEscrowCheck:reply:) argumentIndex:5 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(requestHealthCheckWithContainer:context:requiresEscrowCheck:knownFederations:reply:) argumentIndex:5 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(getSupportAppInfoWithContainer:context:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(removeEscrowCacheWithContainer:context:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchAccountSettingsWithContainer:context:reply:) argumentIndex:1 ofReply:YES];

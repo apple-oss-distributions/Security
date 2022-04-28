@@ -201,7 +201,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         _sosEnabledForPlatform = OctagonPlatformSupportsSOS();
         _cuttlefishXPCConnection = cuttlefishXPCConnection;
 
-        _cloudKitContainer = [CKKSViewManager makeCKContainer:SecCKKSContainerName usePCS:SecCKKSContainerUsePCS];
+        _cloudKitContainer = [OTManager makeCKContainer:SecCKKSContainerName];
         _accountStateTracker = [[CKKSAccountStateTracker alloc] init:_cloudKitContainer
                                            nsnotificationCenterClass:cloudKitClassDependencies.nsnotificationCenterClass];
 
@@ -242,7 +242,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         _lockStateTracker = lockStateTracker;
         _personaAdapter = personaAdapter;
 
-        _cloudKitContainer = [CKKSViewManager makeCKContainer:SecCKKSContainerName usePCS:SecCKKSContainerUsePCS];
+        _cloudKitContainer = [OTManager makeCKContainer:SecCKKSContainerName];
         _accountStateTracker = [[CKKSAccountStateTracker alloc] init:_cloudKitContainer
                                            nsnotificationCenterClass:cloudKitClassDependencies.nsnotificationCenterClass];
         _reachabilityTracker = [[CKKSReachabilityTracker alloc] init];
@@ -2334,6 +2334,36 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
     [cfshContext rpcFetchTrustedSecureElementIdentities:reply];
 }
 
+
+- (void)tlkRecoverabilityForEscrowRecordData:(NSString* _Nullable)containerName
+                                  contextID:(NSString*)contextID
+                                 recordData:(NSData*)recordData
+                                      reply:(void (^)(NSArray<NSString*>* _Nullable views, NSError* _Nullable error))reply
+{
+    NSError* clientError = nil;
+    if(![self allowClientRPC:&clientError]) {
+        secnotice("octagon", "Rejecting a tlkRecoverabilityForEscrowRecordData RPC for container (%@) and context (%@): %@", containerName, contextID, clientError);
+        reply(nil, clientError);
+        return;
+    }
+    
+    OTCuttlefishContext* cfshContext = [self contextForContainerName:containerName contextID:contextID];
+    if(!cfshContext) {
+        reply(nil, [NSError errorWithDomain:OctagonErrorDomain
+                                       code:OctagonErrorNoSuchContext
+                                description:[NSString stringWithFormat:@"No context for (%@,%@)", containerName, contextID]]);
+        return;
+    }
+    [cfshContext rpcTlkRecoverabilityForEscrowRecordData:recordData reply:reply];
+}
+
++ (CKContainer*)makeCKContainer:(NSString*)containerName
+{
+    CKContainerOptions* containerOptions = [[CKContainerOptions alloc] init];
+    containerOptions.bypassPCSEncryption = YES;
+    CKContainerID *containerID = [CKContainer containerIDForContainerIdentifier:containerName];
+    return [[CKContainer alloc] initWithContainerID:containerID options:containerOptions];
+}
 
 @end
 

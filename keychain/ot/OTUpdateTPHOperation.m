@@ -85,7 +85,7 @@
 
             if(!fatal) {
                 if(!pendingFlag) {
-                    NSTimeInterval delay = [self.error overallCuttlefishRetry];
+                    NSTimeInterval delay = [self.error retryInterval];
 
                     pendingFlag = [[OctagonPendingFlag alloc] initWithFlag:self.retryFlag
                                                             delayInSeconds:delay];
@@ -124,10 +124,6 @@
                                           policySecrets:nil
                               syncUserControllableViews:nil
                                   secureElementIdentity:secureElementIdentity
-#if !defined(__OPEN_SOURCE__) && APPLE_FEATURE_WALRUS_UI
-                                          walrusSetting:nil
-                                              webAccess:nil
-#endif /* APPLE_FEATURE_WALRUS_UI */         
                                                   reply:^(TrustedPeersHelperPeerState* peerState, TPSyncingPolicy* syncingPolicy, NSError* error) {
             STRONGIFY(self);
             if(error || !peerState) {

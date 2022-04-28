@@ -103,7 +103,8 @@
 /* Changed the name of the keychain changed notification, for testing */
 static const char *g_keychain_changed_notification = kSecServerKeychainChangedNotification;
 static CFNumberRef lastRowIDHandled = NULL;
-
+static CFErrorRef testError = NULL;
+static CFDictionaryRef rowIDAndErrorDictionary = NULL; /* CFDictionaryRef ex. [1: errSecNotAvailable], [2 : errSecDecode]*/
 #define  MAX_NUM_PERSISTENT_REF_ROWIDS    100
 
 void SecItemServerSetKeychainChangedNotification(const char *notification_name)
@@ -612,10 +613,12 @@ static bool UpgradeItemPhase2(SecDbConnectionRef inDbt, bool *inProgress, int ol
                 switch (status) {
                     case errSecDecode: {
                         // Items producing errSecDecode are silently dropped - they are not decodable and lost forever.
-                        // make sure we use a local error so that this error is not proppaged upward and cause a
+                        // This also happens if we can't re-encode the item for a now non-existent persona.
+                        // Make sure we use a local error so that it's not propagated upward, which would cause a
                         // migration failure.
                         CFErrorRef deleteError = NULL;
-                        (void)SecDbItemDelete(item, threadDbt, false, false, &deleteError);
+                        // Don't create a tombstone, just hard delete the item.
+                        (void)SecDbItemDelete(item, threadDbt, kCFBooleanFalse, false, &deleteError);
                         CFReleaseNull(deleteError);
                         ok = true;
                         break;
@@ -683,41 +686,55 @@ out:
 }
 
 
-static bool phase3EvaluateErrorAndStop(bool *inProgress, bool *stop, CFErrorRef updateError, CFErrorRef *error) {
+static bool phase3EvaluateErrorAndStop(CFErrorRef updateError, CFErrorRef *error) {
     bool shouldStop = false;
     CFIndex status = CFErrorGetCode(updateError);
 
     switch (status) {
         case errSecDecode:
             // Items producing errSecDecode are not decodable and lost forever.
-            // In the future we should probably delete them.
-            *stop = true;
-            secnotice("upgr", "Failed to decode keychain item");
+            // We should probably consider deleting them here.
+            secnotice("upgr-phase3", "failed to decode keychain item");
             break;
         case errSecInteractionNotAllowed:
-            secnotice("upgr", "Bailing in phase 3 interaction not allowed: %@", updateError);
-            *inProgress = true;
-            *stop = true;
+            secnotice("upgr-phase3", "interaction not allowed: %@", updateError);
             shouldStop = true;
-            CFReleaseNull(lastRowIDHandled);
+            CFErrorPropagate(CFRetainSafe(updateError), error);
             break;
         case errSecAuthNeeded:
+            // This particular item requires authentication, attempt to continue iterating through the keychain db
+            secnotice("upgr-phase3", "authentication needed: %@", updateError);
             break;
 #if USE_KEYSTORE
         case kAKSReturnNotReady:
         case kAKSReturnTimeout:
+            secnotice("upgr-phase3", "AKS is not ready/timing out: %@", updateError);
+            shouldStop = true;
+            CFErrorPropagate(CFRetainSafe(updateError), error);
+            break;
 #endif
         case errSecNotAvailable:
-            secnotice("upgr", "Bailing in phase 3 because AKS is unavailable: %@", updateError);
-            *inProgress = true;     // We're not done, call me again later!
-            *stop = true;
-            shouldStop = true;
-            // FALLTHROUGH
+            secnotice("upgr-phase3", "AKS is unavailable: %@", updateError);
+            break;
         default:
             CFErrorPropagate(CFRetainSafe(updateError), error);
             break;
     }
     return shouldStop;
+}
+
+static CFErrorRef errorForRowID(CFNumberRef rowID) {
+    if (!rowIDAndErrorDictionary) {
+        return NULL;
+    }
+    
+    CFErrorRef matching = NULL;
+
+    if (CFDictionaryContainsKey(rowIDAndErrorDictionary, rowID)) {
+        matching = (CFErrorRef)CFDictionaryGetValue(rowIDAndErrorDictionary, rowID);
+    }
+    
+    return matching;
 }
 
 // Goes through all items for each table and assigns a persistent ref UUID
@@ -750,17 +767,18 @@ bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *e
         __block CFErrorRef cferror = NULL;
         __block CFMutableArrayRef rowIDsToBeUpdated = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
 
+        //evaluating only items that have an empty persistref field
         SecDbPrepare(inDbt, sql, &cferror, ^void (sqlite3_stmt *stmt) {
             SecDbStep(inDbt, stmt, &cferror, ^(bool *stop) {
                 int64_t rowid = sqlite3_column_int64(stmt, 0);
-                secnotice("upgr", "picked up rowid: %lld that needs a persistref", rowid);
+                secnotice("upgr-phase3", "picked up rowid: %lld that needs a persistref", rowid);
                 CFNumberRef rowid_cf = CFNumberCreate(kCFAllocatorDefault, kCFNumberLongLongType, &rowid);
-                
+
                 //only add rowids that are greater than the last 'highest' processed rowID.  This is to prevent infinite looping.
                 if (lastRowIDHandled == NULL || CFNumberCompare(rowid_cf, lastRowIDHandled, NULL) == kCFCompareGreaterThan) {
-                    CFArrayAppendValue(rowIDsToBeUpdated, rowid_cf);
-                    
-                    if (CFArrayGetCount(rowIDsToBeUpdated) > MAX_NUM_PERSISTENT_REF_ROWIDS) {
+                    if (CFArrayGetCount(rowIDsToBeUpdated) < MAX_NUM_PERSISTENT_REF_ROWIDS) {
+                        CFArrayAppendValue(rowIDsToBeUpdated, rowid_cf);
+                    } else {
                         *stop = true;
                         *inProgress = true;
                     }
@@ -771,11 +789,11 @@ bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *e
 
         CFReleaseNull(sql);
 
-        __block bool shouldStop = false;
+        __block bool shouldStopIteratingArray = false;
 
         CFArrayForEach(rowIDsToBeUpdated, ^(const void *row) {
     
-            if (shouldStop) { //stop processing items in the array
+            if (shouldStopIteratingArray) { //stop processing items in the array
                 return;
             }
             
@@ -793,37 +811,47 @@ bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *e
             }, ^(SecDbItemRef item, bool *stop) {
                 CFErrorRef localError = NULL;
                 CFErrorRef fetchError = NULL;
+                CFNumberRef previousRowIDHandled = NULL;
 
-                //keep track of the highest rowID checked. if items are corrupt we will never be able to unwrap them
-                //and potentially cause an infinite loop.
+                //keep track of the highest rowID checked.
+                //if items are corrupt we will never be able to unwrap them
+                //or if the items require authentication they can't be upgraded at this point
+                //in both cases, these items need to be ignored for now
+                CFTransferRetained(previousRowIDHandled, lastRowIDHandled);
+                
                 CFReleaseNull(lastRowIDHandled);
+                
                 lastRowIDHandled = CFRetainSafe(row_cf);
                 
                 //only update items that do not have a persistent ref UUID
                 CFDataRef persistRef = SecDbItemGetPersistentRef(item, &localError);
                 if (localError) {
-                    secerror("upgr: failed to get persistent ref error: %@", localError);
-                    if (phase3EvaluateErrorAndStop(inProgress, stop, localError, error)) {
-                        shouldStop = true;
+                    secerror("upgr-phase3: failed to get persistent ref error: %@", localError);
+                    if (phase3EvaluateErrorAndStop(localError, error)) {
+                        shouldStopIteratingArray = true;
+                        *inProgress = true;
+                        CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                        CFReleaseNull(localError);
                         return;
                     }
+                    CFReleaseNull(localError);
                 }
 
                 sqlite_int64 itemRowID = SecDbItemGetRowId(item, &fetchError);
                 if (fetchError) {
-                    secerror("upgr: failed to get rowID error: %@", fetchError);
+                    secerror("upgr-phase3: failed to get rowID error: %@", fetchError);
                 }
 
                 CFStringRef itemClass = SecDbItemGetClass(item)->name;
 
                 CFStringRef shouldPerformUpgrade = (persistRef && CFDataGetLength(persistRef) == PERSISTENT_REF_UUID_BYTES_LENGTH) ? CFSTR("NO") : CFSTR("YES");
 
-                secnotice("upgr", "inspecting item at row %lld in table %@, should add persistref uuid?: %@", itemRowID, itemClass, shouldPerformUpgrade);
+                secnotice("upgr-phase3", "inspecting item at row %lld in table %@, should add persistref uuid?: %@", itemRowID, itemClass, shouldPerformUpgrade);
                 CFReleaseNull(fetchError);
                 CFReleaseNull(localError);
 
                 if (CFStringCompare(shouldPerformUpgrade, CFSTR("YES"), 0) == kCFCompareEqualTo) {
-                    secnotice("upgr", "upgrading item persistentref at row id %lld", itemRowID);
+                    secnotice("upgr-phase3", "upgrading item persistentref at row id %lld", itemRowID);
 
                     //update item to have a UUID
                     CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);
@@ -835,32 +863,63 @@ bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *e
                     bool setResult = SecDbItemSetValueWithName(item, kSecAttrPersistentReference, uuidData, &localError);
                     CFReleaseNull(uuidData);
 
-                    if (!setResult || localError) {
-                        secerror("upgr: failed to set persistentref for item:%@, error:%@", item, localError);
+                    if (!setResult || localError || testError || errorForRowID(row_cf)) {
+                        secerror("upgr-phase3: failed to set persistentref for item:%@, error:%@", item, localError);
                         if (localError) {
-                            if (phase3EvaluateErrorAndStop(inProgress, stop, localError, error)) {
-                                shouldStop = true;
+                            if (phase3EvaluateErrorAndStop(localError, error)) {
+                                shouldStopIteratingArray = true;
+                                *inProgress = true;
+                                CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                                CFReleaseNull(localError);
                                 return;
                             }
+                            CFReleaseNull(localError);
+                        } else if (testError) {
+                            secerror("upgr-phase3: TEST ERROR PATH:%@, error:%@", item, testError);
+                            if (phase3EvaluateErrorAndStop(testError, error)) {
+                                shouldStopIteratingArray = true;
+                                *inProgress = true;
+                                CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                                return;
+                            }
+                        } else if (errorForRowID(row_cf)) {
+                            CFErrorRef errorForRow = errorForRowID(row_cf);
+                            secerror("upgr-phase3: TEST ERROR FOR ROWID PATH:%@, error:%@", item, errorForRow);
+                            if (phase3EvaluateErrorAndStop(errorForRow, error)) {
+                                shouldStopIteratingArray = true;
+                                *inProgress = true;
+                                CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                                return;
+                            }
+                        } else if (!setResult) {
+                            secerror("upgr-phase3: SecDbItemSetValueWithName returned false");
+                            shouldStopIteratingArray = true;
+                            *inProgress = true;
+                            CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                            return;
                         }
                     } else {
                         CFErrorRef updateError = NULL;
                         bool updateResult = SecDbItemUpdate(item, item, inDbt, false, query->q_uuid_from_primary_key, &updateError);
                         if (!updateResult || updateError) {
-                            secnotice("upgr", "phase3: failed to update item %@: %d, error: %@", item, updateResult, updateError);
+                            secnotice("upgr-phase3", "phase3: failed to update item %@: %d, error: %@", item, updateResult, updateError);
                             if (updateError) {
-                                if (phase3EvaluateErrorAndStop(inProgress, stop, updateError, error)) {
-                                    shouldStop = true;
+                                if (phase3EvaluateErrorAndStop(updateError, error)) {
+                                    shouldStopIteratingArray = true;
+                                    *inProgress = true;
+                                    CFTransferRetained(lastRowIDHandled, previousRowIDHandled);
+                                    CFReleaseNull(updateError);
                                     return;
                                 }
                             }
 
                             CFReleaseNull(updateError);
                         } else {
-                            secnotice("upgr", "updated item %@: %d", item, updateResult);
+                            secnotice("upgr-phase3", "updated item %@: %d", item, updateResult);
                         }
                     }
                     CFReleaseNull(localError);
+                    CFReleaseNull(previousRowIDHandled);
                 }
             });
             if (query != NULL) {
@@ -882,6 +941,26 @@ bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *e
 
 void clearLastRowIDHandledForTests() {
     CFReleaseNull(lastRowIDHandled);
+}
+
+CFNumberRef lastRowIDHandledForTests() {
+    return lastRowIDHandled;
+}
+
+void setExpectedErrorForTests(CFErrorRef error) {
+    testError = error;
+}
+
+void clearTestError() {
+    testError = NULL;
+}
+
+void setRowIDToErrorDictionary(CFDictionaryRef dictionary) {
+    rowIDAndErrorDictionary = CFRetainSafe(dictionary);
+}
+
+void clearRowIDAndErrorDictionary() {
+    CFReleaseNull(rowIDAndErrorDictionary);
 }
 
 // There's no data-driven approach for this. Let's think about it more if it gets unwieldy
@@ -1095,23 +1174,6 @@ out:
         }
     } else {
         // Things seemed to go okay!
-        //let's try upgrading items persistent refs
-        if (SecKeychainIsStaticPersistentRefsEnabled()) {
-            SecSignpostStart(SecSignpostUpgradePhase3);
-
-            CFErrorRef phase3Error = NULL;
-
-            bool ok = UpgradeItemPhase3(dbt, inProgress, &phase3Error);
-            if (!ok) {
-                SecErrorPropagate(phase3Error, &localError);
-            }
-
-            if (!*inProgress && ok) {
-                secnotice("upgr", "Finished updating persistent refs!");
-                SecSignpostStop(SecSignpostUpgradePhase3);
-            }
-        }
-
         if (didPhase2) {
             LKAReportKeychainUpgradeOutcome(version, newVersion, LKAKeychainUpgradeOutcomeSuccess);
         }
@@ -1415,6 +1477,30 @@ SecDbRef SecKeychainDbCreate(CFStringRef path, CFErrorRef* error) {
     }
 
     return kc;
+}
+
+bool SecKeychainUpgradePersistentReferences(bool *inProgress, CFErrorRef *error)
+{
+    __block bool success = false;
+    
+    if (SecKeychainIsStaticPersistentRefsEnabled()) {
+        __block CFErrorRef kcError = NULL;
+        kc_with_dbt(true, &kcError, ^(SecDbConnectionRef dbt) {
+            return kc_transaction(dbt, &kcError, ^bool{
+                CFErrorRef phase3Error = NULL;
+                success = UpgradeItemPhase3(dbt, inProgress, &phase3Error); //this always returns true
+                if (phase3Error) {
+                    secerror("upgr-phase3: failed to perform persistent ref upgrade for keychain item(s): %@", phase3Error);
+                    CFErrorPropagate(CFRetainSafe(phase3Error), error);
+                    CFReleaseNull(phase3Error);
+                } else {
+                    secnotice("upgr-phase3", "finished upgrading keychain items' persistent refs");
+                }
+                return true;
+            });
+        });
+    }
+    return success;
 }
 
 SecDbRef SecKeychainDbInitialize(SecDbRef db) {
@@ -1913,14 +1999,17 @@ static CFStringRef CopyAccessGroupForPersistentRef(CFStringRef itemClass, CFData
     __block CFErrorRef error = NULL;
     bool ok = kc_with_dbt(false, &error, ^bool(SecDbConnectionRef dbt) {
         CFStringRef table = CFEqual(itemClass, kSecClassIdentity) ? kSecClassCertificate : itemClass;
-        CFStringRef sql = CFStringCreateWithFormat(NULL, NULL, CFSTR("SELECT agrp FROM %@ WHERE persistref == %@"), table, uuidData);
+        CFStringRef sql = CFStringCreateWithFormat(NULL, NULL, CFSTR("SELECT agrp FROM %@ WHERE persistref = ?"), table);
+      
         bool dbOk = SecDbWithSQL(dbt, sql, &error, ^bool(sqlite3_stmt *stmt) {
+            bool bindOk = SecDbBindBlob(stmt, 1,  CFDataGetBytePtr(uuidData),
+                                (size_t)CFDataGetLength(uuidData), SQLITE_TRANSIENT, &error);
             bool rowOk = SecDbForEach(dbt, stmt, &error, ^bool(int row_index) {
                 accessGroup = CFStringCreateWithBytes(NULL, sqlite3_column_blob(stmt, 0), sqlite3_column_bytes(stmt, 0), kCFStringEncodingUTF8, false);
                 return accessGroup != NULL;
             });
             
-            return (bool)(rowOk && accessGroup != NULL);
+            return (bool)(rowOk && bindOk && accessGroup != NULL);
         });
         
         CFReleaseNull(sql);
@@ -2759,7 +2848,7 @@ _SecAddSharedWebCredential(CFDictionaryRef attributes,
 
     // check autofill enabled status
     if (!swca_autofill_enabled(clientAuditToken)) {
-        SecError(errSecBadReq, error, CFSTR("Autofill is not enabled in Safari settings"));
+        SecError(errSecBadReq, error, CFSTR("Password AutoFill for iCloud Keychain must be enabled in Settings > Passwords to save passwords"));
         goto cleanup;
     }
 
@@ -2949,303 +3038,11 @@ cleanup:
     return ok;
 }
 
-/* Specialized version of SecItemCopyMatching for shared web credentials */
-bool
-_SecCopySharedWebCredential(CFDictionaryRef query,
-			    SecurityClient *client,
-			    const audit_token_t *clientAuditToken,
-			    CFStringRef appID,
-			    CFArrayRef domains,
-			    CFTypeRef *result,
-			    CFErrorRef *error)
-{
-    CFMutableArrayRef credentials = NULL;
-    CFMutableArrayRef foundItems = NULL;
-    CFMutableArrayRef fqdns = NULL;
-    CFStringRef account = NULL;
-    bool ok = false;
-
-    require_quiet(result, cleanup);
-    credentials = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
-    foundItems = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
-    fqdns = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
-
-    // give ourselves access to see matching items for kSecSafariAccessGroup
-    CFStringRef accessGroup = CFSTR("*");
-    SecurityClient swcclient = {
-        .task = NULL,
-        .accessGroups =  CFArrayCreate(kCFAllocatorDefault, (const void **)&accessGroup, 1, &kCFTypeArrayCallBacks),
-        .allowSystemKeychain = false,
-        .allowSyncBubbleKeychain = false,
-        .isNetworkExtension = false,
-        .musr = client->musr,
-    };
-
-    // On input, the query dictionary contains optional fqdn and account entries.
-    account = CFDictionaryGetValue(query, kSecAttrAccount);
-
-    // Check autofill enabled status
-    if (!swca_autofill_enabled(clientAuditToken)) {
-        SecError(errSecBadReq, error, CFSTR("Autofill is not enabled in Safari settings"));
-        goto cleanup;
-    }
-
-    // Check fqdn; if NULL, add domains from caller's entitlement.
-    {
-        CFStringRef fqdn = CFDictionaryGetValue(query, kSecAttrServer);
-        if (fqdn) {
-            CFTypeRef fqdnObject = _SecCopyFQDNObjectFromString(fqdn);
-            if (fqdnObject) {
-                CFArrayAppendValue(fqdns, fqdnObject);
-                CFReleaseSafe(fqdnObject);
-            }
-        }
-        else if (domains) {
-            CFIndex idx, count = CFArrayGetCount(domains);
-            for (idx=0; idx < count; idx++) {
-                CFStringRef str = (CFStringRef) CFArrayGetValueAtIndex(domains, idx);
-                // Parse the entry for our service label prefix
-                CFTypeRef fqdnObject = _SecCopyFQDNObjectFromString(str);
-                if (fqdnObject) {
-                    CFArrayAppendValue(fqdns, fqdnObject);
-                    CFReleaseSafe(fqdnObject);
-                }
-            }
-        }
-    }
-    CFIndex count, idx;
-
-    count = CFArrayGetCount(fqdns);
-    if (count < 1) {
-        SecError(errSecParam, error, CFSTR("No domain provided"));
-        goto cleanup;
-    }
-
-    // Aggregate search results for each domain
-    for (idx = 0; idx < count; idx++) {
-        CFMutableArrayRef items = NULL;
-        CFMutableDictionaryRef attrs = NULL;
-
-        CFTypeRef fqdnObject = CFArrayGetValueAtIndex(fqdns, idx);
-        SInt32 port = -1;
-        CFStringRef fqdn = _SecGetFQDNFromFQDNObject(fqdnObject, &port);
-
-#if TARGET_OS_SIMULATOR
-        secerror("app/site association entitlements not checked in Simulator");
-#else
-	    OSStatus status = errSecMissingEntitlement;
-        if (!appID) {
-            SecError(status, error, CFSTR("Missing application-identifier entitlement"));
-            goto cleanup;
-        }
-        // validate that fqdn is part of caller's entitlement
-        if (_SecEntitlementContainsDomainForService(domains, fqdn, port)) {
-            status = errSecSuccess;
-        }
-        if (errSecSuccess != status) {
-            CFStringRef msg = CFStringCreateWithFormat(kCFAllocatorDefault, NULL,
-                CFSTR("%@ not found in %@ entitlement"), fqdn, kSecEntitlementAssociatedDomains);
-            if (!msg) {
-                msg = CFRetain(CFSTR("Requested domain not found in entitlement"));
-            }
-            SecError(status, error, CFSTR("%@"), msg);
-            CFReleaseSafe(msg);
-            goto cleanup;
-        }
-#endif
-
-        attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        if (!attrs) {
-            SecError(errSecAllocate, error, CFSTR("Unable to create query dictionary"));
-            goto cleanup;
-        }
-        CFDictionaryAddValue(attrs, kSecClass, kSecClassInternetPassword);
-        CFDictionaryAddValue(attrs, kSecAttrAccessGroup, kSecSafariAccessGroup);
-        CFDictionaryAddValue(attrs, kSecAttrProtocol, kSecAttrProtocolHTTPS);
-        CFDictionaryAddValue(attrs, kSecAttrAuthenticationType, kSecAttrAuthenticationTypeHTMLForm);
-        CFDictionaryAddValue(attrs, kSecAttrServer, fqdn);
-        if (account) {
-            CFDictionaryAddValue(attrs, kSecAttrAccount, account);
-        }
-        if (port < -1 || port > 0) {
-            SInt16 portValueShort = (port & 0xFFFF);
-            CFNumberRef portNumber = CFNumberCreate(NULL, kCFNumberSInt16Type, &portValueShort);
-            CFDictionaryAddValue(attrs, kSecAttrPort, portNumber);
-            CFReleaseSafe(portNumber);
-        }
-        CFDictionaryAddValue(attrs, kSecAttrSynchronizable, kCFBooleanTrue);
-        CFDictionaryAddValue(attrs, kSecMatchLimit, kSecMatchLimitAll);
-        CFDictionaryAddValue(attrs, kSecReturnAttributes, kCFBooleanTrue);
-        CFDictionaryAddValue(attrs, kSecReturnData, kCFBooleanTrue);
-
-        ok = _SecItemCopyMatching(attrs, &swcclient, (CFTypeRef*)&items, error);
-        if (count > 1) {
-            // ignore interim error since we have multiple domains to search
-            CFReleaseNull(*error);
-        }
-        if (ok && items && CFGetTypeID(items) == CFArrayGetTypeID()) {
-#if TARGET_OS_SIMULATOR
-            secerror("Ignoring app/site approval state in the Simulator.");
-            bool approved = true;
-#else
-            // get approval status for this app/domain pair
-            SecSWCFlags flags = _SecAppDomainApprovalStatus(appID, fqdn, error);
-            if (count > 1) {
-                // ignore interim error since we have multiple domains to check
-                CFReleaseNull(*error);
-            }
-            bool approved = (flags & kSecSWCFlag_SiteApproved);
-#endif
-            if (approved) {
-                CFArrayAppendArray(foundItems, items, CFRangeMake(0, CFArrayGetCount(items)));
-            }
-        }
-        CFReleaseSafe(items);
-        CFReleaseSafe(attrs);
-    }
-
-//  If matching credentials are found, the credentials provided to the completionHandler
-//  will be a CFArrayRef containing CFDictionaryRef entries. Each dictionary entry will
-//  contain the following pairs (see Security/SecItem.h):
-//  key: kSecAttrServer     value: CFStringRef (the website)
-//  key: kSecAttrAccount    value: CFStringRef (the account)
-//  key: kSecSharedPassword value: CFStringRef (the password)
-//  Optional keys:
-//  key: kSecAttrPort       value: CFNumberRef (the port number, if non-standard for https)
-
-    count = CFArrayGetCount(foundItems);
-    for (idx = 0; idx < count; idx++) {
-        CFDictionaryRef dict = (CFDictionaryRef) CFArrayGetValueAtIndex(foundItems, idx);
-        CFMutableDictionaryRef newdict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        if (newdict && dict && CFGetTypeID(dict) == CFDictionaryGetTypeID()) {
-            CFStringRef srvr = CFDictionaryGetValue(dict, kSecAttrServer);
-            CFStringRef acct = CFDictionaryGetValue(dict, kSecAttrAccount);
-            CFNumberRef pnum = CFDictionaryGetValue(dict, kSecAttrPort);
-            CFStringRef icmt = CFDictionaryGetValue(dict, kSecAttrComment);
-            CFDataRef data = CFDictionaryGetValue(dict, kSecValueData);
-            if (srvr) {
-                CFDictionaryAddValue(newdict, kSecAttrServer, srvr);
-            }
-            if (acct) {
-                CFDictionaryAddValue(newdict, kSecAttrAccount, acct);
-            }
-            if (pnum) {
-                SInt16 pval = -1;
-                if (CFNumberGetValue(pnum, kCFNumberSInt16Type, &pval) &&
-                    (pval < -1 || pval > 0)) {
-                    CFDictionaryAddValue(newdict, kSecAttrPort, pnum);
-                }
-            }
-            if (data) {
-                CFStringRef password = CFStringCreateFromExternalRepresentation(kCFAllocatorDefault, data, kCFStringEncodingUTF8);
-                if (password) {
-                #if TARGET_OS_IPHONE && !TARGET_OS_WATCH && !TARGET_OS_TV
-                    CFDictionaryAddValue(newdict, kSecSharedPassword, password);
-                #else
-                    CFDictionaryAddValue(newdict, CFSTR("spwd"), password);
-                #endif
-                    CFReleaseSafe(password);
-                }
-            }
-
-            if (acct && CFEqual(acct, kSecSafariPasswordsNotSaved)) {
-                // Do not add to credentials list!
-                secwarning("copySWC: Skipping \"%@\" item", kSecSafariPasswordsNotSaved);
-            } else if (icmt && CFEqual(icmt, kSecSafariDefaultComment)) {
-                CFArrayInsertValueAtIndex(credentials, 0, newdict);
-            } else {
-                CFArrayAppendValue(credentials, newdict);
-            }
-        }
-        CFReleaseSafe(newdict);
-    }
-
-    count = CFArrayGetCount(credentials);
-    if (count) {
-        ok = false;
-        // create a new array of dictionaries (without the actual password) for picker UI
-        CFMutableArrayRef items = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
-        for (idx = 0; idx < count; idx++) {
-            CFDictionaryRef dict = (CFDictionaryRef) CFArrayGetValueAtIndex(credentials, idx);
-            CFMutableDictionaryRef newdict = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, dict);
-        #if TARGET_OS_IPHONE && !TARGET_OS_WATCH && !TARGET_OS_TV
-            CFDictionaryRemoveValue(newdict, kSecSharedPassword);
-        #else
-            CFDictionaryRemoveValue(newdict, CFSTR("spwd"));
-        #endif
-            CFArrayAppendValue(items, newdict);
-            CFReleaseSafe(newdict);
-        }
-
-        // prompt user to select one of the dictionary items
-        CFDictionaryRef selected = swca_copy_selected_dictionary(swca_select_request_id,
-                                                                 clientAuditToken, items, error);
-        if (selected) {
-            // find the matching item in our credentials array
-            CFStringRef srvr = CFDictionaryGetValue(selected, kSecAttrServer);
-            CFStringRef acct = CFDictionaryGetValue(selected, kSecAttrAccount);
-            CFNumberRef pnum = CFDictionaryGetValue(selected, kSecAttrPort);
-            for (idx = 0; idx < count; idx++) {
-                CFDictionaryRef dict = (CFDictionaryRef) CFArrayGetValueAtIndex(credentials, idx);
-                CFStringRef srvr1 = CFDictionaryGetValue(dict, kSecAttrServer);
-                CFStringRef acct1 = CFDictionaryGetValue(dict, kSecAttrAccount);
-                CFNumberRef pnum1 = CFDictionaryGetValue(dict, kSecAttrPort);
-
-                if (!srvr || !srvr1 || !CFEqual(srvr, srvr1)) continue;
-                if (!acct || !acct1 || !CFEqual(acct, acct1)) continue;
-                if ((pnum && pnum1) && !CFEqual(pnum, pnum1)) continue;
-
-                // we have a match!
-                CFReleaseSafe(selected);
-                CFRetainSafe(dict);
-                selected = dict;
-                ok = true;
-                break;
-            }
-        }
-        CFReleaseSafe(items);
-        CFArrayRemoveAllValues(credentials);
-        if (selected && ok) {
-#if TARGET_OS_IOS && !TARGET_OS_BRIDGE && !TARGET_OS_SIMULATOR
-			// register confirmation with database
-            CFStringRef fqdn = CFDictionaryGetValue(selected, kSecAttrServer);
-            _SecSetAppDomainApprovalStatus(appID, fqdn, kCFBooleanTrue);
-#endif
-            CFArrayAppendValue(credentials, selected);
-        }
-
-        CFReleaseSafe(selected);
-    }
-    else if (NULL == *error) {
-        // found no items, and we haven't already filled in the error
-        SecError(errSecItemNotFound, error, CFSTR("no matching items found"));
-    }
-
-cleanup:
-    if (!ok) {
-        CFArrayRemoveAllValues(credentials);
-        CFReleaseNull(credentials);
-    }
-    CFReleaseSafe(foundItems);
-    *result = credentials;
-    CFReleaseSafe(swcclient.accessGroups);
-    CFReleaseSafe(fqdns);
-
-    return ok;
-}
-
 #else /* !(TARGET_OS_IOS && !TARGET_OS_BRIDGE && !TARGET_OS_WATCH && !TARGET_OS_TV) */
 
 bool _SecAddSharedWebCredential(CFDictionaryRef attributes, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error) {
     if (error) {
         SecError(errSecUnimplemented, error, CFSTR("_SecAddSharedWebCredential not supported on this platform"));
-    }
-    return false;
-}
-
-bool _SecCopySharedWebCredential(CFDictionaryRef query, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error) {
-    if (error) {
-        SecError(errSecUnimplemented, error, CFSTR("_SecCopySharedWebCredential not supported on this platform"));
     }
     return false;
 }

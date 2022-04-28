@@ -84,8 +84,7 @@ NSXPCInterface* CKKSSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errClasses forSelector:@selector(rpcResetCloudKit:reason:reply:)         argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcResync:reply:)                       argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcResyncLocal:reply:)                  argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcStatus:reply:)                       argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(rpcFastStatus:reply:)                   argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(rpcStatus:fast:waitForNonTransientState:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcFetchAndProcessChanges:classA:onlyIfNoRecentFetch:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcPushOutgoingChanges:reply:)          argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(rpcGetCKDeviceIDWithReply:)             argumentIndex:0 ofReply:YES];
@@ -95,6 +94,8 @@ NSXPCInterface* CKKSSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errClasses forSelector:@selector(fetchSEViewKeyHierarchy:forceFetch:reply:) argumentIndex:3 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(modifyTLKSharesForSEView:adding:deleting:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(deleteSEView:reply:) argumentIndex:0 ofReply:YES];
+
+        [interface setClasses:errClasses forSelector:@selector(pcsMirrorKeysForServices:reply:) argumentIndex:1 ofReply:YES];
 
         [interface setClasses:tlkShareArrayClasses forSelector:@selector(proposeTLKForSEView:proposedTLK:wrappedOldTLK:tlkShares:reply:) argumentIndex:3 ofReply:NO];
         [interface setClasses:tlkArrayClasses      forSelector:@selector(fetchSEViewKeyHierarchy:forceFetch:reply:) argumentIndex:1 ofReply:YES];

@@ -68,6 +68,7 @@
 #import "keychain/ot/proto/generated_source/OTAccountMetadataClassC.h"
 
 
+
 #import "keychain/ot/categories/OTAccountMetadataClassC+KeychainSupport.h"
 #import "keychain/ot/categories/OctagonEscrowRecoverer.h"
 
@@ -95,3 +96,6 @@
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadata.h"
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadataClientMetadata.h"
 
+#import "keychain/keychainupgrader/KeychainItemUpgradeRequestServer.h"
+#import "keychain/keychainupgrader/KeychainItemUpgradeRequestController.h"
+#import "keychain/keychainupgrader/KeychainItemUpgradeRequestServerHelpers.h"

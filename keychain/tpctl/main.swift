@@ -653,6 +653,7 @@ for command in commands {
                          policySecrets: policySecrets,
                          syncUserControllableViews: .UNKNOWN,
                          secureElementIdentity: nil,
+                         setting: nil,
                          signingPrivKeyPersistentRef: nil,
                          encPrivKeyPersistentRef: nil) { peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, syncingPolicy, error in
                             guard error == nil else {
@@ -678,27 +679,6 @@ for command in commands {
 
     case .update:
         logger.log("updating (\(container), \(context))")
-#if !__OPEN_SOURCE__ && APPLE_FEATURE_WALRUS_UI
-        tpHelper.update(withContainer: container,
-                        context: context,
-                        forceRefetch: false,
-                        deviceName: deviceName,
-                        serialNumber: serialNumber,
-                        osVersion: osVersion,
-                        policyVersion: nil,
-                        policySecrets: policySecrets,
-                        syncUserControllableViews: nil,
-                        secureElementIdentity: nil,
-                        walrusSetting: nil,
-                        webAccess: nil) { _, _, error in
-                            guard error == nil else {
-                                print("Error updating:", error!)
-                                return
-                            }
-
-                            print("Update complete")
-        }
-#else
         tpHelper.update(withContainer: container,
                         context: context,
                         forceRefetch: false,
@@ -716,7 +696,6 @@ for command in commands {
 
                             print("Update complete")
         }
-#endif /* APPLE_FEATURE_WALRUS_UI */
 
     case .reset:
         logger.log("resetting (\(container), \(context))")

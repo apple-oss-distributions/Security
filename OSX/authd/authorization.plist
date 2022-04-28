@@ -939,8 +939,8 @@ See remaining rules for examples.
 			<string>Login mechanism based rule.  Not for general use, yet.</string>
 			<key>mechanisms</key>
 			<array>
+                <string>builtin:prelogin</string>
 				<string>builtin:policy-banner</string>
-				<string>builtin:prelogin</string>
 				<string>loginwindow:login</string>
 				<string>builtin:login-begin</string>
 				<string>builtin:reset-password,privileged</string>
@@ -958,7 +958,7 @@ See remaining rules for examples.
 				<string>loginwindow:done</string>
 			</array>
 			<key>version</key>
-			<integer>8</integer>
+			<integer>9</integer>
 		</dict>
 		<key>system.login.filevault</key>
 		<dict>
@@ -1824,6 +1824,23 @@ See remaining rules for examples.
             <key>shared</key>
             <false/>
         </dict>
+	<key>com.apple.auth.user</key>
+	<dict>
+		<key>authenticate-user</key>
+		<true/>
+		<key>class</key>
+		<string>user</string>
+		<key>comment</key>
+		<string>Authenticate as an any user.</string>
+		<key>group</key>
+		<string>staff</string>
+		<key>password-only</key>
+		<false/>
+		<key>shared</key>
+		<false/>
+		<key>timeout</key>
+		<integer>0</integer>
+	</dict>
     </dict>
 	<key>rules</key>
 	<dict>

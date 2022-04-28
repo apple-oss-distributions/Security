@@ -181,6 +181,12 @@ NS_ASSUME_NONNULL_BEGIN
                         uuid:(NSUUID *)uuid
                        reply:(void (^)(NSError *_Nullable error))reply;
 
+- (void)tlkRecoverabilityForEscrowRecordData:(NSString* _Nullable)containerName
+                                   contextID:(NSString*)contextID
+                                  recordData:(NSData*)recordData
+                                       reply:(void (^)(NSArray<NSString*>* _Nullable views, NSError* _Nullable error))reply;
+
+
 - (void)allContextsHalt;
 - (void)allContextsDisablePendingFlags;
 - (bool)allContextsPause:(uint64_t)within;
@@ -200,6 +206,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)fetchAccountSettings:(NSString * _Nullable)containerName
                    contextID:(NSString *)contextID
                        reply:(void (^)(OTAccountSettings* _Nullable setting, NSError * _Nullable error))reply;
+
+// Helper function to make CK containers
++ (CKContainer*)makeCKContainer:(NSString*)containerName;
 
 @end
 

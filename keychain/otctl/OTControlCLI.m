@@ -137,8 +137,6 @@ static void print_json(NSDictionary* dict)
     return self;
 }
 
-enum {NUM_RETRIES = 10};
-
 - (int)startOctagonStateMachine:(NSString* _Nullable)container context:(NSString *)contextID {
 #if OCTAGON
     __block int ret = 1;
@@ -225,10 +223,10 @@ enum {NUM_RETRIES = 10};
 #endif
 }
 
-- (int)resetOctagon:(NSString* _Nullable)container context:(NSString *)contextID altDSID:(NSString *)altDSID {
+- (int)resetOctagon:(NSString* _Nullable)container context:(NSString *)contextID altDSID:(NSString *)altDSID timeout:(NSTimeInterval)timeout {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     do {
@@ -240,14 +238,14 @@ enum {NUM_RETRIES = 10};
                                   reply:^(NSError* _Nullable error) {
                 if(error) {
                     fprintf(stderr, "Error resetting: %s\n", [[error description] UTF8String]);
-                    if (i < NUM_RETRIES && [error isRetryable]) {
+                    if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                         retry = true;
+                        sleep([error retryInterval]);
                     }
                 } else {
                     printf("reset and establish:\n");
                     ret = 0;
                 }
-                ++i;
             }];
     } while(retry);
     return ret;
@@ -495,6 +493,44 @@ enum {NUM_RETRIES = 10};
 #endif
 }
 
+- (int)tlkRecoverability:(NSString * _Nullable)container context:(NSString *)contextID
+{
+#if OCTAGON
+    __block int ret = 1;
+    
+    NSError* error = nil;
+    OTConfigurationContext *data = [[OTConfigurationContext alloc] init];
+    data.context = contextID;
+
+    OTClique *clique = [[OTClique alloc] initWithContextData:data];
+    if (clique == nil) {
+        fprintf(stderr, "Failed to create clique\n");
+        return ret;
+    }
+    NSArray<OTEscrowRecord*>* records = [OTClique fetchAllEscrowRecords:data error:&error];
+    if (records == nil || error != nil) {
+        fprintf(stderr, "Failed to fetch escrow records: %s.\n", error.description.UTF8String);
+        return ret;
+    } else {
+        for (OTEscrowRecord *record in records) {
+            NSError* localError = nil;
+            NSArray<NSString*>* views = [clique tlkRecoverabilityForEscrowRecord:record error:&localError];
+            if (views && [views count] > 0 && localError == nil) {
+                for (NSString *view in views) {
+                    printf("%s has recoverable view: %s\n", record.recordId.UTF8String, [view UTF8String]);
+                }
+                ret = 0;
+            } else {
+                fprintf(stderr, "%s Failed TLK recoverability check: %s\n", record.recordId.UTF8String, localError.description.UTF8String);
+            }
+        }
+    }
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
 
 - (int)status:(NSString * _Nullable)container context:(NSString *)contextID json:(bool)json {
 #if OCTAGON
@@ -843,12 +879,13 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 }
 
 - (int)createCustodianRecoveryKeyWithContainerName:(NSString* _Nullable)containerName
-                                          contextID:(NSString *)contextID
-                                               json:(bool)json
+                                         contextID:(NSString *)contextID
+                                              json:(bool)json
+                                           timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
     do {
         retry = false;
@@ -858,8 +895,9 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                            reply:^(OTCustodianRecoveryKey *_Nullable crk, NSError *_Nullable error) {
             if (error) {
                 fprintf(stderr, "createCustodianRecoveryKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 ret = 0;
@@ -879,7 +917,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                            [[crk.wrappedKey base64EncodedStringWithOptions:0] UTF8String]);
                 }
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -894,10 +931,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                          wrappingKey:(NSString*)wrappingKey
                                           wrappedKey:(NSString*)wrappedKey
                                           uuidString:(NSString*)uuidString
+                                             timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSData *wrappingKeyData = [[NSData alloc] initWithBase64EncodedString:wrappingKey options:0];
@@ -934,14 +972,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                              reply:^(NSError* _Nullable error) {
             if (error) {
                 fprintf(stderr, "joinWithCustodianRecoveryKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 printf("successful join from custodian recovery key\n");
                 ret = 0;
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -956,10 +994,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                                   wrappingKey:(NSString*)wrappingKey
                                                    wrappedKey:(NSString*)wrappedKey
                                                    uuidString:(NSString*)uuidString
+                                                      timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSData *wrappingKeyData = [[NSData alloc] initWithBase64EncodedString:wrappingKey options:0];
@@ -996,14 +1035,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                                       reply:^(NSError* _Nullable error) {
                 if (error) {
                     fprintf(stderr, "preflightJoinWithCustodianRecoveryKey failed: %s\n", [[error description] UTF8String]);
-                    if (i < NUM_RETRIES && [error isRetryable]) {
+                    if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                         retry = true;
+                        sleep([error retryInterval]);
                     }
                 } else {
                     printf("successful preflight join from custodian recovery key\n");
                     ret = 0;
                 }
-                ++i;
             }];
     } while (retry);
     return ret;
@@ -1016,10 +1055,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 - (int)removeCustodianRecoveryKeyWithContainerName:(NSString* _Nullable)containerName
                                          contextID:(NSString *)contextID
                                         uuidString:(NSString*)uuidString
+                                           timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
@@ -1035,14 +1075,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                            reply:^(NSError* _Nullable error) {
             if (error) {
                 fprintf(stderr, "remove custodian recovery key failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 printf("successful removal of custodian recovery key\n");
                 ret = 0;
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -1055,10 +1095,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 - (int)createInheritanceKeyWithContainerName:(NSString* _Nullable)containerName
                                    contextID:(NSString *)contextID
                                         json:(bool)json
+                                     timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
     do {
         retry = false;
@@ -1068,8 +1109,9 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                      reply:^(OTInheritanceKey *_Nullable ik, NSError *_Nullable error) {
             if (error) {
                 fprintf(stderr, "createInheritanceKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 ret = 0;
@@ -1105,7 +1147,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                            );
                 }
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -1118,10 +1159,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 - (int)generateInheritanceKeyWithContainerName:(NSString* _Nullable)containerName
                                      contextID:(NSString *)contextID
                                           json:(bool)json
+                                       timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
     do {
         retry = false;
@@ -1131,8 +1173,9 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                      reply:^(OTInheritanceKey *_Nullable ik, NSError *_Nullable error) {
             if (error) {
                 printf("generateInheritanceKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 ret = 0;
@@ -1168,7 +1211,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                            );
                 }
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -1183,10 +1225,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                 wrappingKey:(NSString*)wrappingKey
                                  wrappedKey:(NSString*)wrappedKey
                                  uuidString:(NSString*)uuidString
+                                    timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSData *wrappingKeyData = [[NSData alloc] initWithBase64EncodedString:wrappingKey options:0];
@@ -1223,14 +1266,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                     reply:^(NSError* _Nullable error) {
             if (error) {
                 printf("storeInheritanceKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 printf("successful store of inheritance key\n");
                 ret = 0;
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -1245,10 +1288,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                    wrappingKey:(NSString*)wrappingKey
                                     wrappedKey:(NSString*)wrappedKey
                                     uuidString:(NSString*)uuidString
+                                       timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSData *wrappingKeyData = [[NSData alloc] initWithBase64EncodedString:wrappingKey options:0];
@@ -1285,14 +1329,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                        reply:^(NSError* _Nullable error) {
             if (error) {
                 fprintf(stderr, "joinWithInheritanceKey failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 printf("successful join from inheritance key\n");
                 ret = 0;
             }
-            ++i;
         }];
     } while (retry);
     return ret;
@@ -1307,10 +1351,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                             wrappingKey:(NSString*)wrappingKey
                                              wrappedKey:(NSString*)wrappedKey
                                              uuidString:(NSString*)uuidString
+                                                timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSData *wrappingKeyData = [[NSData alloc] initWithBase64EncodedString:wrappingKey options:0];
@@ -1347,14 +1392,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                                 reply:^(NSError* _Nullable error) {
                 if (error) {
                     fprintf(stderr, "preflight joinWithInheritanceKey failed: %s\n", [[error description] UTF8String]);
-                    if (i < NUM_RETRIES && [error isRetryable]) {
+                    if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                         retry = true;
+                        sleep([error retryInterval]);
                     }
                 } else {
                     printf("successful preflight join from inheritance key\n");
                     ret = 0;
                 }
-                ++i;
         }];
     } while (retry);
     return ret;
@@ -1367,10 +1412,11 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 - (int)removeInheritanceKeyWithContainerName:(NSString* _Nullable)containerName
                                    contextID:(NSString *)contextID
                                   uuidString:(NSString*)uuidString
+                                     timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
-    __block int i = 0;
     __block bool retry;
 
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
@@ -1386,14 +1432,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                      reply:^(NSError* _Nullable error) {
             if (error) {
                 fprintf(stderr, "remove inheritance key failed: %s\n", [[error description] UTF8String]);
-                if (i < NUM_RETRIES && [error isRetryable]) {
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
                     retry = true;
+                    sleep([error retryInterval]);
                 }
             } else {
                 printf("successful removal of inheritance key\n");
                 ret = 0;
             }
-            ++i;
         }];
     } while (retry);
     return ret;

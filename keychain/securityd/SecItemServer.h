@@ -73,7 +73,6 @@ bool _SecServerDeleteMUSERViews(SecurityClient *client, uid_t uid, CFErrorRef *e
 
 #if SHAREDWEBCREDENTIALS
 bool _SecAddSharedWebCredential(CFDictionaryRef attributes, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error);
-bool _SecCopySharedWebCredential(CFDictionaryRef query, SecurityClient *client, const audit_token_t *clientAuditToken, CFStringRef appID, CFArrayRef domains, CFTypeRef *result, CFErrorRef *error);
 #endif /* SHAREDWEBCREDENTIALS */
 
 // Hack to log objects from inside SOS code
@@ -88,11 +87,25 @@ bool kc_with_custom_db(bool writeAndRead, bool usesItemTables, SecDbRef db, CFEr
 
 bool UpgradeItemPhase3(SecDbConnectionRef inDbt, bool *inProgress, CFErrorRef *error);
 
+// returns whether or not it succeeeded
+// if the inProgress bool is set, then an attempt to reinvoke this routine will occur sometime in the near future
+// error to be filled in if any upgrade attempt resulted in an error
+// this will always return true because upgrade phase3 always returns true
+bool SecKeychainUpgradePersistentReferences(bool *inProgress, CFErrorRef *error);
+
 /* For whitebox testing only */
 SecDbRef SecKeychainDbGetDb(CFErrorRef* error);
 void SecKeychainDbForceClose(void);
 void SecKeychainDbReset(dispatch_block_t inbetween);
+
+/* V V test routines V V */
 void clearLastRowIDHandledForTests(void);
+CFNumberRef lastRowIDHandledForTests(void);
+void setExpectedErrorForTests(CFErrorRef error);
+void clearTestError(void);
+void setRowIDToErrorDictionary(CFDictionaryRef rowIDToErrorDictionary);
+void clearRowIDAndErrorDictionary(void);
+/* ^ ^ test routines ^ ^*/
 
 SOSDataSourceFactoryRef SecItemDataSourceFactoryGetDefault(void);
 

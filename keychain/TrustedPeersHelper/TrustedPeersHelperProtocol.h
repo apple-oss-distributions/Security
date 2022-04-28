@@ -34,7 +34,6 @@
 #import "keychain/ot/OTConstants.h"
 
 #import "keychain/ot/proto/generated_source/OTEscrowMoveRequestContext.h"
-
 NS_ASSUME_NONNULL_BEGIN
 
 // Any client hoping to use the TrustedPeersHelperProtocol should have an entitlement
@@ -203,6 +202,7 @@ NS_ASSUME_NONNULL_BEGIN
                policySecrets:(nullable NSDictionary<NSString*,NSData*> *)policySecrets
    syncUserControllableViews:(TPPBPeerStableInfoUserControllableViewStatus)syncUserControllableViews
        secureElementIdentity:(nullable TPPBSecureElementIdentity*)secureElementIdentity
+                     setting:(nullable OTAccountSettingsX*)setting
  signingPrivKeyPersistentRef:(nullable NSData *)spkPr
      encPrivKeyPersistentRef:(nullable NSData*)epkPr
                        reply:(void (^)(NSString * _Nullable peerID,
@@ -499,6 +499,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)requestHealthCheckWithContainer:(NSString *)container
                                 context:(NSString *)context
                     requiresEscrowCheck:(BOOL)requiresEscrowCheck
+                       knownFederations:(NSArray<NSString *> *)knownFederations
                                   reply:(void (^)(BOOL postRepairCFU, BOOL postEscrowCFU, BOOL resetOctagon, BOOL leaveTrust, OTEscrowMoveRequestContext* _Nullable moveRequest, NSError* _Nullable error))reply;
 
 - (void)getSupportAppInfoWithContainer:(NSString *)container

@@ -32,6 +32,9 @@
 #define MAX_TASKS 3
 #define MAX_TIMEOUTS 2
 #define TIMEOUT_BACKOFF 60 // 1 minute
+#define MAX_AGE_DEFAULT 60.0 * 60.0 * 24.0 * 1 // 1 day
+#define MAX_AGE_MIN 60.0 * 60.0 // 1 hour
+#define MAX_AGE_MAX 60.0 * 60.0 * 24.0 * 7 // 7 days
 
 /* There has got to be an easier way to do this.  For now we based this code
  on CFNetwork/Connection/URLResponse.cpp. */
@@ -129,15 +132,23 @@ static CFStringRef copyParseMaxAge(CFStringRef cacheControlHeader) {
 }
 
 @implementation TrustURLSessionContext
-- (instancetype)initWithContext:(void *)context uris:(NSArray <NSURL *>*)uris
+- (instancetype)initWithContext:(CFTypeRef)context uris:(NSArray <NSURL *>*)uris
 {
     if (self = [super init]) {
-        self.context = context;
+        self.context = (void *)CFRetainSafe(context);
         self.URIs = uris;
         self.URIix = 0;
         self.numTasks = 0;
     }
     return self;
+}
+
+- (void)dealloc
+{
+    if (self.context) {
+        CFRelease(self.context);
+        self.context = NULL;
+    }
 }
 @end
 
@@ -228,6 +239,11 @@ NSString *kSecTrustRequestHeaderUUID = @"X-Apple-Request-UUID";
 
 - (void)removeServer:(NSString *)server
 {
+    /* If this is Apple's OCSP responder, we need to unmunge the hostname, since
+     * we use the pre-munged hostname to do the timeout entry lookup in fetchNext. */
+    if ([server isEqualToString:@"ocsp2.apple.com"]) {
+        server = @"ocsp.apple.com";
+    }
     @synchronized (self._serverMap) {
         [self._serverMap removeObjectForKey:server];
     }
@@ -243,6 +259,11 @@ NSString *kSecTrustRequestHeaderUUID = @"X-Apple-Request-UUID";
 
 - (void)incrementCountForServer:(NSString *)server
 {
+    /* If this is Apple's OCSP responder, we need to unmunge the hostname, since
+     * we use the pre-munged hostname to do the timeout entry lookup in fetchNext. */
+    if ([server isEqualToString:@"ocsp2.apple.com"]) {
+        server = @"ocsp.apple.com";
+    }
     @synchronized (self._serverMap) {
         TimeoutEntry *entry = self._serverMap[server];
         if (!entry) {
@@ -346,12 +367,12 @@ NSString *kSecTrustRequestHeaderUUID = @"X-Apple-Request-UUID";
         }
 
         secdebug("http", "completed taskId %@", taskId);
-        context.expiration = 60.0 * 60.0 * 24.0 * 7; /* Default is 7 days */
+        context.maxAge = MAX_AGE_DEFAULT; /* Default is 1 days */
         if ([context.response length] > 0 && [[task response] isKindOfClass:[NSHTTPURLResponse class]]) {
             NSString *cacheControl = [[(NSHTTPURLResponse *)[task response] allHeaderFields] objectForKey:@"cache-control"];
             NSString *maxAge = CFBridgingRelease(copyParseMaxAge((__bridge CFStringRef)cacheControl));
-            if (maxAge && [maxAge doubleValue] > context.expiration) {
-                context.expiration = [maxAge doubleValue];
+            if (maxAge && ([maxAge doubleValue] >= MAX_AGE_MIN) && ([maxAge doubleValue] <= MAX_AGE_MAX)) {
+                context.maxAge = [maxAge doubleValue];
             }
         }
 

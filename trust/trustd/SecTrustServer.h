@@ -38,7 +38,7 @@
 
 __BEGIN_DECLS
 
-typedef struct SecPathBuilder *SecPathBuilderRef;
+typedef struct _SecPathBuilder *SecPathBuilderRef;
 
 typedef struct OpaqueSecPVC *SecPVCRef;
 
@@ -62,13 +62,13 @@ typedef void(*SecPathBuilderCompleted)(const void *userData,
     SecTrustResultType result);
 
 /* Returns a new trust path builder and policy evaluation engine instance. */
-SecPathBuilderRef SecPathBuilderCreate(dispatch_queue_t builderQueue, CFDataRef clientAuditToken,
+CF_RETURNS_RETAINED SecPathBuilderRef
+SecPathBuilderCreate(dispatch_queue_t builderQueue, CFDataRef clientAuditToken,
     CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly,
     bool keychainsAllowed, CFArrayRef policies, CFArrayRef ocspResponse,
     CFArrayRef signedCertificateTimestamps, CFArrayRef trustedLogs,
     CFAbsoluteTime verifyTime, CFArrayRef accessGroups, CFArrayRef exceptions,
     SecPathBuilderCompleted completed, const void *userData);
-void SecPathBuilderDestroy(SecPathBuilderRef builder);
 
 /* engine states exposed for testing */
 bool SecPathBuilderDidValidatePath(SecPathBuilderRef builder);
@@ -144,6 +144,7 @@ dispatch_queue_t SecPathBuilderGetQueue(SecPathBuilderRef builder);
 /* Return the client audit token associated with this path builder,
    which caller must release, or NULL if there is no external client. */
 CFDataRef SecPathBuilderCopyClientAuditToken(SecPathBuilderRef builder);
+CFDataRef SecTrustServerCopySelfAuditToken(void);
 
 /* Evaluate trust and call evaluated when done. */
 void SecTrustServerEvaluateBlock(dispatch_queue_t builderQueue, CFDataRef clientAuditToken, CFArrayRef certificates, CFArrayRef anchors, bool anchorsOnly, bool keychainsAllowed, CFArrayRef policies, CFArrayRef responses, CFArrayRef SCTs, CFArrayRef trustedLogs, CFAbsoluteTime verifyTime, __unused CFArrayRef accessGroups, CFArrayRef exceptions, void (^evaluated)(SecTrustResultType tr, CFArrayRef details, CFDictionaryRef info, CFArrayRef chain, CFErrorRef error));

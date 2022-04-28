@@ -170,20 +170,6 @@
     return self;
 }
 
-+ (CKContainer*)makeCKContainer:(NSString*)containerName
-                         usePCS:(bool)usePCS
-{
-    CKContainer* container = [CKContainer containerWithIdentifier:containerName];
-    if(!usePCS) {
-        CKContainerOptions* containerOptions = [[CKContainerOptions alloc] init];
-        containerOptions.bypassPCSEncryption = YES;
-
-        // We don't have a great way to set these, so replace the entire container object
-        container = [[CKContainer alloc] initWithContainerID: container.containerID options:containerOptions];
-    }
-    return container;
-}
-
 - (BOOL)allowClientRPC:(NSError**)error
 {
     if(![self.personaAdapter currentThreadIsForPrimaryiCloudAccount]) {
@@ -809,8 +795,9 @@ dispatch_once_t globalZoneStateQueueOnce;
 }
 
 - (void)rpcStatus:(NSString*)viewName
-             fast:(bool)fast
-            reply:(void(^)(NSArray<NSDictionary*>* result, NSError* error))reply
+        fast:(BOOL)fast
+        waitForNonTransientState:(dispatch_time_t)nonTransientStateTimeout
+        reply:(void(^)(NSArray<NSDictionary*>* result, NSError* error))reply
 {
     NSError* clientError = nil;
     if(![self allowClientRPC:&clientError]) {
@@ -830,18 +817,9 @@ dispatch_once_t globalZoneStateQueueOnce;
     }
 
     [view rpcStatus:viewName
-               fast:fast
-              reply:reply];
-}
-
-- (void)rpcStatus:(NSString*)viewName reply:(void (^)(NSArray<NSDictionary*>* result, NSError* error))reply
-{
-    [self rpcStatus:viewName fast:false reply:reply];
-}
-
-- (void)rpcFastStatus:(NSString*)viewName reply:(void (^)(NSArray<NSDictionary*>* result, NSError* error))reply
-{
-    [self rpcStatus:viewName fast:true reply:reply];
+          fast:fast
+          waitForNonTransientState:nonTransientStateTimeout
+          reply:reply];
 }
 
 - (void)rpcFetchAndProcessChanges:(NSString* _Nullable __unused)viewName classA:(bool)classAError onlyIfNoRecentFetch:(bool)onlyIfNoRecentFetch reply:(void(^)(NSError* _Nullable result))reply
@@ -1133,6 +1111,21 @@ dispatch_once_t globalZoneStateQueueOnce;
     }
 
     [view toggleHavoc:reply];
+}
+
+- (void)pcsMirrorKeysForServices:(NSDictionary<NSNumber*,NSArray<NSData*>*>*)services reply:(void (^)(NSDictionary<NSNumber*,NSArray<NSData*>*>* _Nullable result, NSError* _Nullable error))reply
+{
+    CKKSKeychainView* view = [self ckksAccountSyncForContainer:SecCKKSContainerName
+                                                     contextID:OTDefaultContext];
+    if(!view) {
+        ckksnotice_global("ckks", "No CKKS view for %@, %@", SecCKKSContainerName, OTDefaultContext);
+        reply(nil, [NSError errorWithDomain:CKKSErrorDomain
+                                       code:CKKSNoSuchView
+                                   userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat: @"No syncing view for %@, %@", SecCKKSContainerName, OTDefaultContext]}]);
+        return;
+    }
+
+    [view pcsMirrorKeysForServices:services reply:reply];
 }
 
 -(void)xpc24HrNotification {

@@ -35,10 +35,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property NSArray <NSURL *>*URIs;
 @property NSUInteger URIix;
 @property (nullable) NSMutableData *response;
-@property NSTimeInterval expiration;
+@property NSTimeInterval maxAge;
 @property NSUInteger numTasks;
 
-- (instancetype)initWithContext:(void *)context uris:(NSArray <NSURL *>*)uris;
+- (instancetype)initWithContext:(CFTypeRef)context uris:(NSArray <NSURL *>*)uris;
 @end
 
 @interface NSURLRequest (TrustURLRequest)

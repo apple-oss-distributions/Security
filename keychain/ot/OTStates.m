@@ -116,6 +116,11 @@ OctagonState* const OctagonStateReEnactPrepare = (OctagonState*)@"ReEnactPrepare
 OctagonState* const OctagonStateReEnactReadyToEstablish = (OctagonState*)@"ReEnactReadyToEstablish";
 OctagonState* const OctagonStateEstablishCKKSReset = (OctagonState*)@"EstablishCKKSReset";
 OctagonState* const OctagonStateEstablishAfterCKKSReset = (OctagonState*)@"EstablishAfterCKKSReset";
+OctagonState* const OctagonStateResetAndEstablishClearLocalContextState = (OctagonState*)@"ResetAndEstablishClearLocalContextState";
+
+/* local reset */
+OctagonState* const OctagonStateLocalReset = (OctagonState*)@"LocalReset";
+OctagonState* const OctagonStateLocalResetClearLocalContextState = (OctagonState*)@"LocalResetClearLocalContextState";
 
 /* used for trust health checks */
 OctagonState* const OctagonStateHSA2HealthCheck = (OctagonState*)@"HSA2HealthCheck";
@@ -141,9 +146,6 @@ OctagonState* const OctagonStateAssistCKKSTLKUploadAfterCKKSReset = (OctagonStat
 
 OctagonState* const OctagonStateHealthCheckLeaveClique = (OctagonState*)@"HealthCheckLeaveClique";
 
-#if !defined(__OPEN_SOURCE__) && APPLE_FEATURE_WALRUS_UI
-OctagonState* const OctagonStateSetAccountSettings = (OctagonState*)@"SetAccountSettings";
-#endif /* APPLE_FEATURE_WALRUS_UI */
 
 /* escrow */
 OctagonState* const OctagonStateEscrowTriggerUpdate = (OctagonState*)@"EscrowTriggerUpdate";
@@ -243,9 +245,6 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateBottlePreloadOctagonKeysInSOS,            @65U,],
                                      @[OctagonStateAttemptSOSUpgradeDetermineCDPState,       @66U,],
                                      @[OctagonStateLostAccountAuth,                          @67U,],
-#if !defined(__OPEN_SOURCE__) && APPLE_FEATURE_WALRUS_UI
-                                     @[OctagonStateSetAccountSettings,                       @68U,],
-#endif /* APPLE_FEATURE_WALRUS_UI */
                                      @[OctagonStateCreateIdentityForCustodianRecoveryKey,    @69U,],
                                      @[OctagonStateVouchWithCustodianRecoveryKey,            @70U,],
                                      //Removed: @[OctagonStateFixupRefetchCuttlefishForCustodian,       @71U,],
@@ -268,6 +267,9 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateBecomeInherited,                          @87U,],
                                      @[OctagonStateInherited,                                @88U,],
                                      @[OctagonStatePeerMissingFromServer,                    @89U,],
+                                     @[OctagonStateResetAndEstablishClearLocalContextState,  @90U,],
+                                     @[OctagonStateLocalReset,                               @91U,],
+                                     @[OctagonStateLocalResetClearLocalContextState,         @92U,],
                                      ];
     return stateInit;
 }
@@ -326,6 +328,8 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
         [sourceStates removeObject:OctagonStateWaitingForCloudKitAccount];
         [sourceStates removeObject:OctagonStateCloudKitNewlyAvailable];
         [sourceStates removeObject:OctagonStateWaitForHSA2];
+        [sourceStates removeObject:OctagonStateLocalReset];
+        [sourceStates removeObject:OctagonStateLocalResetClearLocalContextState];
 
         // If the device hasn't unlocked yet, we don't know what we wrote down for iCloud account status
         [sourceStates removeObject:OctagonStateWaitForClassCUnlock];

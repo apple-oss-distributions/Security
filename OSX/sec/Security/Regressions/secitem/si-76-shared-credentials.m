@@ -24,14 +24,30 @@
 
 #include "Security_regressions.h"
 
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
+
+#include <AuthenticationServices/AuthenticationServices.h>
 
 #define WAIT_WHILE(X) { while ((X)) { (void)CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, TRUE); } }
 
-static bool expected_failure(OSStatus status)
+static bool expected_failure(CFErrorRef error)
 {
-    return ((status == errSecMissingEntitlement) ||
-            (status == errSecBadReq));
+    if (!error) {
+        return false;
+    }
+
+    if (CFEqualSafe(CFErrorGetDomain(error), (__bridge CFStringRef)ASAuthorizationErrorDomain)) {
+        ASAuthorizationError code = (ASAuthorizationError)CFErrorGetCode(error);
+        return code == ASAuthorizationErrorCanceled;
+    }
+
+    if (CFEqualSafe(CFErrorGetDomain(error), kCFErrorDomainOSStatus)) {
+        OSStatus status = (OSStatus)CFErrorGetCode(error);
+        return ((status == errSecMissingEntitlement) ||
+                (status == errSecBadReq));
+    }
+
+    return false;
 }
 
 static void tests(void)
@@ -52,8 +68,7 @@ static void tests(void)
     // should get denied if we request a fqdn which is not in our entitlement
     requesting = true;
     SecRequestSharedWebCredential(not_my_fqdn, NULL, ^void (CFArrayRef credentials, CFErrorRef error) {
-        OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
-        is(status == errSecItemNotFound || expected_failure(status), true, "fqdn not entitled");
+        is(expected_failure(error), true, "fqdn not entitled");
         is(CFArrayGetCount(credentials) > 0, false, "returned credential array == 0");
         requesting = false;
     });
@@ -64,7 +79,7 @@ static void tests(void)
     SecAddSharedWebCredential(fqdn, acct1, cred, ^void (CFErrorRef error) {
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
-        if (status == errSecAuthFailed || expected_failure(status)) { status = errSecSuccess; }
+        if (status == errSecAuthFailed || expected_failure(error)) { status = errSecSuccess; }
         ok_status(status);
         adding = false;
     });
@@ -74,7 +89,7 @@ static void tests(void)
     SecAddSharedWebCredential(fqdn, acct2, cred, ^void (CFErrorRef error) {
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
-        if (status == errSecAuthFailed || expected_failure(status)) { status = errSecSuccess; }
+        if (status == errSecAuthFailed || expected_failure(error)) { status = errSecSuccess; }
         ok_status(status);
         adding = false;
     });
@@ -86,7 +101,7 @@ static void tests(void)
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect no items
         bool notFound = false;
-        if (status == errSecItemNotFound || expected_failure(status)) {
+        if (status == errSecItemNotFound || expected_failure(error)) {
             status = errSecSuccess; notFound = true;
         }
         ok_status(status);
@@ -106,7 +121,7 @@ static void tests(void)
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
         bool notFound = false;
-        if (status == errSecItemNotFound || expected_failure(status)) {
+        if (status == errSecItemNotFound || expected_failure(error)) {
             status = errSecSuccess; notFound = true;
         }
         ok_status(status);
@@ -128,7 +143,7 @@ static void tests(void)
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
         bool notFound = false;
-        if (status == errSecItemNotFound || expected_failure(status)) {
+        if (status == errSecItemNotFound || expected_failure(error)) {
             status = errSecSuccess; notFound = true;
         }
         ok_status(status);
@@ -148,7 +163,7 @@ static void tests(void)
     SecAddSharedWebCredential(fqdn, acct1, NULL, ^void (CFErrorRef error) {
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
-        if (status == errSecAuthFailed || expected_failure(status)) { status = errSecSuccess; }
+        if (status == errSecAuthFailed || expected_failure(error)) { status = errSecSuccess; }
         ok_status(status);
         deleting = false;
     });
@@ -158,7 +173,7 @@ static void tests(void)
     SecAddSharedWebCredential(fqdn, acct2, NULL, ^void (CFErrorRef error) {
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
-        if (status == errSecAuthFailed || expected_failure(status)) { status = errSecSuccess; }
+        if (status == errSecAuthFailed || expected_failure(error)) { status = errSecSuccess; }
         ok_status(status);
         deleting = false;
     });
@@ -169,7 +184,7 @@ static void tests(void)
     SecRequestSharedWebCredential(fqdn, NULL, ^void (CFArrayRef credentials, CFErrorRef error) {
         OSStatus status = (OSStatus)((error) ? CFErrorGetCode(error) : errSecSuccess);
         // TODO: need a proper teamID-enabled application identifier to succeed; expect auth failure
-        if (status == errSecAuthFailed || expected_failure(status)) { status = errSecItemNotFound; }
+        if (status == errSecAuthFailed || expected_failure(error)) { status = errSecItemNotFound; }
         is_status(status, errSecItemNotFound);
         is(CFArrayGetCount(credentials) > 0, false, "returned credential array == 0");
         requesting = false;
@@ -179,11 +194,11 @@ static void tests(void)
     CFRelease(cred);
 }
 
-#endif // !TARGET_OS_WATCH
+#endif // TARGET_OS_IOS
 
 int si_76_shared_credentials(int argc, char *const *argv)
 {
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
 		plan_tests(14);
 		tests();
 #else
