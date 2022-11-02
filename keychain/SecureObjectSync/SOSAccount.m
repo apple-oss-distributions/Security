@@ -92,12 +92,14 @@ const CFStringRef kSOSAccountPeerNegotiationTimeouts = CFSTR("PeerNegotiationTim
 const CFStringRef kSOSAccountPeerLastSentTimestamp = CFSTR("kSOSAccountPeerLastSentTimestamp"); //Dictionary<CFStringRef, CFDateRef>
 const CFStringRef kSOSAccountRenegotiationRetryCount = CFSTR("NegotiationRetryCount");
 const CFStringRef kOTRConfigVersion = CFSTR("OTRConfigVersion");
+
 NSString* const SecSOSAggdReattemptOTRNegotiation   = @"com.apple.security.sos.otrretry";
 NSString* const SOSAccountUserDefaultsSuite = @"com.apple.security.sosaccount";
 NSString* const SOSAccountLastKVSCleanup = @"lastKVSCleanup";
 NSString* const kSOSIdentityStatusCompleteIdentity = @"completeIdentity";
 NSString* const kSOSIdentityStatusKeyOnly = @"keyOnly";
 NSString* const kSOSIdentityStatusPeerOnly = @"peerOnly";
+
 
 
 const uint64_t max_packet_size_over_idms = 500;
@@ -211,54 +213,56 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
 -(id) initWithGestalt:(CFDictionaryRef)newGestalt factory:(SOSDataSourceFactoryRef)f
 {
     if ((self = [super init])) {
-        self.queue = dispatch_queue_create("Account Queue", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create("Account Queue", DISPATCH_QUEUE_SERIAL);
 
-        self.gestalt = [[NSDictionary alloc] initWithDictionary:(__bridge NSDictionary * _Nonnull)(newGestalt)];
+        _gestalt = [[NSDictionary alloc] initWithDictionary:(__bridge NSDictionary * _Nonnull)(newGestalt)];
 
         SOSAccountTrustClassic *t = [[SOSAccountTrustClassic alloc] initWithRetirees:[NSMutableSet set] fpi:NULL circle:NULL departureCode:kSOSDepartureReasonError peerExpansion:[NSMutableDictionary dictionary]];
         
-        self.trust = t;
-        self.factory = f; // We adopt the factory. kthanksbai.
+        _trust = t;
+        _factory = f; // We adopt the factory. kthanksbai.
 
-        self.isListeningForSync = false;
+        _isListeningForSync = NO;
 
-        self.accountPrivateKey = NULL;
-        self._password_tmp = NULL;
-        self.user_private_timer = NULL;
-        self.lock_notification_token = NOTIFY_TOKEN_INVALID;
+        _accountPrivateKey = NULL;
+        __password_tmp = NULL;
+        _user_private_timer = NULL;
+        _lock_notification_token = NOTIFY_TOKEN_INVALID;
 
-        self.change_blocks = [NSMutableArray array];
+        _change_blocks = [NSMutableArray array];
 
-        self.key_transport = nil;
-        self.circle_transport = NULL;
-        self.ck_storage = nil;
-        self.kvs_message_transport = nil;
+        _key_transport = nil;
+        _circle_transport = NULL;
+        _ck_storage = nil;
+        _kvs_message_transport = nil;
         
-        self.circle_rings_retirements_need_attention = false;
-        self.engine_peer_state_needs_repair = false;
-        self.key_interests_need_updating = false;
-        self.need_backup_peers_created_after_backup_key_set = false;
+        _circle_rings_retirements_need_attention = NO;
+        _engine_peer_state_needs_repair = NO;
+        _key_interests_need_updating = NO;
+        _need_backup_peers_created_after_backup_key_set = NO;
         
-        self.backup_key =nil;
-        self.deviceID = nil;
+        _backup_key =nil;
+        _deviceID = nil;
 
-        self.waitForInitialSync_blocks = [NSMutableDictionary dictionary];
-        self.accountKeyIsTrusted = false;
-        self.accountKeyDerivationParameters = NULL;
-        self.accountKey = NULL;
-        self.previousAccountKey = NULL;
-        self.peerPublicKey = NULL;
+        _waitForInitialSync_blocks = [NSMutableDictionary dictionary];
+        _accountKeyIsTrusted = NO;
+        _accountKeyDerivationParameters = NULL;
+        _accountKey = NULL;
+        _previousAccountKey = NULL;
+        _peerPublicKey = NULL;
 
-        self.saveBlock = nil;
+        _saveBlock = nil;
 
-        self.settings =  [[NSUserDefaults alloc] initWithSuiteName:SOSAccountUserDefaultsSuite];
+        _settings =  [[NSUserDefaults alloc] initWithSuiteName:SOSAccountUserDefaultsSuite];
         [self sosIsEnabled];
 
         [self ensureFactoryCircles];
         SOSAccountEnsureUUID(self);
-        self.accountIsChanging = false;
-        self.sosTestmode = false;
-        self.consolidateKeyInterest = false;
+        _accountIsChanging = NO;
+        _sosTestmode = NO;
+        _consolidateKeyInterest = NO;
+        _accountInScriptBypassMode = NO;
+        
 #if OCTAGON
         [self setupStateMachine];
 #endif
@@ -284,6 +288,16 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
             [self.trust.expansion isEqual: left.trust.expansion] &&
             CFEqualSafe(self.trust.fullPeerInfo, left.trust.fullPeerInfo));
 
+}
+
+- (void)setAccountInBypassMode:(BOOL)inBypass
+{
+    self.accountInScriptBypassMode = inBypass;
+}
+
+- (BOOL)getAccountInBypassMode
+{
+    return self.accountInScriptBypassMode;
 }
 
 - (void)userPublicKey:(void ((^))(BOOL trusted, NSData *spki, NSError *error))reply
@@ -315,6 +329,14 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
     SOSCloudKeychainRequestPerfCounters(dispatch_get_global_queue(SOS_ACCOUNT_PRIORITY, 0), ^(CFDictionaryRef returnedValues, CFErrorRef error)
     {
         reply((__bridge NSDictionary *)returnedValues);
+    });
+}
+
+- (void)setBypass:(BOOL)bypass reply:(void(^)(BOOL result, NSError *error))reply
+{
+    dispatch_async(self.queue, ^{
+        [self setAccountInBypassMode:bypass];
+        reply(YES, nil);
     });
 }
 
@@ -534,7 +556,8 @@ static bool Flush(CFErrorRef *error) {
 {
     __block CFErrorRef localError = NULL;
     __block NSString *circleHash = NULL;
-    SecAKSDoWithUserBagLockAssertion(&localError, ^{
+    // user_only_keybag_handle ok to use here, since we don't call SOS from securityd_system
+    SecAKSDoWithKeybagLockAssertion(user_only_keybag_handle, &localError, ^{
         [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
             circleHash = CFBridgingRelease(SOSCircleCopyHashString(txn.account.trust.trustedCircle));
         }];
@@ -598,7 +621,8 @@ static bool Flush(CFErrorRef *error) {
         [SOSAuthKitHelpers activeMIDs:^(NSSet <SOSTrustedDeviceAttributes *> * _Nullable activeMIDs, NSError * _Nullable error) {
             SOSAuthKitHelpers *akh = [[SOSAuthKitHelpers alloc] initWithActiveMIDS:activeMIDs];
             if(akh) {
-                SecAKSDoWithUserBagLockAssertion(&localError, ^{
+                // user_only_keybag_handle ok to use here, since we don't call SOS from securityd_system
+                SecAKSDoWithKeybagLockAssertion(user_only_keybag_handle, &localError, ^{
                     [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
                         result = SOSAccountGhostBustCircle(txn.account, akh, options, 1);
                         [self ghostBustFollowup];
@@ -837,7 +861,8 @@ static bool Flush(CFErrorRef *error) {
         return;
     }
 
-    SecAKSDoWithUserBagLockAssertionSoftly(^{
+    // user_only_keybag_handle ok to use here, since we don't call SOS from securityd_system
+    SecAKSDoWithKeybagLockAssertionSoftly(user_only_keybag_handle, ^{
         [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
             blob = CFBridgingRelease(SOSAccountCopyCircleJoiningBlob(txn.account, peer, &localError));
         }];
@@ -897,7 +922,8 @@ static bool Flush(CFErrorRef *error) {
     
     secnotice("sync", "trigger a forced sync for %@", peers);
     
-    SecAKSDoWithUserBagLockAssertion(&localError, ^{
+    // user_only_keybag_handle ok to use here, since we don't call SOS from securityd_system
+    SecAKSDoWithKeybagLockAssertion(user_only_keybag_handle, &localError, ^{
         [self performTransaction:^(SOSAccountTransaction *txn) {
             if ([peers count]) {
                 NSSet *peersSet = [NSSet setWithArray:peers];
@@ -1159,7 +1185,7 @@ static OSStatus do_delete(CFDictionaryRef query) {
 }
 
 static int
-do_keychain_delete_aks_bags()
+do_keychain_delete_aks_bags(void)
 {
     OSStatus result;
     CFDictionaryRef item = CFDictionaryCreateForCFTypes(kCFAllocatorDefault,
@@ -1178,7 +1204,7 @@ do_keychain_delete_aks_bags()
 }
 
 static int
-do_keychain_delete_identities()
+do_keychain_delete_identities(void)
 {
     OSStatus result;
     CFDictionaryRef item = CFDictionaryCreateForCFTypes(kCFAllocatorDefault,
@@ -1195,14 +1221,14 @@ do_keychain_delete_identities()
 }
 
 static int
-do_keychain_delete_lakitu()
+do_keychain_delete_lakitu(void)
 {
     OSStatus result;
     CFDictionaryRef item = CFDictionaryCreateForCFTypes(kCFAllocatorDefault,
                                                         kSecClass, kSecClassGenericPassword,
                                                         kSecAttrSynchronizable, kCFBooleanTrue,
                                                         kSecUseTombstones, kCFBooleanFalse,
-                                                        kSecAttrAccessGroup, CFSTR("com.apple.lakitu"),
+                                                        kSecAttrAccessGroup, CFSTR("com.apple.sbd"),
                                                         kSecAttrAccount, CFSTR("EscrowServiceBypassToken"),
                                                         kSecAttrService, CFSTR("EscrowService"),
                                                         NULL);
@@ -1214,7 +1240,7 @@ do_keychain_delete_lakitu()
 }
 
 static int
-do_keychain_delete_sbd()
+do_keychain_delete_sbd(void)
 {
     OSStatus result;
     CFDictionaryRef item = CFDictionaryCreateForCFTypes(kCFAllocatorDefault,
@@ -1222,6 +1248,8 @@ do_keychain_delete_sbd()
                                                         kSecAttrSynchronizable, kCFBooleanTrue,
                                                         kSecUseTombstones, kCFBooleanFalse,
                                                         kSecAttrAccessGroup, CFSTR("com.apple.sbd"),
+                                                        kSecAttrAccount, CFSTR("SecureBackupEscrowCert"),
+                                                        kSecAttrService, CFSTR("SecureBackupService"),
                                                         NULL);
     
     result = do_delete(item);
@@ -1598,21 +1626,117 @@ bool SOSAccountRemoveIncompleteiCloudIdentities(SOSAccount*  account, SOSCircleR
 }
 
 //
+// MARK: Recovery/Backup Public Key Status Functions
+//
+
+static CFStringRef getCFStringFromKeyType(int n) {
+    switch (n) {
+        case kSOSRecoveryKeyStatus:
+            return CFSTR("kSOSRecoveryKeyStatus");
+        case kSOSBackupKeyStatus:
+            return CFSTR("kSOSBackupKeyStatus");
+        default:
+            return NULL;
+    }
+}
+
+- (void) setPublicKeyStatus: (int) status forKey: (int) key  {
+    CFNumberRef cfstatus = CFNumberCreateWithCFIndex(kCFAllocatorDefault, status);
+    CFStringRef cfkey = getCFStringFromKeyType(key);
+    if(cfkey) {
+        SOSAccountSetValue(self, cfkey, cfstatus, NULL);
+    }
+    CFReleaseNull(cfstatus);
+}
+
+- (int) getPublicKeyStatusForKey: (int) key error: (NSError **) error {
+    CFIndex retval = -1;
+
+    CFStringRef cfkey = getCFStringFromKeyType(key);
+
+    if(!cfkey) {
+        if(error) {
+            *error = [NSError errorWithDomain:(__bridge NSString *)kSOSErrorDomain code:kSOSErrorBadKeyType userInfo:NULL];
+        }
+        return -1;
+    }
+    
+    CFNumberRef cfstatus = SOSAccountGetValue(self, cfkey, NULL);
+    if(cfstatus) {
+        CFNumberGetValue(cfstatus, kCFNumberCFIndexType, &retval);
+        if(key == kSOSRecoveryKeyStatus) {
+            CFDataRef reckey = SOSAccountCopyRecoveryPublic(kCFAllocatorDefault, self, NULL);
+            if(!reckey) {
+                retval = kSOSKeyNotRegistered;
+            }
+            CFReleaseNull(reckey);
+        } else if(key == kSOSBackupKeyStatus) {
+            if(!SOSPeerInfoHasBackupKey(self.peerInfo)) {
+                retval = kSOSKeyNotRegistered;
+            }
+        }
+        return (int) retval;
+    }
+    
+    // if we're here we have to figure it out and save it - upgrade to account struct
+    
+    retval = kSOSKeyNotRegistered;
+    if(key == kSOSRecoveryKeyStatus) {
+        CFDataRef reckey = NULL;
+        if(SOSAccountRecoveryKeyIsInBackupAndCurrentInView(self, kSOSViewiCloudIdentity)) {
+            retval = kSOSKeyRecordedInRing; // most we know right now
+        } else if ((reckey = SOSAccountCopyRecoveryPublic(kCFAllocatorDefault, self, NULL)) != NULL) {
+            retval = kSOSKeyRegisteredInAccount;
+            CFReleaseNull(reckey);
+        }
+    } else if(key == kSOSBackupKeyStatus) {
+        if(SOSAccountBackupRingHasMyBackupKeyForView(self, kSOSViewiCloudIdentity, NULL)) {
+            retval = kSOSKeyRecordedInRing; // most we know right now
+        } else if(SOSPeerInfoHasBackupKey(self.peerInfo)) {
+            retval = kSOSKeyRegisteredInAccount;
+        }
+    } else {
+        retval = -1;
+        if(error) {
+            *error = [NSError errorWithDomain:(__bridge NSString *)kSOSErrorDomain code:kSOSErrorBadKeyType userInfo:NULL];
+        }
+    }
+    
+    return (int) retval;
+}
+
+
+- (void)keyStatusFor: (int) keyType complete: (void(^)(SOSBackupPublicKeyStatus status, NSError *error))complete {
+    NSError* error = nil;
+    SOSBackupPublicKeyStatus status = [self getPublicKeyStatusForKey:keyType error: &error];
+    complete(status, error);
+}
+
+//
 // MARK: Recovery Public Key Functions
 //
 
 bool SOSAccountRegisterRecoveryPublicKey(SOSAccountTransaction* txn, CFDataRef recovery_key, CFErrorRef *error){
     bool retval = SOSAccountSetRecoveryKey(txn.account, recovery_key, error);
-    if(retval) secnotice("recovery", "successfully registered recovery public key");
-    else secnotice("recovery", "could not register recovery public key: %@", *error);
+    if(retval) {
+        secnotice("recovery", "successfully registered recovery public key");
+        [txn.account setPublicKeyStatus:kSOSKeyRegisteredInAccount forKey:kSOSRecoveryKeyStatus];
+    } else {
+        secnotice("recovery", "could not register recovery public key: %@", *error);
+        [txn.account setPublicKeyStatus:kSOSKeyNotRegistered forKey:kSOSRecoveryKeyStatus];
+    }
     SOSClearErrorIfTrue(retval, error);
     return retval;
 }
 
 bool SOSAccountClearRecoveryPublicKey(SOSAccountTransaction* txn, CFDataRef recovery_key, CFErrorRef *error){
     bool retval = SOSAccountRemoveRecoveryKey(txn.account, error);
-    if(retval) secnotice("recovery", "RK Cleared");
-    else secnotice("recovery", "Couldn't clear RK(%@)", *error);
+    if(retval) {
+        secnotice("recovery", "RK Cleared");
+    } else {
+        secnotice("recovery", "Couldn't clear RK(%@)", *error);
+    }
+    [txn.account setPublicKeyStatus:kSOSKeyNotRegistered forKey:kSOSRecoveryKeyStatus];
     SOSClearErrorIfTrue(retval, error);
     return retval;
 }
@@ -1642,9 +1766,17 @@ static bool SOSAccountJoinCircle(SOSAccountTransaction* aTxn, SecKeyRef user_key
     require_action_quiet(trust.trustedCircle, fail, SOSCreateErrorWithFormat(kSOSErrorPeerNotFound, NULL, error, NULL, CFSTR("Don't have circle when joining???")));
 
     require_quiet([account.trust ensureFullPeerAvailable: account err:error], fail);
+        
+    if (account.accountInScriptBypassMode) {
+        account.trust.fullPeerInfo = nil;
+        [account.trust ensureFullPeerAvailable:account err:error];
+    }
     
     SOSFullPeerInfoRef myCirclePeer = trust.fullPeerInfo;
-    if (SOSCircleCountPeers(trust.trustedCircle) == 0 || SOSAccountGhostResultsInReset(account)) {
+
+    
+    if (SOSCircleCountPeers(trust.trustedCircle) == 0 ||
+        (account.accountInScriptBypassMode == NO && SOSAccountGhostResultsInReset(account))) {
         secnotice("resetToOffering", "Resetting circle to offering since there are no peers");
         // this also clears initial sync data
         result = [account.trust resetCircleToOffering:aTxn userKey:user_key err:error];
@@ -1695,10 +1827,12 @@ static bool SOSAccountJoinCircles_internal(SOSAccountTransaction* aTxn, bool use
         return [account.trust resetCircleToOffering:aTxn userKey:user_key err:error];
     }
     
-    if(SOSCircleHasPeerWithID(trust.trustedCircle, (__bridge CFStringRef)(account.peerID), NULL)) {
-        // We shouldn't be at this point if we're already in circle.
-        secnotice("circleops", "attempt to join a circle we're in - continuing.");
-        return true; // let things above us think we're in circle - because we are.
+    if (account.accountInScriptBypassMode == NO) {
+        if(SOSCircleHasPeerWithID(trust.trustedCircle, (__bridge CFStringRef)(account.peerID), NULL)) {
+            // We shouldn't be at this point if we're already in circle.
+            secnotice("circleops", "attempt to join a circle we're in - continuing.");
+            return true; // let things above us think we're in circle - because we are.
+        }
     }
     
     if(!SOSCircleVerify(trust.trustedCircle, account.accountKey, NULL)) {
@@ -1706,20 +1840,21 @@ static bool SOSAccountJoinCircles_internal(SOSAccountTransaction* aTxn, bool use
         return [account.trust resetCircleToOffering:aTxn userKey:user_key err:error];
     }
 
-    if (trust.fullPeerInfo != NULL) {
-        SOSPeerInfoRef myPeer = trust.peerInfo;
-        success = SOSCircleHasPeer(trust.trustedCircle, myPeer, NULL);
-        require_quiet(!success, done);
-
-        SOSCircleRemoveRejectedPeer(trust.trustedCircle, myPeer, NULL); // If we were rejected we should remove it now.
-
-        if (!SOSCircleHasApplicant(trust.trustedCircle, myPeer, NULL)) {
-            secerror("Resetting my peer (ID: %@) for circle '%@' during application", SOSPeerInfoGetPeerID(myPeer), SOSCircleGetName(trust.trustedCircle));
-
-            trust.fullPeerInfo = NULL;
+    if (account.accountInScriptBypassMode == NO) {
+        if (trust.fullPeerInfo != NULL) {
+            SOSPeerInfoRef myPeer = trust.peerInfo;
+            success = SOSCircleHasPeer(trust.trustedCircle, myPeer, NULL);
+            require_quiet(!success, done);
+            
+            SOSCircleRemoveRejectedPeer(trust.trustedCircle, myPeer, NULL); // If we were rejected we should remove it now.
+            
+            if (!SOSCircleHasApplicant(trust.trustedCircle, myPeer, NULL)) {
+                secerror("Resetting my peer (ID: %@) for circle '%@' during application", SOSPeerInfoGetPeerID(myPeer), SOSCircleGetName(trust.trustedCircle));
+                
+                trust.fullPeerInfo = NULL;
+            }
         }
     }
-
     success = SOSAccountJoinCircle(aTxn, user_key, use_cloud_identity, error);
 
     require_quiet(success, done);
@@ -2172,7 +2307,7 @@ SOSPeerInfoRef SOSAccountCopyApplication(SOSAccount*  account, CFErrorRef* error
     SOSPeerInfoRef applicant = NULL;
     SOSAccountTrustClassic *trust = account.trust;
     SecKeyRef userKey = SOSAccountGetPrivateCredential(account, error);
-    if(!userKey) return false;
+    if(!userKey) return NULL;
     if(![trust ensureFullPeerAvailable:account err:error])
         return applicant;
     if(!SOSFullPeerInfoPromoteToApplication(trust.fullPeerInfo, userKey, error))
@@ -2938,27 +3073,27 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
                                                  lockStateTracker:[CKKSLockStateTracker globalTracker]
                                               reachabilityTracker:nil];
 
-
     self.performBackups = [[CKKSNearFutureScheduler alloc] initWithName:@"performBackups"
                                                            initialDelay:5*NSEC_PER_SEC
-                                                        continuingDelay:30*NSEC_PER_SEC
+                                                     exponentialBackoff:2.0
+                                                           maximumDelay:120*NSEC_PER_SEC
                                                        keepProcessAlive:YES
                                               dependencyDescriptionCode:CKKSResultDescriptionNone
                                                                   block:^{
-        STRONGIFY(self);
-        [self addBackupFlag];
-    }];
+                                                                            STRONGIFY(self);
+                                                                            [self addBackupFlag];
+                                                                        }];
 
     self.performRingUpdates = [[CKKSNearFutureScheduler alloc] initWithName:@"performRingUpdates"
                                                                initialDelay:1*NSEC_PER_SEC
-                                                           expontialBackoff:2.0
+                                                         exponentialBackoff:2.0
                                                                maximumDelay:10*NSEC_PER_SEC
                                                            keepProcessAlive:YES
                                                   dependencyDescriptionCode:CKKSResultDescriptionNone
                                                                       block:^{
-        STRONGIFY(self);
-        [self addRingUpdateFlag];
-    }];
+                                                                                STRONGIFY(self);
+                                                                                [self addRingUpdateFlag];
+                                                                            }];
 
     SOSAccountConfiguration *conf = self.accountConfiguration.storage;
 
@@ -3127,8 +3262,17 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
         // an existing circle/ring.
         [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
             CFErrorRef localError = NULL;
+            secnotice("rings", "Flushing Rings to KVS");
             if(![self.circle_transport flushChanges:&localError]){
                 secnotice("circleOps", "flush circles/rings failed %@", localError);
+            } else {
+                txn.account.need_backup_peers_created_after_backup_key_set = true;
+                if([txn.account getPublicKeyStatusForKey:kSOSRecoveryKeyStatus error:NULL] > 0) {
+                    [txn.account setPublicKeyStatus:kSOSKeyPushedInRing forKey:kSOSRecoveryKeyStatus];
+                }
+                if([txn.account getPublicKeyStatusForKey:kSOSBackupKeyStatus error:NULL] > 0) {
+                    [txn.account setPublicKeyStatus:kSOSKeyPushedInRing forKey:kSOSBackupKeyStatus];
+                }
             }
             CFReleaseNull(localError);
 

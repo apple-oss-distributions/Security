@@ -192,6 +192,10 @@
     [self.account accountStatus: complete];
 }
 
+- (void)keyStatusFor: (int) keyType complete: (void(^)(SOSBackupPublicKeyStatus status, NSError *error))complete {
+    [self.account keyStatusFor: keyType complete: complete];
+}
+
 - (void)rpcTriggerBackup:(NSArray<NSString *>* _Nullable)backupPeers complete:(void (^)(NSError *error))complete
 {
     if([self sosIsEnabled]) {
@@ -252,6 +256,11 @@
 
 - (NSString *) sosIsEnabledString {
     return [self.account sosIsEnabledString];
+}
+
+- (void)setBypass:(BOOL)bypass reply:(void(^)(BOOL result, NSError *error))reply
+{
+    [self.account setBypass:bypass reply:reply];
 }
 
 @end

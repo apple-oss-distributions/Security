@@ -62,6 +62,7 @@ enum {
     kSOSEntitlementMissing = 7,
 
     KSOSCantParseSOSMessage = 8,
+    kSOSErrorBadKeyType = 9,
     kSOSDisabled,
 };
 
@@ -93,6 +94,7 @@ extern const char * kSOSCCHoldLockForInitialSync;
 extern const char * kSOSCCPeerAvailable;
 extern const char * kSOSCCRecoveryKeyChanged;
 extern const char * kSOSCCCircleOctagonKeysChangedNotification;
+
 
 /*!
  @function SOSCCSetUserCredentials
@@ -535,6 +537,7 @@ extern const CFStringRef kCKKSViewApplePay;
 extern const CFStringRef kCKKSViewHome;
 extern const CFStringRef kCKKSViewLimitedPeersAllowed;
 extern const CFStringRef kCKKSViewMFi;
+extern const CFStringRef kCKKSViewMail;
 
 
 /*!

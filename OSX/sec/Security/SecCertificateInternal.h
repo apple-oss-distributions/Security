@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2019 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2007-2022 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -179,6 +179,9 @@ const DERItem *SecCertificateGetPublicKeyData(SecCertificateRef certificate);
 /* Return legacy property values for use by SecCertificateCopyValues. */
 CFArrayRef SecCertificateCopyLegacyProperties(SecCertificateRef certificate);
 
+/* Return PEM representation of the certificate. */
+CFStringRef SecCertificateCopyPEMRepresentation(SecCertificateRef certificate);
+
 // MARK: -
 // MARK: Certificate Operations
 
@@ -245,6 +248,7 @@ bool SecCertificateIsOidString(CFStringRef oid);
 DERItem *SecCertificateGetExtensionValue(SecCertificateRef certificate, CFTypeRef oid);
 
 CFArrayRef SecCertificateCopyRFC822NamesFromSubject(SecCertificateRef certificate);
+CFArrayRef SecCertificateCopyRFC822NamesFromSAN(SecCertificateRef certificate);
 CFArrayRef SecCertificateCopyDNSNamesFromSAN(SecCertificateRef certificate);
 CFArrayRef SecCertificateCopyIPAddressDatas(SecCertificateRef certificate);
 

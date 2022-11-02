@@ -27,12 +27,12 @@
 #import <Security/SecItemPriv.h>
 #import <Security/SecureObjectSync/SOSTypes.h>
 #include "keychain/SecureObjectSync/SOSControlHelper.h"
+#include "keychain/SecureObjectSync/SOSAccountPriv.h"
 #import <ipc/securityd_client.h>
 #import <err.h>
 #import <getopt.h>
 
 #include "builtin_commands.h"
-
 
 @interface SOSStatus : NSObject
 @property NSXPCConnection *connection;
@@ -62,41 +62,50 @@
     return self;
 }
 
+- (void)setBypassBit:(BOOL)bypass
+{
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+        
+    [[self.connection remoteObjectProxy] setBypass:bypass reply:^(BOOL result, NSError *error) {
+        dispatch_semaphore_signal(sema);
+        printf("setting bypass complete\n");
+    }];
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+}
+
+
 - (void)printPerformanceCounters:(bool)asPList
 {
-    dispatch_semaphore_t sema1 = dispatch_semaphore_create(0);
-    dispatch_semaphore_t sema2 = dispatch_semaphore_create(0);
-    dispatch_semaphore_t sema3 = dispatch_semaphore_create(0);
+    dispatch_group_t group = dispatch_group_create();
     
     NSMutableDictionary<NSString *, NSNumber *> *merged = [NSMutableDictionary dictionary];
     __block NSMutableDictionary<NSString *, NSString *> *diagnostics = [NSMutableDictionary dictionary];
     
+    dispatch_group_enter(group);
     [[self.connection remoteObjectProxy] kvsPerformanceCounters:^(NSDictionary <NSString *, NSNumber *> *counters){
         if (counters == NULL){
             printf("no KVS counters!");
-            return;
+        } else {
+            [merged addEntriesFromDictionary:counters];
         }
-       
-        [merged addEntriesFromDictionary:counters];
-        dispatch_semaphore_signal(sema1);
+        dispatch_group_leave(group);
     }];
     
+    dispatch_group_enter(group);
     [[self.connection remoteObjectProxy] rateLimitingPerformanceCounters:^(NSDictionary <NSString *, NSString *> *returnedDiagnostics){
         if (returnedDiagnostics == NULL){
             printf("no rate limiting counters!");
-            return;
+        } else {
+            diagnostics = [[NSMutableDictionary alloc] initWithDictionary:returnedDiagnostics];
         }
-        diagnostics = [[NSMutableDictionary alloc]initWithDictionary:returnedDiagnostics];
-        dispatch_semaphore_signal(sema3);
+        dispatch_group_leave(group);
     }];
-    dispatch_semaphore_wait(sema1, DISPATCH_TIME_FOREVER);
-    dispatch_semaphore_wait(sema2, DISPATCH_TIME_FOREVER);
-    dispatch_semaphore_wait(sema3, DISPATCH_TIME_FOREVER);
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
     
     if (asPList) {
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:merged format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
 
-        printf("%.*s\n", (int)[data length], [data bytes]);
+        fwrite([data bytes], [data length], 1, stdout);
     } else {
         [merged enumerateKeysAndObjectsUsingBlock:^(NSString * key, NSNumber * obj, BOOL *stop) {
             printf("%s - %lld\n", [key UTF8String], [obj longLongValue]);
@@ -119,6 +128,56 @@ usage(const char *command, struct option *options)
         printf("\t [-%c|--%s\n", options[n].val, options[n].name);
     }
 
+}
+
+int
+command_bypass(__unused int argc, __unused char * const * argv)
+{
+    @autoreleasepool {
+        int option_index = 0, ch;
+
+        SOSStatus *control = [[SOSStatus alloc] init];
+
+        bool setBypass = false;
+        bool clearBypass = false;
+
+        struct option long_options[] =
+        {
+            /* These options set a flag. */
+            {"set",    no_argument, NULL, 's'},
+            {"clear",    no_argument, NULL, 'c'},
+            {0, 0, 0, 0}
+        };
+
+        while ((ch = getopt_long(argc, argv, "sc", long_options, &option_index)) != -1) {
+            switch  (ch) {
+                case 's': {
+                    setBypass = true;
+                    break;
+                }
+                case 'c': {
+                    clearBypass = true;
+                    break;
+                }
+                case '?':
+                default:
+                {
+                    usage("bypass", long_options);
+                    return SHOW_USAGE_MESSAGE;
+                }
+            }
+        }
+        if (setBypass) {
+            printf("setting account bypass\n");
+            [control setBypassBit:YES];
+        }
+        if (clearBypass) {
+            printf("clearing account bypass\n");
+            [control setBypassBit:NO];
+        }
+    }
+
+    return 0;
 }
 
 int
@@ -162,6 +221,16 @@ static void printControlFailureMessage(NSError *error) {
     printf("%s", [[NSString stringWithFormat:@"Failed to send messages to soscontrol object: %@\n", error] UTF8String]);
 }
 
+static char *keyStatusToString(SOSBackupPublicKeyStatus kstat) {
+    switch(kstat) {
+        case kSOSKeyNotRegistered:          return "kSOSKeyNotRegistered";
+        case kSOSKeyRegisteredInAccount:    return "kSOSKeyRegisteredInAccount";
+        case kSOSKeyRecordedInRing:         return "kSOSKeyRecordedInRing";
+        case kSOSKeyPushedInRing:           return "kSOSKeyPushedInRing";
+        default:                            return "not recognized";
+    }
+}
+
 int
 command_sos_control(__unused int argc, __unused char * const * argv)
 {
@@ -182,6 +251,7 @@ command_sos_control(__unused int argc, __unused char * const * argv)
         bool accountStatus = false;
         bool removeV0Peers = false;
         bool sosQueryEnabled = false;
+        bool keyStatus = false;
 
         static struct option long_options[] =
         {
@@ -201,13 +271,18 @@ command_sos_control(__unused int argc, __unused char * const * argv)
             {"logAccountStatus",   optional_argument, NULL, 'l'},
             {"removeV0Peers",   optional_argument, NULL, 'V'},
             {"querySOSMode",   no_argument, NULL, 'Q'},
+            {"keyStatus",   no_argument, NULL, 'k'},
             {0, 0, 0, 0}
         };
 
-        while ((ch = getopt_long(argc, argv, "as:AB:GHIMQRSTilV", long_options, &option_index)) != -1) {
+        while ((ch = getopt_long(argc, argv, "aks:AB:GHIMQRSTilV", long_options, &option_index)) != -1) {
             switch  (ch) {
                 case 'a': {
                     assertStashAccountKey = true;
+                    break;
+                }
+                case 'k': {
+                    keyStatus = true;
                     break;
                 }
                 case 's': {
@@ -410,7 +485,26 @@ command_sos_control(__unused int argc, __unused char * const * argv)
                     printf("%s", [[NSString stringWithFormat:@"failed to get account status: %@\n", error] UTF8String]);
                 }
             }];
-
+        } else if (keyStatus) {
+            [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
+                printControlFailureMessage(error);
+            }] keyStatusFor:kSOSBackupKeyStatus complete:^(SOSBackupPublicKeyStatus status, NSError *error) {
+                if(error) {
+                    printf("%s", [[NSString stringWithFormat:@"Failed to get status for Backup Key -  %@\n", error] UTF8String]);
+                } else {
+                    printf("Backup Key Status: %s\n", keyStatusToString(status));
+                }
+            }];
+            
+            [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
+                printControlFailureMessage(error);
+            }] keyStatusFor:kSOSRecoveryKeyStatus complete:^(SOSBackupPublicKeyStatus status, NSError *error) {
+                if(error) {
+                    printf("%s", [[NSString stringWithFormat:@"Failed to get status for Recovery Key -  %@\n", error] UTF8String]);
+                } else {
+                    printf("Recovery Key Status: %s\n", keyStatusToString(status));
+                }
+            }];
         } else if (removeV0Peers) {
             [[control.connection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *error) {
                 printControlFailureMessage(error);

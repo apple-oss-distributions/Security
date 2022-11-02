@@ -235,7 +235,7 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
     CFErrorRef localError = NULL;
     bool notifyEngines = false;
 
-    SOSPeerInfoRef mpi = self.account.peerInfo;
+    SOSPeerInfoRef mpi = NULL;
 
     bool isInCircle = [self.account isInCircle:NULL];
 
@@ -253,7 +253,8 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
         SOSAccountCancelSyncChecking(self.account);
     }
 
-    // If our identity changed our inital set should be everything.
+    // If our identity changed, our initial set should be everything.
+    mpi = self.account.peerInfo;
     if (sosIsEnabled && [self.initialID isEqualToString: (__bridge NSString *)(SOSPeerInfoGetPeerID(mpi))]) {
         self.initialUnsyncedViews = (__bridge_transfer NSSet<NSString*>*) SOSViewCopyViewSet(kViewSetAll);
     }
@@ -289,7 +290,7 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
         // Also, there might be some view set change. Ensure that the engine knows...
         notifyEngines = true;
     }
-    if(sosIsEnabled && self.account.need_backup_peers_created_after_backup_key_set) { // if we need to keep backup peers this needs to be re-enabled.
+    if(self.account.need_backup_peers_created_after_backup_key_set) {
         self.account.need_backup_peers_created_after_backup_key_set = false;
         notifyEngines = true;
     }
@@ -300,7 +301,7 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
     CFReleaseNull(currentViews);
     notifyEngines |= viewSetChanged;
 
-    if (sosIsEnabled && notifyEngines) {
+    if (notifyEngines) {
 #if OCTAGON
         if(!SecCKKSTestDisableSOS()) {
 #endif
@@ -310,7 +311,7 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
 #endif
     }
 
-    if(sosIsEnabled && self.account.key_interests_need_updating && !self.account.consolidateKeyInterest) {
+    if(self.account.key_interests_need_updating && !self.account.consolidateKeyInterest) {
         SOSUpdateKeyInterest(self.account);
     }
 
@@ -393,7 +394,7 @@ static void SOSViewsSetCachedStatus(SOSAccount *account) {
     if(doViewChanged) {
         SOSViewsSetCachedStatus(_account);
     }
-    if(sosIsEnabled && self.account.notifyBackupOnExit) {
+    if(self.account.notifyBackupOnExit) {
         notify_post(kSecItemBackupNotification);
         self.account.notifyBackupOnExit = false;
     }

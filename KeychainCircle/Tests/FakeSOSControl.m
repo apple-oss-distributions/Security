@@ -357,6 +357,10 @@
     complete(nil, nil);
 }
 
+- (void)keyStatusFor: (int) keyType complete: (void(^)(SOSBackupPublicKeyStatus status, NSError *error))complete {
+    complete(0, nil);
+}
+
 - (void)rpcTriggerBackup:(NSArray<NSString *> *)backupPeers complete:(void (^)(NSError *))complete {
     complete(nil);
 }
@@ -387,6 +391,11 @@
 
 - (NSString *)sosIsEnabledString {
     return [self sosIsEnabled] ? @"[SOS is active]": @"[SOS is monitoring]";
+}
+
+- (void)setBypass:(BOOL)bypass reply:(void (^)(BOOL, NSError *))reply
+{
+    reply(YES, nil);
 }
 
 @end
