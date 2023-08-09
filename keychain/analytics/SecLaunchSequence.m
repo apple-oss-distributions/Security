@@ -1,14 +1,14 @@
 //
-//  CKKSLaunchSequence.m
+//  SecLaunchSequence.m
 //
 
-#import "keychain/analytics/CKKSLaunchSequence.h"
+#import <Security/SecLaunchSequence.h>
 #import <utilities/SecCoreAnalytics.h>
 #import <os/assumes.h>
 
-enum { CKKSMaxLaunchEvents = 100 };
+enum { SecMaxLaunchEvents = 100 };
 
-@interface CKKSLaunchEvent : NSObject <NSCopying>
+@interface SecLaunchEvent : NSObject <NSCopying>
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithName:(NSString *)name;
 @property (strong) NSString *name; // "human friendly" name, included in metrics
@@ -17,20 +17,20 @@ enum { CKKSMaxLaunchEvents = 100 };
 @end
 
 
-@interface CKKSLaunchSequence () {
+@interface SecLaunchSequence () {
     bool _firstLaunch;
 }
 @property (readwrite) bool launched;
-@property (strong) NSString* name;
-@property (strong) NSMutableDictionary<NSString *,CKKSLaunchEvent *>* events; // key is uniqifier, event.name is "human friendly"
+@property (strong, readwrite) NSString* name;
+@property (strong) NSMutableDictionary<NSString *,SecLaunchEvent *>* events; // key is uniqifier, event.name is "human friendly"
 @property (strong) NSMutableDictionary<NSString *,id>* attributes;
 
 @property (strong) NSBlockOperation *launchOperation;
-@property (strong) NSMutableDictionary<NSString *, CKKSLaunchSequence *> *dependantLaunches;
+@property (strong) NSMutableDictionary<NSString *, SecLaunchSequence *> *dependantLaunches;
 @end
 
 
-@implementation CKKSLaunchEvent
+@implementation SecLaunchEvent
 
 - (instancetype)initWithName:(NSString *)name {
     if ((self = [super init]) != NULL) {
@@ -43,7 +43,7 @@ enum { CKKSMaxLaunchEvents = 100 };
 
 - (id)copyWithZone:(NSZone *)zone
 {
-    CKKSLaunchEvent *copy = [[[self class] alloc] init];
+    SecLaunchEvent *copy = [[[self class] alloc] init];
 
     copy.name = [self.name copyWithZone:zone];
     copy.date = [self.date copyWithZone:zone];
@@ -54,13 +54,13 @@ enum { CKKSMaxLaunchEvents = 100 };
 
 @end
 
-@implementation CKKSLaunchSequence
+@implementation SecLaunchSequence
 
 - (instancetype)initWithRocketName:(NSString *)name {
     if ((self = [super init]) != NULL) {
         _name = name;
         _events = [NSMutableDictionary dictionary];
-        _events[@"started"] = [[CKKSLaunchEvent alloc] initWithName:@"started"];
+        _events[@"started"] = [[SecLaunchEvent alloc] initWithName:@"started"];
         _launchOperation = [[NSBlockOperation alloc] init];
         _dependantLaunches = [NSMutableDictionary dictionary];
     }
@@ -83,7 +83,7 @@ enum { CKKSMaxLaunchEvents = 100 };
     }
 }
 
-- (void)addDependantLaunch:(NSString *)name child:(CKKSLaunchSequence *)child
+- (void)addDependantLaunch:(NSString *)name child:(SecLaunchSequence *)child
 {
     @synchronized (self) {
         if (self.launched) {
@@ -122,37 +122,38 @@ enum { CKKSMaxLaunchEvents = 100 };
         if (self.launched) {
             return;
         }
-        if (self.events.count > CKKSMaxLaunchEvents) {
+        if (self.events.count > SecMaxLaunchEvents) {
             return;
         }
-        CKKSLaunchEvent *event = self.events[eventname];
+        SecLaunchEvent *event = self.events[eventname];
         if (event) {
             event.counter++;
         } else {
-            event = [[CKKSLaunchEvent alloc] initWithName:eventname];
+            event = [[SecLaunchEvent alloc] initWithName:eventname];
         }
         self.events[eventname] = event;
     }
 }
 
-- (void)reportMetric {
-
+- (NSDictionary<NSString*,id>* _Nullable) metricsReport {
     NSMutableDictionary *metric = [NSMutableDictionary dictionary];
-    os_assert(self.launched);
+    if (self.launched == NO) {
+        return nil;
+    }
 
     @synchronized(self) {
         /* don't need to lock children, at this point, they have launched and will no longer mutate */
-        [self.dependantLaunches enumerateKeysAndObjectsUsingBlock:^(NSString *_Nonnull childKey, CKKSLaunchSequence *_Nonnull child, BOOL * _Nonnull stop) {
+        [self.dependantLaunches enumerateKeysAndObjectsUsingBlock:^(NSString *_Nonnull childKey, SecLaunchSequence *_Nonnull child, BOOL * _Nonnull stop) {
             os_assert(child.launched);
-            [child.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull key, CKKSLaunchEvent * _Nonnull obj, BOOL * _Nonnull stop) {
-                CKKSLaunchEvent *childEvent = [obj copy];
+            [child.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull key, SecLaunchEvent * _Nonnull obj, BOOL * _Nonnull clientStop) {
+                SecLaunchEvent *childEvent = [obj copy];
                 childEvent.name = [NSString stringWithFormat:@"c:%@-%@", childKey, childEvent.name];
                 self.events[[NSString stringWithFormat:@"c:%@-%@", childKey, key]] = childEvent;
             }];
             self.attributes[[NSString stringWithFormat:@"c:%@", childKey]] = child.attributes;
         }];
 
-        CKKSLaunchEvent *event = [[CKKSLaunchEvent alloc] initWithName:(self.firstLaunch ? @"first-launch" : @"re-launch")];
+        SecLaunchEvent *event = [[SecLaunchEvent alloc] initWithName:(self.firstLaunch ? @"first-launch" : @"re-launch")];
         self.events[event.name] = event;
 
         metric[@"events"] = [self eventsRelativeTime];
@@ -161,7 +162,7 @@ enum { CKKSMaxLaunchEvents = 100 };
         }
 
     }
-    [SecCoreAnalytics sendEvent:self.name event:metric];
+    return metric;
 }
 
 - (void)launch {
@@ -171,28 +172,20 @@ enum { CKKSMaxLaunchEvents = 100 };
         }
         self.launched = true;
     }
-
-    __weak typeof(self) weakSelf = self;
-
-    [self.launchOperation addExecutionBlock:^{
-        [weakSelf reportMetric];
-    }];
-
-    [[NSOperationQueue mainQueue] addOperation:self.launchOperation];
 }
 
 - (NSArray *) eventsRelativeTime
 {
-    NSMutableArray<CKKSLaunchEvent *>* array = [NSMutableArray array];
-    [self.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull __unused name, CKKSLaunchEvent * _Nonnull event, BOOL * _Nonnull __unused stop) {
+    NSMutableArray<SecLaunchEvent *>* array = [NSMutableArray array];
+    [self.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull __unused name, SecLaunchEvent * _Nonnull event, BOOL * _Nonnull __unused stop) {
         [array addObject:event];
     }];
-    [array sortUsingComparator:^NSComparisonResult(CKKSLaunchEvent * _Nonnull obj1, CKKSLaunchEvent *_Nonnull obj2) {
+    [array sortUsingComparator:^NSComparisonResult(SecLaunchEvent * _Nonnull obj1, SecLaunchEvent *_Nonnull obj2) {
         return [obj1.date compare:obj2.date];
     }];
     NSDate *firstEvent = array[0].date;
     NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
-    [array enumerateObjectsUsingBlock:^(CKKSLaunchEvent * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+    [array enumerateObjectsUsingBlock:^(SecLaunchEvent * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
         NSMutableDictionary *event = [NSMutableDictionary dictionary];
         event[@"name"] = obj.name;
         event[@"time"] = @([obj.date timeIntervalSinceDate:firstEvent]);
@@ -210,7 +203,7 @@ enum { CKKSMaxLaunchEvents = 100 };
         dateFormatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSZ";
 
         NSMutableArray<NSString *>* array = [NSMutableArray array];
-        [self.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull name, CKKSLaunchEvent * _Nonnull event, BOOL * _Nonnull stop) {
+        [self.events enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull name, SecLaunchEvent * _Nonnull event, BOOL * _Nonnull stop) {
             NSString *str = [NSString stringWithFormat:@"%@ - %@:%u", [dateFormatter stringFromDate:event.date], event.name, event.counter];
             [array addObject:str];
         }];
