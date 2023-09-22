@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006-2022 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2006-2023 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -361,6 +361,7 @@ OSStatus SecTrustAddToInputCertificates(SecTrustRef trust, CFTypeRef certificate
         CFReleaseNull(trust->_certificates);
         trust->_certificates = (CFArrayRef)newCertificates;
     });
+    SecTrustSetNeedsEvaluation(trust);
 
     return errSecSuccess;
 }
@@ -1741,33 +1742,74 @@ bool SecTrustIsTrustResultValid(SecTrustRef trust, CFAbsoluteTime verifyTime) {
     return false;
 }
 
-static OSStatus SecTrustEvaluateIfNecessary(SecTrustRef trust) {
-    __block OSStatus result;
-    check(trust);
-    if (!trust)
-        return errSecParam;
-
-    /* Create runtime issue if called on main thread of an app because trust evaluation calls to trustd can hang */
-    CFBundleRef mainBundle = CFBundleGetMainBundle();
-    CFURLRef bundleUrl = mainBundle ? CFBundleCopyBundleURL(mainBundle) : NULL;
-    if (bundleUrl) {
-        CFBooleanRef is_app = NULL;
-        CFStringRef bundleID = CFBundleGetIdentifier(mainBundle);
-        if (CFURLCopyResourcePropertyForKey(bundleUrl, kCFURLIsApplicationKey, &is_app, NULL)) {
-            if ((1 == pthread_main_np()) && is_app == kCFBooleanTrue) {
-                // For non-apple apps. See rdar://96982460
-                if (bundleID && !CFStringHasPrefix(bundleID, CFSTR("com.apple."))) {
+static void SecTrustEvaluateThreadRuntimeCheck(void) {
+#if (defined(TARGET_DARWINOS) && TARGET_DARWINOS) || TARGET_OS_BRIDGE
+    // Skip runtime check
+    return;
+#else
+    // Create a runtime issue if this is called on an app's main thread,
+    // because trust evaluation can block on network calls and should be
+    // performed asynchronously. This function should return as quickly
+    // as possible, dispatching work only if called on the main thread.
+    if (1 != pthread_main_np()) {
+        return;
+    }
+    static dispatch_once_t queueToken;
+    static dispatch_queue_t runtimeLogQueue = NULL;
+    dispatch_once(&queueToken, ^{
+        runtimeLogQueue = dispatch_queue_create("Runtime Issue Logging", DISPATCH_QUEUE_SERIAL);
+    });
+    dispatch_async(runtimeLogQueue, ^{
+        CFBundleRef mainBundle = CFBundleGetMainBundle();
+        CFURLRef bundleUrl = mainBundle ? CFBundleCopyBundleURL(mainBundle) : NULL;
+        CFStringRef bundlePath = (bundleUrl) ? CFURLCopyFileSystemPath(bundleUrl, kCFURLPOSIXPathStyle) : NULL;
+        // Check for app extension first before performing more expensive bundle resource lookups;
+        // this is targeting app bundles and not command-line tools. See rdar://107146836.
+        if (bundlePath && CFStringHasSuffix(bundlePath, CFSTR(".app"))) {
+            CFStringRef bundleID = CFBundleGetIdentifier(mainBundle);
+            // For non-apple apps. See rdar://96982460.
+            if (bundleID && !CFStringHasPrefix(bundleID, CFSTR("com.apple."))) {
+                CFBooleanRef is_app = NULL;
+                if (CFURLCopyResourcePropertyForKey(bundleUrl, kCFURLIsApplicationKey, &is_app, NULL) && is_app == kCFBooleanTrue) {
                     static dispatch_once_t onceToken;
                     static os_log_t runtimeLog = NULL;
+                    static uint64_t faultsSinceStartTime = 0;
+                    static CFAbsoluteTime startTime = 0;
                     dispatch_once(&onceToken, ^{
                         runtimeLog = os_log_create(OS_LOG_SUBSYSTEM_RUNTIME_ISSUES, "Security");
                     });
-                    os_log_fault(runtimeLog, "This method should not be called on the main thread as it may lead to UI unresponsiveness.");
+                    CFAbsoluteTime curTime = CFAbsoluteTimeGetCurrent();
+                    if (curTime < startTime) {
+                        // we're throttled and waiting until startTime to resume
+                        faultsSinceStartTime = 0;
+                    } else {
+                        // log the fault and see if we need to throttle
+                        os_log_fault(runtimeLog, "__delegate_identifier__:Performance Diagnostics__:::____message__:This method should not be called on the main thread as it may lead to UI unresponsiveness.");
+                        faultsSinceStartTime++;
+                        if (!SecFrameworkIsRunningInXcode() && faultsSinceStartTime > 10) {
+                            // more than 10 faults in the past minute, and we aren't running in Xcode
+                            startTime = curTime + (60*5); // throttle for 5 minutes
+                        } else if ((curTime - startTime) > 60) {
+                            startTime = curTime; // if not throttled, reset counters after 1 minute
+                            faultsSinceStartTime = 0;
+                        }
+                    }
                 }
             }
         }
+        CFReleaseNull(bundlePath);
         CFReleaseNull(bundleUrl);
+    });
+#endif
+}
+
+static OSStatus SecTrustEvaluateIfNecessary(SecTrustRef trust) {
+    __block OSStatus result;
+    check(trust);
+    if (!trust) {
+        return errSecParam;
     }
+    SecTrustEvaluateThreadRuntimeCheck();
 
     __block CFAbsoluteTime verifyTime = SecTrustGetVerifyTime(trust);
     SecTrustAddPolicyAnchors(trust);
@@ -3231,5 +3273,4 @@ bool SecTrustResetSettings(SecTrustResetFlags flags, CFErrorRef* error) {
         CFRelease(localError);
     }
     return result;
-
 }

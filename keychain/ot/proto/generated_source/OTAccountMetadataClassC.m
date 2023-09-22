@@ -7,8 +7,6 @@
 #import <ProtocolBuffer/PBHashUtil.h>
 #import <ProtocolBuffer/PBDataReader.h>
 
-#import "OTAccountMetadataClassCAccountSettings.h"
-
 #if !__has_feature(objc_arc)
 # error This generated file depends on ARC but it is not enabled; turn on ARC, or use 'objc_use_arc' option to generate non-ARC code.
 #endif
@@ -27,12 +25,12 @@
 }
 - (void)setIcloudAccountState:(OTAccountMetadataClassC_AccountState)v
 {
-    _has.icloudAccountState = YES;
+    _has.icloudAccountState = (uint)YES;
     _icloudAccountState = v;
 }
 - (void)setHasIcloudAccountState:(BOOL)f
 {
-    _has.icloudAccountState = f;
+    _has.icloudAccountState = (uint)f;
 }
 - (BOOL)hasIcloudAccountState
 {
@@ -49,12 +47,12 @@
 @synthesize epoch = _epoch;
 - (void)setEpoch:(int64_t)v
 {
-    _has.epoch = YES;
+    _has.epoch = (uint)YES;
     _epoch = v;
 }
 - (void)setHasEpoch:(BOOL)f
 {
-    _has.epoch = f;
+    _has.epoch = (uint)f;
 }
 - (BOOL)hasEpoch
 {
@@ -72,12 +70,12 @@
 }
 - (void)setTrustState:(OTAccountMetadataClassC_TrustState)v
 {
-    _has.trustState = YES;
+    _has.trustState = (uint)YES;
     _trustState = v;
 }
 - (void)setHasTrustState:(BOOL)f
 {
-    _has.trustState = f;
+    _has.trustState = (uint)f;
 }
 - (BOOL)hasTrustState
 {
@@ -94,12 +92,12 @@
 @synthesize lastHealthCheckup = _lastHealthCheckup;
 - (void)setLastHealthCheckup:(uint64_t)v
 {
-    _has.lastHealthCheckup = YES;
+    _has.lastHealthCheckup = (uint)YES;
     _lastHealthCheckup = v;
 }
 - (void)setHasLastHealthCheckup:(BOOL)f
 {
-    _has.lastHealthCheckup = f;
+    _has.lastHealthCheckup = (uint)f;
 }
 - (BOOL)hasLastHealthCheckup
 {
@@ -112,12 +110,12 @@
 }
 - (void)setAttemptedJoin:(OTAccountMetadataClassC_AttemptedAJoinState)v
 {
-    _has.attemptedJoin = YES;
+    _has.attemptedJoin = (uint)YES;
     _attemptedJoin = v;
 }
 - (void)setHasAttemptedJoin:(BOOL)f
 {
-    _has.attemptedJoin = f;
+    _has.attemptedJoin = (uint)f;
 }
 - (BOOL)hasAttemptedJoin
 {
@@ -138,12 +136,12 @@
 }
 - (void)setCdpState:(OTAccountMetadataClassC_CDPState)v
 {
-    _has.cdpState = YES;
+    _has.cdpState = (uint)YES;
     _cdpState = v;
 }
 - (void)setHasCdpState:(BOOL)f
 {
-    _has.cdpState = f;
+    _has.cdpState = (uint)f;
 }
 - (BOOL)hasCdpState
 {
@@ -205,12 +203,12 @@
 @synthesize isInheritedAccount = _isInheritedAccount;
 - (void)setIsInheritedAccount:(BOOL)v
 {
-    _has.isInheritedAccount = YES;
+    _has.isInheritedAccount = (uint)YES;
     _isInheritedAccount = v;
 }
 - (void)setHasIsInheritedAccount:(BOOL)f
 {
-    _has.isInheritedAccount = f;
+    _has.isInheritedAccount = (uint)f;
 }
 - (BOOL)hasIsInheritedAccount
 {
@@ -219,12 +217,12 @@
 @synthesize warmedEscrowCache = _warmedEscrowCache;
 - (void)setWarmedEscrowCache:(BOOL)v
 {
-    _has.warmedEscrowCache = YES;
+    _has.warmedEscrowCache = (uint)YES;
     _warmedEscrowCache = v;
 }
 - (void)setHasWarmedEscrowCache:(BOOL)f
 {
-    _has.warmedEscrowCache = f;
+    _has.warmedEscrowCache = (uint)f;
 }
 - (BOOL)hasWarmedEscrowCache
 {
@@ -233,22 +231,17 @@
 @synthesize warnedTooManyPeers = _warnedTooManyPeers;
 - (void)setWarnedTooManyPeers:(BOOL)v
 {
-    _has.warnedTooManyPeers = YES;
+    _has.warnedTooManyPeers = (uint)YES;
     _warnedTooManyPeers = v;
 }
 - (void)setHasWarnedTooManyPeers:(BOOL)f
 {
-    _has.warnedTooManyPeers = f;
+    _has.warnedTooManyPeers = (uint)f;
 }
 - (BOOL)hasWarnedTooManyPeers
 {
     return _has.warnedTooManyPeers != 0;
 }
-- (BOOL)hasSettings
-{
-    return _settings != nil;
-}
-@synthesize settings = _settings;
 
 - (NSString *)description
 {
@@ -322,10 +315,6 @@
     {
         [dict setObject:[NSNumber numberWithBool:self->_warnedTooManyPeers] forKey:@"warnedTooManyPeers"];
     }
-    if (self->_settings)
-    {
-        [dict setObject:[_settings dictionaryRepresentation] forKey:@"settings"];
-    }
     return dict;
 }
 
@@ -353,13 +342,13 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             break;
             case 2 /* icloudAccountState */:
             {
-                self->_has.icloudAccountState = YES;
+                self->_has.icloudAccountState = (uint)YES;
                 self->_icloudAccountState = PBReaderReadInt32(reader);
             }
             break;
             case 3 /* epoch */:
             {
-                self->_has.epoch = YES;
+                self->_has.epoch = (uint)YES;
                 self->_epoch = PBReaderReadInt64(reader);
             }
             break;
@@ -371,25 +360,25 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             break;
             case 5 /* trustState */:
             {
-                self->_has.trustState = YES;
+                self->_has.trustState = (uint)YES;
                 self->_trustState = PBReaderReadInt32(reader);
             }
             break;
             case 6 /* lastHealthCheckup */:
             {
-                self->_has.lastHealthCheckup = YES;
+                self->_has.lastHealthCheckup = (uint)YES;
                 self->_lastHealthCheckup = PBReaderReadUint64(reader);
             }
             break;
             case 7 /* attemptedJoin */:
             {
-                self->_has.attemptedJoin = YES;
+                self->_has.attemptedJoin = (uint)YES;
                 self->_attemptedJoin = PBReaderReadInt32(reader);
             }
             break;
             case 8 /* cdpState */:
             {
-                self->_has.cdpState = YES;
+                self->_has.cdpState = (uint)YES;
                 self->_cdpState = PBReaderReadInt32(reader);
             }
             break;
@@ -428,38 +417,20 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             break;
             case 18 /* isInheritedAccount */:
             {
-                self->_has.isInheritedAccount = YES;
+                self->_has.isInheritedAccount = (uint)YES;
                 self->_isInheritedAccount = PBReaderReadBOOL(reader);
             }
             break;
             case 19 /* warmedEscrowCache */:
             {
-                self->_has.warmedEscrowCache = YES;
+                self->_has.warmedEscrowCache = (uint)YES;
                 self->_warmedEscrowCache = PBReaderReadBOOL(reader);
             }
             break;
             case 20 /* warnedTooManyPeers */:
             {
-                self->_has.warnedTooManyPeers = YES;
+                self->_has.warnedTooManyPeers = (uint)YES;
                 self->_warnedTooManyPeers = PBReaderReadBOOL(reader);
-            }
-            break;
-            case 21 /* settings */:
-            {
-                OTAccountMetadataClassCAccountSettings *new_settings = [[OTAccountMetadataClassCAccountSettings alloc] init];
-                self->_settings = new_settings;
-                PBDataReaderMark mark_settings;
-                BOOL markError = !PBReaderPlaceMark(reader, &mark_settings);
-                if (markError)
-                {
-                    return NO;
-                }
-                BOOL inError = !OTAccountMetadataClassCAccountSettingsReadFrom(new_settings, reader);
-                if (inError)
-                {
-                    return NO;
-                }
-                PBReaderRecallMark(reader, &mark_settings);
             }
             break;
             default:
@@ -589,13 +560,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
             PBDataWriterWriteBOOLField(writer, self->_warnedTooManyPeers, 20);
         }
     }
-    /* settings */
-    {
-        if (self->_settings != nil)
-        {
-            PBDataWriterWriteSubmessage(writer, self->_settings, 21);
-        }
-    }
 }
 
 - (void)copyTo:(OTAccountMetadataClassC *)other
@@ -678,10 +642,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
         other->_warnedTooManyPeers = _warnedTooManyPeers;
         other->_has.warnedTooManyPeers = YES;
     }
-    if (_settings)
-    {
-        other.settings = _settings;
-    }
 }
 
 - (id)copyWithZone:(NSZone *)zone
@@ -743,7 +703,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
         copy->_warnedTooManyPeers = _warnedTooManyPeers;
         copy->_has.warnedTooManyPeers = YES;
     }
-    copy->_settings = [_settings copyWithZone:zone];
     return copy;
 }
 
@@ -783,8 +742,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     ((self->_has.warmedEscrowCache && other->_has.warmedEscrowCache && ((self->_warmedEscrowCache && other->_warmedEscrowCache) || (!self->_warmedEscrowCache && !other->_warmedEscrowCache))) || (!self->_has.warmedEscrowCache && !other->_has.warmedEscrowCache))
     &&
     ((self->_has.warnedTooManyPeers && other->_has.warnedTooManyPeers && ((self->_warnedTooManyPeers && other->_warnedTooManyPeers) || (!self->_warnedTooManyPeers && !other->_warnedTooManyPeers))) || (!self->_has.warnedTooManyPeers && !other->_has.warnedTooManyPeers))
-    &&
-    ((!self->_settings && !other->_settings) || [self->_settings isEqual:other->_settings])
     ;
 }
 
@@ -823,8 +780,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     (self->_has.warmedEscrowCache ? PBHashInt((NSUInteger)self->_warmedEscrowCache) : 0)
     ^
     (self->_has.warnedTooManyPeers ? PBHashInt((NSUInteger)self->_warnedTooManyPeers) : 0)
-    ^
-    [self->_settings hash]
     ;
 }
 
@@ -902,14 +857,6 @@ BOOL OTAccountMetadataClassCReadFrom(__unsafe_unretained OTAccountMetadataClassC
     {
         self->_warnedTooManyPeers = other->_warnedTooManyPeers;
         self->_has.warnedTooManyPeers = YES;
-    }
-    if (self->_settings && other->_settings)
-    {
-        [self->_settings mergeFrom:other->_settings];
-    }
-    else if (!self->_settings && other->_settings)
-    {
-        [self setSettings:other->_settings];
     }
 }
 

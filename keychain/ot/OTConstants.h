@@ -29,10 +29,17 @@
 bool SecErrorIsNestedErrorCappingEnabled(void);
 bool SecKeychainIsStaticPersistentRefsEnabled(void);
 void SecKeychainSetOverrideStaticPersistentRefsIsEnabled(bool value);
+bool OctagonIsSOSFeatureEnabled(void);
+bool OctagonPlatformSupportsSOS(void);
+void OctagonSetSOSFeatureEnabled(bool value);
+bool SOSCompatibilityModeEnabled(void);
+void SetSOSCompatibilityMode(bool value);
+void ClearSOSCompatibilityModeOverride(void);
 
 #if __OBJC__
 
 #import <Foundation/Foundation.h>
+#import <AppleFeatures/AppleFeatures.h>
 
 extern NSString* OTDefaultContext;
 
@@ -62,6 +69,8 @@ typedef NS_ERROR_ENUM(OctagonErrorDomain, OctagonError) {
     OctagonErrorFailedToLeaveClique                             = 48,
     OctagonErrorSyncPolicyMissing                               = 49,
     OctagonErrorRequiredLibrariesNotPresent                     = 50,
+    OctagonErrorFailedToSetWalrus                               = 51,
+    OctagonErrorFailedToSetWebAccess                            = 52,
     OctagonErrorNoAccountSettingsSet                            = 53,
     OctagonErrorBadUUID                                         = 54,
     OctagonErrorUserControllableViewsUnavailable                = 55,
@@ -73,6 +82,9 @@ typedef NS_ERROR_ENUM(OctagonErrorDomain, OctagonError) {
     OctagonErrorNoSuchCKKS                                      = 61,
     OctagonErrorUnsupportedInEDUMode                            = 62,
     OctagonErrorAltDSIDPersonaMismatch                          = 63,
+    OctagonErrorNoRecoveryKeyRegistered                         = 64,
+    OctagonErrorRecoverWithRecoveryKeyNotSupported              = 65,
+    OctagonErrorSecureBackupRestoreUsingRecoveryKeyFailed       = 66,
 };
 
 /* used for defaults writes */
@@ -84,14 +96,7 @@ extern NSString* OTProtocolPiggybacking;
 extern const char * OTTrustStatusChangeNotification;
 extern NSString* OTEscrowRecordPrefix;
 
-
-bool OctagonPlatformSupportsSOS(void);
-
 // Used for testing.
-void OctagonSetPlatformSupportsSOS(bool value);
-
-bool OctagonIsSOSFeatureEnabled(void);
-void OctagonSetSOSFeatureEnabled(bool value);
 
 bool OctagonSupportsPersonaMultiuser(void);
 void OctagonSetSupportsPersonaMultiuser(bool value);
@@ -112,6 +117,17 @@ typedef NS_ENUM(NSInteger, CuttlefishResetReason) {
 
 extern NSString* const CuttlefishErrorDomain;
 extern NSString* const CuttlefishErrorRetryAfterKey;
+
+typedef NS_ENUM(NSInteger, OTEscrowRecordFetchSource) {
+    /// Default is equivalent to cache or cuttlefish, depending on recency of cache update.
+    OTEscrowRecordFetchSourceDefault = 0,
+    
+    /// Forces the escrow record fetch to only use local on-disk cache, even if stale.
+    OTEscrowRecordFetchSourceCache = 1,
+    
+    /// Forces the escrow record fetch to only use cuttlefish, even if cache is recent.
+    OTEscrowRecordFetchSourceCuttlefish = 2,
+};
 
 #endif // __OBJC__
 

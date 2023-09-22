@@ -327,6 +327,9 @@
     [self.keychainZone addToZone: [self createFakeRecord: self.keychainZoneID recordName:@"7B598D31-0000-0000-0000-5A507ACB2D03" withAccount:@"account3"]];
 
     [self expectCKFetchWithFilter:^BOOL(FakeCKFetchRecordZoneChangesOperation * _Nonnull frzco) {
+        // The fetch on restart with more-coming should be QoS UserInitiated, as CKKS won't be sure if this is part of the initial download (e.g. resuming after a crash)
+        XCTAssertEqual(frzco.qualityOfService, NSQualityOfServiceUserInitiated, "QoS should be user-initiated");
+
         // Assert that the fetch is happening with the change token we paused at before
         CKServerChangeToken* changeToken = frzco.configurationsByRecordZoneID[self.keychainZoneID].previousServerChangeToken;
         if(changeToken && [changeToken isEqual:ck1]) {
@@ -368,8 +371,15 @@
     ckzone.limitFetchTo = ck1;
 
     self.silentFetchesAllowed = false;
-    [self expectCKFetch];
     [self expectCKFetchWithFilter:^BOOL(FakeCKFetchRecordZoneChangesOperation * _Nonnull frzco) {
+        // As part of the initial download, we should boost QoS
+        XCTAssertEqual(frzco.qualityOfService, NSQualityOfServiceUserInitiated, "QoS should be user-initiated");
+        return YES;
+    } runBeforeFinished:^{}];
+    [self expectCKFetchWithFilter:^BOOL(FakeCKFetchRecordZoneChangesOperation * _Nonnull frzco) {
+        // As part of the initial download, we should boost QoS
+        XCTAssertEqual(frzco.qualityOfService, NSQualityOfServiceUserInitiated, "QoS should be user-initiated");
+
         // Assert that the fetch is happening with the change token we paused at before
         CKServerChangeToken* changeToken = frzco.configurationsByRecordZoneID[self.keychainZoneID].previousServerChangeToken;
         if(changeToken && [changeToken isEqual:ck1]) {

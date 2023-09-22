@@ -83,9 +83,11 @@ public:
     virtual CFDictionaryRef copyDiskRepInformation();		// information from diskrep
 
 	virtual void registerStapledTicket();
+	virtual CFDataRef copyStapledTicket();
 
 	// default values for signing operations
 	virtual std::string recommendedIdentifier(const SigningContext &ctx) = 0; // default identifier
+	virtual std::string explicitIdentifier();
 	virtual CFDictionaryRef defaultResourceRules(const SigningContext &ctx); // default resource rules [none]
 	virtual const Requirements *defaultRequirements(const Architecture *arch,
 		const SigningContext &ctx);							// default internal requirements [none]

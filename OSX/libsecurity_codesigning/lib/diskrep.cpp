@@ -311,8 +311,18 @@ std::string DiskRep::canonicalIdentifier(const std::string &name)
 	return s.substr(0, p);
 }
 
+std::string DiskRep::explicitIdentifier()
+{
+	return "";
+}
+
 void DiskRep::registerStapledTicket()
 { /* do nothing */ }
+
+CFDataRef DiskRep::copyStapledTicket()
+{
+	return NULL;
+}
 
 
 //

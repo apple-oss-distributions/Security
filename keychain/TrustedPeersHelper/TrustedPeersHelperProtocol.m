@@ -35,10 +35,11 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         [interface setClasses:errClasses forSelector:@selector(dumpWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(departByDistrustingSelfWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(distrustPeerIDsWithSpecificUser:peerIDs:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(dropPeerIDsWithSpecificUser:peerIDs:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(trustStatusWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(resetWithSpecificUser:resetReason:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(resetWithSpecificUser:resetReason:idmsTargetContext:idmsCuttlefishPassword:notifyIdMS:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(localResetWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(setAllowedMachineIDsWithSpecificUser:allowedMachineIDs:honorIDMSListChanges:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(setAllowedMachineIDsWithSpecificUser:allowedMachineIDs:honorIDMSListChanges:version:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(addAllowedMachineIDsWithSpecificUser:machineIDs:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(removeAllowedMachineIDsWithSpecificUser:machineIDs:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchAllowedMachineIDsWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
@@ -58,29 +59,31 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         [interface setClasses:errClasses forSelector:@selector(joinWithSpecificUser:voucherData:voucherSig:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:3 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(preflightPreapprovedJoinWithSpecificUser:preapprovedKeys:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(attemptPreapprovedJoinWithSpecificUser:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:3 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(updateWithSpecificUser:forceRefetch:deviceName:serialNumber:osVersion:policyVersion:policySecrets:syncUserControllableViews:secureElementIdentity:reply:) argumentIndex:2 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(updateWithSpecificUser:forceRefetch:deviceName:serialNumber:osVersion:policyVersion:policySecrets:syncUserControllableViews:secureElementIdentity:walrusSetting:webAccess:reply:) argumentIndex:2 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(setPreapprovedKeysWithSpecificUser:preapprovedKeys:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(updateTLKsWithSpecificUser:ckksKeys:tlkShares:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(fetchViableBottlesWithSpecificUser:reply:) argumentIndex:2 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(fetchViableEscrowRecordsWithSpecificUser:forceFetch:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(fetchViableBottlesWithSpecificUser:source:reply:) argumentIndex:2 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(fetchViableEscrowRecordsWithSpecificUser:source:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchEscrowContentsWithSpecificUser:reply:) argumentIndex:3 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchPolicyDocumentsWithSpecificUser:versions:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchRecoverableTLKSharesWithSpecificUser:peerID:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchCurrentPolicyWithSpecificUser:modelIDOverride:isInheritedAccount:reply:) argumentIndex:2 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(validatePeersWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(fetchTrustStateWithSpecificUser:reply:) argumentIndex:2 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(setRecoveryKeyWithSpecificUser:recoveryKey:salt:ckksKeys:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(createCustodianRecoveryKeyWithSpecificUser:recoveryKey:salt:ckksKeys:uuid:kind:reply:) argumentIndex:2 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(removeCustodianRecoveryKeyWithSpecificUser:uuid:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(findCustodianRecoveryKeyWithSpecificUser:uuid:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(reportHealthWithSpecificUser:stateMachineState:trustState:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(pushHealthInquiryWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(requestHealthCheckWithSpecificUser:requiresEscrowCheck:knownFederations:reply:) argumentIndex:5 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(requestHealthCheckWithSpecificUser:requiresEscrowCheck:repair:knownFederations:reply:) argumentIndex:5 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(getSupportAppInfoWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(resetAccountCDPContentsWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(resetAccountCDPContentsWithSpecificUser:idmsTargetContext:idmsCuttlefishPassword:notifyIdMS:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errClasses forSelector:@selector(removeEscrowCacheWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errClasses forSelector:@selector(fetchAccountSettingsWithSpecificUser:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(fetchAccountSettingsWithSpecificUser:forceFetch:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(isRecoveryKeySet:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errClasses forSelector:@selector(testSemaphoreWithSpecificUser:arg:reply:) argumentIndex:0 ofReply:YES];
 
-        [interface setClasses:arrayOfSettings forSelector:@selector(fetchAccountSettingsWithSpecificUser:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:arrayOfSettings forSelector:@selector(fetchAccountSettingsWithSpecificUser:forceFetch:reply:) argumentIndex:0 ofReply:YES];
        
         [interface setClasses:arrayOfCKRecords forSelector:@selector(fetchRecoverableTLKSharesWithSpecificUser:peerID:reply:) argumentIndex:0 ofReply:YES];
 
@@ -98,7 +101,7 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         [interface setClasses:arrayOfKeySets   forSelector:@selector(attemptPreapprovedJoinWithSpecificUser:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:1 ofReply:NO];
         [interface setClasses:arrayOfTLKShares forSelector:@selector(attemptPreapprovedJoinWithSpecificUser:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:2 ofReply:NO];
         [interface setClasses:arrayOfCKRecords forSelector:@selector(attemptPreapprovedJoinWithSpecificUser:ckksKeys:tlkShares:preapprovedKeys:reply:) argumentIndex:1 ofReply:YES];
-
+        
         [interface setClasses:arrayOfKeySets      forSelector:@selector(vouchWithSpecificUser:
                                                                      peerID:
                                                                      permanentInfo:
@@ -208,6 +211,7 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
                                                                                            crk:
                                                                                            tlkShares:
                                                                                            reply:) argumentIndex:1 ofReply:NO];
+        [interface setClasses:trustedPeersHelperCustodianRecoveryKey forSelector:@selector(findCustodianRecoveryKeyWithSpecificUser:uuid:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:trustedPeersHelperPeerState forSelector:@selector(updateWithSpecificUser:
                                                                                 forceRefetch:
                                                                                 deviceName:
@@ -217,6 +221,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
                                                                                 policySecrets:
                                                                                 syncUserControllableViews:
                                                                                 secureElementIdentity:
+                                                                                walrusSetting:
+                                                                                webAccess:
                                                                                 reply:) argumentIndex:0 ofReply:YES];
 
         [interface setClasses:trustedPeersHelperPeerState   forSelector:@selector(fetchTrustStateWithSpecificUser:
@@ -254,6 +260,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
                  memberChanges:(BOOL)memberChanges
              unknownMachineIDs:(BOOL)unknownMachineIDs
                      osVersion:(NSString *)osVersion
+                        walrus:(TPPBPeerStableInfoSetting*)walrus
+                     webAccess:(TPPBPeerStableInfoSetting*)webAccess
 {
     if((self = [super init])) {
         _peerID = peerID;
@@ -262,6 +270,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         _memberChanges = memberChanges;
         _unknownMachineIDsPresent = unknownMachineIDs;
         _osVersion = osVersion;
+        _walrus = walrus;
+        _webAccess = webAccess;
     }
     return self;
 }
@@ -274,6 +284,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
                          "memberChanges: %@ "
                          "unk. mIDs: %@ "
                          "osVersion: %@ "
+                         "walrus: %@ "
+                         "webAccess: %@"
                          ">",
             self.peerID,
             self.identityIsPreapproved,
@@ -281,6 +293,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
             self.memberChanges ? @"YES" : @"NO",
             self.unknownMachineIDsPresent ? @"YES" : @"NO",
             self.osVersion?:@"unknown"
+           ,self.walrus
+           ,self.webAccess
             ];
 }
 
@@ -296,6 +310,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
         _memberChanges = (BOOL)[coder decodeInt64ForKey:@"memberChanges"];
         _unknownMachineIDsPresent = (BOOL)[coder decodeInt64ForKey:@"unknownMachineIDs"];
         _osVersion = [coder decodeObjectOfClass:[NSString class] forKey:@"osVersion"];
+        _walrus = [coder decodeObjectOfClass:[TPPBPeerStableInfoSetting class] forKey:@"walrus"];
+        _webAccess = [coder decodeObjectOfClass:[TPPBPeerStableInfoSetting class] forKey:@"webAccess"];
     }
     return self;
 }
@@ -307,6 +323,8 @@ NSXPCInterface* TrustedPeersHelperSetupProtocol(NSXPCInterface* interface)
     [coder encodeInt64:(int64_t)self.memberChanges forKey:@"memberChanges"];
     [coder encodeInt64:(int64_t)self.unknownMachineIDsPresent forKey:@"unknownMachineIDs"];
     [coder encodeObject:self.osVersion forKey:@"osVersion"];
+    [coder encodeObject:self.walrus forKey:@"walrus"];
+    [coder encodeObject:self.webAccess forKey:@"webAccess"];
 }
 @end
 

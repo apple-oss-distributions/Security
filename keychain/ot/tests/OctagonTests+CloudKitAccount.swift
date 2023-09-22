@@ -11,7 +11,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.accountStateTracker.notifyCKAccountStatusChangeAndWaitForSignal()
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // With no account, Octagon should go directly into 'NoAccount'
         self.cuttlefishContext.startOctagonStateMachine()
@@ -37,7 +37,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // With no account, Octagon should go directly into 'NoAccount'
         self.cuttlefishContext.startOctagonStateMachine()
@@ -124,7 +124,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // With no account, Octagon should go directly into 'NoAccount'
         self.cuttlefishContext.startOctagonStateMachine()
@@ -187,11 +187,11 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         XCTAssertNoThrow(try self.cuttlefishContext.accountAvailable(newAltDSID), "Sign-in shouldn't error")
 
         // Octagon should go into 'waitforhsa2'
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
 
         XCTAssertNoThrow(try self.cuttlefishContext.idmsTrustLevelChanged(), "Notification of IDMS trust level shouldn't error")
 
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
         self.assertNoAccount(context: self.cuttlefishContext)
 
         XCTAssertEqual(self.defaultCKKS.viewList.count, 0, "Should have no CKKS views in an SA account")
@@ -200,7 +200,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.accountStatus = .noAccount
         self.accountStateTracker.notifyCKAccountStatusChangeAndWaitForSignal()
 
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
 
         // On sign-out, octagon should go back to 'no account'
         self.mockAuthKit.removePrimaryAccount()
@@ -221,7 +221,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // With no account, Octagon should go directly into 'NoAccount'
         self.cuttlefishContext.startOctagonStateMachine()
@@ -235,7 +235,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         XCTAssertNoThrow(try self.cuttlefishContext.idmsTrustLevelChanged(), "Notification of IDMS trust level shouldn't error")
         XCTAssertNoThrow(try self.cuttlefishContext.accountAvailable(newAltDSID), "Sign-in shouldn't error")
 
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
         self.assertNoAccount(context: self.cuttlefishContext)
 
         // Account promotes to HSA2
@@ -296,7 +296,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         XCTAssertNoThrow(try self.cuttlefishContext.idmsTrustLevelChanged(), "Notification of IDMS trust level shouldn't error")
         XCTAssertNoThrow(try self.cuttlefishContext.accountAvailable(newAltDSID), "Sign-in shouldn't error")
 
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
         self.assertNoAccount(context: self.cuttlefishContext)
 
         // Account promotes to HSA2
@@ -348,7 +348,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
 
         self.cuttlefishContext.startOctagonStateMachine()
 
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
         self.assertNoAccount(context: self.cuttlefishContext)
 
         // Calling OTClique API should error (eventually)
@@ -356,7 +356,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         XCTAssertThrowsError(try OTClique.newFriends(withContextData: self.otcliqueContext, resetReason: .testGenerated), "establishing new friends in an SA account should error")
 
         // And octagon should still believe everything is terrible
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForHSA2, within: 10 * NSEC_PER_SEC)
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateWaitForCDPCapableSecurityLevel, within: 10 * NSEC_PER_SEC)
         XCTAssertEqual(self.cuttlefishContext.currentMemoizedTrustState(), .UNKNOWN, "Trust state should be unknown")
 
         let statusexpectation = self.expectation(description: "trust status returns")
@@ -460,7 +460,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         // With no account, Octagon should go directly into 'NoAccount'
         self.cuttlefishContext.startOctagonStateMachine()
@@ -479,7 +479,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
 
         // RPCs should fail, since CK is not present
         let fetchViableFailureExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { _, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { _, _, error in
             XCTAssertNotNil(error, "should be an error fetching viable bottles before CK is ready")
 
             if let nserror = error as NSError? {
@@ -498,7 +498,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         // RPCs should cause Octagon to recheck the CK account status and wake up
         // In particular, fetching all viable bottles should succeed, instead of erroring with 'no CK account'
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { _, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { _, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             fetchViableExpectation.fulfill()
         }
@@ -514,7 +514,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.ckAccountStatusFetchError = NSError(domain: NSCocoaErrorDomain, code: 4099, userInfo: nil)
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         self.startCKAccountStatusMock()
 
@@ -529,7 +529,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         // RPCs should cause Octagon to recheck the CK account status and wake up
         // In particular, fetching all viable bottles should succeed, instead of erroring with 'no CK account'
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { _, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { _, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             fetchViableExpectation.fulfill()
         }
@@ -544,7 +544,7 @@ class OctagonCloudKitAccountTests: OctagonTestsBase {
         self.ckAccountStatusFetchError = NSError(domain: NSCocoaErrorDomain, code: 4099, userInfo: nil)
 
         // Tell SOS that it is absent, so we don't enable CDP on bringup
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCCircleAbsent)
 
         self.startCKAccountStatusMock()
 

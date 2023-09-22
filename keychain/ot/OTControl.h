@@ -36,13 +36,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class OTAccountSettings;
+@class OTWebAccess;
+@class OTWalrus;
 
 @class OTCurrentSecureElementIdentities;
 @class OTCustodianRecoveryKey;
 @class OTInheritanceKey;
 @class OTJoiningConfiguration;
 @class OTSecureElementPeerIdentity;
-
+@class OTAccountMetadataClassC;
 
 @interface OTControlArguments : NSObject <NSSecureCoding>
 @property (strong) NSString* contextID;
@@ -166,6 +169,10 @@ API_DEPRECATED("No longer needed", macos(10.14, 10.15), ios(4, 17));
 
 - (void)resetAndEstablish:(OTControlArguments*)arguments
               resetReason:(CuttlefishResetReason)resetReason
+        idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+   idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+	       notifyIdMS:(bool)notifyIdMS
+          accountSettings:(OTAccountSettings *_Nullable)accountSettings
                     reply:(void (^)(NSError* _Nullable error))reply;
 
 - (void)establish:(OTControlArguments*)arguments
@@ -219,6 +226,10 @@ API_DEPRECATED("No longer needed", macos(10.14, 10.15), ios(4, 17));
                               uuid:(NSUUID *)uuid
                              reply:(void (^)(NSError *_Nullable error))reply;
 
+- (void)checkCustodianRecoveryKey:(OTControlArguments*)arguments
+                             uuid:(NSUUID *)uuid
+                            reply:(void (^)(bool exists, NSError *_Nullable error))reply;
+
 - (void)createInheritanceKey:(OTControlArguments*)arguments
                         uuid:(NSUUID *_Nullable)uuid
                        reply:(void (^)(OTInheritanceKey *_Nullable ik, NSError *_Nullable error))reply;
@@ -243,8 +254,13 @@ API_DEPRECATED("No longer needed", macos(10.14, 10.15), ios(4, 17));
                         uuid:(NSUUID *)uuid
                        reply:(void (^)(NSError *_Nullable error))reply;
 
+- (void)checkInheritanceKey:(OTControlArguments*)arguments
+                       uuid:(NSUUID *)uuid
+                      reply:(void (^)(bool exists, NSError *_Nullable error))reply;
+
 - (void)healthCheck:(OTControlArguments*)arguments
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
+             repair:(BOOL)repair
               reply:(void (^)(NSError *_Nullable error))reply;
 
 - (void)waitForOctagonUpgrade:(OTControlArguments*)arguments
@@ -270,9 +286,8 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 - (void)refetchCKKSPolicy:(OTControlArguments*)arguments
                     reply:(void (^)(NSError* _Nullable error))reply;
 
-
 - (void)fetchEscrowRecords:(OTControlArguments*)arguments
-                forceFetch:(BOOL)forceFetch
+                    source:(OTEscrowRecordFetchSource)source
                      reply:(void (^)(NSArray<NSData*>* _Nullable records,
                                      NSError* _Nullable error))reply;
 
@@ -287,6 +302,9 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                         reply:(nonnull void (^)(NSError * _Nullable error))reply;
 
 - (void)resetAccountCDPContents:(OTControlArguments*)arguments
+        idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+   idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+	       notifyIdMS:(bool)notifyIdMS
                           reply:(void (^)(NSError* _Nullable error))reply;
 
 
@@ -303,12 +321,23 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                                       NSError* _Nullable replyError))reply;
 
 
+- (void)setAccountSetting:(OTControlArguments*)arguments
+                  setting:(OTAccountSettings*)setting
+                    reply:(void (^)(NSError* _Nullable))reply;
+
+- (void)fetchAccountSettings:(OTControlArguments*)arguments
+                       reply:(void (^)(OTAccountSettings* _Nullable setting, NSError* _Nullable replyError))reply;
+
+- (void)fetchAccountWideSettingsWithForceFetch:(bool)forceFetch
+                                     arguments:(OTControlArguments*)arguments
+                                         reply:(void (^)(OTAccountSettings* _Nullable setting, NSError* _Nullable error))reply;
 
 - (void)waitForPriorityViewKeychainDataRecovery:(OTControlArguments*)arguments
                                           reply:(void (^)(NSError* _Nullable replyError))reply;
 
 - (void)tlkRecoverabilityForEscrowRecordData:(OTControlArguments*)arguments
                                   recordData:(NSData*)recordData
+                                      source:(OTEscrowRecordFetchSource)source
                                        reply:(void (^)(NSArray<NSString*>* _Nullable views, NSError* _Nullable error))reply;
 
 // Note the lack of arguments: these are global notifications, and don't come in for any particular context/account
@@ -319,6 +348,29 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                    machineID:(NSString*)machineID
                        reply:(void (^)(NSError* _Nullable replyError))reply;
 
+- (void)isRecoveryKeySet:(OTControlArguments*)arguments
+                   reply:(void (^)(BOOL isSet, NSError* _Nullable error))reply;
+
+- (void)recoverWithRecoveryKey:(OTControlArguments*)arguments
+                   recoveryKey:(NSString*)recoveryKey
+                         reply:(void (^)(NSError* _Nullable error))reply;
+
+- (void)removeRecoveryKey:(OTControlArguments*)arguments
+                    reply:(void (^)(NSError* _Nullable error))reply;
+
+- (void)preflightRecoverOctagonUsingRecoveryKey:(OTControlArguments*)arguments
+                                    recoveryKey:(NSString*)recoveryKey
+                                          reply:(void (^)(BOOL correct, NSError* _Nullable replyError))reply;
+
+- (void)getAccountMetadata:(OTControlArguments*)arguments
+                     reply:(void (^)(OTAccountMetadataClassC* _Nullable metadata, NSError* _Nullable replyError))reply;
+
+- (void)resetAcountData:(OTControlArguments*)arguments
+            resetReason:(CuttlefishResetReason)resetReason
+                  reply:(void (^)(NSError* _Nullable error))reply;
+
+- (void)totalTrustedPeers:(OTControlArguments*)arguments
+                    reply:(void (^)(NSNumber* _Nullable count, NSError* _Nullable error))reply;
 @end
 
 NS_ASSUME_NONNULL_END

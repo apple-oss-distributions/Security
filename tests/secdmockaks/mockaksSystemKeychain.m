@@ -8,6 +8,7 @@
 
 #include <Security/SecItemPriv.h>
 #import "ipc/securityd_client.h"
+#import <utilities/SecFileLocations.h>
 #import "featureflags/featureflags.h" // To override SystemKeychainAlways FF
 
 @interface mockaksSystemKeychain : mockaksxcbase
@@ -19,7 +20,7 @@
     _SecSystemKeychainAlwaysClearOverride();
 }
 
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE || TARGET_OS_OSX
 /*
  * Test add api in all its variants, using kSecUseSystemKeychain.
  * Expected behavior is different in edu mode because we pay attention to kSecUseSystemKeychain.
@@ -172,10 +173,58 @@
 #endif
 
 - (void)testOldFlagNotInEduMode {
+#if TARGET_OS_OSX
+    // When both kSecUseSystemKeychain & kSecUseDataProtectionKeychain are true, we get a param error
+    // because the old flag is not appropriate for macOS DP keychain
+    NSDictionary *item = @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrLabel : @"keychain label",
+        (id)kSecUseSystemKeychain : @YES,
+        (id)kSecUseDataProtectionKeychain : @YES,
+    };
+
+    XCTAssertEqual(SecItemAdd((CFDictionaryRef)item, NULL), errSecParam, "SecItemAdd kSecUseSystemKeychain & kSecUseDataProtectionKeychain");
+
+#ifndef NDEBUG // Don't run the rest of this test in BATS yet. See rdar://101983503
+    // Clean up in case previous test failed
+    NSDictionary *query = @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrLabel : @"keychain label",
+    };
+    SecItemDelete((CFDictionaryRef)query);
+
+    // Add with kSecUseSystemKeychain, which is ignored when kSecUseDataProtectionKeychain is not set
+    item = @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrLabel : @"keychain label",
+        (id)kSecUseSystemKeychain : @YES,
+    };
+
+    XCTAssertEqual(SecItemAdd((CFDictionaryRef)item, NULL), errSecSuccess, "SecItemAdd kSecUseSystemKeychain");
+
+    // So it should be in the legacy keychain
+    query = @{
+        (id)kSecClass : (id)kSecClassGenericPassword,
+        (id)kSecAttrLabel : @"keychain label",
+        (id)kSecReturnAttributes: @YES,
+    };
+
+    CFTypeRef result = NULL;
+    XCTAssertEqual(SecItemCopyMatching((CFTypeRef)query, &result), noErr, "SecItemCopyMatching after kSecUseSystemKeychain");
+    if (result) { // so we don't crash calling CFGetTypeID
+        XCTAssertEqual(CFGetTypeID(result), CFDictionaryGetTypeID(), "SecItemCopyMatching after kSecUseSystemKeychain unexpectedly returned something that's not a dict");
+        XCTAssertEqualObjects([(__bridge NSDictionary*)result valueForKey:(id)kSecAttrLabel], query[(id)kSecAttrLabel], "SecItemCopyMatching after kSecUseSystemKeychain label doesn't match");
+        CFReleaseNull(result);
+    }
+    SecItemDelete((CFDictionaryRef)query);
+#endif // NDEBUG
+#else // TARGET_OS_OSX
     [self helperOldSystemKeychainFlagWithEduMode:false];
+#endif // TARGET_OS_OSX
 }
 
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS || TARGET_OS_OSX
+
 /*
  * Test add api in all its variants, using kSecUseSystemKeychainAlways.
  * Pay attention to kSecUseSystemKeychainAlways, whether in edu mode or not.
@@ -343,10 +392,12 @@
 
 }
 
+#if TARGET_OS_IOS
 - (void)testNewFlagInEduMode {
     _SecSystemKeychainAlwaysOverride(true);
     [self helperNewSystemKeychainFlagWithEduMode:true];
 }
+#endif // TARGET_OS_IOS
 
 - (void)testNewFlagNotInEduMode {
     _SecSystemKeychainAlwaysOverride(true);
@@ -371,8 +422,7 @@
 
     XCTAssertEqual(SecItemAdd((CFDictionaryRef)item, NULL), errSecParam, "test_new_system_keychain_flag_disabled SecItemAdd");
 }
-
-#endif // TARGET_OS_IOS
+#endif // TARGET_OS_IOS || TARGET_OS_OSX
 
 #if TARGET_OS_TV
 /*
@@ -511,6 +561,105 @@
 
 #endif // TARGET_OS_TV
 
-#endif // TARGET_OS_IPHONE
+- (NSData *)signWithReimportedKey:(id)key asSystemKey:(BOOL)asSystemKey error:(NSError **)error {
+    NSDictionary *attrs = CFBridgingRelease(SecKeyCopyAttributes((SecKeyRef)key));
+    XCTAssertNotNil(attrs, @"Failed to copy attrs key %@", key);
+    attrs = attrs ?: @{};
+
+    NSMutableDictionary *parameters = @{
+        (id)kSecAttrKeyType: (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+        (id)kSecAttrTokenOID: attrs[(id)kSecAttrTokenOID],
+    }.mutableCopy;
+    if (asSystemKey) {
+#if TARGET_OS_OSX
+        parameters[(id)kSecUseSystemKeychainAlways] = @YES;
+#else
+        parameters[(id)kSecUseSystemKeychain] = @YES;
+#endif
+    }
+
+    NSData *signature;
+    id newKey = CFBridgingRelease(SecKeyCreateWithData((CFDataRef)[NSData data], (CFDictionaryRef)parameters, (void*)error));
+    if (newKey != nil) {
+        NSData *message = [@"message" dataUsingEncoding:NSUTF8StringEncoding];
+        signature = CFBridgingRelease(SecKeyCreateSignature((SecKeyRef)newKey, kSecKeyAlgorithmECDSASignatureMessageX962SHA256, (CFDataRef)message, (void *)error));
+    }
+    return signature;
+}
+
+- (void)helperLegacySystemSecKeyInEduMode:(BOOL)eduMode {
+
+    NSError *error;
+#if TARGET_OS_IOS
+    if (eduMode) {
+        // TODO: Force SecIsEduMode() to return true here.
+    }
+#endif
+
+    // Generate sysKey
+    NSDictionary *sysKeyParams = @{
+        (id)kSecAttrKeyType: (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+        (id)kSecAttrIsPermanent: @NO,
+#if TARGET_OS_OSX
+        (id)kSecUseSystemKeychainAlways: @YES,
+#else
+        (id)kSecUseSystemKeychain: @YES,
+#endif
+    };
+    id sysKey = CFBridgingRelease(SecKeyCreateRandomKey((CFDictionaryRef)sysKeyParams, (void *)&error));
+    XCTAssertNotNil(sysKey, @"Failed to generate system SEP key: %@", error);
+
+    // Generate userKey
+    NSDictionary *userKeyParams = @{
+        (id)kSecAttrKeyType: (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+        (id)kSecAttrIsPermanent: @NO,
+    };
+    id userKey = CFBridgingRelease(SecKeyCreateRandomKey((CFDictionaryRef)userKeyParams, (void *)&error));
+    XCTAssertNotNil(sysKey, @"Failed to generate user SEP key: %@", error);
+
+    // Re-import syskey as syskey - should work.
+    XCTAssertNotNil([self signWithReimportedKey:sysKey asSystemKey:YES error:&error], @"Failed to sign with reimported syskey as syskey: %@", error);
+
+    // Reimport userkey as userkey - should work.
+    XCTAssertNotNil([self signWithReimportedKey:userKey asSystemKey:NO error:&error], @"Failed to sign with reimported userkey as userkey: %@", error);
+
+// Following tests are disabled for now until we teach SecIsEduMode() to be forced to return requested value for testing purposes.
+#if 0
+    // Re-import syskey as userkey - should not work in edumode
+    if (TARGET_OS_OSX || eduMode) {
+        XCTAssertNil([self signWithReimportedKey:sysKey asSystemKey:NO error:&error], @"Failed to fail to sign with reimported syskey as userkey");
+    } else {
+        XCTAssertNotNil([self signWithReimportedKey:sysKey asSystemKey:NO error:&error], @"Failed to sign with reimported syskey as userkey: %@", error);
+    }
+
+    // Reimport userkey as syskey - should not work in edumode
+    if (TARGET_OS_OSX || eduMode) {
+        XCTAssertNil([self signWithReimportedKey:userKey asSystemKey:YES error:&error], @"Failed to fail to sign with reimported userkey as syskey");
+    } else {
+        XCTAssertNotNil([self signWithReimportedKey:userKey asSystemKey:YES error:&error], @"Failed to sign with reimported userkey as syskey: %@", error);
+    }
+#endif // 0
+
+#if TARGET_OS_IOS
+    if (eduMode) {
+        // TODO: Reset forcing SecIsEduMode() to return real value.
+    }
+#endif
+}
+
+- (void)testLegacySystemSecKeyWithoutEduMode {
+    [self helperLegacySystemSecKeyInEduMode:NO];
+}
+
+#if TARGET_OS_IOS
+- (void)testLegacySystemSecKeyInEduMode {
+    [self helperLegacySystemSecKeyInEduMode:YES];
+}
+#endif
+
+#endif // TARGET_OS_IPHONE || TARGET_OS_OSX
 
 @end

@@ -27,27 +27,20 @@
 
 #include <Security/SecureObjectSync/SOSCloudCircle.h>
 #include <Security/SecureObjectSync/SOSPeerInfo.h>
+#import <Security/OTConstants.h>
 
 #include <xpc/xpc.h>
 #include <Security/SecKey.h>
 
-#if TARGET_OS_TV
-#define SOS_AVAILABLE false
-#elif TARGET_OS_WATCH
-#define SOS_AVAILABLE false
-#elif TARGET_OS_BRIDGE
-#define SOS_AVAILABLE false
-#elif TARGET_OS_IOS
-#define SOS_AVAILABLE true
-#elif TARGET_OS_OSX
-#define SOS_AVAILABLE true
-#elif TARGET_OS_SIMULATOR
-#define SOS_AVAILABLE true
-#else
-#define SOS_AVAILABLE false
-#endif
+// Use this for SOS SPI framework side to check if SOS compatibility mode is enabled
+#define IF_SOS_DISABLED if(!SOSCCIsSOSTrustAndSyncingEnabled())
 
-#define IF_SOS_DISABLED if(!SOS_AVAILABLE)
+// Use this for server side SOS compatibility mode checking
+#define IF_SOS_DISABLED_SERVER if(!SOSCompatibilityModeGetCachedStatus())
+
+// This is used for any SOSEngine creation functions.
+// SOSAccount is responsible for creating the engine, the circle and transports.  To make enabling/disabling compatibility mode easier, allow creation to occur outside of whether or not compatibility mode is enabled.
+#define IF_PLATFORM_DOES_NOT_SUPPORTS_SOS if(!OctagonPlatformSupportsSOS())
 
 __BEGIN_DECLS
 
@@ -109,6 +102,8 @@ CFDataRef SOSCCCopyRecoveryPublicKey(CFErrorRef *error);
 CFDataRef SOSCCCopyInitialSyncData(SOSInitialSyncFlags flags, CFErrorRef *error);
 
 void SOSCCForEachEngineStateAsStringFromArray(CFArrayRef states, void (^block)(CFStringRef oneStateString));
+
+bool SOSCCSetSOSDisabledError(CFErrorRef *error);
 
 __END_DECLS
 

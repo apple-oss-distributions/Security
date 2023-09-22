@@ -135,6 +135,11 @@ static NSString *kMonitorWroteInTimeSlice = @"TimeSlice";
     if (self = [super init])
     {
         secnotice("event", "%@ start UID=%u EUID=%u", self, getuid(), geteuid());
+        if (!OctagonPlatformSupportsSOS()) {
+            // bail here if SOS is not supported and somehow this got activated
+            secnotice("nosos", "Cannot run CloudKeychainProxy on a system with no SOS");
+            return NULL;
+        }
 
 #if !TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
         // rdar://problem/26247270
@@ -298,7 +303,9 @@ static NSString *kMonitorWroteInTimeSlice = @"TimeSlice";
     }
 
     NSMutableDictionary<NSString*, NSObject*> *mutableValues = [values mutableCopy];
-    NSString* newDSID = asNSString([mutableValues extractObjectForKey:(__bridge NSString*) kSOSKVSOfficialDSIDKey]);
+    NSData* officialDSIDData = asNSData([mutableValues extractObjectForKey:(__bridge NSString*) kSOSKVSOfficialDSIDKey]);
+    NSString* newDSID = [[NSString alloc] initWithData:officialDSIDData encoding:kCFStringEncodingUTF8];
+   
     if (newDSID) {
         _dsid = newDSID;
     }
@@ -510,11 +517,11 @@ static NSString *kMonitorWroteInTimeSlice = @"TimeSlice";
     if (initial)
         changedValues[(__bridge NSString*)kSOSKVSInitialSyncKey] =  @"true";
 
-    secnotice("event", "%@ keysChangedInCloud: %@ keysOfInterest: %@ initial: %@",
+    secnotice("event", "%@ keysChangedInCloud: %@ keysOfInterest: %@ initial: %{BOOL}d",
               self,
               [[changedKeys allObjects] componentsJoinedByString: @" "],
               [[changedValues allKeys] componentsJoinedByString: @" "],
-              initial ? @"YES" : @"NO");
+              initial);
 
     if ([changedValues count])
         [self processKeyChangedEvent:changedValues];

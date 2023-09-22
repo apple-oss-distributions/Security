@@ -593,7 +593,7 @@ static SOSFullPeerInfoRef SOSCreateFullPeerInfoFromName(CFStringRef name,
 
     gestalt = SOSCreatePeerGestaltFromName(name);
     
-    result = SOSFullPeerInfoCreate(NULL, gestalt, NULL, *outSigningKey,
+    result = SOSFullPeerInfoCreate(NULL, gestalt, name, NULL, *outSigningKey,
                                    *outOctagonSigningKey, *outOctagonEncryptionKey,
                                    error);
     
@@ -898,6 +898,9 @@ static CFDictionaryRef SOSCreatePeerGestaltFromName(CFStringRef name)
 
             FakeCKZone* zone = strongSelf.zones[zoneID];
             XCTAssertNotNil(zone, "Should have a zone for these records");
+            if (zone == nil) {
+                return NO;
+            }
 
             // We only want to match if the synckeys aren't pointing correctly
 
@@ -1004,6 +1007,9 @@ static CFDictionaryRef SOSCreatePeerGestaltFromName(CFStringRef name)
     return ^BOOL(CKRecord* record) {
         __strong __typeof(weakSelf) strongSelf = weakSelf;
         XCTAssertNotNil(strongSelf, "self exists");
+        if (strongSelf == nil) {
+            return NO;
+        }
 
         ZoneKeys* zoneKeys = strongSelf.keys[zoneID];
         XCTAssertNotNil(zoneKeys, "Have zone keys for %@", zoneID);
@@ -1356,6 +1362,25 @@ static CFDictionaryRef SOSCreatePeerGestaltFromName(CFStringRef name)
                  accessGroup:accessGroup
                    expecting:errSecSuccess
                      message:@"Add item to keychain with an access group"];
+}
+
+- (void)addRandomPrivateKeyWithAccessGroup:(NSString *)accessGroup message:(NSString*)message {
+    CFErrorRef cfError = NULL;
+    id privateKey = CFBridgingRelease(SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{
+        (id)kSecUseDataProtectionKeychain : @YES,
+        (id)kSecAttrSynchronizable : @YES,
+        (id)kSecAttrKeyType : (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecAttrKeySizeInBits : @256,
+        (id)kSecPrivateKeyAttrs : @{
+            (id)kSecAttrIsPermanent : @YES,
+            (id)kSecAttrAccessible : (id)kSecAttrAccessibleWhenUnlocked,
+            (id)kSecAttrAccessGroup : accessGroup,
+            (id)kSecAttrSyncViewHint : @"keychain",
+        },
+    }, &cfError));
+    NSError *error = CFBridgingRelease(cfError);
+    XCTAssertNotNil(privateKey, "%@", message);
+    XCTAssertNil(error, "Should not return error adding random private key");
 }
 
 - (void)updateGenericPassword: (NSString*) newPassword account: (NSString*)account {

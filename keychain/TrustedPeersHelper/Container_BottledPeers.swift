@@ -20,10 +20,10 @@ extension Container {
 
     func preflightVouchWithBottle(bottleID: String,
                                   reply: @escaping (String?, TPSyncingPolicy?, Bool, Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (String?, TPSyncingPolicy?, Bool, Error?) -> Void = {
             logger.info("preflightVouchWithBottle complete: \(traceError($3), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0, $1, $2, $3)
         }
 
@@ -50,7 +50,7 @@ extension Container {
                             return
                         }
 
-                        self.fetchViableBottlesWithSemaphore { _, _, fetchBottlesError in
+                        self.fetchViableBottlesWithSemaphore(from: .default) { _, _, fetchBottlesError in
                             guard fetchBottlesError == nil else {
                                 logger.info("preflightVouchWithBottle unable to fetch viable bottles: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
                                 reply(nil, nil, true, fetchBottlesError)
@@ -63,7 +63,7 @@ extension Container {
                                     let (_, peerID, syncingPolicy) = try self.onMOCQueuePerformPreflight(bottleID: bottleID)
                                     reply(peerID, syncingPolicy, true, nil)
                                 } catch {
-                                    logger.info("preflightVouchWithBottle failed after refetches: \(String(describing: error), privacy: .public)")
+                                    logger.error("preflightVouchWithBottle failed after refetches: \(String(describing: error), privacy: .public)")
                                     reply(nil, nil, true, error)
                                 }
                             }

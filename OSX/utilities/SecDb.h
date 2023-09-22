@@ -44,6 +44,7 @@ enum {
     kSecDbNormalTransactionType,
     kSecDbExclusiveRemoteSOSTransactionType,
     kSecDbExclusiveRemoteCKKSTransactionType,
+    kSecDbExclusiveKCSharingTransactionType,
 };
 typedef CFOptionFlags SecDbTransactionType;
 
@@ -56,6 +57,7 @@ typedef CFOptionFlags SecDbTransactionPhase;
 
 enum SecDbTransactionSource {
     kSecDbSOSTransaction = 0,        // A remotely initated transaction (via SOS)
+    kSecDbKCSharingTransaction = 4,  // A transaction initiated by Keychain Item Sharing.
     kSecDbCKKSTransaction = 3,       // A transaction initiated by CKKS (either via remote notification or queue processing)
     kSecDbAPITransaction = 1,        // A user initated transaction.
     kSecDbInvalidTransaction = 2,    // An invalid transaction source (used for initialization)
@@ -175,6 +177,9 @@ void SecDbCorrupt(SecDbConnectionRef dbconn, CFErrorRef error);
 // Testing only. Normally this calls exit() so make it do something more test-friendly instead
 extern void (*SecDbCorruptionExitHandler)(void);
 void SecDbResetCorruptionExitHandler(void);
+
+int SecDBGetInteger(SecDbConnectionRef dbconn, CFStringRef sql, int defaultValue);
+
 __END_DECLS
 
 #endif /* !_UTILITIES_SECDB_H_ */

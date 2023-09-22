@@ -1,3 +1,10 @@
+nesting:
+  type_level:
+    warning: 2
+    error: 4
+  function_level:
+    warning: 2
+    error: 4
 indentation: 4
 disabled_rules:
     - cyclomatic_complexity
@@ -48,6 +55,7 @@ opt_in_rules:
 trailing_comma:
     mandatory_comma: true
 excluded:
+    - keychain/swift-argument-parser
     - keychain/trust/cuttlefish/
     - keychain/Trieste/OctagonTriesteTests/.build
     - keychain/postmodern/dependencies/

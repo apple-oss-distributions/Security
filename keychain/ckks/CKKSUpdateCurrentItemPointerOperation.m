@@ -23,6 +23,8 @@
 
 #if OCTAGON
 
+#import <os/feature_private.h>
+
 #import "keychain/ckks/CKKSKeychainView.h"
 #import "keychain/ckks/CKKSOutgoingQueueEntry.h"
 #import "keychain/ckks/CKKSIncomingQueueEntry.h"
@@ -42,6 +44,7 @@
 
 @interface CKKSUpdateCurrentItemPointerOperation ()
 @property (nullable) CKModifyRecordsOperation* modifyRecordsOperation;
+@property (nullable) CKFetchRecordsOperation* fetchRecordsOperation;
 @property (nullable) CKOperationGroup* ckoperationGroup;
 
 @property CKKSOperationDependencies* deps;
@@ -82,6 +85,11 @@
         _accessGroup = accessGroup;
 
         _currentPointerIdentifier = [NSString stringWithFormat:@"%@-%@", accessGroup, identifier];
+
+        _ckoperationGroup = ckoperationGroup;
+
+        // Updating a CIP is almost certainly user-initiated. We need to boost our CPU priority so CK will accept our boosted network priority <rdar://problem/49086080>
+        self.qualityOfService = NSQualityOfServiceUserInitiated;
     }
     return self;
 }
@@ -288,20 +296,23 @@
         self.modifyRecordsOperation = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:recordsToSave.allValues recordIDsToDelete:nil];
         self.modifyRecordsOperation.atomic = TRUE;
         // We're likely rolling a PCS identity, or creating a new one. User cares.
-        self.modifyRecordsOperation.configuration.automaticallyRetryNetworkFailures = NO;
-        self.modifyRecordsOperation.configuration.discretionaryNetworkBehavior = CKOperationDiscretionaryNetworkBehaviorNonDiscretionary;
         self.modifyRecordsOperation.configuration.isCloudKitSupportOperation = YES;
+
+        if(SecCKKSHighPriorityOperations()) {
+            // This operation might be needed during CKKS/Manatee bringup, which affects the user experience. Bump our priority to get it off-device and unblock Manatee access.
+            self.modifyRecordsOperation.qualityOfService = NSQualityOfServiceUserInitiated;
+        }
 
         self.modifyRecordsOperation.savePolicy = CKRecordSaveIfServerRecordUnchanged;
         self.modifyRecordsOperation.group = self.ckoperationGroup;
 
-        self.modifyRecordsOperation.perRecordCompletionBlock = ^(CKRecord *record, NSError * _Nullable error) {
+        self.modifyRecordsOperation.perRecordSaveBlock = ^(CKRecordID *recordID, CKRecord * _Nullable record, NSError * _Nullable error) {
             STRONGIFY(self);
 
             if(!error) {
-                ckksnotice("ckkscurrent", self.viewState.zoneID, "Current pointer upload successful for %@: %@", record.recordID.recordName, record);
+                ckksnotice("ckkscurrent", self.viewState.zoneID, "Current pointer upload successful for %@: %@", recordID.recordName, record);
             } else {
-                ckkserror("ckkscurrent", self.viewState.zoneID, "error on row: %@ %@", error, record);
+                ckkserror("ckkscurrent", self.viewState.zoneID, "error on row: %@ %@", error, recordID);
             }
         };
 
@@ -352,6 +363,10 @@
                 return CKKSDatabaseTransactionCommit;
             }];
 
+            if(!error) {
+                [self _fetchAndUpdateMirrorEntry:ckme];
+            }
+
             self.error = error;
             [self.operationQueue addOperation:modifyComplete];
         };
@@ -361,6 +376,65 @@
 
         return CKKSDatabaseTransactionCommit;
     }];
+}
+
+- (void)_fetchAndUpdateMirrorEntry:(CKKSMirrorEntry*)ckme
+{
+    WEAKIFY(self);
+
+    // Start a CKFetchRecordsOperation to get the new etag for the now-current item.
+    NSBlockOperation* fetchComplete = [[NSBlockOperation alloc] init];
+    fetchComplete.name = @"updateCurrentItemPointer-fetchRecordsComplete";
+    [self dependOnBeforeGroupFinished: fetchComplete];
+
+    self.fetchRecordsOperation = [[self.deps.cloudKitClassDependencies.fetchRecordsOperationClass alloc] initWithRecordIDs:@[ckme.item.storedCKRecord.recordID]];
+
+    // We're likely rolling a PCS identity, or creating a new one. User cares.
+    self.fetchRecordsOperation.configuration.isCloudKitSupportOperation = YES;
+
+    if(SecCKKSHighPriorityOperations()) {
+        // This operation might be needed during CKKS/Manatee bringup, which affects the user experience. Bump our priority to get it off-device and unblock Manatee access.
+        self.fetchRecordsOperation.qualityOfService = NSQualityOfServiceUserInitiated;
+    }
+
+    self.fetchRecordsOperation.group = self.ckoperationGroup;
+
+    self.fetchRecordsOperation.fetchRecordsCompletionBlock = ^(NSDictionary<CKRecordID *,CKRecord *> * _Nullable recordsByRecordID, NSError * _Nullable ckerror) {
+        STRONGIFY(self);
+        id<CKKSDatabaseProviderProtocol> databaseProvider = self.deps.databaseProvider;
+
+        if(ckerror) {
+            ckkserror("ckkscurrent", self.viewState.zoneID, "fetch returned an error: %@", ckerror);
+            [self.operationQueue addOperation:fetchComplete];
+            return;
+        }
+
+        [databaseProvider dispatchSyncWithSQLTransaction:^CKKSDatabaseTransactionResult{
+            for(CKRecordID* recordID in recordsByRecordID) {
+                CKRecord* record = recordsByRecordID[recordID];
+                NSError* localerror = nil;
+
+                if([ckme matchesCKRecord:record checkServerFields:false]) {
+                    [ckme setFromCKRecord:record];
+
+                    bool mirrorsaved = [ckme saveToDatabase:&localerror];
+                    if(!mirrorsaved || localerror) {
+                        ckkserror("ckkscurrent", self.viewState.zoneID, "couldn't save updated CKRecord to database: %@ %@", record, localerror);
+                    } else {
+                        ckksinfo("ckkscurrent", self.viewState.zoneID, "CKKSMirrorEntry updated: %@", ckme);
+                    }
+                } else {
+                    ckkserror("ckkscurrent", self.viewState.zoneID, "fetched non-matching record %@", record);
+                }
+            }
+            return CKKSDatabaseTransactionCommit;
+        }];
+
+        [self.operationQueue addOperation:fetchComplete];
+    };
+
+    [self dependOnBeforeGroupFinished: self.fetchRecordsOperation];
+    [self.deps.ckdatabase addOperation:self.fetchRecordsOperation];
 }
 
 - (SecDbItemRef _Nullable)_onqueueFindSecDbItem:(NSData*)persistentRef accessGroup:(NSString*)accessGroup error:(NSError**)error {
@@ -456,6 +530,7 @@
                                              code:errSecParam
                                       description:@"couldn't run query"
                                        underlying:(NSError*)CFBridgingRelease(cferror)];
+            cferror = NULL;
             if(*error) {
                 *error = localerror;
             }

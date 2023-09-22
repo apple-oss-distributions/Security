@@ -34,6 +34,7 @@
 #include <Security/SecStaticCodePriv.h>
 #include <Security/SecRequirementPriv.h>
 #include <Security/SecCodeSigner.h>
+#include <Security/SecCodeSignerRemote.h>
 #include <Security/SecBasePriv.h>
 #include <security_utilities/globalizer.h>
 #include <security_utilities/seccfobject.h>
@@ -65,6 +66,7 @@ struct CFObjects {
 	CFClass StaticCode;
 	CFClass Requirement;
 	CFClass CodeSigner;
+	CFClass CodeSignerRemote;
 
 	ThreadNexus<PerThread> perThread;
 	
@@ -124,8 +126,8 @@ OSStatus dbError(const SQLite3::Error &err);
 	catch (const CSError &err) { err.cfError(errors); } \
 	catch (const UnixError &err) { \
 		switch (err.error) { \
-		case ENOEXEC: CSError::cfError(errors, errSecCSBadObjectFormat); \
-		default: CSError::cfError(errors, err.osStatus()); \
+		case ENOEXEC: CSError::cfError(errors, errSecCSBadObjectFormat); break; \
+		default: CSError::cfError(errors, err.osStatus()); break; \
 		}} \
     catch (const MacOSError &err) { CSError::cfError(errors, err.osStatus()); } \
     catch (const SQLite3::Error &err) { CSError::cfError(errors, dbError(err)); } \

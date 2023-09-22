@@ -27,11 +27,13 @@
 #include <stdio.h>
 #include <Security/AuthorizationPriv.h>
 #include <utilities/SecCFRelease.h>
+#include <libproc.h>
+#include <sys/proc_info.h>
+#include <os/log.h>
 
 #include "authz.h"
 #include "security_tool.h"
-
-// AEWP?
+#include "fvunlock.h"
 
 static AuthorizationRef
 read_auth_ref_from_stdin(void)
@@ -75,6 +77,24 @@ write_auth_ref_to_stdout(AuthorizationRef auth_ref)
 		return 0;
 
 	return -1;
+}
+
+static OSStatus
+reset_database(const char *volumeUUID)
+{
+    os_log_debug(OS_LOG_DEFAULT, "Verifying volume %s", volumeUUID);
+    OSStatus status = verifyVolume(volumeUUID);
+    if (status != noErr) {
+        return status;
+    }
+    
+    os_log_debug(OS_LOG_DEFAULT, "Recovery setup in progress");
+    status = recoverySetup();
+    if (status != noErr) {
+        return status;
+    }
+    
+    return fvUnlockWriteResetDb(volumeUUID);
 }
 
 static void
@@ -128,116 +148,28 @@ read_dict_from_stdin(void)
 	return right_dict;
 }
 
-static CFPropertyListRef CF_RETURNS_RETAINED
-read_plist_from_file(CFStringRef filePath)
+static pid_t get_authd_pid(void)
 {
-	CFTypeRef         property = NULL;
-	CFPropertyListRef propertyList = NULL;
-	CFURLRef          fileURL = NULL;
-	CFErrorRef       errorString = NULL;
-	CFDataRef         resourceData = NULL;
-	Boolean           status = FALSE;
-	SInt32            errorCode = -1;
+    int n = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
+    
+    int *buffer = (int *)malloc(sizeof(int)*n);
+    int count = proc_listpids(PROC_ALL_PIDS, 0, buffer, n*sizeof(int));
 
-	// Convert the path to a URL.
-	fileURL = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, filePath, kCFURLPOSIXPathStyle, false);
-	if (NULL == fileURL) {
-		goto bail;
-	}
-	property = CFURLCreatePropertyFromResource(kCFAllocatorDefault, fileURL, kCFURLFileExists, NULL);
-	if (NULL == property) {
-		goto bail;
-	}
-	status = CFBooleanGetValue(property);
-	if (!status) {
-		fprintf(stderr, "The file does not exist.\n");
-		goto bail;
-	}
-
-	// Read the XML file.
-	status = CFURLCreateDataAndPropertiesFromResource(kCFAllocatorDefault, fileURL, &resourceData, NULL, NULL, &errorCode);
-	if (!status) {
-		fprintf(stderr, "Error (%d) reading the file.\n", (int)errorCode);
-		goto bail;
-	}
-
-	// Reconstitute the dictionary using the XML data.
-	propertyList = CFPropertyListCreateWithData(kCFAllocatorDefault, resourceData, kCFPropertyListImmutable, NULL, &errorString);
-	if (NULL == propertyList) {
-		CFShow(errorString);
-		goto bail;
-	}
-
-	// Some error checking.
-	if (!CFPropertyListIsValid(propertyList, kCFPropertyListXMLFormat_v1_0) || CFGetTypeID(propertyList) != CFDictionaryGetTypeID()) {
-		fprintf(stderr, "The file is invalid.\n");
-		CFRelease(propertyList);
-		propertyList = NULL;
-		goto bail;
-	}
-
-bail:
-	if (NULL != fileURL)
-		CFRelease(fileURL);
-	if (NULL != property)
-		CFRelease(property);
-	if (NULL != resourceData)
-		CFRelease(resourceData);
-
-	return propertyList;
-}
-
-static Boolean
-write_plist_to_file(CFPropertyListRef propertyList, CFStringRef filePath)
-{
-	CFTypeRef   property = NULL;
-	CFURLRef	fileURL = NULL;
-	CFDataRef	xmlData = NULL;
-	Boolean		status = FALSE;
-	SInt32		errorCode = -1;
-	CFErrorRef	errorRef = NULL;
-
-	// Convert the path to a URL.
-	fileURL = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, filePath, kCFURLPOSIXPathStyle, false);
-	if (NULL == fileURL) {
-		goto bail;
-	}
-	property = CFURLCreatePropertyFromResource(kCFAllocatorDefault, fileURL, kCFURLFileExists, NULL);
-	if (NULL == property) {
-		goto bail;
-	}
-	if (!CFBooleanGetValue(property)) {
-		fprintf(stderr, "The file does not exist.\n");
-		goto bail;
-	}
-
-	// Convert the property list into XML data.
-	xmlData = CFPropertyListCreateData(kCFAllocatorDefault, propertyList, kCFPropertyListXMLFormat_v1_0, 0, &errorRef);
-	if (errorRef) {
-		fprintf(stderr, "The file could not be written.\n");
-		goto bail;
-	}
-
-	// Write the XML data to the file.
-	if (!CFURLWriteDataAndPropertiesToResource(fileURL, xmlData, NULL, &errorCode)) {
-		fprintf(stderr, "The file could not be written.\n");
-		goto bail;
-	}
-
-	status = TRUE;
-bail:
-    CFReleaseNull(property);
-	if (NULL != xmlData)
-		CFRelease(xmlData);
-	if (NULL != fileURL)
-		CFRelease(fileURL);
-
-	return status;
-}
-
-static void merge_dictionaries(const void *key, const void *value, void *mergeDict)
-{
-	CFDictionarySetValue(mergeDict, key, value);
+    for (int i = 0; i < count; i++) {
+        int pid = buffer[i];
+        if (pid == 0) {
+            continue;
+        }
+        char path[PATH_MAX + 1];
+        if (proc_pidpath(pid, &path, PATH_MAX)) {
+            if (strcmp(path, "/System/Library/Frameworks/Security.framework/Versions/A/XPCServices/authd.xpc/Contents/MacOS/authd") == 0) {
+                free(buffer);
+                return pid;
+            }
+        }
+    }
+    free(buffer);
+    return 0;
 }
 
 int
@@ -264,12 +196,53 @@ authorizationdb(int argc, char * const * argv)
 	if (argc == 0)
 		return SHOW_USAGE_MESSAGE; // required right parameter(s)
 
-	OSStatus status;
+    OSStatus status = errAuthorizationDenied;
 
-	if (argc > 1)
+    if (!strcmp("reset", argv[0]))
+    {
+        if (!isInFVUnlock())
+        {
+            os_log_debug(OS_LOG_DEFAULT, "Live reset command requested");
+
+            if (geteuid() != 0)
+            {
+                fprintf(stderr, "This operation must be done as root\n");
+                return -1;
+            }
+            status = remove("/var/db/auth.db");
+            if (status)
+            {
+                fprintf(stderr, "Authorization Database reset failed: %d\n", status);
+                return -1;
+            }
+            pid_t authdPid = get_authd_pid();
+            if (authdPid > 0)
+            {
+                os_log_debug(OS_LOG_DEFAULT, "Restarting authd [%d]", authdPid);
+                kill(authdPid, SIGQUIT);
+            }
+            printf("Authorization Database was reset\n");
+        }
+        else
+        {
+            os_log_debug(OS_LOG_DEFAULT, "Recovery reset command requested: %d", argc);
+            if (argc == 2)
+            {
+                status = reset_database(argv[1]);
+            }
+            else
+            {
+                return SHOW_USAGE_MESSAGE;
+            }
+        }
+    }
+	else if (argc > 1)
 	{
-		if (!auth_ref && AuthorizationCreate(NULL, NULL, 0, &auth_ref))
-			return -1;
+        if (!auth_ref && AuthorizationCreate(NULL, NULL, 0, &auth_ref))
+        {
+            os_log_debug(OS_LOG_DEFAULT, "Unable to create AuthorizationRef");
+            return -1;
+        }
 
 		if (!strcmp("read", argv[0]))
 		{
@@ -287,7 +260,11 @@ authorizationdb(int argc, char * const * argv)
 			{
 				CFDictionaryRef right_definition = read_dict_from_stdin();
 				if (!right_definition)
-					return -1;
+                {
+                    fprintf(stderr, "Unable to read the right definition\n");
+                    os_log_error(OS_LOG_DEFAULT, "Unable to read the right definition");
+                    return -1;
+                }
 				status = AuthorizationRightSet(auth_ref, argv[1], right_definition, NULL, NULL, NULL);
 				CFRelease(right_definition);
 			}
@@ -295,207 +272,27 @@ authorizationdb(int argc, char * const * argv)
 			{
 				// argv[2] is shortcut string
 				CFStringRef shortcut_definition = CFStringCreateWithCStringNoCopy(NULL, argv[2], kCFStringEncodingUTF8, kCFAllocatorNull);
-				if (!shortcut_definition)
-					return -1;
+                if (!shortcut_definition)
+                {
+                    fprintf(stderr, "The provided right definition is invalid\n");
+                    os_log_error(OS_LOG_DEFAULT, "Invalid right definition");
+                    return -1;
+                }
 				status = AuthorizationRightSet(auth_ref, argv[1], shortcut_definition, NULL, NULL, NULL);
 				CFRelease(shortcut_definition);
 			}
 			else
 				return SHOW_USAGE_MESSAGE; // take one optional argument - no more
-
-		}
-		else if (!strcmp("remove", argv[0]))
+        }
+        else if (!strcmp("remove", argv[0]))
 		{
 			status = AuthorizationRightRemove(auth_ref, argv[1]);
 		}
-		else if (!strcmp("smartcard", argv[0]))
-		{
-			if (argc == 2)
-            {
-                if(!strcmp("status", argv[1]))
-                {
-                    const CFStringRef SMARTCARD_LINE = CFSTR("builtin:smartcard-sniffer,privileged");
-                    const CFStringRef MECHANISMS = CFSTR("mechanisms");
-                    const CFStringRef BUILTIN_LINE = CFSTR("builtin:policy-banner");
-                    const char* SYSTEM_LOGIN_CONSOLE = "system.login.console";
-                    const char* AUTHENTICATE = "authenticate";
-                    
-                    CFIndex requiredLine1 = -1;
-                    CFIndex requiredLine2 = -1;
-                    
-                    CFDictionaryRef right_definition;
-                    status = AuthorizationRightGet(SYSTEM_LOGIN_CONSOLE, &right_definition);
-                    if(!status)
-                    {
-                        CFArrayRef mechanisms;
-                        
-                        Boolean res = CFDictionaryGetValueIfPresent(right_definition, MECHANISMS, (void*)&mechanisms);
-                        if(res)
-                        {
-                            // now parse all array elements until "builtin:policy-banner" is found
-                            CFIndex c = CFArrayGetCount(mechanisms);
-                            CFStringRef mechanismName;
-                            
-                            for (CFIndex i = 0; i < c; ++i)
-                            {
-                                mechanismName = CFArrayGetValueAtIndex(mechanisms, i);
-                                if(CFStringCompare(mechanismName, BUILTIN_LINE, 0) == kCFCompareEqualTo)
-                                {
-                                    if(i + 1 < c)
-                                    {
-                                        mechanismName = CFArrayGetValueAtIndex(mechanisms, i + 1);
-                                        if(CFStringCompare(mechanismName, SMARTCARD_LINE, 0) == kCFCompareEqualTo)
-                                        {
-                                            requiredLine1 = i + 1;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    CFRelease(right_definition);
-                    }
-                    status = AuthorizationRightGet(AUTHENTICATE, &right_definition);
-                    if(!status)
-                    {
-                        CFArrayRef mechanisms;
-                        
-                        Boolean res = CFDictionaryGetValueIfPresent(right_definition, MECHANISMS, (void*)&mechanisms);
-                        if(res)
-                        {
-                            // now parse all array elements until "builtin:policy-banner" is found
-                            CFIndex c = CFArrayGetCount(mechanisms);
-                            CFStringRef mechanismName;
-                            
-                            if(c > 0)
-                            {
-                                mechanismName = CFArrayGetValueAtIndex(mechanisms, 0);
-                                if(CFStringCompare(mechanismName, SMARTCARD_LINE, 0) == kCFCompareEqualTo)
-                                {
-                                    requiredLine2 = 0;
-                                }
-                            }
-                        }
-                        CFRelease(right_definition);
-                    }
-                    printf("Current smartcard login state: %s (system.login.console %s, authentication rule %s)\n", requiredLine1 != -1 && requiredLine2 != -1 ?"enabled":"disabled", requiredLine1 != -1 ? "enabled":"disabled", requiredLine2 != -1 ? "enabled":"disabled");
-
-                }
-                else if(!strcmp("disable", argv[1]))
-                    status = AuthorizationEnableSmartCard(auth_ref, FALSE);
-                else if(!strcmp("enable", argv[1]))
-                    status = AuthorizationEnableSmartCard(auth_ref, TRUE);
-                else
-                   return SHOW_USAGE_MESSAGE; // unrecognized parameter
-            }
-            else
-                return SHOW_USAGE_MESSAGE; // required parameter missing
-		}
-		else if (!strcmp("merge", argv[0])) {
-			status = 1;
-			CFStringRef sourcePath = NULL;
-			CFStringRef destPath = NULL;
-			CFPropertyListRef sourcePlist = NULL;
-			CFPropertyListRef destPlist = NULL;
-			CFDictionaryRef sourceRights = NULL;
-			CFDictionaryRef sourceRules = NULL;
-			CFDictionaryRef destRights = NULL;
-			CFDictionaryRef destRules = NULL;
-			CFIndex rightsCount = 0;
-			CFIndex rulesCount = 0;
-			CFMutableDictionaryRef mergeRights = NULL;
-			CFMutableDictionaryRef mergeRules = NULL;
-			CFMutableDictionaryRef outDict = NULL;
-
-			if (argc < 2 || argc > 3)
-				return SHOW_USAGE_MESSAGE;
-
-			if (!strcmp("-", argv[1])) {
-				// Merging from <STDIN>.
-				sourcePlist = read_dict_from_stdin();
-			} else {
-				sourcePath = CFStringCreateWithCString(kCFAllocatorDefault, argv[1], kCFStringEncodingUTF8);
-				if (NULL == sourcePath) {
-					goto bail;
-				}
-				sourcePlist = read_plist_from_file(sourcePath);
-			}
-			if (NULL == sourcePlist)
-				goto bail;
-			if (argc == 2) {
-				// Merging to /etc/authorization.
-				destPath = CFStringCreateWithCString(kCFAllocatorDefault, "/etc/authorization", kCFStringEncodingUTF8);
-			} else {
-				destPath = CFStringCreateWithCString(kCFAllocatorDefault, argv[2], kCFStringEncodingUTF8);
-			}
-			if (NULL == destPath) {
-				goto bail;
-			}
-			destPlist = read_plist_from_file(destPath);
-			if (NULL == destPlist)
-				goto bail;
-
-			sourceRights = CFDictionaryGetValue(sourcePlist, CFSTR("rights"));
-			sourceRules = CFDictionaryGetValue(sourcePlist, CFSTR("rules"));
-			destRights = CFDictionaryGetValue(destPlist, CFSTR("rights"));
-			destRules = CFDictionaryGetValue(destPlist, CFSTR("rules"));
-			if (sourceRights)
-				rightsCount += CFDictionaryGetCount(sourceRights);
-			if (destRights)
-				rightsCount += CFDictionaryGetCount(destRights);
-			mergeRights = CFDictionaryCreateMutable(NULL, rightsCount, &kCFCopyStringDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-			if (NULL == mergeRights) {
-				goto bail;
-			}
-			if (sourceRules)
-				rulesCount += CFDictionaryGetCount(sourceRules);
-			if (destRules)
-				rulesCount += CFDictionaryGetCount(destRules);
-			mergeRules = CFDictionaryCreateMutable(NULL, rulesCount, &kCFCopyStringDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-			if (NULL == mergeRules) {
-				goto bail;
-			}
-
-			if (destRights)
-				CFDictionaryApplyFunction(destRights, merge_dictionaries, mergeRights);
-			if (destRules)
-				CFDictionaryApplyFunction(destRules, merge_dictionaries, mergeRules);
-			if (sourceRights)
-				CFDictionaryApplyFunction(sourceRights, merge_dictionaries, mergeRights);
-			if (sourceRules)
-				CFDictionaryApplyFunction(sourceRules, merge_dictionaries, mergeRules);
-
-			outDict = CFDictionaryCreateMutable(NULL, 3, &kCFCopyStringDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-			if (NULL == outDict) {
-				goto bail;
-			}
-			if (CFDictionaryContainsKey(sourcePlist, CFSTR("comment")))
-				CFDictionaryAddValue(outDict, CFSTR("comment"), CFDictionaryGetValue(sourcePlist, CFSTR("comment")));
-			else if (CFDictionaryContainsKey(destPlist, CFSTR("comment")))
-				CFDictionaryAddValue(outDict, CFSTR("comment"), CFDictionaryGetValue(destPlist, CFSTR("comment")));
-			CFDictionaryAddValue(outDict, CFSTR("rights"), mergeRights);
-			CFDictionaryAddValue(outDict, CFSTR("rules"), mergeRules);
-			if (!write_plist_to_file(outDict, destPath))
-				goto bail;
-
-			status = noErr;
-bail:
-			if (sourcePath)
-				CFRelease(sourcePath);
-			if (destPath)
-				CFRelease(destPath);
-			if (sourcePlist)
-				CFRelease(sourcePlist);
-			if (destPlist)
-				CFRelease(destPlist);
-			if (outDict)
-				CFRelease(outDict);
-		}
-		else
-			return SHOW_USAGE_MESSAGE;
-	}
-	else
-		return SHOW_USAGE_MESSAGE;
+    }
+    else
+    {
+        return SHOW_USAGE_MESSAGE;
+    }
 
 	if (auth_ref)
 		AuthorizationFree(auth_ref, 0);
@@ -503,7 +300,11 @@ bail:
 	if (!do_quiet)
 		fprintf(stderr, "%s (%d)\n", status ? "NO" : "YES", (int)status);
 
-	return (status ? -1 : 0);
+    if (status) {
+        os_log_error(OS_LOG_DEFAULT, "Write command status: %d", (int)status);
+        return -1;
+    }
+	return 0;
 }
 
 int

@@ -10,11 +10,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
 
         // Set this to what it normally is. Each test can muck with it, if they like
 #if os(macOS) || os(iOS)
-        OctagonSetPlatformSupportsSOS(true)
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 #else
-        self.manager.setSOSEnabledForPlatformFlag(false)
-        OctagonSetPlatformSupportsSOS(false)
+       OctagonSetSOSFeatureEnabled(false)
 #endif
     }
 
@@ -236,16 +234,17 @@ class OctagonInheritanceTests: OctagonTestsBase {
     func createEstablishContext(contextID: String) -> OTCuttlefishContext {
         return self.manager.context(forContainerName: OTCKContainerName,
                                     contextID: contextID,
-                                    sosAdapter: self.mockSOSAdapter,
+                                    sosAdapter: self.mockSOSAdapter!,
                                     accountsAdapter: self.mockAuthKit2,
                                     authKitAdapter: self.mockAuthKit2,
                                     tooManyPeersAdapter: self.mockTooManyPeers,
+                                    tapToRadarAdapter: self.mockTapToRadar,
                                     lockStateTracker: self.lockStateTracker,
                                     deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-IK-iphone", serialNumber: "456", osVersion: "iOS (fake version)"))
     }
 
     @discardableResult
-    func createAndSetInheritanceRecoveryKey(context: OTCuttlefishContext) throws -> (OTInheritanceKey, InheritanceKey) {
+    func createAndSetInheritanceKey(context: OTCuttlefishContext) throws -> (OTInheritanceKey, InheritanceKey) {
         var retirk: OTInheritanceKey?
         let createInheritanceKeyExpectation = self.expectation(description: "createInheritanceKey returns")
 
@@ -273,15 +272,16 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testCreateInheritanceTLKSharesDuringCreation() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.assertResetAndBecomeTrustedInDefaultContext()
 
         // This flag gates whether or not we'll error while setting the recovery key
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (_, irk) = try self.createAndSetInheritanceRecoveryKey(context: self.cuttlefishContext)
+        let (_, irk) = try self.createAndSetInheritanceKey(context: self.cuttlefishContext)
 
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.verifyDatabaseMocks()
@@ -290,10 +290,11 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testResetAndEstablishClearsAccountMetadata() throws {
+        try self.skipOnRecoveryKeyNotSupported()
         let contextName = OTDefaultContext
         let containerName = OTCKContainerName
 
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -306,7 +307,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -328,9 +328,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -385,7 +385,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
 
         // let's ensure the inheritance bit is set.
         do {
-            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter, personaUniqueString: nil)
+            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter!, personaUniqueString: nil)
             XCTAssertTrue(accountState.isInheritedAccount, "isInheritedAccount should be YES")
         } catch {
             XCTFail("error loading account state: \(error)")
@@ -406,7 +406,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
 
         // now let's ensure the inheritance bit is gone.
         do {
-            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter, personaUniqueString: nil)
+            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter!, personaUniqueString: nil)
             XCTAssertFalse(accountState.isInheritedAccount, "isInheritedAccount should be NO")
         } catch {
             XCTFail("error loading account state: \(error)")
@@ -414,10 +414,11 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testAccountNoLongerAvailableClearsInheritanceBit() throws {
+        try self.skipOnRecoveryKeyNotSupported()
         let contextName = OTDefaultContext
         let containerName = OTCKContainerName
 
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -430,7 +431,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -452,9 +452,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -509,7 +509,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
 
         // let's ensure the inheritance bit is set.
         do {
-            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter, personaUniqueString: nil)
+            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter!, personaUniqueString: nil)
             XCTAssertTrue(accountState.isInheritedAccount, "isInheritedAccount should be YES")
         } catch {
             XCTFail("error loading account state: \(error)")
@@ -523,7 +523,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
 
         // now let's ensure the inheritance bit is gone.
         do {
-            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter, personaUniqueString: nil)
+            let accountState = try OTAccountMetadataClassC.loadFromKeychain(forContainer: containerName, contextID: contextName, personaAdapter: self.mockPersonaAdapter!, personaUniqueString: nil)
             XCTAssertFalse(accountState.isInheritedAccount, "isInheritedAccount should be NO")
         } catch {
             XCTFail("error loading account state: \(error)")
@@ -531,18 +531,16 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKeyWithCKKSConflict() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let remote = self.createEstablishContext(contextID: "remote")
         self.assertResetAndBecomeTrusted(context: remote)
 
-#if os(tvOS) || os(watchOS)
-        self.manager.setSOSEnabledForPlatformFlag(true)
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: remote)
-        self.manager.setSOSEnabledForPlatformFlag(false)
-#else
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: remote)
-#endif
+        OctagonSetSOSFeatureEnabled(true)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: remote)
+        OctagonSetSOSFeatureEnabled(false)
         self.sendContainerChangeWaitForFetch(context: remote)
 
         self.silentFetchesAllowed = false
@@ -591,18 +589,16 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testirkRecoveryRecoversCKKSCreatedShares() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let remote = self.createEstablishContext(contextID: "remote")
         self.assertResetAndBecomeTrusted(context: remote)
 
-#if os(tvOS) || os(watchOS)
-        self.manager.setSOSEnabledForPlatformFlag(true)
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: remote)
-        self.manager.setSOSEnabledForPlatformFlag(false)
-#else
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: remote)
-#endif
+        OctagonSetSOSFeatureEnabled(true)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: remote)
+        OctagonSetSOSFeatureEnabled(false)
 
         // And TLKShares for the RK are sent from the Octagon peer
         self.putFakeKeyHierarchiesInCloudKit()
@@ -650,7 +646,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testRecoverTLKSharesSentToirkBeforeCKKSFetchCompletes() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let remote = self.createEstablishContext(contextID: "remote")
@@ -661,8 +658,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: remote)
         self.assertSelfTLKSharesInCloudKit(context: remote)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: remote)
+        OctagonSetSOSFeatureEnabled(true)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: remote)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
 
@@ -681,11 +678,11 @@ class OctagonInheritanceTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         // device succeeds joining after restore
-        self.mockSOSAdapter.joinAfterRestoreResult = true
+        self.mockSOSAdapter!.joinAfterRestoreResult = true
         // reset to offering on the mock adapter is by default set to false so this should cause cascading failures resulting in a cfu
-        self.mockSOSAdapter.joinAfterRestoreCircleStatusOverride = true
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCRequestPending)
-        self.mockSOSAdapter.resetToOfferingCircleStatusOverride = true
+        self.mockSOSAdapter!.joinAfterRestoreCircleStatusOverride = true
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCRequestPending)
+        self.mockSOSAdapter!.resetToOfferingCircleStatusOverride = true
 
         let joinWithInheritanceKeyExpectation = self.expectation(description: "joinWithInheritanceKey callback occurs")
         self.cuttlefishContext.join(with: otirk) {error in
@@ -712,10 +709,12 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let remotePeerID = try remote.accountMetadataStore.getEgoPeerID()
         XCTAssertFalse(self.tlkSharesInCloudKit(receiverPeerID: irk.peerID, senderPeerID: remotePeerID), "Should be no shares from peer to irk; as irk has self-shares")
         XCTAssertFalse(self.tlkSharesInCloudKit(receiverPeerID: remotePeerID, senderPeerID: irk.peerID), "Should be no shares from irk to peer")
-        XCTAssertEqual(self.mockSOSAdapter.circleStatus, SOSCCStatus(kSOSCCRequestPending), "SOS should be Request Pending")
+        XCTAssertEqual(self.mockSOSAdapter!.circleStatus, SOSCCStatus(kSOSCCRequestPending), "SOS should be Request Pending")
     }
 
     func testAddInheritanceKey() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.putFakeKeyHierarchiesInCloudKit()
@@ -740,7 +739,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         XCTAssertEqual(self.cuttlefishContext.currentMemoizedTrustState(), .TRUSTED, "Trust state should be trusted")
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
         let createInheritanceKeyExpectation = self.expectation(description: "createInheritanceKeyExpectation returns")
         self.manager.createInheritanceKey(OTControlArguments(configuration: self.otcliqueContext), uuid: UUID()) { irk, error in
@@ -759,7 +758,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
         throw XCTSkip("Apple TVs and watches will not set recovery key")
 #else
-
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         // To get into a state where we don't upload the TLKShares to each RK on RK creation, put Octagon into a waitfortlk state
@@ -821,7 +820,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testAddInheritanceKeyUUID() throws {
-
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.putFakeKeyHierarchiesInCloudKit()
@@ -847,7 +847,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.assertCKKSStateMachine(enters: CKKSStateReady, within: 10 * NSEC_PER_SEC)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
         let uuid = UUID()
 
@@ -865,6 +865,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testInheritanceKeyTrust() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.cuttlefishContext.startOctagonStateMachine()
@@ -887,7 +889,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
         self.assertCKKSStateMachine(enters: CKKSStateReady, within: 10 * NSEC_PER_SEC)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
         let uuid = UUID()
 
@@ -906,7 +908,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKey() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -919,7 +922,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -941,9 +943,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1005,7 +1007,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKeyAltdsid() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1018,7 +1021,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1040,9 +1042,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1106,7 +1108,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKeyWithClique() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1119,7 +1122,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1141,9 +1143,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1151,7 +1153,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         // Now, join from a new device
         let newCliqueContext = OTConfigurationContext()
         newCliqueContext.context = OTDefaultContext
-        newCliqueContext.dsid = self.otcliqueContext.dsid
         newCliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         newCliqueContext.otControl = self.otControl
 
@@ -1202,7 +1203,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceRecoveryKeyBadUUID() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1215,7 +1217,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1235,7 +1236,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
         var retirk: OTInheritanceKey?
         let createInheritanceKeyExpectation = self.expectation(description: "createInheritanceKeyExpectation returns")
@@ -1297,7 +1298,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKeyBadKey() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1310,7 +1312,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1330,7 +1331,7 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
         var retirk: OTInheritanceKey?
         let createInheritanceKeyExpectation = self.expectation(description: "createInheritanceKeyExpectation returns")
@@ -1392,9 +1393,10 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceKeyThenLoadToInheritedOnRestart() throws {
+        try self.skipOnRecoveryKeyNotSupported()
         let startDate = Date()
 
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1407,7 +1409,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1427,9 +1428,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1510,7 +1511,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceNoCKKSWrites() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1523,7 +1525,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1543,9 +1544,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1604,7 +1605,8 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testJoinWithInheritanceDownloadCKKSItemsAndDoesntWrite() throws {
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1617,7 +1619,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1638,9 +1639,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1696,8 +1697,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
     }
 
     func testSetUserControllableViewsInheritedAccount() throws {
+        try self.skipOnRecoveryKeyNotSupported()
 
-        self.manager.setSOSEnabledForPlatformFlag(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         let establishContextID = "establish-context-id"
@@ -1710,7 +1712,6 @@ class OctagonInheritanceTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = establishContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1730,9 +1731,9 @@ class OctagonInheritanceTests: OctagonTestsBase {
         try self.putSelfTLKSharesInCloudKit(context: establishContext)
         self.assertSelfTLKSharesInCloudKit(context: establishContext)
 
-        self.manager.setSOSEnabledForPlatformFlag(true)
+        OctagonSetSOSFeatureEnabled(true)
 
-        let (otirk, irk) = try self.createAndSetInheritanceRecoveryKey(context: establishContext)
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
 
         self.putInheritanceTLKSharesInCloudKit(irk: irk)
         self.sendContainerChangeWaitForFetch(context: establishContext)
@@ -1781,6 +1782,152 @@ class OctagonInheritanceTests: OctagonTestsBase {
             fetchExpectation.fulfill()
         }
         self.wait(for: [fetchExpectation], timeout: 20)
+    }
+
+    func testInheritanceKeyCheckNoKey() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
+        self.startCKAccountStatusMock()
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        // This flag gates whether or not we'll error while setting the recovery key
+        OctagonSetSOSFeatureEnabled(true)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+
+        let checkInheritanceKeyExpectation = self.expectation(description: "checkInheritanceKey returns")
+        self.manager.checkInheritanceKey(OTControlArguments(configuration: self.otcliqueContext), uuid: UUID()) { exists, error in
+            XCTAssertFalse(exists, "exists mismatch")
+            XCTAssertNil(error, "error should be nil")
+            checkInheritanceKeyExpectation.fulfill()
+        }
+        self.wait(for: [checkInheritanceKeyExpectation], timeout: 20)
+        self.verifyDatabaseMocks()
+    }
+
+    func testInheritanceKeyExists() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
+        self.startCKAccountStatusMock()
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        // This flag gates whether or not we'll error while setting the recovery key
+        OctagonSetSOSFeatureEnabled(true)
+
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: self.cuttlefishContext)
+
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertTLKSharesInCloudKit(receiverPeerID: irk.peerID, senderPeerID: irk.peerID)
+
+        let checkCustodianRecoveryKeyExpectation = self.expectation(description: "checkCustodianRecoveryKey returns")
+        self.manager.checkCustodianRecoveryKey(OTControlArguments(configuration: self.otcliqueContext), uuid: otirk.uuid) { exists, error in
+            XCTAssertFalse(exists, "exists mismatch")
+            XCTAssertNil(error, "error should be nil")
+            checkCustodianRecoveryKeyExpectation.fulfill()
+        }
+        self.wait(for: [checkCustodianRecoveryKeyExpectation], timeout: 20)
+
+        let checkInheritanceKeyExpectation = self.expectation(description: "checkInheritanceKey returns")
+        self.manager.checkInheritanceKey(OTControlArguments(configuration: self.otcliqueContext), uuid: otirk.uuid) { exists, error in
+            XCTAssertTrue(exists, "exists mismatch")
+            XCTAssertNil(error, "error should be nil")
+            checkInheritanceKeyExpectation.fulfill()
+        }
+        self.wait(for: [checkInheritanceKeyExpectation], timeout: 20)
+
+        self.verifyDatabaseMocks()
+    }
+
+    func testInheritanceKeyNotExists() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
+        self.startCKAccountStatusMock()
+
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        // This flag gates whether or not we'll error while setting the recovery key
+        OctagonSetSOSFeatureEnabled(true)
+
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: self.cuttlefishContext)
+
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertTLKSharesInCloudKit(receiverPeerID: irk.peerID, senderPeerID: irk.peerID)
+
+        // Remove the IK
+        let removeInheritanceKeyExpectation = self.expectation(description: "removeInheritanceKey returns")
+        self.manager.removeInheritanceKey(OTControlArguments(configuration: self.otcliqueContext), uuid: otirk.uuid) { error in
+            XCTAssertNil(error, "error should be nil")
+            removeInheritanceKeyExpectation.fulfill()
+        }
+        self.wait(for: [removeInheritanceKeyExpectation], timeout: 20)
+
+        let checkInheritanceKeyExpectation = self.expectation(description: "checkInheritanceKey returns")
+        self.manager.checkInheritanceKey(OTControlArguments(configuration: self.otcliqueContext), uuid: otirk.uuid) { exists, error in
+            // Removed IKs should be exist=false, and error==untrustedRecoveryKeys
+            XCTAssertFalse(exists, "exists should be false")
+            XCTAssertNotNil(error, "error should not be nil")
+            XCTAssertEqual("com.apple.security.trustedpeers.container", (error! as NSError).domain, "error domain mismatch")
+            XCTAssertEqual((error! as NSError).code, ContainerError.untrustedRecoveryKeys.errorCode, "error code mismatch")
+            checkInheritanceKeyExpectation.fulfill()
+        }
+        self.wait(for: [checkInheritanceKeyExpectation], timeout: 20)
+
+        self.verifyDatabaseMocks()
+    }
+
+    func testJoinWithInheritanceKeyLeaveAndJoinAgain() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        OctagonSetSOSFeatureEnabled(false)
+        self.startCKAccountStatusMock()
+
+        let establishContextID = "establish-context-id"
+        let establishContext = self.createEstablishContext(contextID: establishContextID)
+
+        establishContext.startOctagonStateMachine()
+        XCTAssertNoThrow(try establishContext.setCDPEnabled())
+        self.assertEnters(context: establishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        let clique: OTClique
+        let bottlerotcliqueContext = OTConfigurationContext()
+        bottlerotcliqueContext.context = establishContextID
+        bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit2.primaryAltDSID())
+        bottlerotcliqueContext.otControl = self.otControl
+        do {
+            clique = try OTClique.newFriends(withContextData: bottlerotcliqueContext, resetReason: .testGenerated)
+            XCTAssertNotNil(clique, "Clique should not be nil")
+            XCTAssertNotNil(clique.cliqueMemberIdentifier, "Should have a member identifier after a clique newFriends call")
+        } catch {
+            XCTFail("Shouldn't have errored making new friends: \(error)")
+            throw error
+        }
+
+        self.assertEnters(context: establishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+        self.assertConsidersSelfTrusted(context: establishContext)
+
+        // Fake that this peer also created some TLKShares for itself
+        self.putFakeKeyHierarchiesInCloudKit()
+        try self.putSelfTLKSharesInCloudKit(context: establishContext)
+        self.assertSelfTLKSharesInCloudKit(context: establishContext)
+
+        OctagonSetSOSFeatureEnabled(true)
+
+        let (otirk, irk) = try self.createAndSetInheritanceKey(context: establishContext)
+        XCTAssertNotNil(otirk, "otirk should not be nil")
+        XCTAssertNotNil(irk, "irk should not be nil")
+
+        // Remove the IK
+        let removeInheritanceKeyExpectation = self.expectation(description: "removeInheritanceKey returns")
+        self.manager.removeInheritanceKey(OTControlArguments(configuration: bottlerotcliqueContext), uuid: otirk.uuid) { error in
+            XCTAssertNil(error, "error should be nil")
+            removeInheritanceKeyExpectation.fulfill()
+        }
+        self.wait(for: [removeInheritanceKeyExpectation], timeout: 20)
+
+        // now re-create
+        let (otirk2, irk2) = try self.createAndSetInheritanceKey(context: establishContext)
+        XCTAssertNotNil(otirk2, "otirk should not be nil")
+        XCTAssertNotNil(irk2, "irk should not be nil")
     }
 }
 #endif

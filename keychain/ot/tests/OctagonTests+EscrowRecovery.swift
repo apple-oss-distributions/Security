@@ -13,10 +13,11 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let bottlerContext = self.makeInitiatorContext(contextID: initiatorContextID)
 
         bottlerContext.startOctagonStateMachine()
-        let ckacctinfo = CKAccountInfo()
-        ckacctinfo.accountStatus = .available
-        ckacctinfo.hasValidCredentials = true
-        ckacctinfo.accountPartition = .production
+        let fakeAccount = FakeCKAccountInfo()
+        fakeAccount.accountStatus = .available
+        fakeAccount.hasValidCredentials = true
+        fakeAccount.accountPartition = .production
+        let ckacctinfo = unsafeBitCast(fakeAccount, to: CKAccountInfo.self)
 
         bottlerContext.cloudkitAccountStateChange(nil, to: ckacctinfo)
         XCTAssertNoThrow(try bottlerContext.setCDPEnabled())
@@ -25,7 +26,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = initiatorContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -57,7 +57,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
 
         // Before you call joinWithBottle, you need to call fetchViableBottles.
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchViableExpectation.fulfill()
@@ -153,10 +153,11 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let bottlerContext = self.makeInitiatorContext(contextID: initiatorContextID)
 
         bottlerContext.startOctagonStateMachine()
-        let ckacctinfo = CKAccountInfo()
-        ckacctinfo.accountStatus = .available
-        ckacctinfo.hasValidCredentials = true
-        ckacctinfo.accountPartition = .production
+        let fakeAccount = FakeCKAccountInfo()
+        fakeAccount.accountStatus = .available
+        fakeAccount.hasValidCredentials = true
+        fakeAccount.accountPartition = .production
+        let ckacctinfo = unsafeBitCast(fakeAccount, to: CKAccountInfo.self)
 
         bottlerContext.cloudkitAccountStateChange(nil, to: ckacctinfo)
         XCTAssertNoThrow(try bottlerContext.setCDPEnabled())
@@ -165,7 +166,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = initiatorContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -199,7 +199,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
 
         // Before you call joinWithBottle, you need to call fetchViableBottles.
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchViableExpectation.fulfill()
@@ -442,13 +442,13 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
                                                     accountsAdapter: self.mockAuthKit2,
                                                     authKitAdapter: self.mockAuthKit2,
                                                     tooManyPeersAdapter: self.mockTooManyPeers,
+                                                    tapToRadarAdapter: self.mockTapToRadar,
                                                     lockStateTracker: self.lockStateTracker,
                                                     deviceInformationAdapter: self.makeInitiatorDeviceInfoAdapter())
 
         initiatorContext.startOctagonStateMachine()
         let newOTCliqueContext = OTConfigurationContext()
         newOTCliqueContext.context = "restoreContext"
-        newOTCliqueContext.dsid = self.otcliqueContext.dsid
         newOTCliqueContext.altDSID = self.otcliqueContext.altDSID
         newOTCliqueContext.otControl = self.otcliqueContext.otControl
         newOTCliqueContext.sbd = OTMockSecureBackup(bottleID: bottle.bottleID, entropy: entropy!)
@@ -517,13 +517,13 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
                                                     accountsAdapter: self.mockAuthKit2,
                                                     authKitAdapter: self.mockAuthKit2,
                                                     tooManyPeersAdapter: self.mockTooManyPeers,
+                                                    tapToRadarAdapter: self.mockTapToRadar,
                                                     lockStateTracker: self.lockStateTracker,
                                                     deviceInformationAdapter: self.makeInitiatorDeviceInfoAdapter())
 
         initiatorContext.startOctagonStateMachine()
         let newOTCliqueContext = OTConfigurationContext()
         newOTCliqueContext.context = "restoreContext"
-        newOTCliqueContext.dsid = self.otcliqueContext.dsid
         newOTCliqueContext.altDSID = self.otcliqueContext.altDSID
         newOTCliqueContext.otControl = self.otcliqueContext.otControl
         newOTCliqueContext.sbd = OTMockSecureBackup(bottleID: bottledID, entropy: entropy)
@@ -862,7 +862,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
 
         let bNewOTCliqueContext = OTConfigurationContext()
         bNewOTCliqueContext.context = "restoreB"
-        bNewOTCliqueContext.dsid = self.otcliqueContext.dsid
         bNewOTCliqueContext.altDSID = self.otcliqueContext.altDSID
         bNewOTCliqueContext.otControl = self.otcliqueContext.otControl
         bNewOTCliqueContext.sbd = OTMockSecureBackup(bottleID: bottle.bottleID, entropy: entropy!)
@@ -877,6 +876,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
                                                    accountsAdapter: deviceBmockAuthKit,
                                                    authKitAdapter: deviceBmockAuthKit,
                                                    tooManyPeersAdapter: self.mockTooManyPeers,
+                                                   tapToRadarAdapter: self.mockTapToRadar,
                                                    lockStateTracker: self.lockStateTracker,
                                                    deviceInformationAdapter: self.makeInitiatorDeviceInfoAdapter())
         bRestoreContext.startOctagonStateMachine()
@@ -901,13 +901,13 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
                                                   accountsAdapter: restoremockAuthKit,
                                                   authKitAdapter: restoremockAuthKit,
                                                   tooManyPeersAdapter: self.mockTooManyPeers,
+                                                  tapToRadarAdapter: self.mockTapToRadar,
                                                   lockStateTracker: self.lockStateTracker,
                                                   deviceInformationAdapter: self.makeInitiatorDeviceInfoAdapter())
 
         restoreContext.startOctagonStateMachine()
         let newOTCliqueContext = OTConfigurationContext()
         newOTCliqueContext.context = "restoreContext"
-        newOTCliqueContext.dsid = self.otcliqueContext.dsid
         newOTCliqueContext.altDSID = self.otcliqueContext.altDSID
         newOTCliqueContext.otControl = self.otcliqueContext.otControl
         newOTCliqueContext.sbd = OTMockSecureBackup(bottleID: bottle.bottleID, entropy: entropy!)
@@ -969,10 +969,11 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let bottlerContext = self.makeInitiatorContext(contextID: initiatorContextID)
 
         bottlerContext.startOctagonStateMachine()
-        let ckacctinfo = CKAccountInfo()
-        ckacctinfo.accountStatus = .available
-        ckacctinfo.hasValidCredentials = true
-        ckacctinfo.accountPartition = .production
+        let fakeAccount = FakeCKAccountInfo()
+        fakeAccount.accountStatus = .available
+        fakeAccount.hasValidCredentials = true
+        fakeAccount.accountPartition = .production
+        let ckacctinfo = unsafeBitCast(fakeAccount, to: CKAccountInfo.self)
 
         bottlerContext.cloudkitAccountStateChange(nil, to: ckacctinfo)
         XCTAssertNoThrow(try bottlerContext.setCDPEnabled())
@@ -981,7 +982,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = initiatorContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1051,7 +1051,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         }
         let FetchAllViableBottles = self.expectation(description: "FetchAllViableBottles callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             XCTAssertEqual(viable?.count, 2, "There should be 2 bottles")
@@ -1064,7 +1064,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         self.wait(for: [fetchUnCachedViableBottlesExpectation], timeout: 10)
 
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchViableExpectation.fulfill()
@@ -1082,7 +1082,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         }
         let fetchExpectation = self.expectation(description: "fetchExpectation callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchExpectation.fulfill()
@@ -1096,10 +1096,11 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let bottlerContext = self.makeInitiatorContext(contextID: initiatorContextID)
 
         bottlerContext.startOctagonStateMachine()
-        let ckacctinfo = CKAccountInfo()
-        ckacctinfo.accountStatus = .available
-        ckacctinfo.hasValidCredentials = true
-        ckacctinfo.accountPartition = .production
+        let fakeAccount = FakeCKAccountInfo()
+        fakeAccount.accountStatus = .available
+        fakeAccount.hasValidCredentials = true
+        fakeAccount.accountPartition = .production
+        let ckacctinfo = unsafeBitCast(fakeAccount, to: CKAccountInfo.self)
 
         bottlerContext.cloudkitAccountStateChange(nil, to: ckacctinfo)
         XCTAssertNoThrow(try bottlerContext.setCDPEnabled())
@@ -1108,7 +1109,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = initiatorContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1174,7 +1174,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         }
         let FetchAllViableBottles = self.expectation(description: "FetchAllViableBottles callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             FetchAllViableBottles.fulfill()
@@ -1183,7 +1183,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         self.wait(for: [fetchUnCachedViableBottlesExpectation], timeout: 10)
 
         let fetchViableExpectation = self.expectation(description: "fetchViableBottles callback occurs")
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchViableExpectation.fulfill()
@@ -1201,7 +1201,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         }
         let fetchExpectation = self.expectation(description: "fetchExpectation callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             fetchExpectation.fulfill()
@@ -1215,10 +1215,11 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let bottlerContext = self.makeInitiatorContext(contextID: initiatorContextID)
 
         bottlerContext.startOctagonStateMachine()
-        let ckacctinfo = CKAccountInfo()
-        ckacctinfo.accountStatus = .available
-        ckacctinfo.hasValidCredentials = true
-        ckacctinfo.accountPartition = .production
+        let fakeAccount = FakeCKAccountInfo()
+        fakeAccount.accountStatus = .available
+        fakeAccount.hasValidCredentials = true
+        fakeAccount.accountPartition = .production
+        let ckacctinfo = unsafeBitCast(fakeAccount, to: CKAccountInfo.self)
 
         bottlerContext.cloudkitAccountStateChange(nil, to: ckacctinfo)
         XCTAssertNoThrow(try bottlerContext.setCDPEnabled())
@@ -1227,7 +1228,6 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         let clique: OTClique
         let bottlerotcliqueContext = OTConfigurationContext()
         bottlerotcliqueContext.context = initiatorContextID
-        bottlerotcliqueContext.dsid = "1234"
         bottlerotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         bottlerotcliqueContext.otControl = self.otControl
         do {
@@ -1306,7 +1306,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
         self.fakeCuttlefishServer.fetchViableBottlesDontReturnBottleWithID = bottleToExclude
         var FetchAllViableBottles = self.expectation(description: "FetchAllViableBottles callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             FetchAllViableBottles.fulfill()
@@ -1328,7 +1328,7 @@ class OctagonEscrowRecoveryTests: OctagonTestsBase {
 
         FetchAllViableBottles = self.expectation(description: "FetchAllViableBottles callback occurs")
 
-        self.cuttlefishContext.rpcFetchAllViableBottles { viable, _, error in
+        self.cuttlefishContext.rpcFetchAllViableBottles(from: .default) { viable, _, error in
             XCTAssertNil(error, "should be no error fetching viable bottles")
             XCTAssert(viable?.contains(bottle.bottleID) ?? false, "The bottle we're about to restore should be viable")
             FetchAllViableBottles.fulfill()

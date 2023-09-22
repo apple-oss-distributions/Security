@@ -162,6 +162,13 @@ void sync_the_last_data_to_kvs(CFTypeRef account, bool waitForeverForSynchroniza
 bool SOSCCMessageFromPeerIsPending_Server(SOSPeerInfoRef peer, CFErrorRef *error);
 bool SOSCCSendToPeerIsPending_Server(SOSPeerInfoRef peer, CFErrorRef *error);
 
+// SOS compatibility mode
+bool SOSCCSetCompatibilityMode_Server(bool compatibilityMode, CFErrorRef *error);
+bool SOSCCFetchCompatibilityMode_Server(CFErrorRef *error);
+bool SOSCCFetchCompatibilityModeCachedValue_Server(CFErrorRef *error);
+bool SOSCCIsSOSTrustAndSyncingEnabled_Server(void);
+bool SOSCompatibilityModeGetCachedStatus(void);
+
 void SOSCCPerformWithOctagonSigningKey(void (^action)(SecKeyRef octagonPrivKey, CFErrorRef error));
 void SOSCCPerformWithOctagonSigningPublicKey(void (^action)(SecKeyRef octagonPublicKey, CFErrorRef error));
 void SOSCCPerformWithOctagonEncryptionKey(void (^action)(SecKeyRef octagonPrivEncryptionKey, CFErrorRef error));
@@ -172,6 +179,7 @@ void SOSCCPerformWithPeerID(void (^action)(CFStringRef peerID, CFErrorRef error)
 void SOSCCPerformUpdateOfAllOctagonKeys(CFDataRef octagonSigningFullKey, CFDataRef octagonEncryptionFullKey,
                                         CFDataRef signingPublicKey, CFDataRef encryptionPublicKey,
                                         SecKeyRef octagonSigningPublicKeyRef, SecKeyRef octagonEncryptionPublicKeyRef,
+                                        SecKeyRef octagonSigningFullKeyRef, SecKeyRef octagonEncryptionFullKeyRef,
                                         void (^action)(CFErrorRef error));
 void SOSCCPerformPreloadOfAllOctagonKeys(CFDataRef octagonSigningFullKey, CFDataRef octagonEncryptionFullKey,
                                          SecKeyRef octagonSigningFullKeyRef, SecKeyRef octagonEncryptionFullKeyRef,
@@ -187,6 +195,9 @@ void SOSCCPeerRateLimiterSendNextMessage_Server(CFStringRef peerid, CFStringRef 
 bool SOSCCSaveOctagonKeysToKeychain(NSString* keyLabel, NSData* keyDataToSave, __unused int keySize, SecKeyRef octagonPublicKey, NSError** error);
 void SOSCCEnsureAccessGroupOfKey(SecKeyRef publicKey, NSString* oldAgrp, NSString* newAgrp);
 #endif
+
+// for secdtests
+void enableSOSCompatibilityForTests(void);
 
 __END_DECLS
 

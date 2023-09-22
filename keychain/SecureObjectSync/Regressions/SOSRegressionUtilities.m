@@ -356,14 +356,14 @@ SOSFullPeerInfoRef SOSCreateFullPeerInfoFromName(CFStringRef name,
         require(outOctagonEncryptionKey, exit);
         *outOctagonEncryptionKey = GeneratePermanentFullECKey(384, name, error);
         require(*outOctagonEncryptionKey, exit);
-        result = SOSFullPeerInfoCreate(NULL, gestalt,
+        result = SOSFullPeerInfoCreate(NULL, gestalt, name,
                                        NULL,
                                        *outSigningKey,
                                        *outOctagonSigningKey,
                                        *outOctagonEncryptionKey,
                                        error);
     } else {
-        result = SOSFullPeerInfoCreate(NULL, gestalt,
+        result = SOSFullPeerInfoCreate(NULL, gestalt, name,
                                    NULL,
                                    *outSigningKey,
                                    NULL,
@@ -578,8 +578,8 @@ CFStringRef SOSModelFromType(SOSPeerInfoDeviceClass cls) {
         case SOSPeerInfo_macOS: return CFSTR("Mac Pro");
         case SOSPeerInfo_iOS: return CFSTR("iPhone");
         case SOSPeerInfo_iCloud: return CFSTR("iCloud");
-        case SOSPeerInfo_watchOS: return CFSTR("needWatchOSDeviceName");
-        case SOSPeerInfo_tvOS: return CFSTR("needTVOSDeviceName");
+        case SOSPeerInfo_watchOS: return CFSTR("WatchName");
+        case SOSPeerInfo_tvOS: return CFSTR("AppleTVName");
         default: return CFSTR("GENERICOSTHING");
     }
 }

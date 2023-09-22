@@ -9,6 +9,14 @@ import CloudKitCode
 import Foundation
 import InternalSwiftProtobuf
 
+public class FakeManagedConfiguration: OTManagedConfigurationAdapter {
+    var keychainAllowed = true
+
+    public func isCloudKeychainSyncAllowed() -> Bool {
+        return keychainAllowed
+    }
+}
+
 enum FakeCuttlefishOpinion {
     case trusts
     case trustsByPreapproval
@@ -186,6 +194,7 @@ extension TLKShare {
 }
 
 class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
+
     // FakeCuttlefishServer will handle all callers (TODO: split apart)
     func configuredFor(user: TPSpecificUser) -> Bool {
         return true
@@ -197,6 +206,7 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
         var recoveryEncryptionPubKey: Data?
         var bottles: [Bottle] = []
         var escrowRecords: [EscrowInformation] = []
+        var custodianRecoveryKeys: [String:SignedCustodianRecoveryKey] = [:]
 
         var viewKeys: [CKRecordZone.ID: ViewKeys] = [:]
         var tlkShares: [CKRecordZone.ID: [TLKShare]] = [:]
@@ -226,6 +236,9 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
                 }
             }
 
+            if self.recoverySigningPubKey != nil && self.recoveryEncryptionPubKey != nil {
+                model.setRecoveryKeys(TPRecoveryKeyPair(signingKeyData: self.recoverySigningPubKey!, encryptionKeyData: self.recoveryEncryptionPubKey!))
+            }
             return model
         }
     }
@@ -269,6 +282,7 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
     var fetchViableBottlesListener: ((FetchViableBottlesRequest) -> NSError?)?
     var resetListener: ((ResetRequest) -> NSError?)?
     var setRecoveryKeyListener: ((SetRecoveryKeyRequest) -> NSError?)?
+    var removeRecoveryKeyListener: ((RemoveRecoveryKeyRequest) -> NSError?)?
 
     // Any policies in here will be returned by FetchPolicy before any inbuilt policies
     var policyOverlay: [TPPolicyDocument] = []
@@ -718,6 +732,30 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
                 completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeers)))
                 return
             }
+
+            if self.state.recoverySigningPubKey != nil && self.state.recoveryEncryptionPubKey != nil {
+                if let recoverySigningPubKey = self.state.recoverySigningPubKey {
+                    if !model.isRecoveryKeyExcluded(recoverySigningPubKey) {
+                        // if the RK hasn't been explicitly excluded, ensure the resulting model has one trusted peer left
+                        guard model.allTrustedPeersWithCurrentRecoveryKey().isEmpty == false else {
+                            completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeersWithRecoveryKey)))
+                            return
+                        }
+                    }
+                }
+            }
+
+            if self.state.custodianRecoveryKeys.isEmpty == false && peer.hasCustodianRecoveryKeyAndSig{
+                for peerID in self.state.custodianRecoveryKeys.keys {
+                    if model.isCustodianRecoveryKeyTrusted(peerID) == false {
+                        guard model.untrustedPeerIDs().contains(peerID) else {
+                            completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphNotFullyReachable)))
+                            return
+                        }
+                    }
+                }
+            }
+
         } catch {
             print("FakeCuttlefish: updateTrust failed to make model: ", String(describing: error))
         }
@@ -816,6 +854,8 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
         self.state.peersByID[request.peer.peerID] = request.peer
         self.state.peersByID[request.peerID] = peer
 
+        self.state.custodianRecoveryKeys[request.peer.peerID] = request.peer.custodianRecoveryKeyAndSig
+
         var keyRecords: [CKRecord] = []
         // keyRecords.append(contentsOf: store(viewKeys: request.viewKeys))
         keyRecords.append(contentsOf: store(tlkShares: request.tlkShares))
@@ -894,7 +934,7 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
         if self.injectLegacyEscrowRecords {
             print("FakeCuttlefish: fetchViableBottles injecting legacy records")
             let record = EscrowInformation.with {
-                $0.label = "fake-label"
+                $0.label = "com.apple.icdp.record.fake-label"
             }
             legacy.append(record)
         }
@@ -985,12 +1025,6 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
         return assertion.check(peer: self.state.peersByID[assertion.peer], target: self.state.peersByID[assertion.target])
     }
 
-    func validatePeers(_ request: ValidatePeersRequest, completion: @escaping (Result<ValidatePeersResponse, Error>) -> Void) {
-        var response = ValidatePeersResponse()
-        response.validatorsHealth = 0.0
-        response.results = []
-        completion(.success(response))
-    }
     func reportHealth(_ request: ReportHealthRequest, completion: @escaping (Result<ReportHealthResponse, Error>) -> Void) {
         completion(.success(ReportHealthResponse()))
     }
@@ -1059,7 +1093,40 @@ class FakeCuttlefishServer: ConfiguredCuttlefishAPIAsync {
     func fetchSosiCloudIdentity(_ request: FetchSOSiCloudIdentityRequest, completion: @escaping (Result<FetchSOSiCloudIdentityResponse, Error>) -> Void) {
         completion(.success(FetchSOSiCloudIdentityResponse()))
     }
+
     func resetAccountCdpcontents(_ request: ResetAccountCDPContentsRequest, completion: @escaping (Result<ResetAccountCDPContentsResponse, Error>) -> Void) {
         completion(.success(ResetAccountCDPContentsResponse()))
+    }
+
+    func removeRecoveryKey(_ request: RemoveRecoveryKeyRequest, completion: @escaping (Result<RemoveRecoveryKeyResponse, Error>) -> Void) {
+
+        print("FakeCuttlefish: removeRecoveryKey called")
+
+        if let removeRecoveryKeyListener = self.removeRecoveryKeyListener {
+            let possibleError = removeRecoveryKeyListener(request)
+            guard possibleError == nil else {
+                completion(.failure(possibleError!))
+                return
+            }
+        }
+
+        guard let snapshot = self.snapshotsByChangeToken[request.changeToken] else {
+            completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .changeTokenExpired)))
+            return
+        }
+        self.state.recoverySigningPubKey = nil
+        self.state.recoveryEncryptionPubKey = nil
+        self.state.peersByID[request.peerID]?.stableInfoAndSig = request.stableInfoAndSig
+        self.state.peersByID[request.peerID]?.dynamicInfoAndSig = request.dynamicInfoAndSig
+
+        self.makeSnapshot()
+        completion(.success(RemoveRecoveryKeyResponse.with {
+            $0.changes = self.changesSince(snapshot: snapshot)
+        }))
+        self.pushNotify("removeRecoveryKey")
+    }
+
+    func performAtoprvactions(_ request: PerformATOPRVActionsRequest, completion: @escaping (Result<PerformATOPRVActionsResponse, Error>) -> Void) {
+        completion(.success(PerformATOPRVActionsResponse()))
     }
 }

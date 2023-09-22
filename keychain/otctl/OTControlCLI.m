@@ -15,6 +15,7 @@
 #import "keychain/ot/OT.h"
 #import "keychain/ot/OTConstants.h"
 #import "keychain/ot/OTControl.h"
+#import "keychain/ot/proto/generated_source/OTAccountMetadataClassC.h"
 
 #import "keychain/otctl/OTControlCLI.h"
 
@@ -27,6 +28,8 @@
 #import <AuthKit/AKAppleIDAuthenticationContext_Private.h>
 
 #import <AppleFeatures/AppleFeatures.h>
+
+#include <Security/OTClique+Private.h>
 
 static NSString * fetch_pet(NSString * appleID, NSString * dsid)
 {
@@ -219,7 +222,7 @@ static void print_json(NSDictionary* dict)
 #endif
 }
 
-- (int)resetOctagon:(OTControlArguments*)arguments timeout:(NSTimeInterval)timeout {
+- (int)resetOctagon:(OTControlArguments*)arguments idmsTargetContext:(NSString*_Nullable)idmsTargetContext idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword notifyIdMS:(bool)notifyIdMS timeout:(NSTimeInterval)timeout {
 #if OCTAGON
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
@@ -229,6 +232,10 @@ static void print_json(NSDictionary* dict)
         retry = false;
         [self.control resetAndEstablish:arguments
                             resetReason:CuttlefishResetReasonUserInitiatedReset
+                      idmsTargetContext:idmsTargetContext
+                 idmsCuttlefishPassword:idmsCuttlefishPassword
+                             notifyIdMS:notifyIdMS
+                        accountSettings:nil
                                   reply:^(NSError* _Nullable error) {
             if(error) {
                 fprintf(stderr, "Error resetting: %s\n", [[error description] UTF8String]);
@@ -253,6 +260,9 @@ static void print_json(NSDictionary* dict)
 - (int)resetProtectedData:(OTControlArguments*)arguments
                   appleID:(NSString *_Nullable)appleID
                      dsid:(NSString *_Nullable)dsid
+        idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+   idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+               notifyIdMS:(bool)notifyIdMS
 {
 #if OCTAGON
     __block int ret = 1;
@@ -265,7 +275,7 @@ static void print_json(NSDictionary* dict)
     data.context = arguments.contextID;
     data.containerName = arguments.containerName;
 
-    OTClique* clique = [OTClique resetProtectedData:data error:&error];
+    OTClique* clique = [OTClique resetProtectedData:data idmsTargetContext:idmsTargetContext idmsCuttlefishPassword:idmsCuttlefishPassword notifyIdMS:notifyIdMS error:&error];
     if(clique != nil && error == nil) {
         printf("resetProtectedData succeeded\n");
         ret = 0;
@@ -344,7 +354,13 @@ informationOnPeers:(NSDictionary<NSString *, NSDictionary*>*)informationOnPeers
         ret = 0;
         NSMutableArray<NSString *>* escrowRecords = [NSMutableArray array];
         for(OTEscrowRecord* record in records){
-            SOSPeerInfoRef peer = SOSPeerInfoCreateFromData(kCFAllocatorDefault, NULL, (__bridge CFDataRef)record.escrowInformationMetadata.peerInfo);
+            CFErrorRef cfError = NULL;
+            SOSPeerInfoRef peer = SOSPeerInfoCreateFromData(kCFAllocatorDefault, &cfError, (__bridge CFDataRef)record.escrowInformationMetadata.peerInfo);
+            if (peer == NULL) {
+                NSError* nsError = (__bridge_transfer NSError*)cfError;
+                fprintf(stderr, "Failed SOSPeerInfoCreateFromData: %s\n", nsError.description.UTF8String);
+                continue;
+            }
             CFStringRef peerID = SOSPeerInfoGetPeerID(peer);
             [escrowRecords addObject:(__bridge NSString *)peerID];
         }
@@ -431,8 +447,14 @@ informationOnPeers:(NSDictionary<NSString *, NSDictionary*>*)informationOnPeers
     OTEscrowRecord* record = nil;
     
     for (OTEscrowRecord* r in escrowRecords) {
-        CFErrorRef* localError = NULL;
-        SOSPeerInfoRef peer = SOSPeerInfoCreateFromData(kCFAllocatorDefault, localError, (__bridge CFDataRef)r.escrowInformationMetadata.peerInfo);
+        CFErrorRef cfError = NULL;
+        SOSPeerInfoRef peer = SOSPeerInfoCreateFromData(kCFAllocatorDefault, &cfError, (__bridge CFDataRef)r.escrowInformationMetadata.peerInfo);
+        if (peer == NULL) {
+            NSError* nsError = (__bridge_transfer NSError*)cfError;
+            fprintf(stderr, "Failed SOSPeerInfoCreateFromData: %s\n", nsError.description.UTF8String);
+            continue;
+        }
+
         CFStringRef peerID = SOSPeerInfoGetPeerID(peer);
         
         if ([(__bridge NSString *)peerID isEqualToString:recordID]) {
@@ -734,12 +756,14 @@ informationOnPeers:(NSDictionary<NSString *, NSDictionary*>*)informationOnPeers
 
 - (int)healthCheck:(OTControlArguments*)arguments
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
+            repair:(BOOL)repair
 {
 #if OCTAGON
     __block int ret = 1;
 
     [self.control healthCheck:arguments
         skipRateLimitingCheck:skipRateLimitingCheck
+                       repair:repair
                         reply:^(NSError* _Nullable error) {
         if(error) {
             fprintf(stderr, "Error checking health: %s\n", [[error description] UTF8String]);
@@ -843,14 +867,14 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 #endif
 }
 
-- (int)resetAccountCDPContentsWithArguments:(OTControlArguments*)arguments
+- (int)resetAccountCDPContentsWithArguments:(OTControlArguments*)arguments idmsTargetContext:(NSString*_Nullable)idmsTargetContext idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword notifyIdMS:(bool)notifyIdMS 
 {
     __block int ret = 1;
 
 #if OCTAGON
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
-    [self.control resetAccountCDPContents:arguments reply:^(NSError * _Nullable error) {
+    [self.control resetAccountCDPContents:arguments idmsTargetContext:idmsTargetContext idmsCuttlefishPassword:idmsCuttlefishPassword notifyIdMS:notifyIdMS reply:^(NSError * _Nullable error) {
         if(error) {
             fprintf(stderr, "Error resetting account cdp content: %s\n", [[error description] UTF8String]);
         } else {
@@ -873,17 +897,27 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 }
 
 - (int)createCustodianRecoveryKeyWithArguments:(OTControlArguments*)arguments
+                                    uuidString:(NSString*_Nullable)uuidString
                                           json:(bool)json
                                        timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSUUID *uuid = nil;
+    if (uuidString != nil) {
+        uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+        if (uuid == nil) {
+            fprintf(stderr, "bad format for custodianUUID\n");
+            return 1;
+        }
+    }
+
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
     __block bool retry;
     do {
         retry = false;
         [self.control createCustodianRecoveryKey:arguments
-                                            uuid:nil
+                                            uuid:uuid
                                            reply:^(OTCustodianRecoveryKey *_Nullable crk, NSError *_Nullable error) {
             if (error) {
                 fprintf(stderr, "createCustodianRecoveryKey failed: %s\n", [[error description] UTF8String]);
@@ -1078,18 +1112,119 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 #endif
 }
 
+- (int)checkCustodianRecoveryKeyWithArguments:(OTControlArguments*)arguments
+                                   uuidString:(NSString*)uuidString
+                                      timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+
+    NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+    if (uuid == nil) {
+        fprintf(stderr, "bad format for custodianUUID\n");
+        return 1;
+    }
+    do {
+        retry = false;
+        [self.control checkCustodianRecoveryKey:arguments
+                                           uuid:uuid
+                                          reply:^(bool exists, NSError* _Nullable error) {
+            if (error) {
+                fprintf(stderr, "checking custodian recovery key failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successful check of custodian recovery key: %s\n", exists ? "exists" : "does not exist");
+                if (exists) {
+                    ret = 0;
+                } else {
+                    ret = 1;
+                }
+            }
+        }];
+    } while (retry);
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)removeRecoveryKeyWithArguments:(OTControlArguments*)arguments
+{
+#if OCTAGON
+    __block int ret = 1;
+
+    [self.control removeRecoveryKey:arguments
+                              reply:^(NSError* _Nullable error) {
+        if (error) {
+            fprintf(stderr, "remove recovery key failed: %s\n", [[error description] UTF8String]);
+        } else {
+            printf("successful removal of recovery key\n");
+            ret = 0;
+        }
+    }];
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)setRecoveryKeyWithArguments:(OTControlArguments*)arguments
+{
+#if OCTAGON
+    __block int ret = 1;
+    
+    NSError* rkError = nil;
+    NSString* recoveryKey = SecRKCreateRecoveryKeyString(&rkError);
+    
+    if (!recoveryKey || rkError) {
+        fprintf(stderr, "failed to create recovery key: %s\n", [[rkError description] UTF8String]);
+        return ret;
+    }
+    
+    [self.control createRecoveryKey:arguments recoveryKey:recoveryKey reply:^(NSError* error) {
+        if (error) {
+            fprintf(stderr, "set recovery key failed: %s\n", [[error description] UTF8String]);
+        } else {
+            printf("successfully registered recovery key %s, in octagon\n", [recoveryKey UTF8String]);
+            ret = 0;
+        }
+    }];
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
 - (int)createInheritanceKeyWithArguments:(OTControlArguments*)arguments
+                              uuidString:(NSString*_Nullable)uuidString
                                     json:(bool)json
                                  timeout:(NSTimeInterval)timeout
 {
 #if OCTAGON
+    NSUUID *uuid = nil;
+    if (uuidString != nil) {
+        uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+        if (uuid == nil) {
+            fprintf(stderr, "bad format for inheritanceUUID\n");
+            return 1;
+        }
+    }
+
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
     __block int ret = 1;
     __block bool retry;
     do {
         retry = false;
         [self.control createInheritanceKey:arguments
-                                      uuid:nil
+                                      uuid:uuid
                                      reply:^(OTInheritanceKey *_Nullable ik, NSError *_Nullable error) {
             if (error) {
                 fprintf(stderr, "createInheritanceKey failed: %s\n", [[error description] UTF8String]);
@@ -1423,6 +1558,270 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 #endif
 }
 
+- (int)checkInheritanceKeyWithArguments:(OTControlArguments*)arguments
+                             uuidString:(NSString*)uuidString
+                                timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+
+    NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+    if (uuid == nil) {
+        fprintf(stderr, "bad format for inheritanceUUID\n");
+        return 1;
+    }
+    do {
+        retry = false;
+        [self.control checkInheritanceKey:arguments
+                                     uuid:uuid
+                                    reply:^(bool exists, NSError* _Nullable error) {
+            if (error) {
+                fprintf(stderr, "checking inheritance key failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successful check of inheritance key: %s\n", exists ? "exists" : "does not exist");
+                if (exists) {
+                    ret = 0;
+                } else {
+                    ret = 1;
+                }
+            }
+        }];
+    } while (retry);
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)disableWebAccessWithArguments:(OTControlArguments*)arguments
+                             timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+    
+    OTAccountSettings* settings = [[OTAccountSettings alloc] init];
+    OTWebAccess* webAccess = [[OTWebAccess alloc] init];
+    webAccess.enabled = false;
+    settings.webAccess = webAccess;
+
+    do {
+        retry = false;
+
+        [self.control setAccountSetting:arguments setting:settings reply:^(NSError * _Nullable error) {
+            if (error) {
+                fprintf(stderr, "disabling webAccess failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successfully disabled webAccess\n");
+                ret = 0;
+            }
+        }];
+    } while(retry);
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)enableWebAccessWithArguments:(OTControlArguments*)arguments
+                            timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+    
+    OTAccountSettings* settings = [[OTAccountSettings alloc] init];
+    OTWebAccess* webAccess = [[OTWebAccess alloc] init];
+    webAccess.enabled = true;
+    settings.webAccess = webAccess;
+
+    do {
+        retry = false;
+
+        [self.control setAccountSetting:arguments setting:settings reply:^(NSError * _Nullable error) {
+            if (error) {
+                fprintf(stderr, "enabling web access failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successfully enabled web access\n");
+                ret = 0;
+            }
+        }];
+    } while(retry);
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)enableWalrusWithArguments:(OTControlArguments*)arguments
+                         timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+    
+    OTAccountSettings* settings = [[OTAccountSettings alloc] init];
+    OTWalrus* walrus = [[OTWalrus alloc] init];
+    walrus.enabled = true;
+    settings.walrus = walrus;
+    
+    do {
+        retry = false;
+
+        [self.control setAccountSetting:arguments setting:settings reply:^(NSError * _Nullable error) {
+            if (error) {
+                fprintf(stderr, "enabling walrus failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successfully enabled walrus\n");
+                ret = 0;
+            }
+        }];
+    } while(retry);
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)disableWalrusWithArguments:(OTControlArguments*)arguments
+                          timeout:(NSTimeInterval)timeout
+{
+#if OCTAGON
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    __block int ret = 1;
+    __block bool retry;
+    
+    OTAccountSettings* settings = [[OTAccountSettings alloc] init];
+    OTWalrus* walrus = [[OTWalrus alloc] init];
+    walrus.enabled = false;
+    settings.walrus = walrus;
+
+    do {
+        retry = false;
+
+        [self.control setAccountSetting:arguments setting:settings reply:^(NSError * _Nullable error) {
+            if (error) {
+                fprintf(stderr, "disabling walrus failed: %s\n", [[error description] UTF8String]);
+                if ([deadline timeIntervalSinceNow] > 0 && [error isRetryable]) {
+                    retry = true;
+                    sleep([error retryInterval]);
+                }
+            } else {
+                printf("successfully disabled walrus\n");
+                ret = 0;
+            }
+        }];
+    } while(retry);
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)fetchAccountSettingsWithArguments:(OTControlArguments*)arguments
+                                    json:(bool)json
+{
+#if OCTAGON
+    __block int ret = 1;
+    
+    [self.control fetchAccountSettings:arguments reply:^(OTAccountSettings * _Nullable setting, NSError * _Nullable replyError) {
+        if (replyError) {
+            if(json) {
+                print_json(@{@"error" : [replyError description]});
+            } else {
+                fprintf(stderr, "Failed to fetch account settings: %s\n", [[replyError description] UTF8String]);
+            }
+        } else {
+            if(json) {
+                NSDictionary* result = @{@"walrus" : @(setting.walrus.enabled), @"webAccess" : @(setting.webAccess.enabled)};
+                print_json(result);
+            } else {
+                printf("successfully fetched account settings!\n");
+                printf("walrus enabled? %s\n", setting.walrus.enabled ?  [@"YES" UTF8String] : [@"NO" UTF8String]);
+                printf("web access enabled? %s\n", setting.webAccess.enabled ? [@"YES" UTF8String] : [@"NO" UTF8String]);
+            }
+            ret = 0;
+        }
+    }];
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)fetchAccountWideSettingsWithArguments:(OTControlArguments*)arguments
+                                  useDefault:(bool)useDefault
+                                  forceFetch:(bool)forceFetch
+                                        json:(bool)json
+{
+#if OCTAGON
+    __block int ret = 1;
+    
+    OTAccountSettings *setting = nil;
+    NSError* error = nil;
+
+    if (useDefault) {
+        setting = [OTClique fetchAccountWideSettingsDefaultWithForceFetch:forceFetch configuration:[arguments makeConfigurationContext] error:&error];
+    
+    } else {
+        setting = [OTClique fetchAccountWideSettingsWithForceFetch:forceFetch configuration:[arguments makeConfigurationContext] error:&error];
+    }
+    
+    if (error) {
+        if(json) {
+            print_json(@{@"error" : [error description]});
+        } else {
+            fprintf(stderr, "Failed to fetch account wide settings: %s\n", [[error description] UTF8String]);
+        }
+    } else {
+        if(json) {
+            NSDictionary* result = @{@"walrus" : @(setting.walrus.enabled), @"webAccess" : @(setting.webAccess.enabled)};
+            print_json(result);
+        } else {
+            printf("successfully fetched account wide settings!\n");
+            printf("walrus enabled? %s\n", setting.walrus.enabled ?  [@"YES" UTF8String] : [@"NO" UTF8String]);
+            printf("web access enabled? %s\n", setting.webAccess.enabled ? [@"YES" UTF8String] : [@"NO" UTF8String]);
+        }
+        ret = 0;
+    }
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
 
 - (int)setMachineIDOverride:(OTControlArguments*)arguments
                   machineID:(NSString*)machineID
@@ -1443,6 +1842,64 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
             ret = 0;
         }
     }];
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)printAccountMetadataWithArguments:(OTControlArguments*)arguments
+                                    json:(bool)json {
+#if OCTAGON
+    __block int ret = 1;
+    
+    [self.control getAccountMetadata:arguments reply:^(OTAccountMetadataClassC* metadata, NSError * _Nullable replyError) {
+        if (replyError) {
+            if(json) {
+                print_json(@{@"error" : [replyError description]});
+            } else {
+                fprintf(stderr, "Failed to fetch account metadata: %s\n", [[replyError description] UTF8String]);
+            }
+        } else {
+            NSDictionary *dict = [metadata dictionaryRepresentation];
+            if (json) {
+                print_json(dict);
+            } else {
+                printf("%s\n", [[dict description] UTF8String]);
+            }
+        }
+    }];
+    
+    return ret;
+#else
+    fprintf(stderr, "Unimplemented.\n");
+    return 1;
+#endif
+}
+
+- (int)reset:(OTControlArguments*)arguments appleID:(NSString * _Nullable)appleID dsid:(NSString *_Nullable)dsid
+{
+#if OCTAGON
+    __block int ret = 1;
+    
+    OTConfigurationContext *data = [[OTConfigurationContext alloc] init];
+    data.passwordEquivalentToken = fetch_pet(appleID, dsid);
+    data.authenticationAppleID = appleID;
+    data.altDSID = arguments.altDSID;
+    data.context = arguments.contextID;
+    data.containerName = arguments.containerName;
+
+    NSError* localError = nil;
+    BOOL result = [OTClique resetAcountData:data error:&localError];
+    if (localError || !result) {
+        fprintf(stderr, "Failed to wipe account data: %s\n", [[localError description] UTF8String]);
+    } else {
+        printf("Account data wiped.\n");
+        ret = 0;
+    }
+    
     
     return ret;
 #else

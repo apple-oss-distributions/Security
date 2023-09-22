@@ -7,14 +7,14 @@ extension Container {
     func preflightVouchWithRecoveryKey(recoveryKey: String,
                                        salt: String,
                                        reply: @escaping (String?, TPSyncingPolicy?, Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (String?, TPSyncingPolicy?, Error?) -> Void = {
             logger.info("preflightRecoveryKey complete: \(traceError($2), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0, $1, $2)
         }
 
-        self.fetchAndPersistChangesIfNeeded { fetchError in
+        self.fetchAndPersistChanges { fetchError in
             guard fetchError == nil else {
                 logger.info("preflightRecoveryKey unable to fetch current peers: \(String(describing: fetchError), privacy: .public)")
                 reply(nil, nil, fetchError)
@@ -56,7 +56,7 @@ extension Container {
                     do {
                         recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
                     } catch {
-                        logger.info("preflightRecoveryKey: failed to create recovery keys: \(String(describing: error), privacy: .public)")
+                        logger.error("preflightRecoveryKey: failed to create recovery keys: \(String(describing: error), privacy: .public)")
                         reply(nil, nil, ContainerError.failedToCreateRecoveryKey)
                         return
                     }
@@ -92,7 +92,7 @@ extension Container {
 
                         reply(recoveryKeys.peerKeys.peerID, syncingPolicy, nil)
                     } catch {
-                        logger.info("preflightRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
+                        logger.error("preflightRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
                         reply(nil, nil, error)
                         return
                     }
@@ -103,10 +103,10 @@ extension Container {
 
     func preflightVouchWithCustodianRecoveryKey(crk: TrustedPeersHelperCustodianRecoveryKey,
                                                 reply: @escaping (String?, TPSyncingPolicy?, Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (String?, TPSyncingPolicy?, Error?) -> Void = {
             logger.info("preflightCustodianRecoveryKey complete: \(traceError($2), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0, $1, $2)
         }
 
@@ -159,11 +159,17 @@ extension Container {
                         return
                     }
 
+                    guard let recoveryKeyString = crk.recoveryString, let recoverySalt = crk.salt else {
+                        logger.info("Bad format CRK: recovery string or salt not set")
+                        reply(nil, nil, ContainerError.custodianRecoveryKeyMalformed)
+                        return
+                    }
+
                     let crkRecoveryKey: CustodianRecoveryKey
                     do {
-                        crkRecoveryKey = try CustodianRecoveryKey(tpCustodian: tpcrk, recoveryKeyString: crk.recoveryString, recoverySalt: crk.salt)
+                        crkRecoveryKey = try CustodianRecoveryKey(tpCustodian: tpcrk, recoveryKeyString: recoveryKeyString, recoverySalt: recoverySalt)
                     } catch {
-                        logger.info("preflightCustodianRecoveryKey: failed to create custodian recovery keys: \(String(describing: error), privacy: .public)")
+                        logger.error("preflightCustodianRecoveryKey: failed to create custodian recovery keys: \(String(describing: error), privacy: .public)")
                         reply(nil, nil, ContainerError.failedToCreateRecoveryKey)
                         return
                     }
@@ -198,11 +204,59 @@ extension Container {
 
                         reply(crkRecoveryKey.peerKeys.peerID, syncingPolicy, nil)
                     } catch {
-                        logger.info("preflightCustodianRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
+                        logger.error("preflightCustodianRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
                         reply(nil, nil, error)
                         return
                     }
                 }
+            }
+        }
+    }
+
+    func preflightRecoverOctagonWithRecoveryKey(recoveryKey: String,
+                                                salt: String,
+                                                reply: @escaping (Bool, Error?) -> Void) {
+        let sem = self.grabSemaphore()
+        let reply: (Bool, Error?) -> Void = {
+            logger.info("preflightRecoverOctagonWithRecoveryKey complete: \(traceError($1), privacy: .public)")
+            sem.release()
+            reply($0, $1)
+        }
+
+        self.fetchAndPersistChanges { error in
+            guard error == nil else {
+                logger.error("preflightRecoverOctagonWithRecoveryKey unable to fetch changes: \(String(describing: error), privacy: .public)")
+                reply(false, error)
+                return
+            }
+
+            self.moc.performAndWait {
+
+                // inflate this RK
+                var recoveryKeys: RecoveryKey
+                do {
+                    recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+                } catch {
+                    logger.error("preflightRecoverOctagonWithRecoveryKey: failed to create recovery keys: \(String(describing: error), privacy: .public)")
+                    reply(false, ContainerError.failedToCreateRecoveryKey)
+                    return
+                }
+
+                // is a RK enrolled and trusted?
+                guard self.model.isRecoveryKeyEnrolled() else {
+                    logger.info("preflightRecoverOctagonWithRecoveryKey: recovery Key is not enrolled")
+                    reply(false, ContainerError.recoveryKeysNotEnrolled)
+                    return
+                }
+
+                // does this passed in recovery key match the enrolled one?
+                guard self.model.recoverySigningPublicKey() == recoveryKeys.peerKeys.publicSigningKey?.keyData && self.model.recoveryEncryptionPublicKey() == recoveryKeys.peerKeys.publicEncryptionKey?.keyData else {
+                    logger.info("preflightRecoverOctagonWithRecoveryKey: recovery Key is incorrect")
+                    reply(false, ContainerError.recoveryKeyIsNotCorrect)
+                    return
+                }
+
+                reply(true, nil)
             }
         }
     }

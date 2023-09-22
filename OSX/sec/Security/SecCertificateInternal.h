@@ -127,11 +127,19 @@ CFDictionaryRef SecCertificateCopyAttributeDictionary(
 SecCertificateRef SecCertificateCreateFromAttributeDictionary(
 	CFDictionaryRef refAttributes);
 
-/* Return a SecKeyRef for the public key embedded in the cert. */
+
+/*
+ * Both of these are hacks to support the Catalyst SPI surface
+ */
 #if TARGET_OS_OSX
+/* Return a SecKeyRef for the public key embedded in the cert. */
 SecKeyRef SecCertificateCopyPublicKey_ios(SecCertificateRef certificate)
     __OSX_DEPRECATED(__MAC_10_12, __MAC_10_14, "Use SecCertificateCopyKey instead.");
+
+CFDataRef SecCertificateCopySerialNumber_ios(SecCertificateRef certificate)
+    __OSX_DEPRECATED(__MAC_10_12, __MAC_10_14, "Use SecCertificateCopySerialNumberData instead.");
 #endif
+
 
 /* Return the SecCEBasicConstraints extension for this certificate if it
    has one. */
@@ -238,6 +246,7 @@ extern const CFStringRef kSecSignatureDigestAlgorithmSHA224;
 extern const CFStringRef kSecSignatureDigestAlgorithmSHA256;
 extern const CFStringRef kSecSignatureDigestAlgorithmSHA384;
 extern const CFStringRef kSecSignatureDigestAlgorithmSHA512;
+extern const CFStringRef kSecSignatureDigestAlgorithmSHAKE256;
 #endif
 
 bool SecCertificateIsWeakHash(SecCertificateRef certificate);

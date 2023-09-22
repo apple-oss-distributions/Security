@@ -85,6 +85,17 @@
 }
 @end
 
+static inline int indexOfSchemaPassingTest(bool (NS_NOESCAPE ^predicate)(const SecDbSchema *schema))
+{
+    int index = 0;
+    for (const SecDbSchema *const *schema = all_schemas(); *schema != NULL; schema++) {
+        if (predicate(*schema)) {
+            return index;
+        }
+        index++;
+    }
+    return -1;
+}
 
 @implementation secdmockaks
 
@@ -171,6 +182,8 @@
     
     OSStatus result = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
     XCTAssertEqual(result, 0, @"failed to add test key to keychain");
+    CFReleaseNull(ref);
+    CFReleaseNull(key);
 }
 
 - (void)createManyACLKeyItems
@@ -429,6 +442,62 @@
     XCTAssertEqual(result, 0, @"failed to find the data for the item we just added in the keychain");
     CFReleaseNull(foundItem);
     
+    result = SecItemDelete((__bridge CFDictionaryRef)dataQuery);
+    XCTAssertEqual(result, 0, @"failed to delete item");
+}
+
+- (void)testBackupRestoreItemUsingNewStyleAks
+{
+    [self createManyItems];
+    [self createManyKeys];
+    [self createManyACLKeyItems];
+
+    NSDictionary* item = @{ (id)kSecClass : (id)kSecClassGenericPassword,
+                            (id)kSecValueData : [@"🗡🐟" dataUsingEncoding:NSUTF8StringEncoding],
+                            (id)kSecAttrAccount : @"NewTestAccount",
+                            (id)kSecAttrService : @"NewTestService",
+                            (id)kSecUseDataProtectionKeychain : @(YES) };
+
+    OSStatus result = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    XCTAssertEqual(result, 0, @"failed to add test item to keychain");
+
+    NSMutableDictionary* dataQuery = item.mutableCopy;
+    [dataQuery removeObjectForKey:(id)kSecValueData];
+    dataQuery[(id)kSecReturnData] = @(YES);
+    CFTypeRef foundItem = NULL;
+
+    /*
+     * Create backup using NULLs for both keybag & passcode, which means "use the currently registered backup keybag"
+     */
+
+    CFDataRef backup = _SecKeychainCopyBackup(NULL, NULL);
+    XCTAssert(backup, "expected to have a backup");
+
+    result = SecItemDelete((__bridge CFDictionaryRef)dataQuery);
+    XCTAssertEqual(result, 0, @"failed to delete item");
+
+    result = SecItemCopyMatching((__bridge CFDictionaryRef)dataQuery, &foundItem);
+    XCTAssertEqual(result, errSecItemNotFound,
+                   @"failed to find the data for the item we just added in the keychain");
+    CFReleaseNull(foundItem);
+
+    /*
+     * Restore backup and see that item is resurrected
+     */
+
+    CFDataRef keybag = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)"magic backup keybag!", 20);
+    CFDataRef password = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)"swordfish", 9);
+
+    XCTAssertEqual(0, _SecKeychainRestoreBackup(backup, keybag, password));
+
+    CFReleaseNull(backup);
+    CFReleaseNull(password);
+    CFReleaseNull(keybag);
+
+    result = SecItemCopyMatching((__bridge CFDictionaryRef)dataQuery, &foundItem);
+    XCTAssertEqual(result, 0, @"failed to find the data for the item we just added in the keychain");
+    CFReleaseNull(foundItem);
+
     result = SecItemDelete((__bridge CFDictionaryRef)dataQuery);
     XCTAssertEqual(result, 0, @"failed to delete item");
 }
@@ -826,6 +895,7 @@
     
     result = SecItemDelete((__bridge CFDictionaryRef)refQuery);
     XCTAssertEqual(result, 0, @"failed to delete key");
+    CFReleaseNull(key);
 }
 
 - (bool)isLockedSoon:(keyclass_t)key_class
@@ -1170,6 +1240,7 @@
     
     XCTAssertEqual(SecItemCopyMatching((__bridge CFDictionaryRef)canaryQuery, NULL), errSecSuccess,
                    "should successfully get canaryItem final %d", (int)counter);
+    CFReleaseNull(ref);
 }
 #endif /* !TARGET_OS_WATCH */
 
@@ -1205,6 +1276,7 @@
     XCTAssertEqual(SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL), errSecInteractionNotAllowed, "should successfully get item");
     
     XCTAssertEqual(SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL), errSecSuccess, "should successfully get item");
+    CFReleaseNull(ref);
 }
 
 // This test fails before rdar://problem/60028419 because the keystore fails to check for errSecInteractionNotAllowed,
@@ -1298,6 +1370,7 @@
     
     XCTAssertNotNil((__bridge id)output, "Should have received something back from keychain");
     CFReleaseNull(output);
+    CFReleaseNull(access);
 }
 #endif // TARGET_OS_OSX || TARGET_OS_SIMULATOR
 
@@ -4001,6 +4074,7 @@
 
     result = SecItemDelete((__bridge CFDictionaryRef)dataQuery);
     XCTAssertEqual(result, 0, @"failed to delete item");
+    CFReleaseNull(acRef);
 }
 #endif
 

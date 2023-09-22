@@ -48,6 +48,28 @@
 
 __BEGIN_DECLS
 
+/*
+ * rdar://104409817 (Expose mtime of CIP for PCS) adds new declarations that
+ * require nullability annotations. The new declarations are wrapped with the
+ * CF_ASSUME_NONNULL_BEGIN/CF_ASSUME_NONULL_END macros. Unfortunately, using
+ * nullability macros *anywhere* in a file causes *every* declaration in the
+ * file to be checked for "nullability completeness," regardless of whether the
+ * declaration is wrapped by the macros.
+ *
+ * We want nullability annotations for the new declarations, but *don't* want to
+ * add any nullability annotations for existing declarations because that breaks
+ * other project's builds, e.g.
+ * - rdar://104768684 (GateLighthouse: WiFiP2P-561.7#155 has failed to build in install; error: cannot force unwrap value of non-optional type 'CFString')
+ * - rdar://104771211 (GateSunburst: SecureElementService-40.5#136 has failed to build in install; error: cannot force unwrap value of non-optional type 'CFString')
+ *
+ * To achieve both goals, we continue to use the nullability macros around the
+ * new declarations while wrapping the existing declarations in #pragmas that
+ * ignore the nullability completeness warnings. These #pragmas should be
+ * removed by rdar://104825501 (Add nullability to SecItemPriv.h)
+ */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullability-completeness"
+
 /*!
     @enum Class Value Constants (Private)
     @discussion Predefined item class constants used to get or set values in
@@ -340,6 +362,14 @@ extern const CFStringRef kSecAttrKeyTypeSecureEnclaveAttestation
 SPI_AVAILABLE(macos(10.13), ios(11.0), tvos(11.0), watchos(4.0));
 extern const CFStringRef kSecAttrKeyTypeSecureEnclaveAnonymousAttestation
 SPI_AVAILABLE(macos(13.0), ios(16.0), tvos(16.0), watchos(9.0));
+extern const CFStringRef kSecAttrKeyTypeEd25519
+SPI_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0), watchos(10.0));
+extern const CFStringRef kSecAttrKeyTypeX25519
+SPI_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0), watchos(10.0));
+extern const CFStringRef kSecAttrKeyTypeEd448
+SPI_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0), watchos(10.0));
+extern const CFStringRef kSecAttrKeyTypeX448
+SPI_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0), watchos(10.0));
 
 // Should not be used, use kSecAttrTokenOID instead.
 extern const CFStringRef kSecAttrSecureEnclaveKeyBlob
@@ -392,18 +422,13 @@ extern const CFStringRef kSecAttrViewHintHome;
 extern const CFStringRef kSecAttrViewHintLimitedPeersAllowed;
 extern const CFStringRef kSecAttrViewHintMFi;
 extern const CFStringRef kSecAttrViewHintMail;
+extern const CFStringRef kSecAttrViewHintContacts;
+extern const CFStringRef kSecAttrViewHintPhotos;
+extern const CFStringRef kSecAttrViewHintGroups;
 
-/*!
-    @enum kSecUseSystemKeychain Constants (Private)
-    @constant kSecUseSystemKeychainAlways Use the system keychain on iOS, regardless
-        of whether the device is a shared iPad (edu mode).
-        Currently gated behind a feature flag.
-     @constant kSecUseSystemKeychain Use the system keychain on shared iPad (edu mode).
-        Silently ignored when not on shared iPad (edu mode).
-        In the future, this will be deprecated in favor of the Always version above.
- */
+
 extern const CFStringRef kSecUseSystemKeychainAlways
-    SPI_AVAILABLE(ios(16.0)) API_UNAVAILABLE(macos, tvos, watchos, bridgeos, macCatalyst);
+    SPI_AVAILABLE(ios(16.0), macos(14)) API_UNAVAILABLE(tvos, watchos, bridgeos, macCatalyst);
 
 extern const CFStringRef kSecUseSystemKeychain
     __TVOS_AVAILABLE(9.2)
@@ -539,6 +564,15 @@ void SecItemSetCurrentItemAcrossAllDevices(CFStringRef accessGroup,
                                            void (^complete)(CFErrorRef error));
 
 /*!
+     @function SecItemUnsetCurrentItemsAcrossAllDevices
+     @abstract Removes current item pointers for the given identifiers.
+ */
+void SecItemUnsetCurrentItemsAcrossAllDevices(CFStringRef accessGroup,
+                                              CFArrayRef identifiers,
+                                              CFStringRef viewHint,
+                                              void (^complete)(CFErrorRef error));
+
+/*!
      @function SecItemFetchCurrentItemAcrossAllDevices
      @abstract Fetches the locally cached idea of which keychain item is 'current' across this iCloud account
                for the given access group and identifier.
@@ -557,11 +591,47 @@ void SecItemFetchCurrentItemAcrossAllDevices(CFStringRef accessGroup,
                                              void (^complete)(CFDataRef persistentRef, CFErrorRef error));
 
 #if __OBJC__
+
+#pragma clang diagnostic pop /* ignored "-Wnullability-completeness" */
+CF_ASSUME_NONNULL_BEGIN
+
+@interface SecItemCurrentItemData: NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property (strong, readonly, nonnull) NSData *persistentRef;
+@property (strong, readonly, nullable) NSDate *currentItemPointerModificationTime;
+@end
+
+/*!
+     @function SecItemFetchCurrentItemDataAcrossAllDevices
+     @abstract Fetches the locally cached idea of which keychain item is 'current' across this iCloud account
+               for the given access group and identifier.
+ @param accessGroup The accessGroup of your process and the expected current item
+ @param identifier Which 'current' item you're interested in. Freeform, but should match the ID given to
+ SecItemSetCurrentItemAcrossAllDevices.
+ @param viewHint The keychain view hint for your items.
+ @param fetchCloudValue If false, will return the local machine's cached idea of which item is current. If true,
+ performs a CloudKit operation to determine the most up-to-date version.
+ @param complete Called to return values: data object with persistent ref to the current item, if such an item exists. Otherwise, error.
+ */
+
+void
+SecItemFetchCurrentItemDataAcrossAllDevices(NSString *accessGroup,
+                                            NSString *identifier,
+                                            NSString *viewHint,
+                                            BOOL fetchCloudValue,
+                                            void (^complete)(SecItemCurrentItemData * _Nullable persistentRef, NSError * _Nullable error))
+    SPI_AVAILABLE(macos(13.3), ios(16.3), tvos(16.3), watchos(9.3));
+
+CF_ASSUME_NONNULL_END
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullability-completeness"
+
 void _SecItemFetchDigests(NSString *itemClass, NSString *accessGroup, void (^complete)(NSArray *, NSError *));
 
 // On not-macos, this function will call out to the foreground user session.
 void _SecKeychainDeleteMultiUser(NSString *musrUUID, void (^complete)(bool, NSError *));
-#endif
+
+#endif /* __OBJC__ */
 
 /*!
  @function SecItemDeleteAllWithAccessGroups
@@ -615,15 +685,16 @@ OSStatus SecErrorGetOSStatus(CFErrorRef error);
 
 bool _SecKeychainRollKeys(bool force, CFErrorRef *error);
 
-CFDictionaryRef _SecSecuritydCopyWhoAmI(CFErrorRef *error);
-XPC_RETURNS_RETAINED xpc_endpoint_t _SecSecuritydCopyCKKSEndpoint(CFErrorRef *error);
-XPC_RETURNS_RETAINED xpc_endpoint_t _SecSecuritydCopySFKeychainEndpoint(CFErrorRef* error);
-XPC_RETURNS_RETAINED xpc_endpoint_t _SecSecuritydCopyKeychainControlEndpoint(CFErrorRef* error);
+CFDictionaryRef _Nullable _SecSecuritydCopyWhoAmI(CFErrorRef* _Nullable error);
+XPC_RETURNS_RETAINED xpc_endpoint_t _Nullable _SecSecuritydCopyCKKSEndpoint(CFErrorRef *_Nullable error);
+XPC_RETURNS_RETAINED xpc_endpoint_t _Nullable _SecSecuritydCopySFKeychainEndpoint(CFErrorRef* _Nullable error);
+XPC_RETURNS_RETAINED xpc_endpoint_t _Nullable _SecSecuritydCopyKeychainControlEndpoint(CFErrorRef* _Nullable error);
 
 // These three functions are only effective in edu mode (Shared iPad).
 // They will call out to the foreground user session.
 bool _SecSyncBubbleTransfer(CFArrayRef services, uid_t uid, CFErrorRef *error);
 bool _SecSystemKeychainTransfer(CFErrorRef *error);
+bool _SecSystemKeychainTranscrypt(CFErrorRef *error);
 bool _SecSyncDeleteUserViews(uid_t uid, CFErrorRef *error);
 
 
@@ -755,6 +826,8 @@ SPI_AVAILABLE(ios(15.0));
  *             passwords. This set may change in the future (rdar://78624586).
 */
 bool SecDeleteItemsOnSignOut(CFErrorRef *error) SPI_AVAILABLE(macos(13.0), ios(16.0), tvos(16.0), watchos(9.0));
+
+#pragma clang diagnostic pop /* ignored "-Wnullability-completeness" */
 
 __END_DECLS
 

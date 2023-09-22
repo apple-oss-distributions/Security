@@ -337,6 +337,11 @@ SEC_EXP_CLASS(CKKSExternalKey)
 SEC_EXP_CLASS(CKKSExternalTLKShare)
 SEC_EXP_CLASS(SecuritydXPCClient)
 
+/* Diagnostics */
+SEC_EXP_CLASS(SecTapToRadar)
+_SecABCTrigger
+SEC_EXP_CLASS(SecABC)
+
 #if __OBJC2__
 SEC_EXP_CLASS(SecXPCHelper)
 SEC_EXP_CLASS(OTClique)
@@ -384,14 +389,17 @@ _SecEscrowRequestOptionFederationMove
 _CuttlefishErrorDomain
 _CuttlefishErrorRetryAfterKey
 
-_OctagonPlatformSupportsSOS
-_OctagonSetPlatformSupportsSOS
 _OctagonIsSOSFeatureEnabled
 _OctagonSetSOSFeatureEnabled
+_OctagonPlatformSupportsSOS
 _SecErrorIsNestedErrorCappingEnabled
 _SecErrorSetOverrideNestedErrorCappingIsEnabled
 _SecKeychainIsStaticPersistentRefsEnabled
 _SecKeychainSetOverrideStaticPersistentRefsIsEnabled
+
+_SOSCompatibilityModeEnabled
+_SetSOSCompatibilityMode
+_ClearSOSCompatibilityModeOverride
 
 _OctagonSupportsPersonaMultiuser
 _OctagonSetSupportsPersonaMultiuser
@@ -409,6 +417,7 @@ _SecSecurityFixUpClientWithPersona
 _SecSecurityClientRegularToAppClip
 _SecSecurityClientAppClipToRegular
 _SecSecurityClientSetApplicationIdentifier
+_SecSecurityClientSetKeychainSharingState
 _securityd_create_message
 _securityd_message_with_reply_sync
 _securityd_message_no_error
@@ -431,6 +440,7 @@ _SecCopyErrorMessageString
 _SecFrameworkCopyIPAddressData
 _SecFrameworkIsDNSName
 _SecFrameworkIsIPAddress
+_SecFrameworkIsRunningInXcode
 
 _SecPKCS12Import
 #if TARGET_OS_OSX
@@ -542,7 +552,6 @@ _AuthorizationMakeExternalForm
 _AuthorizationRightGet
 _AuthorizationRightRemove
 _AuthorizationRightSet
-_AuthorizationEnableSmartCard
 _AuthorizationCopyPreloginUserDatabase
 _AuthorizationCopyPreloginPreferencesValue
 _AuthorizationCopyRightProperties
@@ -1059,6 +1068,7 @@ _SecKeychainSetUserInteractionAllowed
 _SecKeychainStash
 _SecKeychainStoreUnlockKey
 _SecKeychainStoreUnlockKeyWithPubKeyHash
+_SecKeychainStoreUnlockKeyWithPubKeyHashAndPassword
 _SecKeychainSystemKeychainCheckWouldDeadlock
 _SecKeychainUnlock
 _SecKeychainVerifyKeyStorePassphrase
@@ -1241,6 +1251,8 @@ _kSecRecQuestions
 _kSecRecVersionNumber
 _kSecRecWrappedPassword
 _kSecUseKeychain
+_kSecUseSystemKeychainAlways
+_kSecUseSystemKeychainAlwaysDarwinOSOnlyUnavailableOnMacOS
 #endif
 
 //
@@ -1631,6 +1643,9 @@ _SecCodeSignerGetTypeID
 _SecCodeSignerCreate
 _SecCodeSignerAddSignature
 _SecCodeSignerAddSignatureWithErrors
+_SecCodeSignerRemoteGetTypeID
+_SecCodeSignerRemoteCreate
+_SecCodeSignerRemoteAddSignature
 _SecHostCreateGuest
 _SecHostRemoveGuest
 _SecHostSetGuestStatus
@@ -1649,6 +1664,7 @@ _kSecCodeSignerEntitlements
 _kSecCodeSignerLaunchConstraintSelf
 _kSecCodeSignerLaunchConstraintParent
 _kSecCodeSignerLaunchConstraintResponsible
+_kSecCodeSignerLibraryConstraint
 _kSecCodeSignerFlags
 _kSecCodeSignerIdentifier
 _kSecCodeSignerIdentifierPrefix
@@ -1683,6 +1699,7 @@ _kSecCodeInfoEntitlementsDER
 _kSecCodeInfoLaunchConstraintsSelf
 _kSecCodeInfoLaunchConstraintsParent
 _kSecCodeInfoLaunchConstraintsResponsible
+_kSecCodeInfoLibraryConstraints
 _kSecCodeInfoEntitlementsDict
 _kSecCodeInfoFlags
 _kSecCodeInfoFormat
@@ -1702,6 +1719,7 @@ _kSecCodeInfoTeamIdentifier
 _kSecCodeInfoTrust
 _kSecCodeInfoUnique
 _kSecCodeInfoRuntimeVersion
+_kSecCodeInfoStapledNotarizationTicket
 _kSecCodeInfoCodeDirectory
 _kSecCodeInfoCodeOffset
 _kSecCodeInfoDiskRepInfo
@@ -1736,6 +1754,7 @@ _kSecCFErrorResourceAdded
 _kSecCFErrorResourceAltered
 _kSecCFErrorResourceMissing
 _kSecCFErrorResourceSideband
+_kSecCFErrorResourceRecursive
 _kSecCFErrorInfoPlist
 _kSecCFErrorGuestAttributes
 _kSecCFErrorRequirementSyntax
@@ -1846,6 +1865,7 @@ _kSecCFErrorPattern
 _kSecCFErrorRequirementSyntax
 _kSecCFErrorResourceSeal
 _kSecCFErrorResourceSideband
+_kSecCFErrorResourceRecursive
 _kSecCodeAttributeArchitecture
 _kSecCodeAttributeBundleVersion
 _kSecCodeAttributeSubarchitecture
@@ -2103,6 +2123,7 @@ _SFAnalyticsTableHardFailures
 _SFAnalyticsTableSoftFailures
 _SFAnalyticsTableSamples
 _SFAnalyticsTableNotes
+_SFAnalyticsTableRockwell
 _SFAnalyticsColumnSuccessCount
 _SFAnalyticsColumnHardFailureCount
 _SFAnalyticsColumnSoftFailureCount
@@ -2188,3 +2209,6 @@ _SecCopyBaseFilesURL
 
 _SecSetCustomHomeURL
 _SecSetCustomHomeURLString
+
+SEC_EXP_CLASS(SecLaunchSequence)
+

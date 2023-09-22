@@ -63,6 +63,7 @@ public:
     CFDictionaryRef copyDiskRepInformation();
 
 	std::string recommendedIdentifier(const SigningContext &ctx);
+	std::string explicitIdentifier();
 	const Requirements *defaultRequirements(const Architecture *arch, const SigningContext &ctx);
 	size_t pageSize(const SigningContext &ctx);
 
@@ -72,6 +73,7 @@ public:
 
 	static bool candidate(UnixPlusPlus::FileDesc &fd);
 	void registerStapledTicket();
+	CFDataRef copyStapledTicket();
 	
 public:
 	static CFDataRef identificationFor(MachO *macho);

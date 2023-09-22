@@ -50,6 +50,7 @@
                           errorState:(OctagonState*)errorState
                           deviceInfo:(OTDeviceInformation*)deviceInfo
                       policyOverride:(TPPolicyVersion* _Nullable)policyOverride
+                     accountSettings:(OTAccountSettings* _Nullable)accountSettings
                                epoch:(uint64_t)epoch
 {
     if((self = [super init])) {
@@ -62,6 +63,7 @@
         _nextState = errorState;
 
         _policyOverride = policyOverride;
+        _accountSettings = accountSettings;
     }
     return self;
 }
@@ -121,22 +123,11 @@
     }
 
     __block TPPBSecureElementIdentity* existingSecureElementIdentity = nil;
-    __block OTAccountSettings* settings = nil;
     
     NSError* persistError = nil;
 
     BOOL persisted = [self.deps.stateHolder persistAccountChanges:^OTAccountMetadataClassC * _Nullable(OTAccountMetadataClassC * _Nonnull metadata) {
         existingSecureElementIdentity = [metadata parsedSecureElementIdentity];
-        if (metadata.hasSettings) {
-            settings = [[OTAccountSettings alloc]init];
-            
-            if ([metadata.settings hasW]) {
-                OTTag1* w = [[OTTag1 alloc]init];
-                w.enabled = metadata.settings.w ? YES : NO;
-                settings.tag1 = w;
-            }
-            
-        }
         metadata.attemptedJoin = OTAccountMetadataClassC_AttemptedAJoinState_ATTEMPTED;
 
         return metadata;
@@ -145,6 +136,8 @@
     if(!persisted || persistError) {
         secerror("octagon: failed to save 'attempted join' state: %@", persistError);
     }
+
+    secnotice("octagon", "preparing identity with %@", self.accountSettings);
 
     // Note: we pass syncUserControllableViews as FOLLOWING here, with the intention that
     // it will be set later, when this peer decides who it trusts and accepts their value.
@@ -162,7 +155,7 @@
                                               policySecrets:nil
                                   syncUserControllableViews:TPPBPeerStableInfoUserControllableViewStatus_FOLLOWING
                                       secureElementIdentity:existingSecureElementIdentity
-                                                    setting:settings
+                                                    setting:self.accountSettings
                                 signingPrivKeyPersistentRef:signingKeyPersistRef
                                     encPrivKeyPersistentRef:encryptionKeyPersistRef
                                                       reply:^(NSString * _Nullable peerID,

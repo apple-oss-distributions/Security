@@ -55,6 +55,7 @@
 #import "keychain/ot/OTControl.h"
 #import "keychain/SigninMetrics/OctagonSignPosts.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
+#import "keychain/ckks/CKKSAnalytics.h"
 
 #import "utilities/SecCoreAnalytics.h"
 #include <utilities/SecCFWrappers.h>
@@ -105,8 +106,20 @@
 #include <notify.h>
 
 static int64_t getTimeDifference(time_t start);
+
+typedef enum SOSCompatibilityModeCachedStatus{
+    SOSCompatibilityModeCachedStatusUnknown,
+    SOSCompatibilityModeCachedStatusDisabled,
+    SOSCompatibilityModeCachedStatusEnabled,
+} SOSCompatibilityModeCachedStatus;
+
+static SOSCompatibilityModeCachedStatus gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusUnknown;
+
 CFStringRef const SOSAggdSyncCompletionKey  = CFSTR("com.apple.security.sos.synccompletion");
 CFStringRef const SOSAggdSyncTimeoutKey = CFSTR("com.apple.security.sos.timeout");
+
+NSString* const kSOSCompatibilityModeEnabled = @"enabled";
+NSString* const kSOSCompatibilityModeDisabled = @"disabled";
 
 typedef SOSDataSourceFactoryRef (^SOSCCAccountDataSourceFactoryBlock)(void);
 
@@ -253,8 +266,8 @@ static SOSAccount* SOSKeychainAccountCreateSharedAccount(CFDictionaryRef our_ges
         if (!account)
             secnotice("account", "Got NULL creating account");
     }
-    [account startStateMachine];
     [account sosEvaluateIfNeeded];
+    [account startStateMachine];
 done:
     CFReleaseNull(savedAccount);
     return account;
@@ -393,6 +406,10 @@ static void SOSCCProcessGestaltUpdate(SCDynamicStoreRef store, CFArrayRef keys, 
 
 static CFDictionaryRef CreateDeviceGestaltDictionaryAndRegisterForUpdate(dispatch_queue_t queue, void *info)
 {
+    if (!OctagonPlatformSupportsSOS()) {
+        return NULL;
+    }
+    
     SCDynamicStoreContext context = { .info = info };
     SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR("com.apple.securityd.cloudcircleserver"), SOSCCProcessGestaltUpdate, &context);
     CFStringRef computerKey = SCDynamicStoreKeyCreateComputerName(NULL);
@@ -444,10 +461,91 @@ errOut:
 #define FOR_EXISTING_ACCOUNT 1
 #define CREATE_ACCOUNT_IF_NONE 0
 
+static bool GetSOSCompatibilityMode()
+{
+    // if the feature is enabled, check the keychain
+    if (SOSCompatibilityModeEnabled()) {
+        secnotice("sos-compatibility", "compatibility mode feature flag enabled, checking keychain for sos compatibility mode");
+        // if the feature is enabled, default to OFF
+        gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusDisabled;
+
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassGenericPassword,
+            (id)kSecUseDataProtectionKeychain: @YES,
+            (id)kSecAttrSynchronizable: @NO,
+            (id)kSecAttrAccessGroup: @"com.apple.security.sos",
+            (id)kSecAttrAccount: @"sos-compatibility-mode",
+            (id)kSecReturnData: @YES,
+            (id)kSecMatchLimit: (id)kSecMatchLimitOne,
+            (id)kSecAttrAccessible: (id)kSecAttrAccessibleAfterFirstUnlock,
+            (id)kSecAttrSysBound: @(kSecSecAttrSysBoundPreserveDuringRestore),
+        };
+        CFTypeRef compatibilityModeRef = NULL;
+        NSString* mode = nil;
+        OSStatus result = SecItemCopyMatching((__bridge CFDictionaryRef)query, &compatibilityModeRef);
+        if (result == errSecSuccess) {
+            if (compatibilityModeRef && CFGetTypeID(compatibilityModeRef) == CFDataGetTypeID()) {
+                NSData* modeData = CFBridgingRelease(compatibilityModeRef);
+                mode = [[NSString alloc] initWithData:modeData encoding:kCFStringEncodingUTF8];
+                bool isSOSCompatibilityModeEnabled = mode && [mode isEqualToString:kSOSCompatibilityModeEnabled];
+                gCompatibilityModeStatus = isSOSCompatibilityModeEnabled ? SOSCompatibilityModeCachedStatusEnabled : SOSCompatibilityModeCachedStatusDisabled;
+
+                secnotice("sos-compatibility", "SOS compatibility mode is %@", isSOSCompatibilityModeEnabled ? kSOSCompatibilityModeEnabled : kSOSCompatibilityModeDisabled);
+                return isSOSCompatibilityModeEnabled;
+            } else {
+                secerror("sos-compatibility: unexpected return type, defaulting to OFF");
+            }
+        } else {
+            if (result == errSecItemNotFound) {
+                secnotice("sos-compatibility", "could not find sos compatibility mode in the keychain, defaulting to OFF");
+            } else if (result == errSecInteractionNotAllowed) {
+                secnotice("sos-compatibility", "keychain is locked, will keep compatibility mode set to UNKNOWN");
+                gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusUnknown;
+            } else {
+                secerror("sos-compatibility: failed to fetch sos compatibility mode from the keychain, error code: %d, defaulting to OFF", (int)result);
+            }
+        }
+        
+        return gCompatibilityModeStatus == SOSCompatibilityModeCachedStatusEnabled ? true : false;
+    }
+      
+    // set the compatibility mode to 'if the platform supports SOS'
+    gCompatibilityModeStatus = OctagonPlatformSupportsSOS() ? SOSCompatibilityModeCachedStatusEnabled : SOSCompatibilityModeCachedStatusDisabled;
+    
+    return OctagonPlatformSupportsSOS();
+}
+/* for secdtests */
+void enableSOSCompatibilityForTests(void) {
+    gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusEnabled;
+}
+
+bool SOSCompatibilityModeGetCachedStatus(void)
+{
+    bool compatibilityModeIsEnabled = false;
+    if (gCompatibilityModeStatus == SOSCompatibilityModeCachedStatusUnknown) {
+        compatibilityModeIsEnabled = GetSOSCompatibilityMode();
+#if OCTAGON
+        if (compatibilityModeIsEnabled) {
+            [[[CKKSAnalytics class] logger] logSuccessForEventNamed:SOSDeferralEventCompatibilityModeEnabled];
+        } else {
+            [[[CKKSAnalytics class] logger] logSuccessForEventNamed:SOSDeferralEventCompatibilityModeDisabled];
+        }
+#endif
+    } else {
+        compatibilityModeIsEnabled = gCompatibilityModeStatus == SOSCompatibilityModeCachedStatusEnabled ? true : false;
+    }
+    return compatibilityModeIsEnabled;
+}
+
 static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
     static SOSAccount* sSharedAccount = NULL;
     static dispatch_once_t onceToken;
 
+     
+    if (!OctagonPlatformSupportsSOS()) {
+        return NULL;
+    }
+    
 #if !TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
     if(geteuid() == 0){
         secerror("Cannot inflate account object as root");
@@ -456,11 +554,13 @@ static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
 #endif
     
     if(onlyIfItExists) {
+        sSharedAccount.sosCompatibilityMode = SOSCompatibilityModeGetCachedStatus();
         return sSharedAccount;
     }
 
     dispatch_once(&onceToken, ^{
         secdebug("account", "Account Creation start");
+        static SOSAccount* tmpSharedAccount = NULL;
 
         CFDictionaryRef gestalt = CreateDeviceGestaltDictionaryAndRegisterForUpdate(dispatch_get_global_queue(SOS_ACCOUNT_PRIORITY, 0), NULL);
 
@@ -472,9 +572,9 @@ static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
 #endif
         }
         
-        sSharedAccount = SOSKeychainAccountCreateSharedAccount(gestalt);
+        tmpSharedAccount = SOSKeychainAccountCreateSharedAccount(gestalt);
         
-        SOSAccountAddChangeBlock(sSharedAccount, ^(SOSAccount *account, SOSCircleRef circle,
+        SOSAccountAddChangeBlock(tmpSharedAccount, ^(SOSAccount *account, SOSCircleRef circle,
                                                    CFSetRef peer_additions,      CFSetRef peer_removals,
                                                    CFSetRef applicant_additions, CFSetRef applicant_removals) {
             CFErrorRef pi_error = NULL;
@@ -553,7 +653,7 @@ static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
         });
         CFReleaseSafe(gestalt);
 
-        sSharedAccount.saveBlock = ^(CFDataRef flattenedAccount, CFErrorRef flattenFailError) {
+        tmpSharedAccount.saveBlock = ^(CFDataRef flattenedAccount, CFErrorRef flattenFailError) {
             if (flattenedAccount) {
                 SOSKeychainAccountEnsureSaved(flattenedAccount);
             } else {
@@ -567,8 +667,10 @@ static SOSAccount* GetSharedAccount(bool onlyIfItExists) {
         // provide state handler to sysdiagnose and logging
         os_state_add_handler(dispatch_get_global_queue(0, 0), accountStateBlock);
 
-        [sSharedAccount ghostBustSchedule];
-
+        [tmpSharedAccount ghostBustSchedule];
+        tmpSharedAccount.sosCompatibilityMode = SOSCompatibilityModeGetCachedStatus();
+        
+        sSharedAccount = tmpSharedAccount;
     });
 
     return sSharedAccount;
@@ -642,10 +744,10 @@ static bool isAssertionLockAcquireError(CFErrorRef error) {
     return (CFErrorGetCode(error) == kIOReturnNotPermitted) && (CFEqualSafe(CFErrorGetDomain(error), kSecKernDomain));
 }
 
-static bool checkIfSOSIsEnabled(void) {
+static bool checkIfSOSIsEnabledForMonitorMode(void) {
     __block bool sosIsEnabled = false;
     do_with_account(^(SOSAccountTransaction* txn) {
-        sosIsEnabled = [ txn.account sosIsEnabled ];
+        sosIsEnabled = [ txn.account SOSMonitorModeSOSIsActive ];
         if(!sosIsEnabled) {
             secdebug("circleOps", "SOS is currently not supported or enabled");
         }
@@ -706,7 +808,7 @@ static bool do_with_account_while_unlocked(CFErrorRef *error, bool (^action)(SOS
 
         do_with_account(^(SOSAccountTransaction* txn) {
             SOSAccount *account = txn.account;
-            if ([account isInCircle:(NULL)] && [SOSAuthKitHelpers accountIsHSA2]) {
+            if ([account isInCircle:(NULL)] && [SOSAuthKitHelpers accountIsCDPCapable]) {
                 if(![SOSAuthKitHelpers peerinfoHasMID: account]) {
                     // This is the first good opportunity to update our FullPeerInfo and
                     // push the resulting circle.
@@ -716,7 +818,7 @@ static bool do_with_account_while_unlocked(CFErrorRef *error, bool (^action)(SOS
 #if GHOSTBUST_PERIODIC && (TARGET_OS_IOS || TARGET_OS_OSX)
             if(ghostbustnow) {
                 [account ghostBustPeriodic:gbOptions complete:^(bool ghostBusted, NSError *error) {
-                    secnotice("ghostbust", "GhostBusting: %@", ghostBusted ? CFSTR("true"): CFSTR("false"));
+                    secnotice("ghostbust", "GhostBusting: %{bool}d", ghostBusted);
                 }];
                 
                 [account removeV0Peers:^(bool removedV0Peers, NSError *error) {
@@ -873,7 +975,7 @@ SOSViewResultCode SOSCCView_Server(CFStringRef viewname, SOSViewActionCode actio
     
     do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
         bool retval = false;
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return false;
         }
         switch(action) {
@@ -1060,24 +1162,19 @@ static bool SOSCCAssertUserCredentialsAndOptionalDSID(CFStringRef user_label, CF
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameAssertUserCredentialsAndOptionalDSID);
 
     result = SOSDoWithCredentialsWhileUnlocked(error, ^bool(CFErrorRef *error) {
+        __block bool accountReset = false;
         __block bool localResult = false;
 
         // Shortcut if we're talking to the same account and can construct the same trusted key
         do_with_account(^void (SOSAccountTransaction* txn) {
-            CFStringRef accountDSID = SOSAccountGetValue(txn.account, kSOSDSIDKey, NULL);
-            if(CFEqualSafe(accountDSID, dsid) && txn.account.accountKeyDerivationParameters && txn.account.accountKeyIsTrusted) {
+            accountReset = SOSAccountAssertDSID(txn.account, dsid);
+            if(!accountReset && txn.account.accountKeyDerivationParameters && txn.account.accountKeyIsTrusted) {
                 localResult = SOSAccountTryUserCredentials(txn.account, user_label, user_password, error);
             }
         });
         if(localResult) {
             return true; // shortcut to not do the following work if we're duping a setcreds operation.
         }
-
-        do_with_account(^void (SOSAccountTransaction* txn) {
-            if (dsid != NULL && CFStringCompare(dsid, CFSTR(""), 0) != 0) {
-                SOSAccountAssertDSID(txn.account, dsid);
-            }
-        });
 
         if(SyncKVSAndWait(NULL) && Flush(NULL)) {
             sleep(1); // give the flush a chance - it will work on a different thread
@@ -1206,7 +1303,35 @@ bool SOSCCRequestToJoinCircleAfterRestore_Server(CFErrorRef* error)
                 secerror("ensure peer registration error: %@", blockError);
             }
         }
-        result = SOSAccountJoinCirclesAfterRestore(txn, block_error);
+       
+        CFErrorRef localError = NULL;
+
+        result = SOSAccountJoinCirclesAfterRestore(txn, &localError);
+        if (block_error && localError) {
+            *block_error = CFRetainSafe(localError);
+        }
+        if (result && SOSCompatibilityModeEnabled()) {
+            secnotice("join-after-restore", "posting kSOSCCCircleOctagonKeysChangedNotification");
+            notify_post(kSOSCCCircleOctagonKeysChangedNotification);
+            
+#if OCTAGON
+            bool inCircle = [txn.account.trust isInCircleOnly:NULL];
+            if (localError) {
+                [[[CKKSAnalytics class] logger] logResultForEvent:SOSDeferralEventJoinCircleAfterRestore hardFailure:false result:(__bridge NSError * _Nullable)(localError) withAttributes:@{
+                    SOSDeferralAnalyticsSOSEnabled : SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                    SOSDeferralAnalyticsSOSJoinMethod : SOSDeferralAnalyticsRestore,
+                    SOSDeferralAnalyticsJoiningSOSResult : inCircle ? @"in_circle" : @"not_in_circle",
+                    SOSDeferralAnalyticsCircleContainsLegacy : SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"
+                }];
+            } else {
+                CKKSAnalyticsFailableEvent* event = (CKKSAnalyticsFailableEvent*)[NSString stringWithFormat:@"%@-%@-%@-%@", SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                                                                                  SOSDeferralAnalyticsRestore,
+                                                                                  inCircle ? @"in_circle" : @"not_in_circle",
+                                                                                  SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"];
+                [[[CKKSAnalytics class] logger] logSuccessForEventNamed:event];
+            }
+#endif
+        }
         return result;
     });
     OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCRequestToJoinCircleAfterRestore, OctagonSignpostNumber1(SOSSignpostNameSOSCCRequestToJoinCircleAfterRestore), (int)result);
@@ -1232,7 +1357,37 @@ bool SOSCCResetToOffering_Server(CFErrorRef* error)
         if (!user_key) {
             return result;
         }
-        result = [txn.account.trust resetToOffering:txn key:user_key err:block_error];
+#if OCTAGON
+        bool didCircleContainLegacy = SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey);
+#endif
+        CFErrorRef localError = NULL;
+        result = [txn.account.trust resetToOffering:txn key:user_key err:&localError];
+        if (block_error && localError) {
+            *block_error = CFRetainSafe(localError);
+        }
+
+        if (result && SOSCompatibilityModeEnabled()) {
+            secnotice("reset-to-offering", "posting kSOSCCCircleOctagonKeysChangedNotification");
+            notify_post(kSOSCCCircleOctagonKeysChangedNotification);
+            
+#if OCTAGON
+            bool inCircle = [txn.account.trust isInCircleOnly:NULL];
+            if (localError) {
+                [[[CKKSAnalytics class] logger] logResultForEvent:SOSDeferralEventResetToOffering hardFailure:false result:(__bridge NSError * _Nullable)(localError) withAttributes:@{
+                    SOSDeferralAnalyticsSOSEnabled : SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                    SOSDeferralAnalyticsSOSJoinMethod : SOSDeferralAnalyticsResetToOffering,
+                    SOSDeferralAnalyticsJoiningSOSResult : inCircle ? @"in_circle" : @"not_in_circle",
+                    SOSDeferralAnalyticsCircleContainsLegacy : didCircleContainLegacy ? @"contains_legacy" : @"does_not_contain_legacy"
+                }];
+            } else {
+                CKKSAnalyticsFailableEvent* event = (CKKSAnalyticsFailableEvent*)[NSString stringWithFormat:@"%@-%@-%@-%@", SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                                                                                  SOSDeferralAnalyticsResetToOffering,
+                                                                                  inCircle ? @"in_circle" : @"not_in_circle",
+                                                                                  didCircleContainLegacy ? @"contains_legacy" : @"does_not_contain_legacy"];
+                [[[CKKSAnalytics class] logger] logSuccessForEventNamed:event];
+            }
+#endif
+        }
         return result;
     });
     OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCResetToOffering, OctagonSignpostNumber1(SOSSignpostNameSOSCCResetToOffering), (int)resetResult);
@@ -1249,7 +1404,30 @@ bool SOSCCResetToEmpty_Server(CFErrorRef* error)
         if (!SOSAccountHasPublicKey(txn.account, error)) {
             return result;
         }
-        result = [txn.account.trust resetAccountToEmpty:txn.account transport:txn.account.circle_transport err:block_error];
+#if OCTAGON
+        bool didCircleContainLegacy = SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey);
+#endif
+        CFErrorRef localError = NULL;
+        result = [txn.account.trust resetAccountToEmpty:txn.account transport:txn.account.circle_transport err:&localError];
+        if (block_error && localError) {
+            *block_error = CFRetainSafe(localError);
+        }
+        
+#if OCTAGON
+        if (localError) {
+            [[[CKKSAnalytics class] logger] logResultForEvent:SOSDeferralEventReset hardFailure:false result:(__bridge NSError * _Nullable)(localError) withAttributes:@{
+                SOSDeferralAnalyticsSOSEnabled : SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                SOSDeferralAnalyticsSOSJoinMethod : SOSDeferralAnalyticsReset,
+                SOSDeferralAnalyticsCircleContainsLegacy : didCircleContainLegacy ? @"contains_legacy" : @"does_not_contain_legacy"
+            }];
+        } else {
+            CKKSAnalyticsFailableEvent* event = (CKKSAnalyticsFailableEvent*)[NSString stringWithFormat:@"%@-%@-%@", SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                                                                              SOSDeferralAnalyticsReset,
+                                                                              didCircleContainLegacy ? @"contains_legacy" : @"does_not_contain_legacy"];
+            [[[CKKSAnalytics class] logger] logSuccessForEventNamed:event];
+            
+        }
+#endif
         return result;
     });
     OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCResetToEmpty, OctagonSignpostNumber1(SOSSignpostNameSOSCCResetToEmpty), (int)resetResult);
@@ -1483,16 +1661,14 @@ bool SOSCCWaitForInitialSync_Server(CFErrorRef* error) {
     __block dispatch_semaphore_t inSyncSema = NULL;
     __block bool result = false;
     __block bool synced = false;
-    bool timed_out = false;
     __block CFStringRef inSyncCallID = NULL;
     __block time_t start;
-// radar:93473790
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wbool-conversion"
-    __block CFBooleanRef shouldUseInitialSyncV0 = false;
-#pragma clang diagnostic pop
+    __block CFBooleanRef shouldUseInitialSyncV0BoolRef = kCFBooleanFalse;
+    __block BOOL shouldUseInitialSyncV0 = NO;
+    
+    bool timed_out = false;
 
-    if(!checkIfSOSIsEnabled()) {
+    if(!checkIfSOSIsEnabledForMonitorMode()) {
         return true;
     }
 
@@ -1501,7 +1677,11 @@ bool SOSCCWaitForInitialSync_Server(CFErrorRef* error) {
     secnotice("initial sync", "Wait for initial sync start!");
     
     result = do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        shouldUseInitialSyncV0 = (CFBooleanRef)SOSAccountGetValue(txn.account, kSOSInitialSyncTimeoutV0, error);
+        shouldUseInitialSyncV0BoolRef = (CFBooleanRef)SOSAccountGetValue(txn.account, kSOSInitialSyncTimeoutV0, error);
+    
+        if (shouldUseInitialSyncV0BoolRef){
+            shouldUseInitialSyncV0 = CFBooleanGetValue(shouldUseInitialSyncV0BoolRef) ? YES : NO;
+        }
         bool alreadyInSync = (SOSAccountHasCompletedInitialSync(txn.account));
 
         if (!alreadyInSync) {
@@ -1703,7 +1883,7 @@ bool SOSCCProcessEnsurePeerRegistration_Server(CFErrorRef* error)
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCProcessEnsurePeerRegistration);
 
     bool processResult = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return true;
         }
         bool result = SOSAccountEnsurePeerRegistration(txn.account, error);
@@ -1715,7 +1895,7 @@ bool SOSCCProcessEnsurePeerRegistration_Server(CFErrorRef* error)
 
 static bool internalSyncWithPeers(CFSetRef peers, CFSetRef backupPeers, CFMutableSetRef handled, CFErrorRef *error) {
     return do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return true;
         }
         CFSetRef addedResult = SOSAccountProcessSyncWithPeers(txn, peers, backupPeers, error);
@@ -1753,7 +1933,7 @@ CF_RETURNS_RETAINED CFSetRef SOSCCProcessSyncWithPeers_Server(CFSetRef peers, CF
     static dispatch_queue_t swpQueue = nil;
     static dispatch_once_t onceToken;
     
-    if(checkIfSOSIsEnabled() == false) {
+    if(checkIfSOSIsEnabledForMonitorMode() == false) {
         return NULL;
     }
 
@@ -1816,7 +1996,7 @@ SyncWithAllPeersReason SOSCCProcessSyncWithAllPeers_Server(CFErrorRef* error)
     CFErrorRef action_error = NULL;
     
     if (!do_with_account_while_unlocked(&action_error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return false;
         }
         return SOSAccountRequestSyncWithAllPeers(txn, block_error);
@@ -1986,8 +2166,30 @@ CFDataRef SOSCCCopyInitialSyncData_Server(SOSInitialSyncFlags flags, CFErrorRef 
 bool SOSCCJoinWithCircleJoiningBlob_Server(CFDataRef joiningBlob, PiggyBackProtocolVersion version, CFErrorRef *error) {
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCJoinWithCircleJoiningBlob);
 
-    bool joinResult = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        bool result = SOSAccountJoinWithCircleJoiningBlob(txn.account, joiningBlob, version, error);
+    bool joinResult = do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *block_error) {
+        CFErrorRef localError = NULL;
+        bool result = SOSAccountJoinWithCircleJoiningBlob(txn.account, joiningBlob, version, &localError);
+        if (block_error && localError) {
+            *block_error = CFRetainSafe(localError);
+        }
+        
+#if OCTAGON
+        bool inCircle = [txn.account.trust isInCircleOnly:NULL];
+        if (localError) {
+            [[[CKKSAnalytics class] logger] logResultForEvent:SOSDeferralEventPiggybacking hardFailure:false result:(__bridge NSError*)(localError) withAttributes:@{
+                SOSDeferralAnalyticsSOSEnabled : SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                SOSDeferralAnalyticsSOSJoinMethod : SOSDeferralAnalyticsPiggybacking,
+                SOSDeferralAnalyticsJoiningSOSResult : inCircle ? @"in_circle" : @"not_in_circle",
+                SOSDeferralAnalyticsCircleContainsLegacy : SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"
+            }];
+        } else {
+            CKKSAnalyticsFailableEvent* event = (CKKSAnalyticsFailableEvent*)[NSString stringWithFormat:@"%@-%@-%@-%@", SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                                                                              SOSDeferralAnalyticsPiggybacking,
+                                                                              inCircle ? @"in_circle" : @"not_in_circle",
+                                                                              SOSCircleIsLegacy(txn.account.trust.trustedCircle, txn.account.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"];
+            [[[CKKSAnalytics class] logger] logSuccessForEventNamed:event];
+        }
+#endif
         return result;
     });
 
@@ -2021,6 +2223,39 @@ bool SOSCCRegisterRecoveryPublicKey_Server(CFDataRef recovery_key, CFErrorRef *e
         }
         return result;
     });
+    
+    if (!registerResult) {
+        secerror("register-recovery-public-key: Failed to register recovery key");
+        return registerResult;
+    }
+    
+    SOSAccount *account = (__bridge SOSAccount *)(SOSKeychainAccountGetSharedAccount());
+    if (!account) {
+        secerror("register-recovery-public-key: Failed to get account object");
+        if (error) {
+            *error = CFErrorCreate(kCFAllocatorDefault, kSOSErrorDomain, kSOSErrorNoAccount, NULL);
+        }
+        return false;
+    }
+    
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSError* localError = nil;
+    [account triggerRingUpdateNow:^(NSError *triggerError) {
+        if (triggerError) {
+            secerror("trigger ring update error: %@", triggerError);
+            localError = triggerError;
+        }
+        dispatch_semaphore_signal(sema);
+    }];
+    if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC * 60)) != 0) {
+        secerror("timed out waiting for ring update");
+    }
+    
+    if (localError && error) {
+        *error = (CFErrorRef)CFBridgingRetain(localError);
+        return false;
+    }
+    
     OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCRegisterRecoveryPublicKey, OctagonSignpostNumber1(SOSSignpostNameSOSCCRegisterRecoveryPublicKey), (int)registerResult);
     return registerResult;
 }
@@ -2041,7 +2276,7 @@ bool SOSCCMessageFromPeerIsPending_Server(SOSPeerInfoRef peer, CFErrorRef *error
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCMessageFromPeerIsPending);
 
     bool pendingResult = do_with_account_if_after_first_unlock(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return false;
         }
         bool result = SOSAccountMessageFromPeerIsPending(txn, peer, error);
@@ -2055,7 +2290,7 @@ bool SOSCCSendToPeerIsPending_Server(SOSPeerInfoRef peer, CFErrorRef *error) {
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCSendToPeerIsPending);
 
     bool sendResult = do_with_account_if_after_first_unlock(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return false;
         }
         bool result = SOSAccountSendToPeerIsPending(txn, peer, error);
@@ -2065,11 +2300,190 @@ bool SOSCCSendToPeerIsPending_Server(SOSPeerInfoRef peer, CFErrorRef *error) {
     return sendResult;
 }
 
+bool SOSCCSetCompatibilityMode_Server(bool compatibilityMode, CFErrorRef *error)
+{
+#if OCTAGON
+    SFAnalyticsActivityTracker *analyticsTracker = [[[CKKSAnalytics class] logger] startLogSystemMetricsForActivityNamed:SOSDeferralActivitySetCompatibilityMode];
+#endif
+    OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCSetCompatibilityMode);
+
+    bool setResult = do_with_account_if_after_first_unlock(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *block_error) {
+        
+        if (SOSCompatibilityModeEnabled()) {
+            txn.account.sosCompatibilityMode = compatibilityMode ? YES : NO;
+            
+            if (compatibilityMode) {
+                gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusEnabled;
+
+                secnotice("sos-compatibility-mode", "Alerting SOS of account sign in");
+                 txn.account.accountIsChanging = false;
+               
+                txn.account.factory = accountDataSourceOverride ? accountDataSourceOverride() : SecItemDataSourceFactoryGetDefault();
+                [txn.account SOSMonitorModeEnableSOS];
+                [txn.account ensureFactoryCircles];
+                
+                // these two bools below need to be configured this way so that secd will kick off an update to key-interests when restarting the transaction
+                // otherwise we might drop updates from KVS and we need CKP to pass on KeyParameters and OAK
+                txn.account.key_interests_need_updating = true;
+                txn.account.consolidateKeyInterest = false;
+            
+                [txn restart];
+            } else {
+                secnotice("sos-compatibility-mode", "Alerting SOS of account sign out");
+                CFErrorRef leaveError = NULL;
+                bool result = [txn.account.trust leaveCircle:txn.account err:&leaveError];
+                if (!result || leaveError) {
+                    secerror("sos-compatibility-mode: failed to leave circle, error: %@", leaveError);
+                }
+                [txn restart];
+                sync_the_last_data_to_kvs((__bridge CFTypeRef)(txn.account), false);
+                SOSAccountSetToNew(txn.account);
+                txn.account.accountIsChanging = true;
+                [txn.account SOSMonitorModeDisableSOS];
+                notify_post(kSOSCCSOSIsNowOFF);
+                
+                gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusDisabled;
+            }
+            
+            NSDictionary *query = @{
+                (id)kSecClass: (id)kSecClassGenericPassword,
+                (id)kSecUseDataProtectionKeychain: @YES,
+                (id)kSecAttrSynchronizable: @NO,
+                (id)kSecAttrAccessGroup: @"com.apple.security.sos",
+                (id)kSecAttrAccount: @"sos-compatibility-mode",
+                (id)kSecAttrAccessible: (id)kSecAttrAccessibleAfterFirstUnlock,
+                (id)kSecAttrSysBound: @(kSecSecAttrSysBoundPreserveDuringRestore),
+            };
+            
+            NSString* compatibilityModeString = compatibilityMode ? kSOSCompatibilityModeEnabled : kSOSCompatibilityModeDisabled;
+            NSData* compatibilityModeData = [compatibilityModeString dataUsingEncoding:kCFStringEncodingUTF8];
+            NSDictionary *attributesToUpdate = @{
+                (id)kSecValueData: compatibilityModeData,
+            };
+            
+            NSMutableDictionary *attributesToAdd = [query mutableCopy];
+            [attributesToAdd addEntriesFromDictionary:attributesToUpdate];
+            
+            OSStatus ok = SecItemAdd((__bridge CFDictionaryRef)attributesToAdd, NULL);
+            if (ok == errSecDuplicateItem) {
+                ok = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributesToUpdate);
+            }
+            
+            if (ok != errSecSuccess) {
+                CFErrorRef localError = SecCopyLastError(ok);
+                if (block_error) {
+                    *block_error = CFRetainSafe(localError);
+                }
+                CFReleaseNull(localError);
+                return false;
+            }
+        }
+        return true;
+    });
+    OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCSetCompatibilityMode, OctagonSignpostNumber1(SOSSignpostNameSOSCCSetCompatibilityMode), (int)setResult);
+#if OCTAGON
+    NSError* errorForTracker = nil;
+    if (error && *error) {
+        errorForTracker = (__bridge NSError *)(*error);
+    }
+    
+    [analyticsTracker stopWithEvent:SOSDeferralActivitySetCompatibilityMode result:errorForTracker];
+    
+    if (compatibilityMode) {
+        [[[CKKSAnalytics class] logger] logSuccessForEventNamed:SOSDeferralEventCompatibilityModeEnabled];
+    } else {
+        [[[CKKSAnalytics class] logger] logSuccessForEventNamed:SOSDeferralEventCompatibilityModeDisabled];
+    }
+    
+#endif
+    return setResult;
+}
+
+bool SOSCCFetchCompatibilityModeCachedValue_Server(CFErrorRef *error)
+{
+    bool fetchResult = SOSCompatibilityModeGetCachedStatus();
+    
+    secnotice("sos-compatibility-mode-cached", "Cached SOS Compatibility Mode is %@", fetchResult ? @"enabled" : @"disabled");
+    return fetchResult;
+}
+
+bool SOSCCFetchCompatibilityMode_Server(CFErrorRef *error)
+{
+    OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCFetchCompatibilityMode);
+ 
+    if (SOSCompatibilityModeEnabled()) {
+        __block bool inCircle = false;
+        do_with_account_if_after_first_unlock(error, ^bool (SOSAccountTransaction* txn, CFErrorRef* block_error) {
+            SOSCCStatus circleStatus = [txn.account getCircleStatus:NULL];
+            
+            if (circleStatus == kSOSCCInCircle && gCompatibilityModeStatus != SOSCompatibilityModeCachedStatusEnabled) {
+                gCompatibilityModeStatus = SOSCompatibilityModeCachedStatusEnabled;
+                
+                txn.account.sosCompatibilityMode = true;
+                txn.account.accountIsChanging = false;
+                
+                txn.account.factory = accountDataSourceOverride ? accountDataSourceOverride() : SecItemDataSourceFactoryGetDefault();
+                [txn.account SOSMonitorModeEnableSOS];
+                [txn.account ensureFactoryCircles];
+                
+                // these two bools below need to be configured this way so that secd will kick off an update to key-interests when restarting the transaction
+                // otherwise we might drop updates from KVS and we need CKP to pass on KeyParameters and OAK
+                txn.account.key_interests_need_updating = true;
+                txn.account.consolidateKeyInterest = false;
+            
+                [txn restart];
+#if OCTAGON
+                [[[CKKSAnalytics class] logger] logSuccessForEventNamed:SOSDeferralEventCompatibilityModeEnabled];
+#endif
+            }
+            
+            if (circleStatus == kSOSCCInCircle) {
+                inCircle = true;
+            }
+            txn.account.sosCompatibilityMode = circleStatus == kSOSCCInCircle ? YES : NO;
+            
+            return true;
+        });
+        
+        if (inCircle) {
+            secnotice("sos-compatibility-mode", "Device is in circle, SOS Compatibility Mode is enabled");
+            OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCFetchCompatibilityMode, OctagonSignpostNumber1(SOSSignpostNameSOSCCFetchCompatibilityMode), (int)true);
+            return true;
+        }
+    }
+    bool fetchResult = SOSCompatibilityModeGetCachedStatus();
+    
+    secnotice("sos-compatibility-mode", "SOS Compatibility Mode is %@", fetchResult ? @"enabled" : @"disabled");
+    OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCFetchCompatibilityMode, OctagonSignpostNumber1(SOSSignpostNameSOSCCFetchCompatibilityMode), (int)fetchResult);
+    return fetchResult;
+}
+
+bool SOSCCIsSOSTrustAndSyncingEnabled_Server(void)
+{
+    // enabled to true by default until the compatibility mode feature is enabled
+    
+    bool isEnabled = true;
+
+    if (OctagonPlatformSupportsSOS() && SOSCompatibilityModeEnabled()) {
+        secnotice("sos-compatibility-mode", "SOS Compatibility Mode feature flag enabled, checking platform availability and sos compat mode");
+        CFErrorRef fetchError = NULL;
+        isEnabled = SOSCCFetchCompatibilityMode_Server(&fetchError);
+        secnotice("sos-compatibility-mode", "sos trust and syncing is %@", isEnabled ? @"enabled" : @"disabled");
+        if (fetchError) {
+            secerror("sos-compatibility-mode: fetching compatibility mode error: %@", fetchError);
+        }
+        CFReleaseNull(fetchError);
+    } else if (!OctagonPlatformSupportsSOS()) {
+        isEnabled = false;
+    }
+    return isEnabled;
+}
+
 void SOSCCResetOTRNegotiation_Server(CFStringRef peerid)
 {
     CFErrorRef localError = NULL;
      do_with_account_while_unlocked(&localError, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-         if(![txn.account sosIsEnabled]) {
+         if(![txn.account SOSMonitorModeSOSIsActive]) {
              return true;
          }
          SOSAccountResetOTRNegotiationCoder(txn.account, peerid);
@@ -2085,7 +2499,7 @@ void SOSCCPeerRateLimiterSendNextMessage_Server(CFStringRef peerid, CFStringRef 
 {
     CFErrorRef localError = NULL;
     do_with_account_while_unlocked(&localError, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        if(![txn.account sosIsEnabled]) {
+        if(![txn.account SOSMonitorModeSOSIsActive]) {
             return true;
         }
         SOSAccountTimerFiredSendNextMessage(txn, (__bridge NSString*)peerid, (__bridge NSString*)accessGroup);
@@ -2297,6 +2711,7 @@ static NSError* saveKeysToKeychain(SOSAccount* account, NSData* octagonSigningFu
 void SOSCCPerformUpdateOfAllOctagonKeys(CFDataRef octagonSigningFullKey, CFDataRef octagonEncryptionFullKey,
                                         CFDataRef signingPublicKey, CFDataRef encryptionPublicKey,
                                         SecKeyRef octagonSigningPublicKeyRef, SecKeyRef octagonEncryptionPublicKeyRef,
+                                        SecKeyRef octagonSigningFullKeyRef, SecKeyRef octagonEncryptionFullKeyRef,
                                         void (^action)(CFErrorRef error))
 {
     CFErrorRef localError = NULL;
@@ -2331,7 +2746,10 @@ void SOSCCPerformUpdateOfAllOctagonKeys(CFDataRef octagonSigningFullKey, CFDataR
                 return false;
             }
 
-            secnotice("octagon", "Success! Upated Octagon keys in SOS!");
+            txn.account.octagonSigningFullKeyRef = CFRetainSafe(octagonSigningFullKeyRef);
+            txn.account.octagonEncryptionFullKeyRef = CFRetainSafe(octagonEncryptionFullKeyRef);
+            
+            secnotice("octagon", "Success! Updated Octagon keys in SOS!");
 
             action(nil);
             return true;
@@ -2438,7 +2856,7 @@ SOSCCAccountTriggerSyncWithBackupPeer_server(CFStringRef peer)
         return;
     }
     SOSAccount* account = (__bridge SOSAccount*)GetSharedAccountRef();
-    if([account sosIsEnabled]) {
+    if([account SOSMonitorModeSOSIsActive]) {
         [account triggerBackupForPeers:@[(__bridge NSString *)peer]];
     }
 #endif

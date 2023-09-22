@@ -21,25 +21,10 @@
 				<key>Notification</key>
 				<string>com.apple.security.publickeyavailable</string>
 			</dict>
-			<key>com.apple.mobile.keybagd.lock_status</key>
-			<dict>
-				<key>Notification</key>
-				<string>com.apple.mobile.keybagd.lock_status</string>
-			</dict>
 			<key>kPublicKeyNotAvailable</key>
 			<dict>
 				<key>Notification</key>
 				<string>com.apple.security.publickeynotavailable</string>
-			</dict>
-			<key>com.apple.mobile.keybagd.first_unlock</key>
-			<dict>
-				<key>Notification</key>
-				<string>com.apple.mobile.keybagd.first_unlock</string>
-			</dict>
-			<key>TICK</key>
-			<dict>
-				<key>Notification</key>
-				<string>com.apple.security.tick</string>
 			</dict>
 			<key>kSOSCCCircleChangedNotification</key>
 			<dict>
@@ -47,6 +32,13 @@
 				<string>com.apple.security.secureobjectsync.circlechanged</string>
 			</dict>
 		</dict>
+	</dict>
+	<key>Disabled</key>
+	<dict>
+		<key>#IfFeatureFlagDisabled</key>
+		<string>Security/EnableSecureObjectSync</string>
+		<key>#Then</key>
+		<true/>
 	</dict>
 </dict>
 </plist>

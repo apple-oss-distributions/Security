@@ -11,10 +11,11 @@
 #import "MobileGestalt.h"
 #import <CryptoTokenKit/CryptoTokenKit_Private.h>
 #import <utilities/SecCFWrappers.h>
+#include "featureflags/featureflags.h"
 
 #import "shared_regressions.h"
 
-static id generateKey(id keyType, CFStringRef protection, BOOL withACL) {
+static id generateKey(id keyType, CFStringRef protection, BOOL withACL, BOOL systemSession) {
     id accessControl;
     if (!withACL) {
         accessControl = CFBridgingRelease(SecAccessControlCreate(kCFAllocatorDefault, NULL));
@@ -25,7 +26,11 @@ static id generateKey(id keyType, CFStringRef protection, BOOL withACL) {
     NSDictionary *keyAttributes = @{ (id)kSecAttrTokenID : (id)kSecAttrTokenIDAppleKeyStore,
                                      (id)kSecAttrKeyType : keyType,
                                      (id)kSecAttrAccessControl : accessControl,
-                                     (id)kSecAttrIsPermanent : @NO };
+                                     (id)kSecAttrIsPermanent : @NO,
+#if TARGET_OS_OSX || TARGET_OS_IOS
+                                     (id)kSecUseSystemKeychainAlways : @(systemSession),
+#endif
+    };
     NSError *error;
     id key = (__bridge_transfer id)SecKeyCreateRandomKey((CFDictionaryRef)keyAttributes, (void *)&error);
     ok(key, "failed to create random key %@", error);
@@ -41,7 +46,7 @@ static void secKeySepTest(BOOL testPKA) {
     }
     BOOL withACL = NO;
     for (id keyType in keyTypes) {
-        id privateKey = generateKey((id)keyType, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, (withACL = !withACL));
+        id privateKey = generateKey((id)keyType, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, (withACL = !withACL), NO);
         ok(privateKey, "failed to create key '%@'", keyType);
         id publicKey = (__bridge_transfer id)SecKeyCopyPublicKey((SecKeyRef)privateKey);
 
@@ -92,8 +97,8 @@ static void secKeySepTest(BOOL testPKA) {
 
 static void attestationTest(CFStringRef protection, BOOL withACL) {
     NSError *error;
-    id privKey = generateKey((id)kSecAttrKeyTypeECSECPrimeRandom, protection, withACL);
-    id uik = generateKey((id)kSecAttrKeyTypeSecureEnclaveAttestation, protection, withACL);
+    id privKey = generateKey((id)kSecAttrKeyTypeECSECPrimeRandom, protection, withACL, NO);
+    id uik = generateKey((id)kSecAttrKeyTypeSecureEnclaveAttestation, protection, withACL, NO);
     id sik = CFBridgingRelease(SecKeyCopySystemKey(kSecKeySystemKeyTypeSIK, (void *)&error));
     ok(sik != nil, "get SIK key: %@", error);
 
@@ -115,11 +120,17 @@ static void attestationTest(CFStringRef protection, BOOL withACL) {
     ok(SecKeySetParameter((__bridge SecKeyRef)uik, kSecKeyParameterSETokenAttestationNonce, (__bridge CFPropertyListRef)nonce, (void *)&error), "Set nonce to UIK: %@", error);
     NSData *attUIKNonce = CFBridgingRelease(SecKeyCreateAttestation((__bridge SecKeyRef)uik, (__bridge SecKeyRef)privKey, (void *)&error));
     ok(attUIKNonce != nil, "SIK attesting UIK, with nonce: %@", error);
+
+    id uikc = CFBridgingRelease(SecKeyCopySystemKey(kSecKeySystemKeyTypeUIKCommitted, (void *)&error));
+    ok(uikc != nil, "get UIKC key: %@", error);
+    id sysPrivKey = generateKey((id)kSecAttrKeyTypeECSECPrimeRandom, protection, withACL, YES);
+    NSData *attSysUIKC = CFBridgingRelease(SecKeyCreateAttestation((__bridge SecKeyRef)uikc, (__bridge SecKeyRef)sysPrivKey, (void *)&error));
+    ok(attSysUIKC != nil, "UIKC attesting sysPriv: %@", error);
 }
 
 static void sysKeyAttestationTest(CFStringRef protection, BOOL withACL, const char *name, SecKeySystemKeyType committed, SecKeySystemKeyType proposed, BOOL canAttest) {
     NSError *error;
-    id privKey = generateKey((id)kSecAttrKeyTypeECSECPrimeRandom, protection, withACL);
+    id privKey = generateKey((id)kSecAttrKeyTypeECSECPrimeRandom, protection, withACL, NO);
     id sik = CFBridgingRelease(SecKeyCopySystemKey(kSecKeySystemKeyTypeSIK, (void *)&error));
     ok(sik != nil, "get SIK key: %@", error);
 
@@ -534,6 +545,75 @@ static void sysKeySignTest(SecKeySystemKeyType keyType, SecKeyAlgorithm algorith
     ok(SecKeyVerifySignature((SecKeyRef)pubKey, algorithm, (CFDataRef)message, (CFDataRef)signature, (void *)&error), "signature verification with key %s failed: %@", name, error);
 }
 
+static void systemSessionKeysTest(void) {
+#if TARGET_OS_OSX || (TARGET_OS_IOS && !TARGET_OS_SIMULATOR)
+    NSError *error;
+    id privKey = generateKey((__bridge id)kSecAttrKeyTypeECSECPrimeRandom, kSecAttrAccessibleAlwaysPrivate, NO, YES);
+    isnt(privKey, nil, "unable to generate key: %@", error);
+
+    NSData *message = [@"message" dataUsingEncoding:NSUTF8StringEncoding];
+    SecKeyAlgorithm algorithm = kSecKeyAlgorithmECDSASignatureMessageX962SHA256;
+    NSData *signature;
+
+    signature = CFBridgingRelease(SecKeyCreateSignature((SecKeyRef)privKey, algorithm, (CFDataRef)message, (void *)&error));
+    isnt(signature, nil, "signing with system session key failed: %@", error);
+
+    id pubKey = CFBridgingRelease(SecKeyCopyPublicKey((SecKeyRef)privKey));
+    isnt(pubKey, nil, "getting public key of system session key failed");
+    ok(SecKeyVerifySignature((SecKeyRef)pubKey, algorithm, (CFDataRef)message, (CFDataRef)signature, (void *)&error), "signature verification with system session key failed: %@", error);
+
+#if TARGET_OS_OSX
+    // Re-create key from OID blob - must fail when using in user session, must work when done in system session.
+    NSDictionary *attribs = CFBridgingRelease(SecKeyCopyAttributes((__bridge SecKeyRef)privKey));
+    NSDictionary *params;
+    id createdKey;
+
+    params = @{ (id)kSecAttrTokenID: attribs[(id)kSecAttrTokenID], (id)kSecAttrTokenOID: attribs[(id)kSecAttrTokenOID] };
+    createdKey = CFBridgingRelease(SecKeyCreateWithData((__bridge CFDataRef)NSData.data, (__bridge CFDictionaryRef)params, (void *)&error));
+    signature = CFBridgingRelease(SecKeyCreateSignature((SecKeyRef)createdKey, algorithm, (CFDataRef)message, (void *)&error));
+    is(signature, nil, "system session key restored in user context unexpectedly succeeded");
+
+    params = @{ (id)kSecAttrTokenID: attribs[(id)kSecAttrTokenID], (id)kSecAttrTokenOID: attribs[(id)kSecAttrTokenOID],
+                (id)kSecUseSystemKeychainAlways: @YES,
+    };
+    error = nil;
+    createdKey = CFBridgingRelease(SecKeyCreateWithData((__bridge CFDataRef)NSData.data, (__bridge CFDictionaryRef)params, (void *)&error));
+    signature = CFBridgingRelease(SecKeyCreateSignature((SecKeyRef)createdKey, algorithm, (CFDataRef)message, (void *)&error));
+    isnt(signature, nil, "system session key restored in system context failed: %@", error);
+
+    id itemCreatedKey = CFBridgingRelease(SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{
+        (id)kSecAttrTokenID: (id)kSecAttrTokenIDSecureEnclave,
+        (id)kSecAttrKeyType: (id)kSecAttrKeyTypeECSECPrimeRandom,
+        (id)kSecPrivateKeyAttrs: @{
+            (id)kSecUseSystemKeychainAlways: @YES,
+            (id)kSecAttrIsPermanent: @YES,
+            (id)kSecAttrLabel: @"si-44-seckey-aks:sepsyskey1",
+        },
+    }, (void *)&error));
+    isnt(itemCreatedKey, nil, "failed to generate system key into keychain");
+
+    id itemKey;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)@{
+        (id)kSecClass: (id)kSecClassKey,
+        (id)kSecAttrLabel: @"si-44-seckey-aks:sepsyskey1",
+        (id)kSecUseSystemKeychainAlways: @YES,
+        (id)kSecReturnRef: @YES,
+    }, (void *)&itemKey);
+    is(status, errSecSuccess, "query system SEP key from system keychain");
+
+    error = nil;
+    signature = CFBridgingRelease(SecKeyCreateSignature((SecKeyRef)itemKey, algorithm, (CFDataRef)message, (void *)&error));
+    isnt(signature, nil, "system session key restored from system keychain failed: %@", error);
+
+    SecItemDelete((__bridge CFDictionaryRef)@{
+        (id)kSecClass: (id)kSecClassKey,
+        (id)kSecUseSystemKeychainAlways: @YES,
+        (id)kSecAttrLabel: @"si-44-seckey-aks:sepsyskey1",
+    });
+#endif
+#endif
+}
+
 int si_44_seckey_aks(int argc, char *const *argv) {
     @autoreleasepool {
         NSNumber *hasSEP = CFBridgingRelease(MGCopyAnswer(kMGQHasSEP, NULL));
@@ -545,7 +625,7 @@ int si_44_seckey_aks(int argc, char *const *argv) {
         }
 
         NSNumber *hasPKA = CFBridgingRelease(MGCopyAnswer(kMGQHasPKA, NULL));
-        plan_tests(hasPKA.boolValue ? 190 : 113);
+        plan_tests(hasPKA.boolValue ? 238 : 120);
 
         secAccessControlDescriptionTest();
         secKeySepTest(hasPKA.boolValue);
@@ -565,6 +645,9 @@ int si_44_seckey_aks(int argc, char *const *argv) {
         sysKeyAttestationTest(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, YES, "DAK", kSecKeySystemKeyTypeDAKCommitted, kSecKeySystemKeyTypeDAKProposed, YES);
         sysKeyAttestationTest(kSecAttrAccessibleUntilReboot, NO, "DAK", kSecKeySystemKeyTypeDAKCommitted, kSecKeySystemKeyTypeDAKProposed, YES);
 
+        sysKeyAttestationTest(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, YES, "SDAK", kSecKeySystemKeyTypeSDAKCommitted, kSecKeySystemKeyTypeSDAKProposed, NO /* canAttest */);
+        sysKeyAttestationTest(kSecAttrAccessibleUntilReboot, NO, "SDAK", kSecKeySystemKeyTypeSDAKCommitted, kSecKeySystemKeyTypeSDAKProposed, NO /* canAttest */);
+
         keyFromBlobTest();
         keychainTest();
 
@@ -578,6 +661,9 @@ int si_44_seckey_aks(int argc, char *const *argv) {
         // Test signing with haven keys.
         sysKeySignTest(kSecKeySystemKeyTypeHavenCommitted, kSecKeyAlgorithmECDSASignatureMessageX962SHA384, 384, "Haven-C");
         sysKeySignTest(kSecKeySystemKeyTypeHavenProposed, kSecKeyAlgorithmECDSASignatureMessageX962SHA384, 384, "Haven-P");
+
+        // Test using system session keys.
+        systemSessionKeysTest();
 
         return 0;
     }

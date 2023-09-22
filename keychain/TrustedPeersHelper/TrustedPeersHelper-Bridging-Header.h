@@ -18,7 +18,7 @@
 #import <TrustedPeers/TPECPublicKeyFactory.h>
 
 #import "utilities/SecFileLocations.h"
-#import "utilities/SecTapToRadar.h"
+#import <Security/SecTapToRadar.h>
 
 #import <SecurityFoundation/SFKeychain.h>
 #import <SecurityFoundation/SFIdentity.h>
@@ -31,6 +31,7 @@
 
 #import "keychain/ot/OTDefines.h"
 #import "keychain/ot/OTPersonaAdapter.h"
+#import "keychain/ot/OTManagedConfigurationAdapter.h"
 #import "keychain/ot/ErrorUtils.h"
 #import "keychain/ot/proto/generated_source/OTEscrowRecord.h"
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadata.h"
@@ -58,7 +59,13 @@
 
 #import <CoreData/CoreDataErrors.h>
 
+#import "keychain/ot/proto/generated_source/OTAccountSettings.h"
+#import "keychain/ot/proto/generated_source/OTWalrus.h"
+#import "keychain/ot/proto/generated_source/OTWebAccess.h"
 
 #if TARGET_OS_OSX
 #include <sandbox.h>
 #endif
+
+#import <Security/SecABC.h>
+#import "OSX/utilities/SecInternalReleasePriv.h"

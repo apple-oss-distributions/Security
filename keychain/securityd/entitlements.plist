@@ -4,6 +4,15 @@
 <dict>
 	<key>com.apple.usermanagerd.persona.fetch</key>
 	<true/>
+	<key>com.apple.private.iokit.nvram-write-access</key>
+	<true/>
+	<key>com.apple.private.cloudkit.serviceNameForContainerMap</key>
+	<dict>
+		<key>com.apple.security.shared.keychain</key>
+		<string>com.apple.security.keychain.shared</string>
+	</dict>
+	<key>com.apple.private.cloudkit.prefix</key>
+	<string>com.apple.security.</string>
 	<key>com.apple.springboard.opensensitiveurl</key>
 	<true/>
 	<key>com.apple.private.cloudkit.notifyOnAccountWarmup</key>
@@ -117,6 +126,20 @@
 	<key>allow-obliterate-device</key>
 	<true/>
 	<key>com.apple.developer.device-information.user-assigned-device-name</key>
+	<true/>
+	<key>com.apple.private.security.storage.SFAnalytics</key>
+	<true/>
+	<key>com.apple.TapToRadarKit.service-access</key>
+	<true/>
+	<key>com.apple.security.exception.mach-lookup.global-name</key>
+	<array>
+		<string>com.apple.keychainsharingmessagingd</string>
+		<string>com.apple.AuthenticationServices.CredentialSharingGroups</string>
+		<string>com.apple.security.KeychainDBMover</string>
+	</array>
+	<key>com.apple.authentication-services.credential-sharing-groups</key>
+	<true/>
+	<key>com.apple.private.keychain.kcsharing.invitation.manager</key>
 	<true/>
 </dict>
 </plist>

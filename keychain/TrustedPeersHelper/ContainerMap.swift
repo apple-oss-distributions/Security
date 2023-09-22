@@ -130,8 +130,6 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
                                                        completion: @escaping (Swift.Result<ResponseType, Swift.Error>) -> Swift.Void) {
         let op = operationCreator()
 
-        op.configuration.discretionaryNetworkBehavior = .nonDiscretionary
-        op.configuration.automaticallyRetryNetworkFailures = false
         op.configuration.isCloudKitSupportOperation = true
         op.configuration.setApplicationBundleIdentifierOverride(CuttlefishPushTopicBundleIdentifier)
 
@@ -235,13 +233,6 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
             return CuttlefishAPI.FetchPolicyDocumentsOperation(request: request)
         }, completion: completion)
     }
-    public func validatePeers(
-      _ request: ValidatePeersRequest,
-      completion: @escaping (Swift.Result<ValidatePeersResponse, Swift.Error>) -> Swift.Void) {
-        retry(functionName: #function, operationCreator: {
-            return CuttlefishAPI.ValidatePeersOperation(request: request)
-        }, completion: completion)
-    }
     public func reportHealth(
       _ request: ReportHealthRequest,
       completion: @escaping (Swift.Result<ReportHealthResponse, Swift.Error>) -> Swift.Void) {
@@ -303,6 +294,20 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
         completion: @escaping (Result<FetchRecoverableTLKSharesResponse, Error>) -> Void) {
         retry(functionName: #function, operationCreator: {
             return CuttlefishAPI.FetchRecoverableTlksharesOperation(request: request)
+        }, completion: completion)
+    }
+
+    public func removeRecoveryKey(_ request: RemoveRecoveryKeyRequest,
+                                  completion: @escaping (Result<RemoveRecoveryKeyResponse, Error>) -> Void) {
+        retry(functionName: #function, operationCreator: {
+            return CuttlefishAPI.RemoveRecoveryKeyOperation(request: request)
+        }, completion: completion)
+    }
+
+    public func performAtoprvactions(_ request: PerformATOPRVActionsRequest,
+                                     completion: @escaping (Result<PerformATOPRVActionsResponse, any Error>) -> Void) {
+        retry(functionName: #function, operationCreator: {
+            return CuttlefishAPI.PerformAtoprvactionsOperation(request: request)
         }, completion: completion)
     }
 }
@@ -370,13 +375,16 @@ class ContainerMap {
     let ckCodeOperationRunnerCreator: ContainerNameToCKOperationRunner
     let darwinNotifier: CKKSNotifier.Type
     let personaAdapter: OTPersonaAdapter
+    let managedConfigurationAdapter: OTManagedConfigurationAdapter
 
     init (ckCodeOperationRunnerCreator: ContainerNameToCKOperationRunner,
           darwinNotifier: CKKSNotifier.Type,
-          personaAdapter: OTPersonaAdapter) {
+          personaAdapter: OTPersonaAdapter,
+          managedConfigurationAdapter: OTManagedConfigurationAdapter) {
         self.ckCodeOperationRunnerCreator = ckCodeOperationRunnerCreator
         self.darwinNotifier = darwinNotifier
         self.personaAdapter = personaAdapter
+        self.managedConfigurationAdapter = managedConfigurationAdapter
     }
     // Only access containers while executing on queue
     private var containers: [ContainerName: Container] = [:]
@@ -408,6 +416,7 @@ class ContainerMap {
                 let container = try Container(name: containerName,
                                               persistentStoreDescription: description,
                                               darwinNotifier: self.darwinNotifier,
+                                              managedConfigurationAdapter: self.managedConfigurationAdapter,
                                               cuttlefish: retryingCuttlefish)
                 self.containers[containerName] = container
 
@@ -419,7 +428,7 @@ class ContainerMap {
 
     static func urlForPersistentStore(name: ContainerName) -> URL {
         let filename = name.container + "-" + name.context + ".TrustedPeersHelper.db"
-        return SecCopyURLForFileInKeychainDirectory(filename as CFString) as URL
+        return SecCopyURLForFileInUserScopedKeychainDirectory(filename as CFString) as URL
     }
 
     // To be called via test only

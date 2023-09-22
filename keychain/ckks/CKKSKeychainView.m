@@ -54,7 +54,6 @@
 #import "CKKSManifestLeafRecord.h"
 #import "CKKSZoneChangeFetcher.h"
 #import "CKKSAnalytics.h"
-#import "keychain/analytics/CKKSLaunchSequence.h"
 #import "keychain/ckks/CKKSCloudKitClassDependencies.h"
 #import "keychain/ckks/CKKSDeviceStateEntry.h"
 #import "keychain/ckks/CKKSNearFutureScheduler.h"
@@ -62,6 +61,7 @@
 #import "keychain/ckks/CKKSCreateCKZoneOperation.h"
 #import "keychain/ckks/CKKSDeleteCKZoneOperation.h"
 #import "keychain/ckks/CKKSUpdateCurrentItemPointerOperation.h"
+#import "keychain/ckks/CKKSDeleteCurrentItemPointersOperation.h"
 #import "keychain/ckks/CKKSUpdateDeviceStateOperation.h"
 #import "keychain/ckks/CKKSNotifier.h"
 #import "keychain/ckks/CloudKitCategories.h"
@@ -79,6 +79,7 @@
 #import "keychain/ot/OTDefines.h"
 #import "keychain/ot/OctagonCKKSPeerAdapter.h"
 #import "keychain/ot/ObjCImprovements.h"
+#import <Security/SecLaunchSequence.h>
 
 #include <utilities/SecCFWrappers.h>
 #include <utilities/SecTrace.h>
@@ -182,7 +183,8 @@
 
         _resyncRecordsSeen = nil;
 
-        _stateMachine = [[OctagonStateMachine alloc] initWithName:@"ckks"
+        NSString* stateMachineName = [contextID isEqualToString:CKKSDefaultContextID] ? @"ckks" : [NSString stringWithFormat:@"ckks-%@", contextID];
+        _stateMachine = [[OctagonStateMachine alloc] initWithName:stateMachineName
                                                            states:CKKSAllStates()
                                                             flags:CKKSAllStateFlags()
                                                      initialState:CKKSStateWaitForCloudKitAccountStatus
@@ -206,8 +208,8 @@
         }];
 
         _outgoingQueuePriorityOperationScheduler = [[CKKSNearFutureScheduler alloc] initWithName:[NSString stringWithFormat: @"outgoing-queue-priority-scheduler"]
-                                                                                    initialDelay:NSEC_PER_SEC*1
-                                                                                 continuingDelay:NSEC_PER_SEC*1
+                                                                                    initialDelay:NSEC_PER_MSEC*500
+                                                                                 continuingDelay:NSEC_PER_MSEC*500
                                                                                 keepProcessAlive:false
                                                                        dependencyDescriptionCode:CKKSResultDescriptionPendingOutgoingQueueScheduling
                                                                                            block:^{
@@ -219,7 +221,7 @@
                                                                  reachabilityTracker:reachabilityTracker
                                                                 cloudkitDependencies:cloudKitClassDependencies];
 
-        CKKSLaunchSequence* overallLaunch = [[CKKSLaunchSequence alloc] initWithRocketName:@"com.apple.security.ckks.launch"];
+        SecLaunchSequence* overallLaunch = [[SecLaunchSequence alloc] initWithRocketName:@"com.apple.security.ckks.launch"];
         [overallLaunch addAttribute:@"view" value:@"global"];
 
         _policyLoaded = [[CKKSCondition alloc] init];
@@ -899,6 +901,7 @@
             [viewState launchComplete];
         }
         [self.operationDependencies.overallLaunch launch];
+        [[CKKSAnalytics logger] noteLaunchSequence:self.operationDependencies.overallLaunch];
 
         return nil;
     }
@@ -1640,6 +1643,40 @@
     return false;
 }
 
+- (void)notifyForItem:(SecDbItemRef)item
+{
+    CFTypeRef agrp = SecDbItemGetValue(item, &v6agrp, NULL);
+    if (agrp && !CFEqual(agrp, kCFNull)) {
+        NSString* accessGroup = (__bridge_transfer NSString*) CFRetainSafe(agrp);
+        if ([accessGroup isEqualToString:@"com.apple.cfnetwork"]) {
+            [self.cloudKitClassDependencies.notifierClass post:[NSString stringWithFormat:@"com.apple.security.view-change.Passwords"]];
+        }
+    }
+    
+    CFTypeRef vwht = SecDbItemGetValue(item, &v7vwht, NULL);
+    if (vwht && !CFEqual(vwht, kCFNull)) {
+        NSString* viewHint = (__bridge_transfer NSString*) CFRetainSafe(vwht);
+        if ([viewHint isEqualToString: (__bridge NSString*)kSOSViewHintPCSMasterKey]) {
+            [self.cloudKitClassDependencies.notifierClass post:[NSString stringWithFormat:@"com.apple.security.view-change.PCS"]];
+        }
+    }
+}
+
+- (void)notifyPasswordsOrPCSChangedForAddedItem:(SecDbItemRef)added
+                                       modified:(SecDbItemRef)modified
+                                        deleted:(SecDbItemRef)deleted
+{
+    if (added) {
+        [self notifyForItem:added];
+    }
+    if (modified) {
+        [self notifyForItem:modified];
+    }
+    if (deleted) {
+        [self notifyForItem:deleted];
+    }
+}
+
 - (void)handleKeychainEventDbConnection:(SecDbConnectionRef) dbconn
                                  source:(SecDbTransactionSource)txionSource
                                   added:(SecDbItemRef) added
@@ -1698,6 +1735,7 @@
     });
 
     if(!havePolicy) {
+        [self notifyPasswordsOrPCSChangedForAddedItem:added modified:modified deleted:deleted];
         return;
     }
 
@@ -1705,6 +1743,7 @@
 
     if(!viewName) {
         ckksnotice_global("ckks", "No intended CKKS view for item; skipping: " SECDBITEM_FMT, modified);
+        [self notifyPasswordsOrPCSChangedForAddedItem:added modified:modified deleted:deleted];
         return;
     }
 
@@ -1732,7 +1771,7 @@
         return;
     }
 
-    ckksnotice("ckks", viewState.zoneID, "Routing item to zone %@: " SECDBITEM_FMT, viewName, modified);
+    ckksinfo("ckks", viewState.zoneID, "Routing item to zone %@: " SECDBITEM_FMT, viewName, modified);
 
     __block NSError* error = nil;
 
@@ -2070,11 +2109,83 @@
     return;
 }
 
+- (void)unsetCurrentItemsForAccessGroup:(NSString*)accessGroup
+                            identifiers:(NSArray<NSString*>*)identifiers
+                               viewHint:(NSString*)viewHint
+                               complete:(void (^)(NSError* operror))complete
+{
+    NSError* viewError = nil;
+    CKKSKeychainViewState* viewState = [self policyDependentViewStateForName:viewHint
+                                                                       error:&viewError];
+    if(!viewState) {
+        complete(viewError);
+        return;
+    }
+
+    if(accessGroup == nil || identifiers == nil || identifiers.count == 0) {
+        ckksnotice("ckkscurrent", self, "Rejecting current item pointer delete since no access group(%@) or identifiers(%@) given", accessGroup, identifiers);
+        complete([NSError errorWithDomain:CKKSErrorDomain
+                                           code:errSecParam
+                                    description:@"No access group or identifier given"]);
+        return;
+    }
+
+    // Not being in a CloudKit account is an automatic failure.
+    // But, wait a good long while for the CloudKit account state to be known (in the case of daemon startup)
+    [self.accountStateKnown wait:(SecCKKSTestsEnabled() ? 1*NSEC_PER_SEC : 30*NSEC_PER_SEC)];
+
+    CKKSAccountStatus accountStatus = self.accountStatus;
+    if(accountStatus != CKKSAccountStatusAvailable) {
+        NSError* localError = nil;
+        if(accountStatus == CKKSAccountStatusUnknown) {
+            localError = [NSError errorWithDomain:CKKSErrorDomain
+                                             code:CKKSErrorAccountStatusUnknown
+                                      description:@"iCloud account status unknown."];
+        } else {
+            localError = [NSError errorWithDomain:CKKSErrorDomain
+                                             code:CKKSNotLoggedIn
+                                      description:@"User is not signed into iCloud."];
+        }
+
+        ckksnotice("ckkscurrent", self, "Rejecting current item pointer delete since we don't have an iCloud account: %@", localError);
+        complete(localError);
+        return;
+    }
+
+    ckksnotice("ckkscurrent", self, "Starting delete current item pointer(s) operation for %@ (%lu)", accessGroup, (unsigned long)identifiers.count);
+    CKKSDeleteCurrentItemPointersOperation* dcipo = [[CKKSDeleteCurrentItemPointersOperation alloc] initWithCKKSOperationDependencies:self.operationDependencies
+                                                                                                                            viewState:viewState
+                                                                                                                          accessGroup:accessGroup
+                                                                                                                          identifiers:identifiers
+                                                                                                                     ckoperationGroup:[CKOperationGroup CKKSGroupWithName:@"currentitem-api"]];
+    CKKSResultOperation* returnCallback = [CKKSResultOperation operationWithBlock:^{
+        if(dcipo.error) {
+            ckkserror("ckkscurrent", viewState.zoneID, "Failed deleting current item pointers: %@", dcipo.error);
+        } else {
+            ckksnotice("ckkscurrent", viewState.zoneID, "Finished deleting current item pointers");
+        }
+        complete(dcipo.error);
+    }];
+    returnCallback.name = @"unsetCurrentItems-return-callback";
+    [returnCallback addDependency:dcipo];
+    [self scheduleOperation:returnCallback];
+
+    // Now, schedule dcipo. It modifies the CloudKit zone, so it should insert itself into the list of OutgoingQueueOperations.
+    // Then, we won't have simultaneous zone-modifying operations.
+    [dcipo linearDependencies:self.outgoingQueueOperations];
+
+    // If this operation hasn't started within 60 seconds, cancel it and return a "timed out" error.
+    [dcipo timeout:60*NSEC_PER_SEC];
+
+    [self scheduleOperation:dcipo];
+    return;
+}
+
 - (void)getCurrentItemForAccessGroup:(NSString*)accessGroup
                           identifier:(NSString*)identifier
                             viewHint:(NSString*)viewHint
                      fetchCloudValue:(bool)fetchCloudValue
-                            complete:(void (^) (NSString* uuid, NSError* operror)) complete
+                            complete:(void (^) (CKKSCurrentItemData* data, NSError* operror)) complete
 {
     NSError* viewError = nil;
     CKKSKeychainViewState* viewState = [self policyDependentViewStateForName:viewHint
@@ -2165,7 +2276,9 @@
             }
 
             ckksinfo("ckkscurrent", self, "Retrieved current item pointer: %@", cip);
-            complete(cip.currentItemUUID, NULL);
+            CKKSCurrentItemData *data = [[CKKSCurrentItemData alloc] initWithUUID: cip.currentItemUUID];
+            data.modificationDate = cip.storedCKRecord.modificationDate;
+            complete(data, NULL);
             return;
         }];
     }];
@@ -2619,7 +2732,14 @@
             [self.operationQueue addOperation:returnOp];
             return;
         }
-
+        if (self.priorityViewsProcessed.result.error) {
+            // The priority views watcher is running very early in system setup and hitting errors.
+            // This API invocation should be invoked when the system is ready to process priority views,
+            // so let's re-setup the operation
+            ckksnotice_global("ckksrpc", "priorityViewsProcessed already ran and hit an error, re-setting up priority views watcher");
+            
+            [self onqueueCreatePriorityViewsProcessedWatcher];
+        }
         returnOp = self.priorityViewsProcessed.result;
         if(returnOp == nil) {
             ckksnotice_global("ckksrpc", "Returning success for waitForPriorityViews");
@@ -3393,7 +3513,12 @@
             }
         }
 
-        ckksnotice("ckksfetch", zoneID, "Finished processing changes for %@", zoneID);
+        ckksnotice("ckksfetch", zoneID, "Finished processing changes: changed=%lu deleted=%lu moreComing=%lu resync=%u changeToken=%@",
+                   (unsigned long)changedRecords.count,
+                   (unsigned long)deletedRecords.count,
+                   (unsigned long)moreComing,
+                   resync,
+                   newChangeToken);
 
         return CKKSDatabaseTransactionCommit;
     }];
@@ -3792,6 +3917,12 @@
             NSDate *lastCKKSPush = [[CKKSAnalytics logger] datePropertyForKey:CKKSAnalyticsLastCKKSPush];
 
 #define stringify(obj) CKKSNilToNSNull([obj description])
+            NSMutableArray<NSString*>* operationDescriptions = [NSMutableArray array];
+            NSArray* ops = [self.operationQueue.operations copy];
+            for(id op in ops) {
+                [operationDescriptions addObject:[op description]];
+            }
+
             NSDictionary* global = @{
                 @"view":                @"global",
                 @"reachability":        self.reachabilityTracker.currentReachability ? @"network" : @"no-network",
@@ -3819,6 +3950,7 @@
                 @"lastReencryptOutgoingItemsOperation":stringify(self.lastReencryptOutgoingItemsOperation),
 
                 @"launchSequence":      CKKSNilToNSNull([self.operationDependencies.overallLaunch eventsByTime]),
+                @"operationQueue":  operationDescriptions,
             };
             [result addObject:global];
         }

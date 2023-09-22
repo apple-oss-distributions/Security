@@ -67,6 +67,7 @@ OSStatus SecItemAdd_osx(CFDictionaryRef attributes, CFTypeRef *result);
 OSStatus SecItemCopyMatching_osx(CFDictionaryRef query, CFTypeRef *result);
 OSStatus SecItemUpdate_osx(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
 OSStatus SecItemDelete_osx(CFDictionaryRef query);
+OSStatus SecItemCategorizeQuery(CFDictionaryRef query, bool &can_target_ios, bool &can_target_osx, bool &useDataProtectionKeychainFlag);
 
 extern "C" {
 OSStatus SecItemAdd_ios(CFDictionaryRef attributes, CFTypeRef *result);
@@ -1979,7 +1980,7 @@ malloc_attrPtr_failed:
 
 calloc_attrListPtr_failed:
 
-	return ( errSecBufferTooSmall );
+	return status;
 }
 
 
@@ -3389,6 +3390,32 @@ _FilterWithDate(CFTypeRef validOnDate, SecCertificateRef cert)
 }
 
 static OSStatus
+_FilterWithEmailAddress(CFStringRef emailAddrToMatch, SecCertificateRef cert)
+{
+	if (!cert || !emailAddrToMatch || CFGetTypeID(emailAddrToMatch) != CFStringGetTypeID()) {
+		return errSecParam;
+	}
+	CFArrayRef emailAddresses = NULL;
+	OSStatus status = SecCertificateCopyEmailAddresses(cert, &emailAddresses);
+	if (status != errSecSuccess) {
+		return status;
+	}
+	CFIndex idx, count = (emailAddresses) ? CFArrayGetCount(emailAddresses) : 0;
+	status = (count > 0) ? errSecSMIMEEmailAddressesNotFound : errSecSMIMENoEmailAddress;
+	for (idx = 0; idx < count; idx++) {
+		CFStringRef emailAddr = (CFStringRef) CFArrayGetValueAtIndex(emailAddresses, idx);
+		if (emailAddr && kCFCompareEqualTo == CFStringCompare(emailAddrToMatch, emailAddr, kCFCompareCaseInsensitive)) {
+			status = errSecSuccess;
+			break;
+		}
+	}
+	if (emailAddresses) {
+		CFRelease(emailAddresses);
+	}
+	return status;
+}
+
+static OSStatus
 _FilterWithTrust(Boolean trustedOnly, SecCertificateRef cert)
 {
 	if (!cert) return errSecParam;
@@ -3734,11 +3761,16 @@ FilterCandidateItem(CFTypeRef *item, SecItemParams *itemParams, SecIdentityRef *
 			}
 			// certificate item is trusted on this system
 		}
-        if (itemParams->matchIssuers) {
-            status = _FilterWithIssuers((CFArrayRef)itemParams->matchIssuers, (SecCertificateRef) *item);
-            if (status) goto filterOut;
-            // certificate item has one of the issuers
-        }
+		if (itemParams->matchIssuers) {
+			status = _FilterWithIssuers((CFArrayRef)itemParams->matchIssuers, (SecCertificateRef) *item);
+			if (status) goto filterOut;
+			// certificate item has one of the issuers
+		}
+		if (itemParams->emailAddrToMatch) {
+			status = _FilterWithEmailAddress((CFStringRef)itemParams->emailAddrToMatch, (SecCertificateRef) *item);
+			if (status) goto filterOut;
+			// certificate item matches specified email address
+		}
 	}
 	if (itemParams->itemList) {
 		Boolean foundMatch = FALSE;
@@ -4060,7 +4092,7 @@ extern "C" Boolean SecKeyIsCDSAKey(SecKeyRef ref);
 //
 // Function to find out which keychains are targetted by the query.
 //
-static OSStatus SecItemCategorizeQuery(CFDictionaryRef query, bool &can_target_ios, bool &can_target_osx, bool &useDataProtectionKeychainFlag)
+OSStatus SecItemCategorizeQuery(CFDictionaryRef query, bool &can_target_ios, bool &can_target_osx, bool &useDataProtectionKeychainFlag)
 {
 	// By default, target both keychain.
 	can_target_osx = can_target_ios = true;
@@ -4084,10 +4116,32 @@ static OSStatus SecItemCategorizeQuery(CFDictionaryRef query, bool &can_target_i
     }
 
 
+    CFTypeRef useSystem = NULL;
+    if (CFDictionaryGetValueIfPresent(query, kSecUseSystemKeychainAlways, &useSystem) && readNumber(useSystem)) {
+        // If using DP system keychain, the data protection attribute must be omitted or true.
+        if (useDataProtection && !readNumber(useDataProtection)) {
+            return errSecParam;
+        }
+        useDataProtection = kCFBooleanTrue;
+    }
+
 	if (useDataProtection != NULL) {
         useDataProtectionKeychainFlag = readNumber(useDataProtection);
 		can_target_ios = useDataProtectionKeychainFlag;
 		can_target_osx = !can_target_ios;
+
+		CFTypeRef returnRef = NULL;
+		if (CFDictionaryGetValueIfPresent(query, kSecReturnRef, &returnRef) && readNumber(returnRef)) {
+			CFStringRef item_class_string = (CFStringRef)CFDictionaryGetValue(query, kSecClass);
+			if (CFEqualSafe(item_class_string, kSecClassGenericPassword)) {
+				static dispatch_once_t genpOnceler;
+				countLegacyAPI(&genpOnceler, "kSecReturnRef for genp in DP");
+			} else if (CFEqualSafe(item_class_string, kSecClassInternetPassword)) {
+				static dispatch_once_t inetOnceler;
+				countLegacyAPI(&inetOnceler, "kSecReturnRef for inet in DP");
+			}
+		}
+
 		return errSecSuccess;
 	}
 
@@ -4123,6 +4177,18 @@ static OSStatus SecItemCategorizeQuery(CFDictionaryRef query, bool &can_target_i
 	// Synchronizable items should go to iOS keychain only.
 	if (SecItemSynchronizable(query)) {
 		can_target_osx = false;
+
+		CFTypeRef returnRef = NULL;
+		if (CFDictionaryGetValueIfPresent(query, kSecReturnRef, &returnRef) && readNumber(returnRef)) {
+			CFStringRef item_class_string = (CFStringRef)CFDictionaryGetValue(query, kSecClass);
+			if (CFEqualSafe(item_class_string, kSecClassGenericPassword)) {
+				static dispatch_once_t genpOnceler;
+				countLegacyAPI(&genpOnceler, "kSecReturnRef for genp and sync");
+			} else if (CFEqualSafe(item_class_string, kSecClassInternetPassword)) {
+				static dispatch_once_t inetOnceler;
+				countLegacyAPI(&inetOnceler, "kSecReturnRef for inet and sync");
+			}
+		}
 	}
 
 	value = CFDictionaryGetValue(query, kSecValuePersistentRef);

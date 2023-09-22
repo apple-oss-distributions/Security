@@ -26,6 +26,10 @@
 #include <MobileGestalt.h>
 #endif
 
+#ifndef TARGET_OS_XR
+#define TARGET_OS_XR 0
+#endif
+
 #import <os/feature_private.h>
 
 #import "keychain/ot/OTConstants.h"
@@ -55,31 +59,6 @@ static bool SecErrorNestedErrorCappingIsEnabledOverride = false;
 static bool SecKeychainStaticPersistentRefsEnabledOverrideSet = false;
 static bool SecKeychainStaticPersistentRefsEnabledOverride = false;
 
-static bool OctagonOverridePlatformSOS = false;
-static bool OctagonPlatformSOSOverrideValue = false;
-
-bool OctagonPlatformSupportsSOS(void)
-{
-    if(OctagonOverridePlatformSOS) {
-        return OctagonPlatformSOSOverrideValue ? YES : NO;
-    }
-    
-#if TARGET_OS_OSX
-    return true;
-#elif TARGET_OS_IOS
-    return true;
-#else
-    return false;
-#endif
-}
-
-void OctagonSetPlatformSupportsSOS(bool value)
-{
-    OctagonPlatformSOSOverrideValue = value;
-    OctagonOverridePlatformSOS = YES;
-}
-
-
 bool OctagonIsSOSFeatureEnabled(void)
 {
     if(OctagonSOSFeatureIsEnabledOverrideSet) {
@@ -95,6 +74,11 @@ bool OctagonIsSOSFeatureEnabled(void)
     });
 
     return sosEnabled;
+}
+
+bool OctagonPlatformSupportsSOS(void)
+{
+    return OctagonIsSOSFeatureEnabled();
 }
 
 void OctagonSetSOSFeatureEnabled(bool value)
@@ -170,9 +154,9 @@ bool OctagonSupportsPersonaMultiuser(void)
     static bool ffOctagonSupportsPersonaMultiuserStatus = false;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // To enable, run this and reboot: $ ffctl Security/BecomeiProd=1
+        // To enable, run this and reboot: $ ffctl Security/OctagonSupportsPersonaMultiuser=1
         ffOctagonSupportsPersonaMultiuserStatus = os_feature_enabled(Security, OctagonSupportsPersonaMultiuser);
-        secnotice("octagon", "OctagonSupportsMultiuser is %s", ffOctagonSupportsPersonaMultiuserStatus == OctagonSupportsPersonaMultiuser_OVERRIDE_TRUE ? "enabled" : "disabled");
+        secnotice("octagon", "OctagonSupportsMultiuser is %s", ffOctagonSupportsPersonaMultiuserStatus ? "enabled" : "disabled");
     });
 
     return ffOctagonSupportsPersonaMultiuserStatus;
@@ -188,6 +172,43 @@ void OctagonClearSupportsPersonaMultiuserOverride(void)
 {
     gOctagonSupportsPersonaMultiuserStatus = OctagonSupportsPersonaMultiuser_DEFAULT;
     secnotice("octagon", "OctagonSupportsMultiuser override removed");
+}
+
+typedef enum {
+    DEFER_SOS_FROM_SIGNIN_DEFAULT,
+    DEFER_SOS_FROM_SIGNIN_OVERRIDE_TRUE,
+    DEFER_SOS_FROM_SIGNIN_OVERRIDE_FALSE,
+} DeferSOSFromSignInStatus;
+
+static DeferSOSFromSignInStatus gDeferSOSFromSignInStatus = DEFER_SOS_FROM_SIGNIN_DEFAULT;
+
+bool SOSCompatibilityModeEnabled(void)
+{
+    if (gDeferSOSFromSignInStatus != DEFER_SOS_FROM_SIGNIN_DEFAULT) {
+        return gDeferSOSFromSignInStatus == DEFER_SOS_FROM_SIGNIN_OVERRIDE_TRUE;
+    }
+
+    static bool ffDeferSOSFromSignInStatus = false;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // To enable, run this and reboot: $ ffctl CoreCDP/DeferSOSFromSignIn=FeatureComplete
+        ffDeferSOSFromSignInStatus = os_feature_enabled(CoreCDP, DeferSOSFromSignIn);
+        secnotice("octagon", "DeferSOSFromSignIn is %s", ffDeferSOSFromSignInStatus ? "enabled" : "disabled");
+    });
+
+    return ffDeferSOSFromSignInStatus;
+}
+
+void SetSOSCompatibilityMode(bool value)
+{
+    gDeferSOSFromSignInStatus = value ? DEFER_SOS_FROM_SIGNIN_OVERRIDE_TRUE : DEFER_SOS_FROM_SIGNIN_OVERRIDE_FALSE;
+    secnotice("octagon", "DeferSOSFromSignIn overridden to %s", value ? "enabled" : "disabled");
+}
+
+void ClearSOSCompatibilityModeOverride(void)
+{
+    gDeferSOSFromSignInStatus = DEFER_SOS_FROM_SIGNIN_DEFAULT;
+    secnotice("octagon", "DeferSOSFromSignIn override removed");
 }
 
 

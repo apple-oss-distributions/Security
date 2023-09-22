@@ -245,12 +245,21 @@ sec_protocol_options_contents_compare(sec_protocol_options_content_t contentA,
         return false; \
     }
 
-    CHECK_BLOCK_QUEUE(key_update_block, key_update_queue);
-    CHECK_BLOCK_QUEUE(psk_selection_block, psk_selection_queue);
-    CHECK_BLOCK_QUEUE(challenge_block, challenge_queue);
-    CHECK_BLOCK_QUEUE(verify_block, verify_queue);
-    CHECK_BLOCK_QUEUE(tls_secret_update_block, tls_secret_update_queue);
-    CHECK_BLOCK_QUEUE(tls_encryption_level_update_block, tls_encryption_level_update_queue);
+    bool nw_protocol_joining_context_opt_in = (compare_mode == sec_protocol_options_compare_mode_joining || compare_mode == sec_protocol_options_compare_mode_joining_proxy) &&
+    (optionsA->nw_protocol_joining_context != NULL || optionsB->nw_protocol_joining_context != NULL);
+
+    if (nw_protocol_joining_context_opt_in) {
+        if (optionsA->nw_protocol_joining_context != optionsB->nw_protocol_joining_context) {
+            return false;
+        }
+    } else {
+        CHECK_BLOCK_QUEUE(key_update_block, key_update_queue);
+        CHECK_BLOCK_QUEUE(psk_selection_block, psk_selection_queue);
+        CHECK_BLOCK_QUEUE(challenge_block, challenge_queue);
+        CHECK_BLOCK_QUEUE(verify_block, verify_queue);
+        CHECK_BLOCK_QUEUE(tls_secret_update_block, tls_secret_update_queue);
+        CHECK_BLOCK_QUEUE(tls_encryption_level_update_block, tls_encryption_level_update_queue);
+    }
 
 #undef CHECK_BLOCK_QUEUE
 
@@ -873,6 +882,20 @@ sec_protocol_options_set_quic_early_data_context(sec_protocol_options_t options,
         return true;
     });
 }
+
+void
+sec_protocol_options_set_nw_protocol_joining_context(sec_protocol_options_t options, const void * _Nullable context)
+{
+    SEC_PROTOCOL_OPTIONS_VALIDATE(options,);
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+
+        content->nw_protocol_joining_context = context;
+        return true;
+    });
+}
+
 
 void
 sec_protocol_options_set_tls_sni_disabled(sec_protocol_options_t options, bool sni_disabled)
@@ -2296,6 +2319,50 @@ sec_protocol_metadata_copy_serialized_session(sec_protocol_metadata_t metadata)
     return session;
 }
 
+dispatch_data_t _Nullable
+sec_protocol_metadata_copy_authenticator(sec_protocol_metadata_t metadata, sec_identity_t identity,
+                                         const void * _Nullable context, size_t context_size)
+{
+    SEC_PROTOCOL_METADATA_VALIDATE(metadata, NULL);
+    SEC_PROTOCOL_METADATA_VALIDATE(identity, NULL);
+
+    __block dispatch_data_t authenticator = NULL;
+    sec_protocol_metadata_access_handle(metadata, ^bool(void *handle) {
+        sec_protocol_metadata_content_t content = (sec_protocol_metadata_content_t)handle;
+        SEC_PROTOCOL_METADATA_VALIDATE(content, false);
+
+        if (content->copy_authenticator_function && content->authenticator_context) {
+            sec_protocol_metadata_copy_authenticator_f func = (sec_protocol_metadata_copy_authenticator_f)content->copy_authenticator_function;
+            authenticator = func(content->authenticator_context, identity, context, context_size);
+        }
+        return true;
+    });
+    return authenticator;
+}
+
+sec_trust_t _Nullable
+sec_protocol_metadata_copy_authenticator_trust(sec_protocol_metadata_t metadata,
+                                               const void *authenticator, size_t authenticator_size,
+                                               const void * _Nullable context , size_t context_size)
+{
+    SEC_PROTOCOL_METADATA_VALIDATE(metadata, NULL);
+    SEC_PROTOCOL_METADATA_VALIDATE(authenticator, NULL);
+    SEC_PROTOCOL_METADATA_VALIDATE(authenticator_size, NULL);
+
+    __block sec_trust_t trust = NULL;
+    sec_protocol_metadata_access_handle(metadata, ^bool(void *handle) {
+        sec_protocol_metadata_content_t content = (sec_protocol_metadata_content_t)handle;
+        SEC_PROTOCOL_METADATA_VALIDATE(content, false);
+
+        if (content->copy_authenticator_trust_function && content->authenticator_context) {
+            sec_protocol_metadata_copy_authenticator_trust_f func = (sec_protocol_metadata_copy_authenticator_trust_f)content->copy_authenticator_trust_function;
+            trust = func(content->authenticator_context, authenticator, authenticator_size, context, context_size);
+        }
+        return true;
+    });
+    return trust;
+}
+
 const char * __nullable
 sec_protocol_metadata_get_experiment_identifier(sec_protocol_metadata_t metadata)
 {
@@ -3064,4 +3131,69 @@ sec_protocol_options_set_resumed_session_ticket_request(sec_protocol_options_t o
 
         return true;
     });
+}
+
+#pragma mark - EAP protocol support
+
+void
+sec_protocol_options_set_eap_method(sec_protocol_options_t options, sec_protocol_options_eap_method_t eap_method)
+{
+    SEC_PROTOCOL_OPTIONS_VALIDATE(options, );
+
+    if (eap_method > sec_protocol_options_eap_method_max) {
+        return;
+    }
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+
+        content->eap_method = eap_method;
+
+        return true;
+    });
+}
+
+sec_protocol_options_eap_method_t
+sec_protocol_options_get_eap_method(sec_protocol_options_t options)
+{
+    SEC_PROTOCOL_OPTIONS_VALIDATE(options, sec_protocol_options_eap_method_none);
+
+    __block sec_protocol_options_eap_method_t eap_method = sec_protocol_options_eap_method_none;
+
+    (void)sec_protocol_options_access_handle(options, ^bool(void *handle) {
+        sec_protocol_options_content_t content = (sec_protocol_options_content_t)handle;
+        SEC_PROTOCOL_OPTIONS_VALIDATE(content, false);
+
+        eap_method = content->eap_method;
+
+        return true;
+    });
+
+    return eap_method;
+}
+
+bool
+sec_protocol_metadata_get_eap_key_material(sec_protocol_metadata_t metadata, uint8_t *key, size_t key_length)
+{
+    SEC_PROTOCOL_METADATA_VALIDATE(metadata, false);
+    SEC_PROTOCOL_METADATA_VALIDATE(key, false);
+
+    if (key_length == 0 || key_length > EAP_KEY_MATERIAL_SIZE) {
+        return false;
+    }
+
+    __block bool success = false;
+
+    (void)sec_protocol_metadata_access_handle(metadata, ^bool(void *handle) {
+        sec_protocol_metadata_content_t content = (sec_protocol_metadata_content_t)handle;
+        SEC_PROTOCOL_METADATA_VALIDATE(content, false);
+        if (content->eap_key_material != NULL) {
+            bcopy(content->eap_key_material, key, key_length);
+            success = true;
+        }
+
+        return true;
+    });
+
+    return success;
 }

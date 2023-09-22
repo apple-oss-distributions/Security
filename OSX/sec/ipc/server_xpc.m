@@ -228,36 +228,95 @@
 #endif // OCTAGON
 }
 
+- (void)secItemUnsetCurrentItemsAcrossAllDevices:(NSString*)accessGroup
+                                      identifiers:(NSArray<NSString*>*)identifiers
+                                         viewHint:(NSString*)viewHint
+                                         complete:(void (^)(NSError* operror))xpcComplete
+{
+#if OCTAGON
+    // The calling client might not handle CK types well. Sanitize!
+    void (^complete)(NSError*) = ^(NSError* error){
+        xpcComplete(XPCSanitizeError(error));
+    };
+
+    __block CFErrorRef cferror = NULL;
+    if([self clientHasBooleanEntitlement: (__bridge NSString*) kSecEntitlementKeychainDeny]) {
+        SecError(errSecNotAvailable, &cferror, CFSTR("SecItemUnsetCurrentItemsAcrossAllDevices: %@ has entitlement %@"), _client.task, kSecEntitlementKeychainDeny);
+        complete((__bridge NSError*) cferror);
+        CFReleaseNull(cferror);
+        return;
+    }
+
+    if(![self clientHasBooleanEntitlement: (__bridge NSString*) kSecEntitlementPrivateCKKSWriteCurrentItemPointers]) {
+        SecError(errSecMissingEntitlement, &cferror, CFSTR("SecItemUnsetCurrentItemsAcrossAllDevices: %@ does not have entitlement %@"), _client.task, kSecEntitlementPrivateCKKSWriteCurrentItemPointers);
+        complete((__bridge NSError*) cferror);
+        CFReleaseNull(cferror);
+        return;
+    }
+
+    if (!accessGroupsAllows(self->_client.accessGroups, (__bridge CFStringRef)accessGroup, &_client)) {
+        SecError(errSecMissingEntitlement, &cferror, CFSTR("SecItemUnsetCurrentItemsAcrossAllDevices: client is missing access-group %@: %@"), accessGroup, _client.task);
+        complete((__bridge NSError*)cferror);
+        CFReleaseNull(cferror);
+        return;
+    }
+
+    CKKSViewManager* manager = [CKKSViewManager manager];
+    if(!manager) {
+        secerror("SecItemUnsetCurrentItemsAcrossAllDevices: no view manager?");
+        complete([NSError errorWithDomain:CKKSErrorDomain
+                                     code:CKKSNotInitialized
+                              description:@"No view manager, cannot forward request"]);
+        return;
+    }
+
+    // Wait a bit for CKKS initialization in case of daemon start, and bail it doesn't come up
+    if([manager.completedSecCKKSInitialize wait:10] != 0) {
+        secerror("SecItemUnsetCurrentItemsAcrossAllDevices: CKKSViewManager not initialized?");
+        complete([NSError errorWithDomain:CKKSErrorDomain code:CKKSNotInitialized description:@"CKKS not yet initialized"]);
+        return;
+    }
+
+    [manager unsetCurrentItemsForAccessGroup:accessGroup
+                                 identifiers:identifiers
+                                    viewHint:viewHint
+                                    complete:complete];
+    return;
+#else // ! OCTAGON
+    xpcComplete([NSError errorWithDomain:@"securityd" code:errSecParam userInfo:@{NSLocalizedDescriptionKey: @"SecItemUnsetCurrentItemsAcrossAllDevices not implemented on this platform"}]);
+#endif // OCTAGON
+}
+
 -(void)secItemFetchCurrentItemAcrossAllDevices:(NSString*)accessGroup
                                     identifier:(NSString*)identifier
                                       viewHint:(NSString*)viewHint
                                fetchCloudValue:(bool)fetchCloudValue
-                                      complete:(void (^) (NSData* persistentref, NSError* operror))xpcComplete
+                                      complete:(void (^) (NSData* persistentref, NSDate *cipModificationTime, NSError* operror))xpcComplete
 {
 #if OCTAGON
     // The calling client might not handle CK types well. Sanitize!
-    void (^complete)(NSData*, NSError*) = ^(NSData* persistentref, NSError* error){
-        xpcComplete(persistentref, XPCSanitizeError(error));
+    void (^complete)(NSData*, NSDate*, NSError*) = ^(NSData* persistentref, NSDate* cipModificationTime, NSError* error){
+        xpcComplete(persistentref, cipModificationTime, XPCSanitizeError(error));
     };
 
     CFErrorRef cferror = NULL;
     if([self clientHasBooleanEntitlement: (__bridge NSString*) kSecEntitlementKeychainDeny]) {
         SecError(errSecNotAvailable, &cferror, CFSTR("SecItemFetchCurrentItemAcrossAllDevices: %@ has entitlement %@"), _client.task, kSecEntitlementKeychainDeny);
-        complete(NULL, (__bridge NSError*) cferror);
+        complete(NULL, NULL, (__bridge NSError*) cferror);
         CFReleaseNull(cferror);
         return;
     }
 
     if(![self clientHasBooleanEntitlement: (__bridge NSString*) kSecEntitlementPrivateCKKSReadCurrentItemPointers]) {
         SecError(errSecNotAvailable, &cferror, CFSTR("SecItemFetchCurrentItemAcrossAllDevices: %@ does not have entitlement %@"), _client.task, kSecEntitlementPrivateCKKSReadCurrentItemPointers);
-        complete(NULL, (__bridge NSError*) cferror);
+        complete(NULL, NULL, (__bridge NSError*) cferror);
         CFReleaseNull(cferror);
         return;
     }
 
     if (!accessGroupsAllows(self->_client.accessGroups, (__bridge CFStringRef)accessGroup, &_client)) {
         SecError(errSecMissingEntitlement, &cferror, CFSTR("SecItemFetchCurrentItemAcrossAllDevices: client is missing access-group %@: %@"), accessGroup, _client.task);
-        complete(NULL, (__bridge NSError*)cferror);
+        complete(NULL, NULL, (__bridge NSError*)cferror);
         CFReleaseNull(cferror);
         return;
     }
@@ -265,7 +324,7 @@
     // Wait a bit for CKKS initialization in case of daemon start, and bail it doesn't come up
     if([[CKKSViewManager manager].completedSecCKKSInitialize wait:10] != 0) {
         secerror("SecItemFetchCurrentItemAcrossAllDevices: CKKSViewManager not initialized?");
-        complete(NULL, [NSError errorWithDomain:CKKSErrorDomain code:CKKSNotInitialized description:@"CKKS not yet initialized"]);
+        complete(NULL, NULL, [NSError errorWithDomain:CKKSErrorDomain code:CKKSNotInitialized description:@"CKKS not yet initialized"]);
         return;
     }
 
@@ -281,10 +340,10 @@
                                                  identifier:identifier
                                                    viewHint:viewHint
                                             fetchCloudValue:fetchCloudValue
-                                                   complete:^(NSString* uuid, NSError* error) {
-                                                       if(error || !uuid) {
-                                                           secnotice("ckkscurrent", "CKKS didn't find a current item for (%@,%@): %@ %@", accessGroup, identifier, uuid, error);
-                                                           complete(NULL, error);
+                                                   complete:^(CKKSCurrentItemData* data, NSError* error) {
+                                                       if(error || !data) {
+                                                           secnotice("ckkscurrent", "CKKS didn't find a current item for (%@,%@): %@ %@", accessGroup, identifier, data.uuid, error);
+                                                           complete(NULL, NULL, error);
                                                            if (OctagonSupportsPersonaMultiuser()) {
                                                                CFReleaseNull(client->musr);
                                                                free(client);
@@ -293,12 +352,12 @@
                                                        }
 
                                                        // Find the persistent ref and return it.
-                                                       secinfo("ckkscurrent", "CKKS believes current item UUID for (%@,%@) is %@. Looking up persistent ref...", accessGroup, identifier, uuid);
-                                                       [self findItemPersistentRefByUUID:uuid
+                                                       secinfo("ckkscurrent", "CKKS believes current item UUID for (%@,%@) is %@. Looking up persistent ref...", accessGroup, identifier, data.uuid);
+                                                       [self findItemPersistentRefByUUID:data.uuid
                                                                       extraLoggingString:[NSString stringWithFormat:@"%@,%@", accessGroup, identifier]
                                                                                   client:client
                                                                                 complete:^(NSData *persistentref, NSError *operror) {
-                                                           complete(persistentref, operror);
+                                                           complete(persistentref, data.modificationDate, operror);
                                                            if (OctagonSupportsPersonaMultiuser()) {
                                                                CFReleaseNull(client->musr);
                                                                free(client);
@@ -306,7 +365,7 @@
                                                        }];
                                                    }];
 #else // ! OCTAGON
-    xpcComplete(NULL, [NSError errorWithDomain:@"securityd" code:errSecParam userInfo:@{NSLocalizedDescriptionKey: @"SecItemFetchCurrentItemAcrossAllDevices not implemented on this platform"}]);
+    xpcComplete(NULL, NULL, [NSError errorWithDomain:@"securityd" code:errSecParam userInfo:@{NSLocalizedDescriptionKey: @"SecItemFetchCurrentItemAcrossAllDevices not implemented on this platform"}]);
 #endif // OCTAGON
 }
 

@@ -23,7 +23,7 @@ extension Container {
     func resetSync(resetReason: CuttlefishResetReason, test: XCTestCase) -> Error? {
         let expectation = XCTestExpectation(description: "reset replied")
         var reterr: Error?
-        self.reset(resetReason: resetReason) { error in
+        self.reset(resetReason: resetReason, idmsTargetContext: nil, idmsCuttlefishPassword: nil, notifyIdMS: false) { error in
             reterr = error
             expectation.fulfill()
         }
@@ -55,7 +55,7 @@ extension Container {
                      policySecrets: [String: Data]? = nil,
                      syncUserControllableViews: TPPBPeerStableInfoUserControllableViewStatus = .UNKNOWN,
                      secureElementIdentity: TPPBSecureElementIdentity? = nil,
-                     setting: OTAccountSettingsX? = nil,
+                     setting: OTAccountSettings? = nil,
                      signingPrivateKeyPersistentRef: Data? = nil,
                      encryptionPrivateKeyPersistentRef: Data? = nil
     ) -> (String?, Data?, Data?, Data?, Data?, TPSyncingPolicy?, Error?) {
@@ -90,6 +90,7 @@ extension Container {
         test.wait(for: [expectation], timeout: 10.0)
         return (reta, retb, retc, retd, rete, retpolicy, reterr)
     }
+
     func establishSync(test: XCTestCase,
                        ckksKeys: [CKKSKeychainBackedKeySet],
                        tlkShares: [CKKSTLKShare],
@@ -219,7 +220,9 @@ extension Container {
                     policyVersion: UInt64? = nil,
                     policySecrets: [String: Data]? = nil,
                     syncUserControllableViews: TPPBPeerStableInfoUserControllableViewStatus? = nil,
-                    secureElementIdentity: TrustedPeersHelperIntendedTPPBSecureElementIdentity? = nil) -> (TrustedPeersHelperPeerState?, TPSyncingPolicy?, Error?) {
+                    secureElementIdentity: TrustedPeersHelperIntendedTPPBSecureElementIdentity? = nil,
+                    walrusSetting: TPPBPeerStableInfoSetting? = nil,
+                    webAccess: TPPBPeerStableInfoSetting? = nil) -> (TrustedPeersHelperPeerState?, TPSyncingPolicy?, Error?) {
         let expectation = XCTestExpectation(description: "update replied")
         var reterr: Error?
         var retstate: TrustedPeersHelperPeerState?
@@ -231,7 +234,9 @@ extension Container {
                     policyVersion: policyVersion,
                     policySecrets: policySecrets,
                     syncUserControllableViews: syncUserControllableViews,
-                    secureElementIdentity: secureElementIdentity) { state, policy, err in
+                    secureElementIdentity: secureElementIdentity,
+                    walrusSetting: walrusSetting,
+                    webAccess: webAccess) { state, policy, err in
                         retstate = state
                         retpolicy = policy
                         reterr = err
@@ -245,7 +250,7 @@ extension Container {
         let expectation = XCTestExpectation(description: "setAllowedMachineIDs replied")
         var reterr: Error?
         let honorIDMSListChanges = accountIsDemo ? false : true
-        self.setAllowedMachineIDs(allowedMachineIDs, honorIDMSListChanges: honorIDMSListChanges) { differences, err in
+        self.setAllowedMachineIDs(allowedMachineIDs, honorIDMSListChanges: honorIDMSListChanges, version: nil) { differences, err in
             XCTAssertEqual(differences, listDifference, "Reported list difference should match expectation")
             reterr = err
             expectation.fulfill()
@@ -371,7 +376,7 @@ extension Container {
         var retescrowRecordIDs: [String]?
         var retpartialEscrowRecordIDs: [String]?
         var reterror: Error?
-        self.fetchViableBottles { escrowRecordIDs, partialEscrowRecordIDs, error in
+        self.fetchViableBottles(from: .default) { escrowRecordIDs, partialEscrowRecordIDs, error in
             retescrowRecordIDs = escrowRecordIDs
             retpartialEscrowRecordIDs = partialEscrowRecordIDs
             reterror = error
@@ -446,7 +451,7 @@ extension Container {
         return (retentropy, retbottleID, retspki, reterror)
     }
 
-    func requestHealthCheckSync(requiresEscrowCheck: Bool, test: XCTestCase) -> (Bool, Bool, Bool, Bool, Error?) {
+    func requestHealthCheckSync(requiresEscrowCheck: Bool, repair: Bool, test: XCTestCase) -> (Bool, Bool, Bool, Bool, Error?) {
         let expectation = XCTestExpectation(description: "requestHealthCheck replied")
         var retrepairaccount: Bool = false
         var retrepairescrow: Bool = false
@@ -454,7 +459,9 @@ extension Container {
         var retleavetrust: Bool = false
         var reterror: Error?
 
-        self.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck, knownFederations: []) { repairAccount, repairEscrow, resetOctagon, leaveTrust, _, error in
+        self.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck,
+                                repair: repair,
+                                knownFederations: []) { repairAccount, repairEscrow, resetOctagon, leaveTrust, _, error in
             retrepairaccount = repairAccount
             retrepairescrow = repairEscrow
             retresetoctagon = resetOctagon

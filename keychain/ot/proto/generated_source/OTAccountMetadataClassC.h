@@ -5,14 +5,12 @@
 #import <Foundation/Foundation.h>
 #import <ProtocolBuffer/PBCodable.h>
 
-@class OTAccountMetadataClassCAccountSettings;
-
 /**
  * The state of accounts on the system is complicated. Here's how we handle them:
  *  If there is no account, we will be in NO_ACCOUNT and have no altDSID
  *  If there is an SA account, we will bt in NO_ACCOUNT and have an altDSID
- *  If there is an HSA2 account, we will be in ACCOUNT_AVAILABLE and have an altDSID
- * Once you're in an HSA2 account, CDP might be enabled or disabled. If it's not enabled,
+ *  If there is an HSA2/Managed account, we will be in ACCOUNT_AVAILABLE and have an altDSID
+ * Once you're in an HSA2/Managed account, CDP might be enabled or disabled. If it's not enabled,
  * then Octagon shouldn't be active.
  */
 typedef NS_ENUM(int32_t, OTAccountMetadataClassC_AccountState) {
@@ -140,7 +138,6 @@ __attribute__((visibility("hidden")))
     OTAccountMetadataClassC_AccountState _icloudAccountState;
     NSString *_peerID;
     NSData *_secureElementIdentity;
-    OTAccountMetadataClassCAccountSettings *_settings;
     NSData *_syncingPolicy;
     NSMutableArray<NSData *> *_tlkSharesForVouchedIdentitys;
     OTAccountMetadataClassC_TrustState _trustState;
@@ -150,15 +147,15 @@ __attribute__((visibility("hidden")))
     BOOL _warmedEscrowCache;
     BOOL _warnedTooManyPeers;
     struct {
-        int epoch:1;
-        int lastHealthCheckup:1;
-        int attemptedJoin:1;
-        int cdpState:1;
-        int icloudAccountState:1;
-        int trustState:1;
-        int isInheritedAccount:1;
-        int warmedEscrowCache:1;
-        int warnedTooManyPeers:1;
+        uint epoch:1;
+        uint lastHealthCheckup:1;
+        uint attemptedJoin:1;
+        uint cdpState:1;
+        uint icloudAccountState:1;
+        uint trustState:1;
+        uint isInheritedAccount:1;
+        uint warmedEscrowCache:1;
+        uint warnedTooManyPeers:1;
     } _has;
 }
 
@@ -239,9 +236,6 @@ __attribute__((visibility("hidden")))
 @property (nonatomic) BOOL hasWarnedTooManyPeers;
 /** True if we've warned the user about having too many peers */
 @property (nonatomic) BOOL warnedTooManyPeers;
-
-@property (nonatomic, readonly) BOOL hasSettings;
-@property (nonatomic, retain) OTAccountMetadataClassCAccountSettings *settings;
 
 // Performs a shallow copy into other
 - (void)copyTo:(OTAccountMetadataClassC *)other;

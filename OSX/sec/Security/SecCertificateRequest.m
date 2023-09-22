@@ -49,6 +49,7 @@ OSStatus SecCmsArraySortByDER(void **objs, const SecAsn1Template *objtemplate, v
 #include <Security/SecIdentityPriv.h>
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecItem.h>
+#include <Security/SecItemPriv.h>
 #include <Security/SecKey.h>
 #include <Security/SecRSAKey.h>
 #include <Security/SecKeyPriv.h>
@@ -82,7 +83,7 @@ OSStatus SecCmsArraySortByDER(void **objs, const SecAsn1Template *objtemplate, v
 #define DEBUG_LOG 0
 #if DEBUG_LOG
 //#define acmedebug(format, ...) os_log(secLogObjForScope("acme"), format, ## __VA_ARGS__)
-#define acmedebug(format, ...) NSLog(@"[ACME] "format, ## __VA_ARGS__)
+#define acmedebug(format, ...) NSLog(@"[acme] "format, ## __VA_ARGS__)
 #else
 #define acmedebug(format, ...) secdebug("acme", format, ## __VA_ARGS__)
 #endif
@@ -345,7 +346,11 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
                     if (extractable) { keyParams[(__bridge id)kSecAttrIsExtractable] = (__bridge id)extractable; }
                     CFBooleanRef sensitive = (__bridge CFBooleanRef)[keyAttrs objectForKey:(__bridge NSString*)kSecAttrIsSensitive];
                     if (sensitive) { keyParams[(__bridge id)kSecAttrIsSensitive] = (__bridge id)sensitive; }
+                    CFBooleanRef dataProtection = (__bridge CFBooleanRef)[keyAttrs objectForKey:(__bridge NSString*)kSecUseDataProtectionKeychain];
+                    if (dataProtection) { keyParams[(__bridge id)kSecUseDataProtectionKeychain] = (__bridge id)dataProtection; }
 #if TARGET_OS_OSX
+                    CFBooleanRef dpSystemKeychain = (__bridge CFBooleanRef)[keyAttrs objectForKey:(__bridge NSString*)kSecUseSystemKeychainAlways];
+                    if (dpSystemKeychain) { keyParams[(__bridge id)kSecUseSystemKeychainAlways] = (__bridge id)dpSystemKeychain; }
                     SecAccessRef access = (__bridge SecAccessRef)[keyAttrs objectForKey:(__bridge NSString*)kSecAttrAccess];
                     if (access) { keyParams[(__bridge id)kSecAttrAccess] = (__bridge id)access; }
 #endif
@@ -401,7 +406,26 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
                 keyParams[(__bridge id)kSecAttrIsSensitive] = (__bridge id)sensitive;
            }
         }
+        /* check data protection keychain identifier(s) [optional] */
+        if (!paramErrStr) {
+            CFBooleanRef dataProtection = (__bridge CFBooleanRef)[params objectForKey:(__bridge NSString*)kSecUseDataProtectionKeychain];
+            if (dataProtection) {
+                if (!(CFGetTypeID(dataProtection) == CFBooleanGetTypeID())) {
+                    paramErrStr = "kSecUseDataProtectionKeychain";
+                }
+                keyParams[(__bridge id)kSecUseDataProtectionKeychain] = (__bridge id)dataProtection;
+           }
+        }
 #if TARGET_OS_OSX
+        if (!paramErrStr) {
+            CFBooleanRef dpSystemKeychain = (__bridge CFBooleanRef)[params objectForKey:(__bridge NSString*)kSecUseSystemKeychainAlways];
+            if (dpSystemKeychain) {
+                if (!(CFGetTypeID(dpSystemKeychain) == CFBooleanGetTypeID())) {
+                    paramErrStr = "kSecUseSystemKeychainAlways";
+                }
+                keyParams[(__bridge id)kSecUseSystemKeychainAlways] = (__bridge id)dpSystemKeychain;
+           }
+        }
         if (!paramErrStr) {
             SecKeychainRef keychain = (__bridge SecKeychainRef)[params objectForKey:(__bridge NSString*)kSecUseKeychain];
             if (keychain) {
@@ -735,14 +759,14 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
     } else {
         status = SecIdentityCopyCertificate(attestIdentity, &attestCert);
         if (status || !attestCert) {
-            acmedebug("did not obtain attestation certificate (error %ld)", (long)status);
+            secerror("did not obtain attestation certificate (error %ld)", (long)status);
         }
         status = SecIdentityCopyPrivateKey(attestIdentity, &attestKey);
     }
     if (status == errSecSuccess && attestKey) {
         _attestation = (__bridge NSData*)SecKeyCreateAttestation(attestKey, _privateKey, &error);
     } else {
-        acmedebug("did not obtain attestation key (error %ld)", (long)status);
+        secerror("did not obtain attestation key (error %ld)", (long)status);
         CFBooleanRef permitLocal = (__bridge CFBooleanRef)[_parameters objectForKey:(__bridge NSString*)kSecACMEPermitLocalIssuer];
         if (_permitLocalIssuer || (permitLocal &&
             CFGetTypeID(permitLocal) == CFBooleanGetTypeID() &&
@@ -837,10 +861,10 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
             xpc_connection_set_event_handler(_connection, ^(xpc_object_t event) {
                 xpc_type_t xtype = xpc_get_type(event);
                 if (XPC_TYPE_ERROR == xtype) {
-                    acmedebug("default: connection error: %s",
+                    secerror("connection error: %s",
                              xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION));
                 } else {
-                    acmedebug("default: unexpected connection event %p", event);
+                    secerror("unexpected connection event %p", event);
                 }
             });
             xpc_connection_resume(_connection);
@@ -875,7 +899,7 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
     acmedebug("Received XPC reply");
     xpc_type_t xtype = xpc_get_type(reply);
     if (XPC_TYPE_ERROR == xtype) {
-        acmedebug("message error: %s", xpc_dictionary_get_string(reply, XPC_ERROR_KEY_DESCRIPTION));
+        secerror("message error: %s", xpc_dictionary_get_string(reply, XPC_ERROR_KEY_DESCRIPTION));
     } else if (XPC_TYPE_CONNECTION == xtype) {
         acmedebug("received connection");
     } else if (XPC_TYPE_DICTIONARY == xtype) {
@@ -910,7 +934,7 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
             if (locationStr.length > 0) { _location = locationStr; }
         }
         if (xpcAcmeError) {
-            error = (__bridge NSError*)SecCreateCFErrorWithXPCObject(xpcAcmeError);
+            error = (__bridge_transfer NSError*)SecCreateCFErrorWithXPCObject(xpcAcmeError);
             acmedebug("xpcAcmeError: %@", error);
         }
         if (xpcAcmeStatus) {
@@ -928,12 +952,12 @@ typedef NS_ENUM(NSInteger, AcmeRequestState) {
             } else {
                 localResponse = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
                 if (error) {
-                    acmedebug("error converting json to dictionary: %@", error);
+                    secerror("error converting json to dictionary: %@", error);
                 }
             }
         }
     } else {
-        acmedebug("unexpected message reply type %p", xtype);
+        secerror("unexpected message reply type %p", xtype);
     }
     acmedebug("acmeReply: %@, error: %@", localResponse, error);
     if (response) {
@@ -1475,9 +1499,7 @@ out:
     /* Run the state machine until we have a certificate, or fail to get it, or time out. */
     _identity = nil;
     NSError *localError = [self executeRequest];
-    if (localError) {
-        acmedebug("identityWithError: %@", localError);
-    } else if (_certificate && _privateKey) {
+    if (!localError && _certificate && _privateKey) {
         _identity = SecIdentityCreate(kCFAllocatorDefault, _certificate, _privateKey);
     }
     if (!_identity) {
@@ -1503,6 +1525,7 @@ out:
         };
         (void)SecItemDelete((__bridge CFDictionaryRef)pubKeyQuery);
     }
+    if (localError) { secerror("identityWithError: %@", localError); }
     if (error) { *error = localError; }
     else { localError = nil; }
     return _identity;

@@ -97,11 +97,16 @@ NS_ASSUME_NONNULL_BEGIN
                                 hash:(NSData* _Nullable)oldItemSHA1
                             complete:(void (^)(NSError* operror))complete;
 
+- (void)unsetCurrentItemsForAccessGroup:(NSString*)accessGroup
+                            identifiers:(NSArray<NSString*>*)identifiers
+                               viewHint:(NSString*)viewHint
+                               complete:(void (^)(NSError* operror))complete;
+
 - (void)getCurrentItemForAccessGroup:(NSString*)accessGroup
                           identifier:(NSString*)identifier
                             viewHint:(NSString*)viewHint
                      fetchCloudValue:(bool)fetchCloudValue
-                            complete:(void (^)(NSString* uuid, NSError* operror))complete;
+                            complete:(void (^)(CKKSCurrentItemData* data, NSError* operror))complete;
 
 - (void)registerSyncStatusCallback:(NSString*)uuid callback:(SecBoolNSErrorCallback)callback;
 

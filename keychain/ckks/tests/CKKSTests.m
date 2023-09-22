@@ -69,6 +69,41 @@
 
 #pragma mark - Tests
 
+- (void)testNetworkReachability {
+    // Test starts with nothing in database, but one in our fake CloudKit.
+    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
+
+    // Spin up CKKS subsystem.
+    [self startCKKSSubsystem];
+
+    XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], "CKKS entered ready");
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], "CKKS state machine should enter ready");
+
+    // Network is unavailable
+    [self.reachabilityTracker setNetworkReachability:false];
+
+    // Fail next upload
+    NSError* noNetwork = [[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkUnavailable userInfo:@{
+                                                                                                                       CKErrorRetryAfterKey: @(0.2),
+                                                                                                                       }];
+    [self failNextCKAtomicModifyItemRecordsUpdateFailure:self.keychainZoneID blockAfterReject:nil withError:noNetwork];
+
+    [self addGenericPassword: @"data" account: @"account-delete-me"];
+
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:8*NSEC_PER_SEC], "CKKS state machine should enter ready");
+
+    // cheat an run the network dependency pretending the timer expired, about 12h early
+    NSOperation *oldOperation = self.reachabilityTracker.reachabilityDependency;
+    [[[NSOperationQueue alloc] init] addOperation:self.reachabilityTracker.reachabilityDependency];
+    // wait it out so we can have a new dependency operation
+    [oldOperation waitUntilFinished];
+
+    XCTAssertFalse(self.reachabilityTracker.currentReachability, "should not have network");
+
+    XCTAssert([self.reachabilityTracker.reachabilityDependency isPending], "net dep op should be pending");
+}
+
 - (void)testBringupToKeyStateReady {
     // As part of the initial bringup, we should send these 'view ready' notifications
     XCTestExpectation* keychainReadyLibNotifyNotification = [self expectLibNotifyReadyForView:self.keychainZoneID.zoneName];
@@ -1198,6 +1233,9 @@
     // We expect a single record to be uploaded, but that the write will be rejected
     // We then expect that item to be reuploaded with the current key
 
+    // By modifying these delays, this test can check whether the 'etag-only' upload quick retry is functioning.
+    [self.defaultCKKS.outgoingQueueOperationScheduler changeDelays:10*NSEC_PER_USEC continuingDelay:60*NSEC_PER_SEC];
+
     [self expectCKAtomicModifyItemRecordsUpdateFailure: self.keychainZoneID];
     [self addGenericPassword: @"data" account: @"account-delete-me-rolled-key"];
     [self addGenericPassword: @"data" account: @"account-delete-me-rolled-key-2"];
@@ -1955,7 +1993,7 @@
     kc_with_dbt(true, &cferror, ^bool (SecDbConnectionRef dbt) {
         CFErrorRef cfcferror = NULL;
 
-        bool ret = SecServerImportKeychainInPlist(dbt, SecSecurityClientGet(), KEYBAG_NONE, KEYBAG_NONE,
+        bool ret = SecServerImportKeychainInPlist(dbt, SecSecurityClientGet(), KEYBAG_NONE, NULL, KEYBAG_NONE,
                                                   (__bridge CFDictionaryRef)@{}, kSecBackupableItemFilter, false, &cfcferror);
 
         XCTAssertNil(CFBridgingRelease(cfcferror), "Shouldn't error importing a 'backup'");
@@ -3988,42 +4026,6 @@
     XCTAssertNotNil(interface, "Received a configured CKKS interface");
 }
 
-- (void)testMetricsUpload {
-
-    XCTestExpectation *upload = [self expectationWithDescription:@"CAMetrics"];
-    XCTestExpectation *collection = [self expectationWithDescription:@"CAMetrics"];
-
-    id saMock = OCMClassMock([SecCoreAnalytics class]);
-    OCMStub([saMock sendEvent:[OCMArg any] event:[OCMArg any]]).andDo(^(NSInvocation* invocation) {
-        [upload fulfill];
-    });
-
-    NSString *sampleSampler = @"stuff";
-
-    [[CKKSAnalytics logger] AddMultiSamplerForName:sampleSampler withTimeInterval:SFAnalyticsSamplerIntervalOncePerReport block:^NSDictionary<NSString *,NSNumber *> *{
-        [collection fulfill];
-        return @{ @"hej" : @1 };
-    }];
-
-
-    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
-    [self startCKKSSubsystem];
-
-    XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"Key state should have arrived at ready");
-    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter ready");
-
-    [self expectCKModifyRecords:@{SecCKRecordDeviceStateType: [NSNumber numberWithInt:1]}
-        deletedRecordTypeCounts:nil
-                         zoneID:self.keychainZoneID
-            checkModifiedRecord:nil
-           runAfterModification:nil];
-
-    [self.injectedManager xpc24HrNotification];
-
-    [self waitForExpectations: @[upload, collection] timeout:10];
-    [[CKKSAnalytics logger] removeMultiSamplerForName:sampleSampler];
-}
-
 - (void)testSaveManyTLKShares {
     // Spin up CKKS subsystem.
     [self startCKKSSubsystem];
@@ -4143,7 +4145,7 @@
     dispatch_group_t group1 = dispatch_group_create();
     dispatch_group_t group2 = dispatch_group_create();
 
-    for ( int  i = 0; i < 10000; i++) {
+    for(int  i = 0; i < 500; i++) {
         dispatch_queue_t queue1 = dispatch_queue_create("secitemcopymatching1", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
         dispatch_queue_t queue2 = dispatch_queue_create("secitemcopymatching2", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
         

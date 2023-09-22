@@ -60,6 +60,21 @@
 @property FakeCKZone*          passwordsZone;
 @property (readonly) ZoneKeys* passwordsZoneKeys;
 
+@property CKRecordZoneID*      contactsZoneID;
+@property CKKSKeychainViewState* contactsView;
+@property FakeCKZone*          contactsZone;
+@property (readonly) ZoneKeys* contactsZoneKeys;
+
+@property CKRecordZoneID*      groupsZoneID;
+@property CKKSKeychainViewState* groupsView;
+@property FakeCKZone*          groupsZone;
+@property (readonly) ZoneKeys* groupsZoneKeys;
+
+@property CKRecordZoneID*      photosZoneID;
+@property CKKSKeychainViewState* photosView;
+@property FakeCKZone*          photosZone;
+@property (readonly) ZoneKeys* photosZoneKeys;
+
 @property CKRecordZoneID*      ptaZoneID;
 @property CKKSKeychainViewState* ptaView;
 @property FakeCKZone*          ptaZone;

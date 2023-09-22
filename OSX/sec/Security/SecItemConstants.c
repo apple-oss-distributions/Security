@@ -164,6 +164,7 @@ SEC_CONST_DECL (kSecUseOperationPrompt, "u_OpPrompt");
 SEC_CONST_DECL (kSecUseNoAuthenticationUI, "u_NoAuthUI");
 SEC_CONST_DECL (kSecUseAuthenticationUI, "u_AuthUI");
 SEC_CONST_DECL (kSecUseSystemKeychainAlways, "u_SystemKeychainAlways");
+SEC_CONST_DECL (kSecUseSystemKeychainAlwaysDarwinOSOnlyUnavailableOnMacOS, "u_SystemKeychainAlways");
 SEC_CONST_DECL (kSecUseSystemKeychain, "u_SystemKeychain");
 SEC_CONST_DECL (kSecUseSyncBubbleKeychain, "u_SyncBubbleKeychain");
 SEC_CONST_DECL (kSecUseCallerName, "u_CallerName");
@@ -244,7 +245,11 @@ SEC_CONST_DECL (kSecAttrKeyTypeEC, "73");  /* rdar://10755886 */
 SEC_CONST_DECL (kSecAttrKeyTypeECSECPrimeRandom, "73");
 SEC_CONST_DECL (kSecAttrKeyTypeECSECPrimeRandomPKA, "2147483678");  /* <Security/cssmapple.h> CSSM_ALGID__FIRST_UNUSED */
 SEC_CONST_DECL (kSecAttrKeyTypeSecureEnclaveAttestation, "2147483679"); /* <Security/cssmapple.h> CSSM_ALGID__FIRST_UNUSED + 1 */
-SEC_CONST_DECL (kSecAttrKeyTypeSecureEnclaveAnonymousAttestation, "2147483680");  /* <Security/cssmapple.h> CSSM_ALGID__FIRST_UNUSED + 1 */
+SEC_CONST_DECL (kSecAttrKeyTypeSecureEnclaveAnonymousAttestation, "2147483680");  /* <Security/cssmapple.h> CSSM_ALGID__FIRST_UNUSED + 2 */
+SEC_CONST_DECL (kSecAttrKeyTypeEd25519, "105");  /* <Security/cssmapple.h> CSSM_ALGID_RUNNING_COUNTER + 1 */
+SEC_CONST_DECL (kSecAttrKeyTypeX25519, "106");  /* <Security/cssmapple.h> CSSM_ALGID_RUNNING_COUNTER + 2 */
+SEC_CONST_DECL (kSecAttrKeyTypeEd448, "107");  /* <Security/cssmapple.h> CSSM_ALGID_RUNNING_COUNTER + 3 */
+SEC_CONST_DECL (kSecAttrKeyTypeX448, "108");  /* <Security/cssmapple.h> CSSM_ALGID_RUNNING_COUNTER + 4 */
 
 /* kSecAttrSynchronizable Value Constants. */
 SEC_CONST_DECL (kSecAttrSynchronizableAny, "syna");

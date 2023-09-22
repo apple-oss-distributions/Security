@@ -55,7 +55,7 @@ __BEGIN_DECLS
 #define kSecEntitlementApplicationIdentifier kSecEntitlementAppleApplicationIdentifier
 #endif
 
-/* Marzipan apps distributed through the App Store cannot share an application
+/* Catalyst apps distributed through the App Store cannot share an application
    identifier with their iOS versions, so they have an associated application
    identifier which matches the iOS identifier. It will be preferred, when
    present, over the 'regular' application identifier. This avoids developers
@@ -194,6 +194,7 @@ __BEGIN_DECLS
 /* Entitlement for macOS securityd to connect to stash agent */
 #define kSecEntitlementPrivateStashService @"com.apple.private.securityd.stash-agent-client"
 #endif
+
 
 __END_DECLS
 

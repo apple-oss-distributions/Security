@@ -758,6 +758,7 @@ static void swca_xpc_dictionary_handler(const xpc_connection_t connection, xpc_o
                 // return Safari's password autofill enabled status
                 CFTypeRef result = (SWCAIsAutofillEnabled()) ? kCFBooleanTrue : kCFBooleanFalse;
                 SecXPCDictionarySetPList(replyMessage, kSecXPCKeyResult, result, &error);
+                break;
             }
             default:
                 secdebug("ipc", "swcagent: got unsupported request id (%ld)", (long)operation);
@@ -843,13 +844,6 @@ static void swca_xpc_init(void)
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
-        char *wait4debugger = getenv("WAIT4DEBUGGER");
-        if (wait4debugger && !strcasecmp("YES", wait4debugger)) {
-            seccritical("SIGSTOPing self, awaiting debugger");
-            kill(getpid(), SIGSTOP);
-            seccritical("Again, for good luck (or bad debuggers)");
-            kill(getpid(), SIGSTOP);
-        }
         swca_xpc_init();
         dispatch_main();
     }

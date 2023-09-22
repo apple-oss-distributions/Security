@@ -25,6 +25,7 @@
 #include <TargetConditionals.h>
 
 #include "keychain/securityd/SecKeybagSupport.h"
+#include "keychain/securityd/SOSCloudCircleServer.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecBase.h>
@@ -46,6 +47,8 @@
 #include "secd_regressions.h"
 #include "SecdTestKeychainUtilities.h"
 #include "server_security_helpers.h"
+
+#import <Security/OTConstants.h>
 
 struct test_persistent_s {
     CFTypeRef persist[2];
@@ -615,7 +618,11 @@ SKIP: {
 
 int secd_33_keychain_backup(int argc, char *const *argv)
 {
+#if TARGET_OS_TV || TARGET_OS_WATCH
+    OctagonSetSOSFeatureEnabled(true);
+#endif
     plan_tests(86);
+    enableSOSCompatibilityForTests();
 
     CFArrayRef currentACL = CFRetainSafe(SecAccessGroupsGetCurrent());
 
@@ -638,5 +645,8 @@ int secd_33_keychain_backup(int argc, char *const *argv)
     SecAccessGroupsSetCurrent(currentACL);
     CFReleaseNull(currentACL);
 
+#if TARGET_OS_TV || TARGET_OS_WATCH
+    OctagonSetSOSFeatureEnabled(false);
+#endif
     return 0;
 }

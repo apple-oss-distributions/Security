@@ -26,7 +26,7 @@ SECURITY_COMMAND("add-internet-password", keychain_add_internet_password,
                  "Add an internet password item.")
 
 SECURITY_COMMAND("item", keychain_item,
-                 "[-v] [-y | -Y passcode] [-a|-D|-u attr=value,...|[-q|-s groupKitGroup][-j][-g] attr=value,...] [-d password | -f datafile] [attr=value,...]\n"
+                 "[-v] [-y | -Y passcode] [-a|-D|-u attr=value,...|[-q|-s group][-j][-g] attr=value,...] [-d password | -f datafile] [attr=value,...]\n"
                  "-y Prompt for passcode to authenticate (not available on tvOS/bridge)\n"
                  "-Y use specified passcode to authenticate (not available on tvOS/bridge)\n"
                  "   For devices w/o a passcode set, use the empty string: -Y ''\n"
@@ -38,7 +38,7 @@ SECURITY_COMMAND("item", keychain_item,
                  "-j When printing results, print JSON\n"
                  "-p Get persistent reference\n"
                  "-P Find an item based on a persistent reference\n"
-                 "-s Share matching items with the given GroupKit group\n"
+                 "-s Share matching items with the given sharing group\n"
                  "Add, query, update, delete, or share items in the keychain.  Extra attr=value pairs after options always apply to the query\n"
                  "class=[genp|inet|cert|keys] is required for the query\n"
                  "To search the synchronizable items (not searched by default) use sync=1 as an attr=value pair.\n"
@@ -138,8 +138,9 @@ SECURITY_COMMAND("delete-generic-password", keychain_delete_generic_password,
                  "Delete one or more generic password items.")
 
 SECURITY_COMMAND_IOS("keychain-export", keychain_export,
-                 "-k <keybag> [-p password ] <plist>\n"
-                 "    <keybag>   keybag file name. (Can be created with keystorectl)\n"
+                 "[ -k <keybag> [-p password ] ] <plist>\n"
+                 "    <keybag>   keybag file name (optional, can be created with keystorectl)\n"
+                 "               if unspecified, use default backup behavior\n"
                  "    <password> backup password (optional)\n"
                  "    <plist>    backup plist file\n",
                  "Export keychain to a plist file.")
@@ -150,6 +151,11 @@ SECURITY_COMMAND_IOS("keychain-import", keychain_import,
                  "    <password> backup password (optional)\n"
                  "    <plist>    backup plist file\n",
                  "Import keychain from a plist file.")
+
+SECURITY_COMMAND_IOS("keychain-backup-get-uuid", keychain_backup_get_uuid,
+                 "<plist>\n"
+                 "    <plist>    backup plist file\n",
+                 "Get the keybag UUID from a keychain backup plist file.")
 
 SECURITY_COMMAND_IOS("pkcs12", pkcs12_util,
                  "[options] -p <password> file\n"
@@ -318,3 +324,7 @@ SECURITY_COMMAND("stuff-keychain", stuff_keychain,
 SECURITY_COMMAND("tickle", tickle,
                  "",
                  "Tickle DB to possibly upgrade.")
+
+SECURITY_COMMAND("test-application-identifier", test_application_identifier,
+                 "",
+                 "Test application-identifier behavior.")

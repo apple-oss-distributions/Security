@@ -40,8 +40,8 @@
 #include "Security/SecBase.h"
 #include "SecAutorelease.h"
 #include <os/assumes.h>
-#include <xpc/private.h>    // xpc_transaction_exit_clean()
-
+#include <os/lock_private.h>
+#include <pthread.h>
 
 //
 // Architecturally inverted files
@@ -92,13 +92,13 @@ struct __OpaqueSecDb {
     CFMutableArrayRef idleWriteConnections;     // up to kSecDbMaxWriters of them (currently 1, requires locking change for >1)
     CFMutableArrayRef idleReadConnections;      // up to kSecDbMaxReaders of them
     pthread_mutex_t writeMutex;
-    pthread_mutexattr_t writeMutexAttrs;
     // TODO: Replace after we have rdar://problem/60961964
     dispatch_semaphore_t readSemaphore;
 
     bool didFirstOpen;
     bool (^opened)(SecDbRef db, SecDbConnectionRef dbconn, bool didCreate, bool *callMeAgainForNextConnection, CFErrorRef *error);
     bool callOpenedHandlerForNextConnection;
+    os_unfair_lock notifyPhaseLock;
     CFMutableArrayRef notifyPhase; /* array of SecDBNotifyBlock */
     mode_t mode; /* database file permissions */
     bool readWrite; /* open database read-write */
@@ -248,39 +248,13 @@ CFGiblisFor(SecDb)
 
 SecDbRef
 SecDbCreate(CFStringRef dbName, mode_t mode, bool readWrite, bool allowRepair, bool useWAL, bool useRobotVacuum, uint8_t maxIdleHandles,
-                       bool (^opened)(SecDbRef db, SecDbConnectionRef dbconn, bool didCreate, bool *callMeAgainForNextConnection, CFErrorRef *error))
+            bool (^opened)(SecDbRef db, SecDbConnectionRef dbconn, bool didCreate, bool *callMeAgainForNextConnection, CFErrorRef *error))
 {
     SecDbRef db = NULL;
 
     db = CFTypeAllocate(SecDb, struct __OpaqueSecDb, kCFAllocatorDefault);
     require(db != NULL, done);
 
-    CFStringPerformWithCString(dbName, ^(const char *dbNameStr) {
-        db->queue = dispatch_queue_create(dbNameStr, DISPATCH_QUEUE_SERIAL);
-    });
-    CFStringRef commitQueueStr = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%@-commit"), dbName);
-    CFStringPerformWithCString(commitQueueStr, ^(const char *cqNameStr) {
-        db->commitQueue = dispatch_queue_create(cqNameStr, DISPATCH_QUEUE_CONCURRENT);
-    });
-    CFReleaseNull(commitQueueStr);
-    db->readSemaphore = dispatch_semaphore_create(kSecDbMaxReaders);
-
-    bool mutexAttrSuccess =  (0 == pthread_mutexattr_init(&(db->writeMutexAttrs)));
-    if(mutexAttrSuccess) {
-        mutexAttrSuccess = (0 == pthread_mutexattr_setpolicy_np(&(db->writeMutexAttrs), PTHREAD_MUTEX_POLICY_FAIRSHARE_NP));
-    }
-
-    if(!mutexAttrSuccess) {
-        seccritical("SecDb: SecDbCreate failed to create attributes for the write mutex; fairness properties are no longer present");
-    }
-
-    if (pthread_mutex_init(&(db->writeMutex), (mutexAttrSuccess ? &(db->writeMutexAttrs) : NULL)) != 0) {
-        seccritical("SecDb: SecDbCreate failed to init the write mutex, this will end badly");
-    }
-
-    db->idleWriteConnections = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
-    db->idleReadConnections = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
-    db->opened = opened ? Block_copy(opened) : NULL;
     if (getenv("__OSINSTALL_ENVIRONMENT") != NULL) {
         // TODO: Move this code out of this layer
         secinfo("#SecDB", "SecDB: running from installer");
@@ -289,6 +263,37 @@ SecDbCreate(CFStringRef dbName, mode_t mode, bool readWrite, bool allowRepair, b
     } else {
         db->db_path = CFStringCreateCopy(kCFAllocatorDefault, dbName);
     }
+    CFStringPerformWithCString(dbName, ^(const char *dbNameStr) {
+        db->queue = dispatch_queue_create(dbNameStr, DISPATCH_QUEUE_SERIAL);
+    });
+    CFStringRef commitQueueStr = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%@-commit"), dbName);
+    CFStringPerformWithCString(commitQueueStr, ^(const char *cqNameStr) {
+        db->commitQueue = dispatch_queue_create(cqNameStr, DISPATCH_QUEUE_CONCURRENT);
+    });
+    CFReleaseNull(commitQueueStr);
+    db->idleWriteConnections = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
+    db->idleReadConnections = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
+    pthread_mutexattr_t writeMutexAttrs;
+    bool mutexAttrSuccess =  (0 == pthread_mutexattr_init(&writeMutexAttrs));
+    if(mutexAttrSuccess) {
+        mutexAttrSuccess = (0 == pthread_mutexattr_setpolicy_np(&writeMutexAttrs, PTHREAD_MUTEX_POLICY_FAIRSHARE_NP));
+    }
+
+    if(!mutexAttrSuccess) {
+        seccritical("SecDb: SecDbCreate failed to create attributes for the write mutex; fairness properties are no longer present");
+    }
+    if (pthread_mutex_init(&(db->writeMutex), (mutexAttrSuccess ? &writeMutexAttrs : NULL)) != 0) {
+        seccritical("SecDb: SecDbCreate failed to init the write mutex, this will end badly");
+    }
+    pthread_mutexattr_destroy(&writeMutexAttrs);
+
+    db->readSemaphore = dispatch_semaphore_create(kSecDbMaxReaders);
+
+    db->didFirstOpen = false;
+    db->opened = Block_copy(opened);
+    db->callOpenedHandlerForNextConnection = false;
+    db->notifyPhaseLock = OS_UNFAIR_LOCK_INIT;
+    db->notifyPhase = NULL;
     db->mode = mode;
     db->readWrite = readWrite;
     db->allowRepair = allowRepair;
@@ -314,36 +319,57 @@ SecDbIdleConnectionCount(SecDbRef db) {
 void SecDbAddNotifyPhaseBlock(SecDbRef db, SecDBNotifyBlock notifyPhase)
 {
 #if !TARGET_OS_BRIDGE
-    // SecDbNotifyPhase seems to mostly be called on the db's commitQueue, and not the db's queue. Therefore, protect the array with that queue.
-    dispatch_sync(db->commitQueue, ^{
-        SecDBNotifyBlock block = Block_copy(notifyPhase); /* Force the block off the stack */
-        if (db->notifyPhase == NULL) {
-            db->notifyPhase = CFArrayCreateMutableForCFTypes(NULL);
-        }
-        CFArrayAppendValue(db->notifyPhase, block);
-        Block_release(block);
-    });
+    os_unfair_lock_lock(&db->notifyPhaseLock);
+    SecDBNotifyBlock block = Block_copy(notifyPhase); /* Force the block off the stack */
+    if (db->notifyPhase == NULL) {
+        db->notifyPhase = CFArrayCreateMutableForCFTypes(NULL);
+    }
+    CFArrayAppendValue(db->notifyPhase, block);
+    Block_release(block);
+    os_unfair_lock_unlock(&db->notifyPhaseLock);
 #endif
+}
+
+static CFArrayRef SecDbCopyNotifyPhase(SecDbRef db) {
+    CFArrayRef ret = NULL;
+#if !TARGET_OS_BRIDGE
+    os_unfair_lock_lock(&db->notifyPhaseLock);
+    if (db->notifyPhase != NULL) {
+        ret = CFArrayCreateCopy(kCFAllocatorDefault, db->notifyPhase);
+    }
+    os_unfair_lock_unlock(&db->notifyPhaseLock);
+#endif    
+    return ret;
+}
+
+static bool SecDbNotifyPhaseNonNull(SecDbRef db) {
+    bool ret = false;
+#if !TARGET_OS_BRIDGE
+    os_unfair_lock_lock(&db->notifyPhaseLock);
+    ret = db->notifyPhase != NULL;
+    os_unfair_lock_unlock(&db->notifyPhaseLock);
+#endif    
+    return ret;
 }
 
 static void SecDbNotifyPhase(SecDbConnectionRef dbconn, SecDbTransactionPhase phase) {
 #if !TARGET_OS_BRIDGE
-    if (CFArrayGetCount(dbconn->changes)) {
-        CFArrayRef changes = dbconn->changes;
-        dbconn->changes = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
-        if (dbconn->db->notifyPhase) {
-            CFArrayForEach(dbconn->db->notifyPhase, ^(const void *value) {
-                SecDBNotifyBlock notifyBlock = (SecDBNotifyBlock)value;
-                notifyBlock(dbconn, phase, dbconn->source, changes);
-            });
-        }
-        CFReleaseSafe(changes);
+    CFArrayRef changes = dbconn->changes;
+    if (CFArrayGetCount(changes) == 0) {
+        return;
     }
+    CFArrayRef notifyPhase = SecDbCopyNotifyPhase(dbconn->db);
+    if (notifyPhase == NULL) {
+        return;
+    }
+    dbconn->changes = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
+    CFArrayForEach(notifyPhase, ^(const void *value) {
+            SecDBNotifyBlock notifyBlock = (SecDBNotifyBlock)value;
+            notifyBlock(dbconn, phase, dbconn->source, changes);
+        });
+    CFReleaseSafe(changes);
+    CFReleaseSafe(notifyPhase);
 #endif
-}
-
-static void SecDbOnNotify(SecDbConnectionRef dbconn, void (^perform)(void)) {
-    perform();
 }
 
 CFStringRef SecDbGetPath(SecDbRef db) {
@@ -589,30 +615,37 @@ SecDbExec(SecDbConnectionRef dbconn, CFStringRef sql, CFErrorRef *error)
     return ok;
 }
 
-static int SecDBGetInteger(SecDbConnectionRef dbconn, CFStringRef sql)
+int SecDBGetInteger(SecDbConnectionRef dbconn, CFStringRef sql, int defaultValue)
 {
-    __block int number = -1;
+    __block bool ok = true;
+    __block int number = defaultValue;
     __block CFErrorRef error = NULL;
 
-    (void)SecDbWithSQL(dbconn, sql, &error, ^bool(sqlite3_stmt *sqlStmt) {
-        (void)SecDbStep(dbconn, sqlStmt, &error, ^(bool *stop) {
+    ok &= SecDbWithSQL(dbconn, sql, &error, ^bool(sqlite3_stmt *sqlStmt) {
+        ok &= SecDbStep(dbconn, sqlStmt, &error, ^(bool *stop) {
             number = sqlite3_column_int(sqlStmt, 0);
             *stop = true;
         });
         return true;
     });
+
+    if (!ok) {
+        secerror("SecDBGetInteger [%@] failed: %@", sql, error);
+    }
+
     CFReleaseNull(error);
+
     return number;
 }
 
 
 void SecDBManagementTasks(SecDbConnectionRef dbconn)
 {
-    int64_t page_count = SecDBGetInteger(dbconn, CFSTR("pragma page_count"));
+    int64_t page_count = SecDBGetInteger(dbconn, CFSTR("pragma page_count"), -1);
     if (page_count <= 0) {
         return;
     }
-    int64_t free_count = SecDBGetInteger(dbconn, CFSTR("pragma freelist_count"));
+    int64_t free_count = SecDBGetInteger(dbconn, CFSTR("pragma freelist_count"), -1);
     if (free_count < 0) {
         return;
     }
@@ -669,6 +702,11 @@ static bool SecDbBeginTransaction(SecDbConnectionRef dbconn, SecDbTransactionTyp
             dbconn->source = kSecDbCKKSTransaction;
             query = CFSTR("BEGIN EXCLUSIVE");
             break;
+        case kSecDbExclusiveKCSharingTransactionType:
+            secdebug("db", "SecDbBeginTransaction %skSecDbExclusiveKCSharingTransactionType %p", dbconn->readOnly ? "Readonly " : "", dbconn);
+            dbconn->source = kSecDbKCSharingTransaction;
+            query = CFSTR("BEGIN EXCLUSIVE");
+            break;
         case kSecDbExclusiveTransactionType:
             secdebug("db", "SecDbBeginTransaction %skSecDbExclusiveTransactionType %p", dbconn->readOnly ? "Readonly " : "", dbconn);
             query = CFSTR("BEGIN EXCLUSIVE");
@@ -719,7 +757,7 @@ static bool SecDbEndTransaction(SecDbConnectionRef dbconn, bool commit, CFErrorR
         if(!dbconn->readOnly) {
             SecDbNotifyPhase(dbconn, commited ? kSecDbTransactionDidCommit : kSecDbTransactionDidRollback);
         }
-        secdebug("db", "SecDbEndTransaction %s %s %p", dbconn->readOnly ? "Readonly" : "", "commited" ? "kSecDbTransactionDidCommit" : "kSecDbTransactionDidRollback", dbconn);
+        secdebug("db", "SecDbEndTransaction %s %s %p", dbconn->readOnly ? "Readonly" : "", commited ? "kSecDbTransactionDidCommit" : "kSecDbTransactionDidRollback", dbconn);
         dbconn->source = kSecDbAPITransaction;
 
         if (commit && dbconn->db->useRobotVacuum && !dbconn->readOnly) {
@@ -1163,7 +1201,7 @@ static bool SecDbPerformFirstOpen(SecDbRef db, SecDbConnectionRef* dbconnRef, CF
             *error = localError;
             localError = NULL;
         }
-
+        // rdar://112992022 Should we release firstOpenDbConn here?
         return false;
     }
     CFReleaseNull(localError);
@@ -1210,8 +1248,11 @@ static bool SecDbPerformFirstOpen(SecDbRef db, SecDbConnectionRef* dbconnRef, CF
 
     secinfo("#SecDB", "#SecDB ending maintenance");
 
-    // first connection always created "rw", so add it to the pool
-    CFArrayAppendValue(db->idleWriteConnections, firstOpenDbConn);
+    if (ok) {
+        // first connection always created "rw", so add it to the pool
+        // but only if nothing above failed
+        CFArrayAppendValue(db->idleWriteConnections, firstOpenDbConn);
+    }
     CFReleaseNull(firstOpenDbConn);
 
     // Clear the dbconnRef, as it no longer owns the connection anymore
@@ -1699,7 +1740,9 @@ bool SecDbForEach(SecDbConnectionRef dbconn, sqlite3_stmt *stmt, CFErrorRef *err
 }
 
 void SecDbRecordChange(SecDbConnectionRef dbconn, CFTypeRef deleted, CFTypeRef inserted) {
-    if (!dbconn->db->notifyPhase) return;
+    if (!SecDbNotifyPhaseNonNull(dbconn->db)) {
+        return;
+    }
     CFTypeRef entry = SecDbEventCreateWithComponents(deleted, inserted);
     if (entry) {
         CFArrayAppendValue(dbconn->changes, entry);
@@ -1709,9 +1752,7 @@ void SecDbRecordChange(SecDbConnectionRef dbconn, CFTypeRef deleted, CFTypeRef i
             secerror("db %@ changed outside txn", dbconn);
             // Only notify of DidCommit, since WillCommit code assumes
             // we are in a txn.
-            SecDbOnNotify(dbconn, ^{
-                SecDbNotifyPhase(dbconn, kSecDbTransactionDidCommit);
-            });
+            SecDbNotifyPhase(dbconn, kSecDbTransactionDidCommit);
         }
     }
 }

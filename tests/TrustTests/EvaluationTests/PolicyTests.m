@@ -107,7 +107,7 @@ const NSString *kSecTrustTestPinnningTest = @"PinningPolicyTrustTest";
 {
     SecCertificateRef baltimoreRoot = NULL, appleISTCA2 = NULL, pinnedNonCT = NULL;
     SecTrustRef trust = NULL;
-    SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("caldav.icloud.com"));
+    SecPolicyRef policy = SecPolicyCreateSSL(true, CFSTR("p02-ckdatabasews.icloud.com"));
     NSDate *date = [NSDate dateWithTimeIntervalSinceReferenceDate:676000000.0]; // June 3, 2022 at 6:46:40 PM PDT
     NSArray *certs = nil, *enforcement_anchors = nil;
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.security"];
@@ -118,7 +118,7 @@ const NSString *kSecTrustTestPinnningTest = @"PinningPolicyTrustTest";
     require_action(appleISTCA2 = (__bridge SecCertificateRef)[self SecCertificateCreateFromResource:@"AppleISTCA2G1-Baltimore"
                                                                                        subdirectory:(NSString *)kSecTrustTestPinningPolicyResources],
                    errOut, fail("failed to create apple IST CA"));
-    require_action(pinnedNonCT = (__bridge SecCertificateRef)[self SecCertificateCreateFromResource:@"caldav"
+    require_action(pinnedNonCT = (__bridge SecCertificateRef)[self SecCertificateCreateFromResource:@"ckdatabasews"
                                                                                        subdirectory:(NSString *)kSecTrustTestPinningPolicyResources],
                    errOut, fail("failed to create deprecated SSL Server cert"));
 
@@ -954,6 +954,7 @@ errOut:
     SecPolicySetSHA256Pins(policy, NULL, (__bridge CFArrayRef)pins);
     SecTrustSetPolicies(test.trust, policy);
     XCTAssert([test evaluate:nil]);
+    CFReleaseNull(policy);
 }
 
 static void test_shortcut_signing(CFDateRef date, bool disableTemporalCheck, bool useShortcutPolicy, bool expectedResult)
@@ -1062,6 +1063,232 @@ exit:
     CFBridgingRelease((__bridge SecCertificateRef)intermediate);
     CFReleaseNull(noExpirationPolicy);
     CFReleaseNull(expirationPolicy);
+}
+
+- (void)testLargePolicyTreeLimit
+{
+    static const UInt8 *blobs[31] = {
+        lptcert_00, lptcert_01, lptcert_02, lptcert_03, lptcert_04, lptcert_05, lptcert_06, lptcert_07,
+        lptcert_08, lptcert_09, lptcert_10, lptcert_11, lptcert_12, lptcert_13, lptcert_14, lptcert_15,
+        lptcert_16, lptcert_17, lptcert_18, lptcert_19, lptcert_20, lptcert_21, lptcert_22, lptcert_23,
+        lptcert_24, lptcert_25, lptcert_26, lptcert_27, lptcert_28, lptcert_29, lptcert_30
+    };
+    CFIndex lengths[31] = {
+        sizeof(lptcert_00), sizeof(lptcert_01), sizeof(lptcert_02), sizeof(lptcert_03),
+        sizeof(lptcert_04), sizeof(lptcert_05), sizeof(lptcert_06), sizeof(lptcert_07),
+        sizeof(lptcert_08), sizeof(lptcert_09), sizeof(lptcert_10), sizeof(lptcert_11),
+        sizeof(lptcert_12), sizeof(lptcert_13), sizeof(lptcert_14), sizeof(lptcert_15),
+        sizeof(lptcert_16), sizeof(lptcert_17), sizeof(lptcert_18), sizeof(lptcert_19),
+        sizeof(lptcert_20), sizeof(lptcert_21), sizeof(lptcert_22), sizeof(lptcert_23),
+        sizeof(lptcert_24), sizeof(lptcert_25), sizeof(lptcert_26), sizeof(lptcert_27),
+        sizeof(lptcert_28), sizeof(lptcert_29), sizeof(lptcert_30)
+    };
+    CFAbsoluteTime startTime, finishTime;
+    CFMutableArrayRef certs = NULL;
+    SecPolicyRef policy = NULL;
+    TestTrustEvaluation *test = nil;
+
+    isnt(certs = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "certs");
+    if (!certs) { goto exit; }
+    for (CFIndex idx=0; idx<31; idx++) {
+        SecCertificateRef certificate = NULL;
+        isnt(certificate = SecCertificateCreateWithBytes(kCFAllocatorDefault, blobs[idx], lengths[idx]), NULL, "cert");
+        CFArrayAppendValue(certs, certificate);
+        CFReleaseNull(certificate);
+    }
+    isnt(policy = SecPolicyCreateBasicX509(), NULL, "policy");
+    test = [[TestTrustEvaluation alloc] initWithCertificates:(__bridge NSArray*)certs policies:(__bridge id)policy];
+    // the primary goal of this test is to check that evaluation completes within one second
+    startTime = CFAbsoluteTimeGetCurrent();
+    [test evaluate:nil];
+    finishTime = CFAbsoluteTimeGetCurrent();
+    XCTAssert(finishTime >= startTime && ((finishTime - startTime) <= 1));
+exit:
+    CFReleaseNull(policy);
+    CFReleaseNull(certs);
+}
+
+- (void)testMDLTerminalAuth
+{
+    OSStatus err;
+    CFIndex errcode = errSecSuccess;
+    CFMutableArrayRef certs = NULL;
+    CFMutableArrayRef anchors = NULL;
+    SecCertificateRef leaf = NULL, ca = NULL, root = NULL;
+    SecPolicyRef policy = NULL;
+    CFDateRef date = NULL;
+    SecTrustRef trust = NULL;
+    CFErrorRef error = NULL;
+    bool isTrusted = false;
+
+    isnt(leaf = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdlterminalauth_leaf, sizeof(mdlterminalauth_leaf)), NULL, "leaf");
+    isnt(ca = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdlterminalauth_ca, sizeof(mdlterminalauth_ca)), NULL, "ca");
+    isnt(root = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdlterminalauth_root, sizeof(mdlterminalauth_root)), NULL, "root");
+    isnt(certs = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "certs");
+    if (!certs) { goto exit; }
+    CFArrayAppendValue(certs, leaf);
+    CFArrayAppendValue(certs, ca);
+
+    // check EKU extension value, but don't check for leaf BC extension
+    isnt(policy = SecPolicyCreateMDLTerminalAuth(true, false), NULL, "policy");
+    if (!policy) { goto exit; }
+
+    is(err = SecTrustCreateWithCertificates(certs, policy, &trust), errSecSuccess, "trust");
+    if (err != errSecSuccess || trust == NULL) { goto exit; }
+
+    // set anchors
+    isnt(anchors = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "anchors");
+    if (!anchors) { goto exit; }
+    CFArrayAppendValue(anchors, root);
+    is(err = SecTrustSetAnchorCertificates(trust, anchors), errSecSuccess, "set anchors");
+    if (err != errSecSuccess) { goto exit; }
+
+    // set verify date: Apr 15 2023
+    isnt(date = CFDateCreate(NULL, 703290000.0), NULL, "create verify date");
+    if (!date) { goto exit; }
+    is(err = SecTrustSetVerifyDate(trust, date), errSecSuccess, "set verify date");
+    if (err != errSecSuccess) { goto exit; }
+
+    isTrusted = SecTrustEvaluateWithError(trust, &error);
+    if (!isTrusted) {
+        if (error) {
+            errcode = CFErrorGetCode(error);
+        } else {
+            errcode = errSecInternalComponent;
+        }
+    }
+    is(errcode, errSecSuccess, "check error code is success");
+    is(isTrusted, true, "check trust result is true");
+exit:
+    CFReleaseSafe(error);
+    CFReleaseSafe(trust);
+    CFReleaseSafe(date);
+    CFReleaseSafe(policy);
+    CFReleaseSafe(anchors);
+    CFReleaseSafe(certs);
+    CFReleaseSafe(leaf);
+    CFReleaseSafe(ca);
+    CFReleaseSafe(root);
+}
+
+- (void)testMDLTerminalAuthInvalidKeyUsage
+{
+    OSStatus err;
+    CFIndex errcode = errSecSuccess;
+    CFMutableArrayRef certs = NULL;
+    CFMutableArrayRef anchors = NULL;
+    SecCertificateRef leaf = NULL, root = NULL;
+    SecPolicyRef policy = NULL;
+    CFDateRef date = NULL;
+    SecTrustRef trust = NULL;
+    CFErrorRef error = NULL;
+    bool isTrusted = false;
+
+    isnt(leaf = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdltest_invalid_ku_leaf, sizeof(mdltest_invalid_ku_leaf)), NULL, "leaf");
+    isnt(root = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdltest_root, sizeof(mdltest_root)), NULL, "root");
+    isnt(certs = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "certs");
+    if (!certs) { goto exit; }
+    CFArrayAppendValue(certs, leaf);
+
+    // check EKU extension value, but don't check for leaf BC extension
+    isnt(policy = SecPolicyCreateMDLTerminalAuth(true, false), NULL, "policy");
+    if (!policy) { goto exit; }
+
+    is(err = SecTrustCreateWithCertificates(certs, policy, &trust), errSecSuccess, "trust");
+    if (err != errSecSuccess || trust == NULL) { goto exit; }
+
+    // set anchors
+    isnt(anchors = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "anchors");
+    if (!anchors) { goto exit; }
+    CFArrayAppendValue(anchors, root);
+    is(err = SecTrustSetAnchorCertificates(trust, anchors), errSecSuccess, "set anchors");
+    if (err != errSecSuccess) { goto exit; }
+
+    // set verify date: Apr 15 2023
+    isnt(date = CFDateCreate(NULL, 703290000.0), NULL, "create verify date");
+    if (!date) { goto exit; }
+    is(err = SecTrustSetVerifyDate(trust, date), errSecSuccess, "set verify date");
+    if (err != errSecSuccess) { goto exit; }
+
+    isTrusted = SecTrustEvaluateWithError(trust, &error);
+    if (!isTrusted) {
+        if (error) {
+            errcode = CFErrorGetCode(error);
+        } else {
+            errcode = errSecInternalComponent;
+        }
+    }
+    isnt(errcode, errSecSuccess, "check error code is non-success");
+    isnt(isTrusted, true, "check trust result is false");
+exit:
+    CFReleaseSafe(error);
+    CFReleaseSafe(trust);
+    CFReleaseSafe(date);
+    CFReleaseSafe(policy);
+    CFReleaseSafe(anchors);
+    CFReleaseSafe(certs);
+    CFReleaseSafe(leaf);
+    CFReleaseSafe(root);
+}
+
+- (void)testMDLTerminalAuthUnknownCritical
+{
+    OSStatus err;
+    CFIndex errcode = errSecSuccess;
+    CFMutableArrayRef certs = NULL;
+    CFMutableArrayRef anchors = NULL;
+    SecCertificateRef leaf = NULL, root = NULL;
+    SecPolicyRef policy = NULL;
+    CFDateRef date = NULL;
+    SecTrustRef trust = NULL;
+    CFErrorRef error = NULL;
+    bool isTrusted = false;
+
+    isnt(leaf = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdltest_unknown_critical_leaf, sizeof(mdltest_unknown_critical_leaf)), NULL, "leaf");
+    isnt(root = SecCertificateCreateWithBytes(kCFAllocatorDefault, mdltest_root, sizeof(mdltest_root)), NULL, "root");
+    isnt(certs = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "certs");
+    if (!certs) { goto exit; }
+    CFArrayAppendValue(certs, leaf);
+
+    // check EKU extension value, but don't check for leaf BC extension
+    isnt(policy = SecPolicyCreateMDLTerminalAuth(true, false), NULL, "policy");
+    if (!policy) { goto exit; }
+
+    is(err = SecTrustCreateWithCertificates(certs, policy, &trust), errSecSuccess, "trust");
+    if (err != errSecSuccess || trust == NULL) { goto exit; }
+
+    // set anchors
+    isnt(anchors = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks), NULL, "anchors");
+    if (!anchors) { goto exit; }
+    CFArrayAppendValue(anchors, root);
+    is(err = SecTrustSetAnchorCertificates(trust, anchors), errSecSuccess, "set anchors");
+    if (err != errSecSuccess) { goto exit; }
+
+    // set verify date: Apr 15 2023
+    isnt(date = CFDateCreate(NULL, 703290000.0), NULL, "create verify date");
+    if (!date) { goto exit; }
+    is(err = SecTrustSetVerifyDate(trust, date), errSecSuccess, "set verify date");
+    if (err != errSecSuccess) { goto exit; }
+
+    isTrusted = SecTrustEvaluateWithError(trust, &error);
+    if (!isTrusted) {
+        if (error) {
+            errcode = CFErrorGetCode(error);
+        } else {
+            errcode = errSecInternalComponent;
+        }
+    }
+    isnt(errcode, errSecSuccess, "check error code is non-success");
+    isnt(isTrusted, true, "check trust result is false");
+exit:
+    CFReleaseSafe(error);
+    CFReleaseSafe(trust);
+    CFReleaseSafe(date);
+    CFReleaseSafe(policy);
+    CFReleaseSafe(anchors);
+    CFReleaseSafe(certs);
+    CFReleaseSafe(leaf);
+    CFReleaseSafe(root);
 }
 
 @end

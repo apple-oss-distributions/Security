@@ -2,7 +2,7 @@
 
 extension OctagonPairingTests {
     func test2ClientsBothOctagonAndSOS() throws {
-        OctagonSetPlatformSupportsSOS(true)
+        OctagonSetSOSFeatureEnabled(true)
         self.startCKAccountStatusMock()
 
         self.getAcceptorInCircle()
@@ -11,10 +11,11 @@ extension OctagonPairingTests {
         let initiator1Context = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
         let initiator2Context = self.manager.context(forContainerName: OTCKContainerName,
                                                      contextID: initiator2ContextID,
-                                                     sosAdapter: self.mockSOSAdapter,
+                                                     sosAdapter: self.mockSOSAdapter!,
                                                      accountsAdapter: self.mockAuthKit2,
                                                      authKitAdapter: self.mockAuthKit2,
                                                      tooManyPeersAdapter: self.mockTooManyPeers,
+                                                     tapToRadarAdapter: self.mockTapToRadar,
                                                      lockStateTracker: self.lockStateTracker,
                                                      deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-initiator-2", serialNumber: "456", osVersion: "iOS (fake version)"))
 
@@ -316,7 +317,7 @@ extension OctagonPairingTests {
     }
 
     func test2ClientsOctagonOnly() throws {
-        OctagonSetPlatformSupportsSOS(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.getAcceptorInCircle()
@@ -325,10 +326,11 @@ extension OctagonPairingTests {
         let initiator1Context = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
         let initiator2Context = self.manager.context(forContainerName: OTCKContainerName,
                                                      contextID: initiator2ContextID,
-                                                     sosAdapter: self.mockSOSAdapter,
+                                                     sosAdapter: self.mockSOSAdapter!,
                                                      accountsAdapter: self.mockAuthKit2,
                                                      authKitAdapter: self.mockAuthKit2,
                                                      tooManyPeersAdapter: self.mockTooManyPeers,
+                                                     tapToRadarAdapter: self.mockTapToRadar,
                                                      lockStateTracker: self.lockStateTracker,
                                                      deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-initiator-2", serialNumber: "456", osVersion: "iOS (fake version)"))
 
@@ -575,7 +577,7 @@ extension OctagonPairingTests {
     }
 
     func test2ClientsInterlacedOctagonAndSOS() throws {
-        OctagonSetPlatformSupportsSOS(true)
+        OctagonSetSOSFeatureEnabled(true)
         self.startCKAccountStatusMock()
 
         self.getAcceptorInCircle()
@@ -584,10 +586,11 @@ extension OctagonPairingTests {
         let initiator1Context = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
         let initiator2Context = self.manager.context(forContainerName: OTCKContainerName,
                                                      contextID: initiator2ContextID,
-                                                     sosAdapter: self.mockSOSAdapter,
+                                                     sosAdapter: self.mockSOSAdapter!,
                                                      accountsAdapter: self.mockAuthKit2,
                                                      authKitAdapter: self.mockAuthKit2,
                                                      tooManyPeersAdapter: self.mockTooManyPeers,
+                                                     tapToRadarAdapter: self.mockTapToRadar,
                                                      lockStateTracker: self.lockStateTracker,
                                                      deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-initiator-2", serialNumber: "456", osVersion: "iOS (fake version)"))
 
@@ -861,7 +864,7 @@ extension OctagonPairingTests {
     }
 
     func test2ClientsInterlacedOctagonOnly() throws {
-        OctagonSetPlatformSupportsSOS(false)
+        OctagonSetSOSFeatureEnabled(false)
         self.startCKAccountStatusMock()
 
         self.getAcceptorInCircle()
@@ -870,10 +873,11 @@ extension OctagonPairingTests {
         let initiator1Context = self.manager.context(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
         let initiator2Context = self.manager.context(forContainerName: OTCKContainerName,
                                                      contextID: initiator2ContextID,
-                                                     sosAdapter: self.mockSOSAdapter,
+                                                     sosAdapter: self.mockSOSAdapter!,
                                                      accountsAdapter: self.mockAuthKit2,
                                                      authKitAdapter: self.mockAuthKit2,
                                                      tooManyPeersAdapter: self.mockTooManyPeers,
+                                                     tapToRadarAdapter: self.mockTapToRadar,
                                                      lockStateTracker: self.lockStateTracker,
                                                      deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-initiator-2", serialNumber: "456", osVersion: "iOS (fake version)"))
 

@@ -8,7 +8,7 @@ class OctagonSOSTests: OctagonTestsBase {
 
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
 
         self.cuttlefishContext.startOctagonStateMachine()
 
@@ -28,8 +28,8 @@ class OctagonSOSTests: OctagonTestsBase {
         // CKKS will upload new TLKShares
         self.assertAllCKKSViewsUpload(tlkShares: 2)
         let newSOSPeer = createSOSPeer(peerID: peerID)
-        self.mockSOSAdapter.selfPeer = newSOSPeer
-        self.mockSOSAdapter.trustedPeers.add(newSOSPeer)
+        self.mockSOSAdapter!.selfPeer = newSOSPeer
+        self.mockSOSAdapter!.trustedPeers.add(newSOSPeer)
 
         // Now restart the context
         self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
@@ -57,7 +57,7 @@ class OctagonSOSTests: OctagonTestsBase {
 
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
 
         self.cuttlefishContext.startOctagonStateMachine()
 
@@ -77,9 +77,9 @@ class OctagonSOSTests: OctagonTestsBase {
         XCTAssertNotNil(peerID, "Should have a peer ID")
 
         let newSOSPeer = createSOSPeer(peerID: peerID)
-        self.mockSOSAdapter.selfPeer = newSOSPeer
+        self.mockSOSAdapter!.selfPeer = newSOSPeer
 
-        self.mockSOSAdapter.trustedPeers.add(newSOSPeer)
+        self.mockSOSAdapter!.trustedPeers.add(newSOSPeer)
 
         self.aksLockState = true
         self.lockStateTracker.recheck()
@@ -118,7 +118,7 @@ class OctagonSOSTests: OctagonTestsBase {
 
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
 
         self.cuttlefishContext.startOctagonStateMachine()
 
@@ -136,9 +136,9 @@ class OctagonSOSTests: OctagonTestsBase {
         XCTAssertNotNil(peerID, "Should have a peer ID")
 
         let newSOSPeer = createSOSPeer(peerID: peerID)
-        self.mockSOSAdapter.selfPeer = newSOSPeer
+        self.mockSOSAdapter!.selfPeer = newSOSPeer
 
-        self.mockSOSAdapter.trustedPeers.add(newSOSPeer)
+        self.mockSOSAdapter!.trustedPeers.add(newSOSPeer)
 
         // Now restart the context
         self.manager.removeContext(forContainerName: OTCKContainerName, contextID: OTDefaultContext)
@@ -174,7 +174,7 @@ class OctagonSOSTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         // Octagon establishes its identity before SOS joins
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
 
         self.assertResetAndBecomeTrustedInDefaultContext()
 
@@ -183,7 +183,7 @@ class OctagonSOSTests: OctagonTestsBase {
 
         // Now, SOS arrives
         let updateExpectation = self.expectation(description: "Octagon should inform SOS of its keys")
-        self.mockSOSAdapter.updateOctagonKeySetListener = { _ in
+        self.mockSOSAdapter!.updateOctagonKeySetListener = { _ in
             // Don't currently check the key set at all here
             updateExpectation.fulfill()
         }
@@ -191,10 +191,10 @@ class OctagonSOSTests: OctagonTestsBase {
         // CKKS will upload itself new shares (for the newly trusted SOS self peer)
         self.assertAllCKKSViewsUpload(tlkShares: 1)
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
         // Note: this should probably be sendSelfPeerChangedUpdate, but we don't have great fidelity around which peer
         // actually changed. So, just use this channel for now
-        self.mockSOSAdapter.sendTrustedPeerSetChangedUpdate()
+        self.mockSOSAdapter!.sendTrustedPeerSetChangedUpdate()
 
         self.wait(for: [updateExpectation], timeout: 10)
 
@@ -207,7 +207,6 @@ class OctagonSOSTests: OctagonTestsBase {
         OctagonSetSOSFeatureEnabled(false)
         let recoverykeyotcliqueContext = OTConfigurationContext()
         recoverykeyotcliqueContext.context = "recoveryContext"
-        recoverykeyotcliqueContext.dsid = "1234"
         recoverykeyotcliqueContext.altDSID = try XCTUnwrap(self.mockAuthKit.primaryAltDSID())
         recoverykeyotcliqueContext.otControl = self.otControl
 
@@ -220,92 +219,20 @@ class OctagonSOSTests: OctagonTestsBase {
             XCTFail("Shouldn't have errored making new friends: \(error)")
             throw error
         }
-        do {
-            try clique.joinAfterRestore()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        do {
-            try clique.isLastFriend()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        /*
-         * I don't see any way in swift to call a deprecated API.
-         * But, since we're not actually testing behavior here, it's
-         * okay to ignore.
-        do {
-            try clique.safariPasswordSyncingEnabled()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-         */
-
-        do {
-            try clique.waitForInitialSync()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        /*
-         * I don't see any way in swift to call a deprecated API.
-         * But, since we're not actually testing behavior here, it's
-         * okay to ignore.
-        clique.viewSet(Set(), disabledViews: Set())
-         */
-
-        do {
-            try clique.setUserCredentialsAndDSID("", password: Data())
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        do {
-            try clique.tryUserCredentialsAndDSID("", password: Data())
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        do {
-            try clique.peersHaveViewsEnabled([""])
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        do {
-            try clique.requestToJoinCircle()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-
-        clique.accountUserKeyAvailable()
-
-        do {
-            _ = try clique.copyViewUnawarePeerInfo()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
-        do {
-            _ = try clique.copyPeerPeerInfo()
-        } catch {
-            XCTAssertNotNil(error, "error should not be nil")
-        }
     }
 
     func testPreapproveSOSPeersWhenInCircle() throws {
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
-        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter!.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let peer2SOSMockPeer = self.createSOSPeer(peerID: "peer2ID")
-        self.mockSOSAdapter.trustedPeers.add(peer2SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer2SOSMockPeer)
         let peer2Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer2SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let peer3SOSMockPeer = self.createSOSPeer(peerID: "peer3ID")
-        self.mockSOSAdapter.trustedPeers.add(peer3SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer3SOSMockPeer)
         let peer3Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer3SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let establishTwiceExpectation = self.expectation(description: "establish should be called twice")
@@ -368,7 +295,7 @@ class OctagonSOSTests: OctagonTestsBase {
             return nil
         }
 
-        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter.allPeers(), essential: false)
+        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter!.allPeers(), essential: false)
         let peer2 = self.makeInitiatorContext(contextID: "peer2", authKitAdapter: self.mockAuthKit2, sosAdapter: peer2mockSOS)
 
         peer2.startOctagonStateMachine()
@@ -384,15 +311,15 @@ class OctagonSOSTests: OctagonTestsBase {
         // SOS returns 'trusted' peers without actually being in-circle
         // We don't want to preapprove those peers
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
-        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
+        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter!.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let peer2SOSMockPeer = self.createSOSPeer(peerID: "peer2ID")
-        self.mockSOSAdapter.trustedPeers.add(peer2SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer2SOSMockPeer)
         let peer2Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer2SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let peer3SOSMockPeer = self.createSOSPeer(peerID: "peer3ID")
-        self.mockSOSAdapter.trustedPeers.add(peer3SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer3SOSMockPeer)
         let peer3Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer3SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         self.fakeCuttlefishServer.establishListener = { request in
@@ -432,7 +359,7 @@ class OctagonSOSTests: OctagonTestsBase {
             return nil
         }
 
-        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter.allPeers(), essential: false)
+        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter!.allPeers(), essential: false)
         peer2mockSOS.circleStatus = SOSCCStatus(kSOSCCNotInCircle)
         let peer2 = self.makeInitiatorContext(contextID: "peer2", authKitAdapter: self.mockAuthKit2, sosAdapter: peer2mockSOS)
 
@@ -448,11 +375,11 @@ class OctagonSOSTests: OctagonTestsBase {
     func testRespondToNewOctagonPeerWhenUpdatingPreapprovedKeys() throws {
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
-        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        let peer1Preapproval = TPHashBuilder.hash(with: .SHA256, of: self.mockSOSAdapter!.selfPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let peer2SOSMockPeer = self.createSOSPeer(peerID: "peer2ID")
-        self.mockSOSAdapter.trustedPeers.add(peer2SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer2SOSMockPeer)
         let peer2Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer2SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         self.assertAllCKKSViewsUpload(tlkShares: 2)
@@ -466,13 +393,13 @@ class OctagonSOSTests: OctagonTestsBase {
         self.verifyDatabaseMocks()
 
         // Another peer arrives, but we miss the Octagon push
-        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter.allPeers(), essential: false)
+        let peer2mockSOS = CKKSMockSOSPresentAdapter(selfPeer: peer2SOSMockPeer, trustedPeers: self.mockSOSAdapter!.allPeers(), essential: false)
         let joiningContext = self.makeInitiatorContext(contextID: "joiner", authKitAdapter: self.mockAuthKit2, sosAdapter: peer2mockSOS)
         let peer2ID = self.assertJoinViaEscrowRecovery(joiningContext: joiningContext, sponsor: self.cuttlefishContext)
 
         // Now, SOS updates its key list: we should update our preapproved keys (and then also trust the newly-joined peer)
         let peer3SOSMockPeer = self.createSOSPeer(peerID: "peer3ID")
-        self.mockSOSAdapter.trustedPeers.add(peer3SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer3SOSMockPeer)
         let peer3Preapproval = TPHashBuilder.hash(with: .SHA256, of: peer3SOSMockPeer.publicSigningKey.encodeSubjectPublicKeyInfo())
 
         let updateKeysExpectation = self.expectation(description: "UpdateTrust should fire (once)")
@@ -495,7 +422,7 @@ class OctagonSOSTests: OctagonTestsBase {
         self.assertAllCKKSViewsUpload(tlkShares: 2)
 
         // to avoid CKKS race conditions (wherein it uploads each TLKShare in its own operation), send the SOS notification only to the Octagon context
-        // self.mockSOSAdapter.sendTrustedPeerSetChangedUpdate()
+        // self.mockSOSAdapter!.sendTrustedPeerSetChangedUpdate()
         self.cuttlefishContext.trustedPeerSetChanged(self.mockSOSAdapter)
         self.wait(for: [updateKeysExpectation], timeout: 10)
 
@@ -512,9 +439,9 @@ class OctagonSOSTests: OctagonTestsBase {
     func testResetCKKSViewsWithSOSPeers() throws {
         self.startCKAccountStatusMock()
 
-        self.mockSOSAdapter.circleStatus = SOSCCStatus(kSOSCCInCircle)
+        self.mockSOSAdapter!.circleStatus = SOSCCStatus(kSOSCCInCircle)
         let peer2SOSMockPeer = self.createSOSPeer(peerID: "peer2ID")
-        self.mockSOSAdapter.trustedPeers.add(peer2SOSMockPeer)
+        self.mockSOSAdapter!.trustedPeers.add(peer2SOSMockPeer)
 
         // CKKS will upload shares for the SOS peer?
         self.assertAllCKKSViewsUpload(tlkShares: 2)

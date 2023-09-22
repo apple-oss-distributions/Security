@@ -83,6 +83,7 @@ public:
     CFDictionaryRef copyDiskRepInformation();
 
 	std::string recommendedIdentifier(const SigningContext &ctx);
+	std::string explicitIdentifier();
 	CFDictionaryRef defaultResourceRules(const SigningContext &ctx);
 	const Requirements *defaultRequirements(const Architecture *arch, const SigningContext &ctx);
 	size_t pageSize(const SigningContext &ctx);
@@ -92,6 +93,7 @@ public:
 	CFArrayRef allowedResourceOmissions();
 
 	void registerStapledTicket();
+	CFDataRef copyStapledTicket();
 
 	bool appleInternalForcePlatform() const {return forcePlatform;};
 
@@ -116,7 +118,6 @@ private:
 	void validateMetaDirectory(const CodeDirectory* cd, SecCSFlags flags);
 	void validateFrameworkRoot(std::string root);
 	void checkPlainFile(UnixPlusPlus::FileDesc fd, const std::string& path);
-	void checkForks(UnixPlusPlus::FileDesc fd);
 	void checkMoved(CFURLRef oldPath, CFURLRef newPath);
 	void componentFromExec(bool fromExec);
 

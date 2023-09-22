@@ -25,25 +25,51 @@
 
 @implementation OTAuthKitActualAdapter
 
-- (BOOL)accountIsHSA2ByAltDSID:(NSString*)altDSID
+- (BOOL)accountIsCDPCapableByAltDSID:(NSString*)altDSID
 {
     if([ACAccount class] == nil || [AKAccountManager class] == nil) {
         secnotice("authkit", "AuthKit not available");
         return NO;
     }
 
-    BOOL hsa2 = NO;
+    BOOL isCdpCapable = NO;
 
     AKAccountManager *manager = [AKAccountManager sharedInstance];
     ACAccount *authKitAccount = [manager authKitAccountWithAltDSID:altDSID];
     AKAppleIDSecurityLevel securityLevel = [manager securityLevelForAccount:authKitAccount];
-    if(securityLevel == AKAppleIDSecurityLevelHSA2) {
-        hsa2 = YES;
+    if(securityLevel == AKAppleIDSecurityLevelHSA2 || securityLevel == AKAppleIDSecurityLevelManaged) {
+        isCdpCapable = YES;
     }
-    secnotice("security-authkit", "Security level for altDSID %@ is %lu", altDSID, (unsigned long)securityLevel);
-    return hsa2;
-}
 
+    NSString* accountType = nil;
+    switch (securityLevel)
+    {
+        case AKAppleIDSecurityLevelUnknown:
+            accountType = @"Unknown";
+            break;
+        case AKAppleIDSecurityLevelPasswordOnly:
+            accountType = @"PasswordOnly";
+            break;
+        case AKAppleIDSecurityLevelStandard:
+            accountType = @"Standard";
+            break;
+        case AKAppleIDSecurityLevelHSA1:
+            accountType = @"HSA1";
+            break;
+        case AKAppleIDSecurityLevelHSA2:
+            accountType = @"HSA2";
+            break;
+        case AKAppleIDSecurityLevelManaged:
+            accountType = @"Managed";
+            break;
+        default:
+            accountType = @"oh no please file a radar to Security | iCloud Keychain security level";
+            break;
+    }
+
+    secnotice("authkit", "Security level for altDSID %@ is %lu.  Account type: %@", [manager altDSIDForAccount:authKitAccount], (unsigned long)securityLevel, accountType);
+    return isCdpCapable;
+}
 
 - (BOOL)accountIsDemoAccountByAltDSID:(NSString*)altDSID error:(NSError**)error
 {
@@ -51,8 +77,7 @@
     ACAccount *authKitAccount = [manager authKitAccountWithAltDSID:altDSID];
     BOOL isDemo = [manager demoAccountForAccount:authKitAccount];
 
-    secnotice("security-authkit", "Account with altDSID %@ is a demo account: %@", altDSID, isDemo ? @"true" : @"false");
-
+    secnotice("authkit", "Account with altDSID %@ is a demo account: %{bool}d", altDSID, isDemo);
     return isDemo;
 }
 
@@ -92,19 +117,17 @@
     }
 
     secnotice("authkit", "fetched current machine ID as: %@", machineID);
-
     return machineID;
 }
 
-
 - (void)fetchCurrentDeviceListByAltDSID:(NSString*)altDSID
-                                  reply:(void (^)(NSSet<NSString*>* _Nullable machineIDs, NSError* _Nullable error))complete
+                                  reply:(void (^)(NSSet<NSString*>* _Nullable machineIDs, NSString* _Nullable version, NSError* _Nullable error))complete
 {
     if([AKDeviceListRequestContext class] == nil || [AKAppleIDAuthenticationController class] == nil) {
         secnotice("authkit", "AuthKit not available");
-        complete(nil, [NSError errorWithDomain:OctagonErrorDomain
-                                          code:OctagonErrorRequiredLibrariesNotPresent
-                                   description:@"AKAnisette not available"]);
+        complete(nil, nil, [NSError errorWithDomain:OctagonErrorDomain
+                                               code:OctagonErrorRequiredLibrariesNotPresent
+                                        description:@"AKAnisette not available"]);
         return;
     }
 
@@ -114,7 +137,7 @@
                                              code:OctagonErrorAuthKitAKDeviceListRequestContextClass
                                       description:@"can't get AKDeviceListRequestContextClass"];
         [[CKKSAnalytics logger] logUnrecoverableError:error forEvent:OctagonEventAuthKitDeviceList withAttributes:nil];
-        complete(nil, error);
+        complete(nil, nil, error);
         return;
     }
 
@@ -126,28 +149,28 @@
                                              code:OctagonErrorAuthKitNoAuthenticationController
                                       description:@"can't get authController"];
         [[CKKSAnalytics logger] logUnrecoverableError:error forEvent:OctagonEventAuthKitDeviceList withAttributes:nil];
-        complete(nil, error);
+        complete(nil, nil, error);
         return;
     }
 
-    [authController fetchDeviceListWithContext:context completion:^(NSArray<AKRemoteDevice *> *deviceList, NSError *error) {
-        if (deviceList) {
+    [authController deviceListWithContext:context completion:^(AKDeviceListResponse *response, NSError *error) {
+            if (error != nil) {
+                [[CKKSAnalytics logger] logUnrecoverableError:error forEvent:OctagonEventAuthKitDeviceList withAttributes:nil];
+                secnotice("authkit", "received no device list(%@): %@", altDSID, error);
+                complete(nil, nil, error);
+                return;
+            }
             NSMutableSet *mids = [[NSMutableSet alloc] init];
+            NSString* version = response.deviceListVersion;
 
-            for (AKRemoteDevice *device in deviceList) {
+            for (AKRemoteDevice *device in response.deviceList) {
                 [mids addObject:device.machineId];
+                secnotice("authkit", "Current machine ID on list for (%@) version %@: %@", altDSID, version, device.machineId);
             }
 
-            secnotice("authkit", "Current machine ID list: %@", mids);
-            complete(mids, error);
+            complete(mids, version, error);
             [[CKKSAnalytics logger] logSuccessForEventNamed:OctagonEventAuthKitDeviceList];
-
-        } else {
-            [[CKKSAnalytics logger] logUnrecoverableError:error forEvent:OctagonEventAuthKitDeviceList withAttributes:nil];
-            secnotice("authkit", "received no device list: %@", error);
-            complete(nil, error);
-        }
-    }];
+        }];
 }
 
 - (void)registerNotification:(id<OTAuthKitAdapterNotifier>)newNotifier
@@ -178,10 +201,10 @@
 {
     AKDeviceListDeltaMessagePayload* payload = [[AKDeviceListDeltaMessagePayload alloc] initWithResponseBody:notificationDictionary];
 
-    secnotice("authkit", "received notifyAKDeviceListDeltaMessagePayload: %@, parsed payload: %@",
+    secnotice("authkit", "received notifyAKDeviceListDeltaMessagePayload: %@, parsed payload: %{BOOL}d",
               notificationDictionary,
               // Logging the payload logs an address, so clean it up here.
-              payload ? @"YES" : @"NO");
+              payload != nil);
 
     [self.notifiers iterateListeners:^(id<OTAuthKitAdapterNotifier> listener) {
         NSString* altDSID = payload.altDSID;

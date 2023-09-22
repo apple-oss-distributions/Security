@@ -9,6 +9,7 @@
 #include "keychain/SecureObjectSync/SOSTransportMessage.h"
 #include "keychain/SecureObjectSync/SOSRing.h"
 #include <keychain/SecureObjectSync/SOSDictionaryUpdate.h>
+#include <Security/SecureObjectSync/SOSCloudCircleInternal.h>
 
 
 #include "keychain/SecureObjectSync/CKBridge/SOSCloudKeychainClient.h"
@@ -279,6 +280,11 @@ CF_RETURNS_RETAINED
 CFMutableArrayRef SOSTransportDispatchMessages(SOSAccountTransaction* txn, CFDictionaryRef updates, CFErrorRef *error){
     __block SOSAccount* account = txn.account;
     
+    IF_SOS_DISABLED_SERVER {
+        secnotice("nosos", "transport received a message for sos but the system is off");
+        return NULL;
+    }
+
     CFMutableArrayRef handledKeys = CFArrayCreateMutableForCFTypes(kCFAllocatorDefault);
     CFStringRef dsid = NULL;
     
@@ -296,24 +302,7 @@ CFMutableArrayRef SOSTransportDispatchMessages(SOSAccountTransaction* txn, CFDic
             }
         });
         
-        CFArrayForEach(transportsToUse, ^(const void *value) {
-            CKKeyParameter* tempTransport = (__bridge CKKeyParameter*) value;
-            
-            CFStringRef accountDSID = (CFStringRef)SOSAccountGetValue(account, kSOSDSIDKey, error);
-            
-            if(accountDSID == NULL){
-                secnotice("dsid", "Setting account to new because a new DSID is in KVS");
-                [tempTransport SOSTransportKeyParameterHandleNewAccount:tempTransport acct:account];
-                SOSAccountSetValue(account, kSOSDSIDKey, dsid, error);
-            } else if(accountDSID != NULL && CFStringCompare(accountDSID, dsid, 0) != 0 ) {
-                secnotice("dsid", "Setting account to new because a new DSID is in KVS");
-                [tempTransport SOSTransportKeyParameterHandleNewAccount:tempTransport acct:account];
-                SOSAccountSetValue(account, kSOSDSIDKey, dsid, error);
-            } else {
-                secdebug("dsid", "DSIDs are the same!");
-            }
-        });
-        
+        SOSAccountAssertDSID(account, dsid);
         CFReleaseNull(transportsToUse);
     
         CFArrayAppendValue(handledKeys, kSOSKVSAccountChangedKey);
@@ -332,8 +321,7 @@ CFMutableArrayRef SOSTransportDispatchMessages(SOSAccountTransaction* txn, CFDic
     
     __block CFDataRef newParameters = NULL;
     __block bool initial_sync = false;
-    __block bool new_account = false;
-    bool sosIsEnabled = [account sosIsEnabled];
+    bool sosIsActiveForMonitorMode = [account SOSMonitorModeSOSIsActive];
     
     CFDictionaryForEach(updates, ^(const void *key, const void *value) {
         CFStringRef circle_name = NULL;
@@ -351,7 +339,7 @@ CFMutableArrayRef SOSTransportDispatchMessages(SOSAccountTransaction* txn, CFDic
                 CFDictionarySetValue(circle_circle_messages_table, circle_name, value);
                 break;
             case kInitialSyncKey:
-                if(sosIsEnabled) {
+                if(sosIsActiveForMonitorMode) {
                     initial_sync = true;
                 }
                 break;
@@ -361,37 +349,35 @@ CFMutableArrayRef SOSTransportDispatchMessages(SOSAccountTransaction* txn, CFDic
                 }
                 break;
             case kMessageKey: {
-                if(sosIsEnabled) {
+                if(sosIsActiveForMonitorMode) {
                     CFMutableDictionaryRef circle_messages = CFDictionaryEnsureCFDictionaryAndGetCurrentValue(circle_peer_messages_table, circle_name);
                     CFDictionarySetValue(circle_messages, from_name, value);
                 }
                 break;
             }
             case kRetirementKey: {
-                if(sosIsEnabled) {
+                if(sosIsActiveForMonitorMode) {
                     CFMutableDictionaryRef circle_retirements = CFDictionaryEnsureCFDictionaryAndGetCurrentValue(circle_retirement_messages_table, circle_name);
                     CFDictionarySetValue(circle_retirements, from_name, value);
                 }
                 break;
             }
-            case kAccountChangedKey:
-                new_account = true;
-                break;
             case kRingKey:
                 if(isString(ring_name)) {
-                    if(sosIsEnabled || sosDisabledRingException(ring_name)) { // listen for recovery ring and icloud identity ring
+                    if(sosIsActiveForMonitorMode || sosDisabledRingException(ring_name)) { // listen for recovery ring and icloud identity ring
                         CFDictionarySetValue(ring_update_message_table, ring_name, value);
                     }
                 }
                 break;
             case kDebugInfoKey:
-                if(sosIsEnabled) {
+                if(sosIsActiveForMonitorMode) {
                     CFDictionarySetValue(debug_info_message_table, peer_info_name, value);
                 }
                 break;
             case kLastCircleKey:
             case kLastKeyParameterKey:
             case kUnknownKey:
+            case kDSIDKey:
                 secnotice("updates", "Unknown key '%@', ignoring", key);
                 break;
         }

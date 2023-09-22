@@ -72,7 +72,6 @@ typedef struct octagon_signpost_s {
 #define OctagonSignpostNameFetchEscrowRecords                               "FetchEscrowRecords"
 #define OctagonSignpostNameFetchEscrowContents                              "FetchEscrowContents"
 #define OctagonSignpostNameSetNewRecoveryKeyWithData                        "SetNewRecoveryKeyWithData"
-#define OctagonSignpostNameRecoverOctagonUsingData                          "RecoverOctagonUsingData"
 #define OctagonSignpostNameRecoverOctagonUsingCustodianRecoveryKey          "RecoverOctagonUsingCustodianRecoveryKey"
 #define OctagonSignpostNamePreflightRecoverOctagonUsingCustodianRecoveryKey "PreflightRecoverOctagonUsingCustodianRecoveryKey"
 #define OctagonSignpostNameRecoverOctagonUsingInheritanceKey                "RecoverOctagonUsingInheritanceKey"
@@ -82,7 +81,9 @@ typedef struct octagon_signpost_s {
 #define OctagonSignpostNameGenerateInheritanceKey                           "GenerateInheritanceKey"
 #define OctagonSignpostNameStoreInheritanceKey                              "StoreInheritanceKey"
 #define OctagonSignpostNameRemoveCustodianRecoveryKey                       "RemoveCustodianRecoveryKey"
+#define OctagonSignpostNameCheckCustodianRecoveryKey                        "CheckCustodianRecoveryKey"
 #define OctagonSignpostNameRemoveInheritanceKey                             "RemoveInheritanceKey"
+#define OctagonSignpostNameCheckInheritanceKey                              "CheckInheritanceKey"
 #define OctagonSignpostNamePerformedCDPStateMachineRun                      "PerformedCDPStateMachineRun"
 #define OctagonSignpostNameWaitForOctagonUpgrade                            "WaitForOctagonUpgrade"
 
@@ -146,6 +147,8 @@ typedef struct octagon_signpost_s {
 #define SOSSignpostNameSOSCCCopyRecoveryPublicKey               "SOSCCCopyRecoveryPublicKey"
 #define SOSSignpostNameSOSCCMessageFromPeerIsPending            "SOSCCMessageFromPeerIsPending"
 #define SOSSignpostNameSOSCCSendToPeerIsPending                 "SOSCCSendToPeerIsPending"
+#define SOSSignpostNameSOSCCSetCompatibilityMode                "SOSCCSetCompatibilityMode"
+#define SOSSignpostNameSOSCCFetchCompatibilityMode              "SOSCCFetchCompatibilityMode"
 
 #define OctagonSignpostString1(label) " "#label"=%{public,signpost.telemetry:string1,name="#label"}@ "
 #define OctagonSignpostString2(label) " "#label"=%{public,signpost.telemetry:string2,name="#label"}@ "

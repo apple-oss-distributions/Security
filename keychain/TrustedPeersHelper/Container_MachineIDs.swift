@@ -86,15 +86,18 @@ extension Container {
         }
     }
 
-    func setAllowedMachineIDs(_ allowedMachineIDs: Set<String>, honorIDMSListChanges: Bool, reply: @escaping (Bool, Error?) -> Void) {
-        self.semaphore.wait()
+    func setAllowedMachineIDs(_ allowedMachineIDs: Set<String>,
+                              honorIDMSListChanges: Bool,
+                              version: String?,
+                              reply: @escaping (Bool, Error?) -> Void) {
+        let sem = self.grabSemaphore()
         let reply: (Bool, Error?) -> Void = {
             logger.info("setAllowedMachineIDs complete: \(traceError($1), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0, $1)
         }
 
-        logger.info("Setting allowed machine IDs: \(allowedMachineIDs, privacy: .public)")
+        logger.info("Setting allowed machine IDs: \(allowedMachineIDs, privacy: .public), version \(String(describing: version), privacy: .public)")
 
         // Note: we currently ignore any machineIDs that are set in the model, but never appeared on the
         // Trusted Devices list. We should give them a grace period (1wk?) then kick them out.
@@ -116,7 +119,7 @@ extension Container {
                         if machine.status == TPMachineIDStatus.allowed.rawValue {
                             logger.info("Machine ID still trusted: \(String(describing: machine.machineID), privacy: .public)")
                         } else {
-                            logger.info("Machine ID newly retrusted: \(String(describing: machine.machineID), privacy: .public)")
+                            logger.notice("Machine ID newly retrusted: \(String(describing: machine.machineID), privacy: .public)")
                             differences = true
                         }
                         machine.status = Int64(TPMachineIDStatus.allowed.rawValue)
@@ -132,13 +135,13 @@ extension Container {
                             if machine.seenOnFullList {
                                 machine.status = Int64(TPMachineIDStatus.disallowed.rawValue)
                                 machine.modified = Date()
-                                logger.info("Newly distrusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
+                                logger.notice("Newly distrusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
                                 differences = true
                             } else {
                                 if machine.modifiedInPast(hours: cutoffHours) {
                                     logger.info("Allowed-but-unseen machine ID isn't on full list, last modified \(String(describing: machine.modifiedDate()), privacy: .public), ignoring: \(String(describing: machine.machineID), privacy: .public)")
                                 } else {
-                                    logger.info("Allowed-but-unseen machine ID isn't on full list, last modified \(String(describing: machine.modifiedDate()), privacy: .public), distrusting: \(String(describing: machine.machineID), privacy: .public)")
+                                    logger.notice("Allowed-but-unseen machine ID isn't on full list, last modified \(String(describing: machine.modifiedDate()), privacy: .public), distrusting: \(String(describing: machine.machineID), privacy: .public)")
                                     machine.status = Int64(TPMachineIDStatus.disallowed.rawValue)
                                     machine.modified = Date()
                                     differences = true
@@ -148,7 +151,7 @@ extension Container {
                             if machine.modifiedInPast(hours: cutoffHours) {
                                 logger.info("Unknown machine ID last modified \(String(describing: machine.modifiedDate()), privacy: .public); leaving unknown: \(String(describing: machine.machineID), privacy: .public)")
                             } else {
-                                logger.info("Unknown machine ID last modified \(String(describing: machine.modifiedDate()), privacy: .public); distrusting: \(String(describing: machine.machineID), privacy: .public)")
+                                logger.notice("Unknown machine ID last modified \(String(describing: machine.modifiedDate()), privacy: .public); distrusting: \(String(describing: machine.machineID), privacy: .public)")
                                 machine.status = Int64(TPMachineIDStatus.disallowed.rawValue)
                                 machine.modified = Date()
                                 differences = true
@@ -167,7 +170,7 @@ extension Container {
                         machine.seenOnFullList = true
                         machine.modified = Date()
                         machine.status = Int64(TPMachineIDStatus.allowed.rawValue)
-                        logger.info("Newly trusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
+                        logger.notice("Newly trusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
                         differences = true
 
                         self.containerMO.addToMachines(machine)
@@ -180,7 +183,7 @@ extension Container {
                     let modelMachineIDs = self.model.allMachineIDs()
                     modelMachineIDs.forEach { peerMachineID in
                         if !knownMachineIDs.contains(peerMachineID) && !allowedMachineIDs.contains(peerMachineID) {
-                            logger.info("Peer machineID is unknown, beginning grace period: \(String(describing: peerMachineID), privacy: .public)")
+                            logger.notice("Peer machineID is unknown, beginning grace period: \(String(describing: peerMachineID), privacy: .public)")
                             let machine = MachineMO(context: self.moc)
                             machine.machineID = peerMachineID
                             machine.container = containerMO
@@ -193,8 +196,10 @@ extension Container {
                         }
                     }
                 } else {
-                    logger.info("Believe we're in a demo account, not enforcing IDMS list")
+                    logger.notice("Believe we're in a demo account, not enforcing IDMS list")
                 }
+
+                self.containerMO.idmsTrustedDevicesVersion = version
 
                 // We no longer use allowed machine IDs.
                 self.containerMO.allowedMachineIDs = NSSet()
@@ -203,21 +208,21 @@ extension Container {
 
                 reply(differences, nil)
             } catch {
-                logger.info("Error setting machine ID list: \(String(describing: error), privacy: .public)")
+                logger.error("Error setting machine ID list: \(String(describing: error), privacy: .public)")
                 reply(false, error)
             }
         }
     }
 
     func addAllow(_ machineIDs: [String], reply: @escaping (Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (Error?) -> Void = {
             logger.info("addAllow complete: \(traceError($0), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0)
         }
 
-        logger.info("Adding allowed machine IDs: \(String(describing: machineIDs), privacy: .public)")
+        logger.notice("Adding allowed machine IDs: \(String(describing: machineIDs), privacy: .public)")
 
         self.moc.performAndWait {
             do {
@@ -242,7 +247,7 @@ extension Container {
                         machine.seenOnFullList = false
                         machine.modified = Date()
                         machine.status = Int64(TPMachineIDStatus.allowed.rawValue)
-                        logger.info("Newly trusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
+                        logger.notice("Newly trusted machine ID: \(String(describing: machine.machineID), privacy: .public)")
                         self.containerMO.addToMachines(machine)
 
                         knownMachines.insert(machine)
@@ -252,20 +257,21 @@ extension Container {
                 try self.moc.save()
                 reply(nil)
             } catch {
+                logger.error("Error adding to machine ID list: \(String(describing: error), privacy: .public)")
                 reply(error)
             }
         }
     }
 
     func removeAllow(_ machineIDs: [String], reply: @escaping (Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (Error?) -> Void = {
             logger.info("removeAllow complete: \(traceError($0), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0)
         }
 
-        logger.info("Removing allowed machine IDs: \(String(describing: machineIDs), privacy: .public)")
+        logger.notice("Removing allowed machine IDs: \(String(describing: machineIDs), privacy: .public)")
 
         self.moc.performAndWait {
             do {
@@ -300,16 +306,17 @@ extension Container {
                 try self.moc.save()
                 reply(nil)
             } catch {
+                logger.error("Error removing from machine ID list: \(String(describing: error), privacy: .public)")
                 reply(error)
             }
         }
     }
 
     func fetchAllowedMachineIDs(reply: @escaping (Set<String>?, Error?) -> Void) {
-        self.semaphore.wait()
+        let sem = self.grabSemaphore()
         let reply: (Set<String>?, Error?) -> Void = {
             logger.info("fetchAllowedMachineIDs complete: \(traceError($1), privacy: .public)")
-            self.semaphore.signal()
+            sem.release()
             reply($0, $1)
         }
 
@@ -344,7 +351,7 @@ extension Container {
         }
 
         // Didn't find it? reject.
-        logger.info("machineID \(String(describing: machineID), privacy: .public) not found on list")
+        logger.notice("machineID \(String(describing: machineID), privacy: .public) not found on list")
         return false
     }
 
@@ -388,7 +395,7 @@ extension Container {
 
         // Remove all disallowed MIDs, unless we continue to trust the peer for some other reason
         for mo in (machines) where mo.status == TPMachineIDStatus.disallowed.rawValue && !trustedMachineIDs.contains(mo.machineID ?? "") {
-            logger.info("Dropping knowledge of machineID \(String(describing: mo.machineID), privacy: .public)")
+            logger.notice("Dropping knowledge of machineID \(String(describing: mo.machineID), privacy: .public)")
             self.containerMO.removeFromMachines(mo)
         }
     }

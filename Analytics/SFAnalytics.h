@@ -33,6 +33,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class SecLaunchSequence;
+
 // this sampling interval will cause the sampler to run only at data reporting time
 extern const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport;
 
@@ -86,6 +88,7 @@ typedef SFAnalyticsMetricsHookActions(^SFAnalyticsMetricsHook)(NSString* eventNa
 + (void)addOSVersionToEvent:(NSMutableDictionary*)event;
 // Help for the subclass to pick a prefered location
 + (NSString *)defaultAnalyticsDatabasePath:(NSString *)basename;
++ (void)removeLegacyDefaultAnalyticsDatabasePath:(NSString *)basename usingDispatchToken:(dispatch_once_t *)onceToken;
 
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename uuid:(NSUUID * __nullable)userUuid;
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename; // uses current user UUID for path
@@ -110,6 +113,8 @@ typedef SFAnalyticsMetricsHookActions(^SFAnalyticsMetricsHook)(NSString* eventNa
 // or just log an event if it is not failable
 - (void)noteEventNamed:(NSString*)eventName;
 - (void)noteEventNamed:(NSString*)eventName timestampBucket:(SFAnalyticsTimestampBucket)timestampBucket;
+
+- (void)noteLaunchSequence:(SecLaunchSequence *)launchSequence;
 
 - (void)logResultForEvent:(NSString*)eventName
               hardFailure:(bool)hardFailure
@@ -175,6 +180,7 @@ typedef SFAnalyticsMetricsHookActions(^SFAnalyticsMetricsHook)(NSString* eventNa
 // Things below are for unit testing
 
 - (void)removeState;    // removes DB object and any samplers
+- (void)removeStateAndUnlinkFile:(BOOL)unlinkFile;
 
 @end
 

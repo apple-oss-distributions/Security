@@ -40,6 +40,7 @@
 #import "keychain/SecureObjectSync/SOSPeerOTRTimer.h"
 #import "keychain/SecureObjectSync/SOSPeerRateLimiter.h"
 #import "keychain/SecureObjectSync/SOSTypes.h"
+
 #if OCTAGON
 #import "keychain/ckks/CKKSViewManager.h"
 #import "keychain/ckks/CKKSLockStateTracker.h"
@@ -71,11 +72,13 @@
 #import <os/feature_private.h>
 
 #include <utilities/SecCoreCrypto.h>
+#include "utilities/SecCFError.h"
 
 #include <utilities/der_plist.h>
 #include <utilities/der_plist_internal.h>
 #include <corecrypto/ccder.h>
 
+#include <Security/SecItemBackup.h>
 
 const CFStringRef kSOSAccountName = CFSTR("AccountName");
 const CFStringRef kSOSEscrowRecord = CFSTR("EscrowRecord");
@@ -121,6 +124,7 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
 
 @property CKKSNearFutureScheduler *performBackups;
 @property CKKSNearFutureScheduler *performRingUpdates;
+@property BOOL forceSyncForRecoveryRing;
 @end
 #endif
 
@@ -254,7 +258,7 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
         _saveBlock = nil;
 
         _settings =  [[NSUserDefaults alloc] initWithSuiteName:SOSAccountUserDefaultsSuite];
-        [self sosIsEnabled];
+        [self SOSMonitorModeSOSIsActive];
 
         [self ensureFactoryCircles];
         SOSAccountEnsureUUID(self);
@@ -262,6 +266,7 @@ static NSDictionary<OctagonState*, NSNumber*>* SOSStateMap(void);
         _sosTestmode = NO;
         _consolidateKeyInterest = NO;
         _accountInScriptBypassMode = NO;
+        _sosCompatibilityMode = NO;
         
 #if OCTAGON
         [self setupStateMachine];
@@ -617,7 +622,7 @@ static bool Flush(CFErrorRef *error) {
     __block bool result = false;
     __block CFErrorRef localError = NULL;
     
-    if([SOSAuthKitHelpers accountIsHSA2]) {
+    if([SOSAuthKitHelpers accountIsCDPCapable]) {
         [SOSAuthKitHelpers activeMIDs:^(NSSet <SOSTrustedDeviceAttributes *> * _Nullable activeMIDs, NSError * _Nullable error) {
             SOSAuthKitHelpers *akh = [[SOSAuthKitHelpers alloc] initWithActiveMIDS:activeMIDs];
             if(akh) {
@@ -882,7 +887,23 @@ static bool Flush(CFErrorRef *error) {
     [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
         res = SOSAccountJoinWithCircleJoiningBlob(txn.account, (__bridge CFDataRef)blob, version, &localError);
     }];
-
+#if OCTAGON
+    bool inCircle = [self.trust isInCircleOnly:NULL];
+    if (localError) {
+        [[[CKKSAnalytics class] logger] logResultForEvent:SOSDeferralEventPairing hardFailure:false result:(__bridge NSError * _Nullable)(localError) withAttributes:@{
+            SOSDeferralAnalyticsSOSEnabled : SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+            SOSDeferralAnalyticsSOSJoinMethod : SOSDeferralAnalyticsPairing,
+            SOSDeferralAnalyticsJoiningSOSResult : inCircle ? @"in_circle" : @"not_in_circle",
+            SOSDeferralAnalyticsCircleContainsLegacy : SOSCircleIsLegacy(self.trust.trustedCircle, self.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"
+        }];
+    } else {
+        CKKSAnalyticsFailableEvent* event = (CKKSAnalyticsFailableEvent*)[NSString stringWithFormat:@"%@-%@-%@-%@", SOSCompatibilityModeGetCachedStatus() ? @"compat_enabled" : @"compat_disabled",
+                                                                          SOSDeferralAnalyticsPairing,
+                                                                          inCircle ? @"in_circle" : @"not_in_circle",
+                                                                          SOSCircleIsLegacy(self.trust.trustedCircle, self.accountKey) ? @"contains_legacy" : @"does_not_contain_legacy"];
+        [[[CKKSAnalytics class] logger] logSuccessForEventNamed:event];
+    }
+#endif
     complete(res, (__bridge NSError *)localError);
     CFReleaseNull(localError);
 }
@@ -1007,11 +1028,11 @@ static bool Flush(CFErrorRef *error) {
     if(!valuePresent) {
         [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSInitialized"];
         secnotice("SOSMonitorMode", "No value found for SOSMonitorMode initializing to Active");
-        [self sosEnable];
+        [self SOSMonitorModeEnableSOS];
     }
 }
 
-- (void) sosDisable {
+- (void) SOSMonitorModeDisableSOS {
     if(os_feature_enabled(Security, SOSMonitorMode)) {
         secnotice("SOSMonitorMode", "Putting SOS into monitor mode");
         [self.settings setBool: NO forKey: @"SOSEnabled"];
@@ -1020,22 +1041,22 @@ static bool Flush(CFErrorRef *error) {
     }
 }
 
-- (void) sosEnable {
+- (void) SOSMonitorModeEnableSOS {
     secnotice("SOSMonitorMode", "Setting SOS to active");
     [self.settings setBool: YES forKey: @"SOSEnabled"];
 }
 
-- (void) sosIsEnabledCB: (void(^)(bool result)) complete {
-    complete([self sosIsEnabled]);
+- (void) SOSMonitorModeSOSIsActiveWithCallback: (void(^)(bool result)) complete {
+    complete([self SOSMonitorModeSOSIsActive]);
 }
 
-- (bool)sosIsEnabled {
+- (bool) SOSMonitorModeSOSIsActive {
     [self sosEnableValidityCheck];
     return [self.settings boolForKey: @"SOSEnabled"];
 }
 
-- (NSString *) sosIsEnabledString {
-    return [self sosIsEnabled] ? @"[SOS is active]": @"[SOS is monitoring]";
+- (NSString *) SOSMonitorModeSOSIsActiveDescription {
+    return [self SOSMonitorModeSOSIsActive] ? @"[SOS is active]": @"[SOS is monitoring]";
 }
 
 /*
@@ -1043,37 +1064,48 @@ static bool Flush(CFErrorRef *error) {
     We're still listening to circle / keyparm changes (trust) so if changes happen there we'll re-enable if legacy
  */
 - (bool) sosEvaluateIfNeeded {
-    if(!os_feature_enabled(Security, SOSMonitorMode)) {
-        if(![self sosIsEnabled]) {
+    if (SOSCompatibilityModeEnabled()) {
+        secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - SOS Compatibility Mode enabled, checking mode");
+        if (SOSCompatibilityModeGetCachedStatus()) {
+            secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - Turning on SOS for Compatibility mode");
+            [self SOSMonitorModeEnableSOS];
+            [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSCompatMode"];
+        } else {
+            secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - Turning off SOS for Compatibility mode");
+            [self SOSMonitorModeDisableSOS];
+            [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSCompatMode"];
+        }
+    } else if(!os_feature_enabled(Security, SOSMonitorMode)) {
+        if(![self SOSMonitorModeSOSIsActive]) {
             // make sure SOS wasn't accidentally turned off
             secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - Turning on SOS since monitor mode is unavailable");
-            [self sosEnable];
+            [self SOSMonitorModeEnableSOS];
             [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSLegacyMode"];
         }
     } else {
         // SOSMonitorMode is go
         secnotice("SOSMonitorMode", "sosEvaluateIfNeeded - checking circle");
         if(!self.accountKeyIsTrusted) {
-            if([self sosIsEnabled]) {
+            if([self SOSMonitorModeSOSIsActive]) {
                 secnotice("SOSMonitorMode", "SOS is in monitor mode since the account key isn't trusted");
-                [self sosDisable];
+                [self SOSMonitorModeDisableSOS];
                 [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSMonitorMode"];
             }
         } else if(SOSCircleIsLegacy(self.trust.trustedCircle, self.accountKey)) {
-            if(![self sosIsEnabled]) {
+            if(![self SOSMonitorModeSOSIsActive]) {
                 secnotice("SOSMonitorMode", "Putting SOS into active mode for circle change");
-                [self sosEnable];
+                [self SOSMonitorModeEnableSOS];
                 [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSLegacyMode"];
             }
         } else {
-            if([self sosIsEnabled]) {
+            if([self SOSMonitorModeSOSIsActive]) {
                 secnotice("SOSMonitorMode", "Putting SOS into monitor mode due to circle change");
-                [self sosDisable];
+                [self SOSMonitorModeDisableSOS];
                 [[SOSAnalytics logger] logSuccessForEventNamed:@"SOSMonitorMode"];
             }
         }
     }
-    return [self sosIsEnabled];
+    return [self SOSMonitorModeSOSIsActive];
 }
 
 
@@ -1106,23 +1138,34 @@ static bool SOSAccountUpdateDSID(SOSAccount* account, CFStringRef dsid){
     return true;
 }
 
-void SOSAccountAssertDSID(SOSAccount*  account, CFStringRef dsid) {
-    CFStringRef accountDSID = SOSAccountGetValue(account, kSOSDSIDKey, NULL);
+CFStringRef SOSAccountGetCurrentDSID(SOSAccount* account) {
+    CFStringRef accountDSID = asString(SOSAccountGetValue(account, kSOSDSIDKey, NULL), NULL);
+    if(!accountDSID || CFEqual(accountDSID, kCFNull)) {
+        return NULL;
+    }
+    if(accountDSID && CFStringCompare(accountDSID, CFSTR(""), 0) == kCFCompareEqualTo) {
+        return NULL;
+    }
+    return accountDSID;
+}
+
+bool SOSAccountAssertDSID(SOSAccount*  account, CFStringRef dsid) {
+    bool didReset = false;
+    CFStringRef accountDSID = SOSAccountGetCurrentDSID(account);
     if(accountDSID == NULL) {
-        secdebug("updates", "Setting dsid, current dsid is empty for this account: %@", dsid);
-
+        secnotice("updates", "Setting dsid, current dsid is empty for this account: %@", dsid);
         SOSAccountUpdateDSID(account, dsid);
-    } else if(CFStringCompare(dsid, accountDSID, 0) != kCFCompareEqualTo) {
+    } else if(dsid && CFStringCompare(dsid, accountDSID, 0) != kCFCompareEqualTo) {
         secnotice("updates", "Changing DSID from: %@ to %@", accountDSID, dsid);
-
+        __security_simulatecrash(CFSTR("DSID Change is unexpected"), __sec_exception_code_BadDSIDChange);
         //DSID has changed, blast the account!
         SOSAccountSetToNew(account);
-
-        //update DSID to the new DSID
         SOSAccountUpdateDSID(account, dsid);
+        didReset = true;
     } else {
-        secnotice("updates", "Not Changing DSID: %@ to %@", accountDSID, dsid);
+        secdebug("updates", "Not Changing DSID: %@ to %@", accountDSID, dsid);
     }
+    return didReset;
 }
 
 SecKeyRef SOSAccountCopyDevicePrivateKey(SOSAccount* account, CFErrorRef *error) {
@@ -2081,7 +2124,7 @@ bool SOSAccountEnsurePeerRegistration(SOSAccount*  account, CFErrorRef *error) {
         return result;
     }
     
-    if(![account sosIsEnabled]) {
+    if(![account SOSMonitorModeSOSIsActive]) {
         return true;
     }
 
@@ -2160,37 +2203,47 @@ bool SOSAccountAddEscrowToPeerInfo(SOSAccount*  account, SOSFullPeerInfoRef myPe
 
 static const uint64_t maxTimeToWaitInSeconds = 30ull * NSEC_PER_SEC;
 
-static CFDictionaryRef SOSAccountGetObjectsFromCloud(dispatch_queue_t processQueue, CFErrorRef *error)
+static CFDictionaryRef SOSAccountCopyObjectsFromCloud(dispatch_queue_t processQueue, CFErrorRef *error)
 {
-    __block CFTypeRef object = NULL;
+    __block CFDictionaryRef ret = NULL;
     
     dispatch_semaphore_t waitSemaphore = dispatch_semaphore_create(0);
     dispatch_time_t finishTime = dispatch_time(DISPATCH_TIME_NOW, maxTimeToWaitInSeconds);
         
+    __block CFErrorRef retError = NULL;
+    
     CloudKeychainReplyBlock replyBlock =
-    ^ (CFDictionaryRef returnedValues, CFErrorRef error)
+    ^ (CFDictionaryRef returnedValues, CFErrorRef blockError)
     {
-        object = returnedValues;
-        if (object)
-            CFRetain(object);
-        if (error)
-        {
-            secerror("SOSCloudKeychainGetObjectsFromCloud returned error: %@", error);
+        if (blockError) {
+            secerror("SOSCloudKeychainGetObjectsFromCloud returned error: %@", blockError);
+            retError = CFRetainSafe(blockError);
+        }
+        if (returnedValues != NULL) {
+            if (CFGetTypeID(returnedValues) == CFNullGetTypeID()) {
+                CFReleaseNull(returnedValues);
+                ret = NULL;
+            } else {
+                CFRetainAssign(ret, returnedValues);
+            }
+        } else {
+            ret = NULL;
         }
         dispatch_semaphore_signal(waitSemaphore);
     };
     
     SOSCloudKeychainGetAllObjectsFromCloud(processQueue, replyBlock);
-    
     dispatch_semaphore_wait(waitSemaphore, finishTime);
-    if (object && (CFGetTypeID(object) == CFNullGetTypeID()))   // return a NULL instead of a CFNull
-    {
-        CFRelease(object);
-        object = NULL;
-    }
-    return asDictionary(object, NULL); // don't propogate "NULL is not a dictionary" errors
-}
 
+    if (retError) {
+        if (error) {
+            *error = CFRetainSafe(retError);
+        }
+        CFReleaseNull(retError);
+    }
+
+    return ret;
+}
 
 static void SOSAccountRemoveKVSKeys(SOSAccount* account, NSArray* keysToRemove, dispatch_queue_t processQueue)
 {
@@ -2247,9 +2300,25 @@ static void SOSAccountWriteLastCleanupTimestampToKVS(SOSAccount* account)
 // set the cleanup frequency to 3 days.
 #define KVS_CLEANUP_FREQUENCY_LIMIT 60*60*24*3
 
-//Get all the key/values in KVS and remove old entries
-bool SOSAccountCleanupAllKVSKeys(SOSAccount* account, CFErrorRef* error)
-{
+static CFSetRef copySyncingPeerIDsIntoSet(SOSAccount* account) {
+    CFMutableSetRef syncingPeers = CFSetCreateMutableForCFTypes(kCFAllocatorDefault);
+    SOSCircleForEachActiveValidPeer(account.trust.trustedCircle, SOSAccountGetTrustedPublicCredential(account, NULL), ^(SOSPeerInfoRef peer) {
+        CFStringRef peerID = SOSPeerInfoGetPeerID(peer);
+        CFSetAddValue(syncingPeers, peerID);
+    });
+    return syncingPeers;
+}
+
+static CFSetRef copyCircleRetiredPeerIDsIntoSet(SOSAccount* account) {
+    CFMutableSetRef retiredPeers = CFSetCreateMutableForCFTypes(kCFAllocatorDefault);
+    SOSCircleForEachRetiredPeer(account.trust.trustedCircle, ^(SOSPeerInfoRef peer) {
+        CFStringRef peerID = SOSPeerInfoGetPeerID(peer);
+        CFSetAddValue(retiredPeers, peerID);
+    });
+    return retiredPeers;
+}
+
+bool SOSAccountCleanupAllKVSKeysIfScheduled(SOSAccount* account, CFErrorRef* error) {
     // This should only happen on some number of days
     NSDate *lastKVSCleanup = [account.settings objectForKey:SOSAccountLastKVSCleanup];
     NSDate *now = [NSDate date];
@@ -2258,49 +2327,104 @@ bool SOSAccountCleanupAllKVSKeys(SOSAccount* account, CFErrorRef* error)
     if(timeSinceCleanup < KVS_CLEANUP_FREQUENCY_LIMIT) {
         return true;
     }
+    return SOSAccountCleanupAllKVSKeys(account, error);
+}
 
-    dispatch_queue_t processQueue = dispatch_get_global_queue(SOS_TRANSPORT_PRIORITY, 0);
-    
-    NSDictionary *keysAndValues = (__bridge_transfer NSDictionary*)SOSAccountGetObjectsFromCloud(processQueue, error);
-    NSMutableArray *peerIDs = [NSMutableArray array];
+static Boolean CFSetDoesNotContainValue(CFSetRef theSet, const void *value) {
+    if(!value) { // sets don't contain NULL for values.
+        return true;
+    }
+    return !CFSetContainsValue(theSet, value);
+}
+
+// Break this out to make it easier to unit test
+NSMutableArray * SOSAccountScanForDeletions(CFDictionaryRef keysAndValues, CFSetRef peerIDs, CFSetRef retiredPeerIDs) {
     NSMutableArray *keysToRemove = [NSMutableArray array];
-
-    CFArrayRef peers = SOSAccountCopyActiveValidPeers(account, error);
-    CFArrayForEach(peers, ^(const void *value) {
-        SOSPeerInfoRef peer = (SOSPeerInfoRef)value;
-        NSString* peerID = (__bridge NSString*) SOSPeerInfoGetPeerID(peer);
-        
-        //any peerid that is not ours gets added
-        if(![[account.trust peerID] isEqualToString:peerID])
-            [peerIDs addObject:peerID];
-    });
-    CFReleaseNull(peers);
-
-    [keysAndValues enumerateKeysAndObjectsUsingBlock:^(NSString * KVSKey, NSNumber * KVSValue, BOOL *stop) {
-        __block bool keyMatchesPeerID = false;
-        
-        //checks for full peer ids
-        [peerIDs enumerateObjectsUsingBlock:^(id  _Nonnull PeerID, NSUInteger idx, BOOL * _Nonnull stop) {
-            //if key contains peerid of one active peer
-            if([KVSKey containsString:PeerID]){
-                secnotice("key-cleanup","key: %@", KVSKey);
-                keyMatchesPeerID = true;
+    
+    if(!keysAndValues || !peerIDs || !retiredPeerIDs) {
+        return keysToRemove;
+    }
+    
+    CFDictionaryForEach(keysAndValues, ^(const void *key, const void *value) {
+        CFStringRef keyStr = asString(key, NULL);
+        if(keyStr) {
+            switch(SOSKVSKeyGetKeyType(keyStr)) {
+                case kRetirementKey: // Only remove retirement keys of peers not present as valid peers (retired).  These can be used
+                                     // keep long unused peers coming back to the circle from RVWing - leaving because we don't recognize
+                                     // current active valid peers.  Some clients have used "BailBestEffort" and may have only written
+                                     // a ~AK record rather than updating the circle.
+                    {
+                        CFStringRef targetPeerID = NULL;
+                        SOSKVSKeyParse(kRetirementKey, keyStr, NULL, NULL, NULL, NULL, &targetPeerID, NULL);
+                        if(CFSetDoesNotContainValue(retiredPeerIDs, targetPeerID) && CFSetDoesNotContainValue(peerIDs, targetPeerID)) {
+                            [keysToRemove addObject: (__bridge id _Nonnull)(keyStr)];
+                        }
+                        CFReleaseNull(targetPeerID);
+                    }
+                    break;
+                    
+                case kMessageKey:    // purge any messages where either sender or receiver is not an active valid peer.
+                    {
+                        CFStringRef fromPeerID = NULL;
+                        CFStringRef toPeerID = NULL;
+                        SOSKVSKeyParse(kMessageKey, keyStr, NULL, NULL, NULL, NULL, &fromPeerID, &toPeerID);
+                        if(CFSetDoesNotContainValue(peerIDs, fromPeerID) || CFSetDoesNotContainValue(peerIDs, toPeerID)) {
+                            [keysToRemove addObject: (__bridge id _Nonnull)(keyStr)];
+                        }
+                        CFReleaseNull(fromPeerID);
+                        CFReleaseNull(toPeerID);
+                    }
+                    break;
+                    
+                // None of these are going to be cleaned up - they don't contain that much data
+                case kParametersKey:
+                case kInitialSyncKey:
+                case kDSIDKey:
+                case kDebugInfoKey:
+                case kRingKey:
+                case kLastCircleKey:
+                case kCircleKey:
+                case kLastKeyParameterKey:
+                case kUnknownKey:
+                default:
+                    break;
             }
-        }];
-        if((([KVSKey hasPrefix:@"ak"] || [KVSKey hasPrefix:@"-ak"]) && !keyMatchesPeerID)
-           || [KVSKey hasPrefix:@"po"])
-            [keysToRemove addObject:KVSKey];
-    }];
+        }
+    });
+    return keysToRemove;
+}
+
+//Get all the key/values in KVS and remove old entries
+bool SOSAccountCleanupAllKVSKeys(SOSAccount* account, CFErrorRef* error)
+{
+    dispatch_queue_t processQueue = dispatch_get_global_queue(SOS_TRANSPORT_PRIORITY, 0);
+    CFDictionaryRef keysAndValues = SOSAccountCopyObjectsFromCloud(processQueue, error);
+
+    if (keysAndValues == NULL) {
+        secnotice("key-cleanup", "KVS data returned is nil, cleanup complete");
+        if (error) {
+            secerror("key-cleanup: SOSAccountCopyObjectsFromCloud hit an error: %@", *error);
+        }
+        return true;
+    }
     
+    CFSetRef peerIDs = copySyncingPeerIDsIntoSet(account);
+    CFSetRef retiredPeerIDs = copyCircleRetiredPeerIDsIntoSet(account);
+
+    NSMutableArray *keysToRemove = SOSAccountScanForDeletions(keysAndValues, peerIDs, retiredPeerIDs);
+    
+    CFReleaseNull(peerIDs);
+    CFReleaseNull(retiredPeerIDs);
+
+    secnotice("key-cleanup", "total keys: %lu, cleaning up %lu", CFDictionaryGetCount(keysAndValues), (unsigned long)[keysToRemove count]);
     secnotice("key-cleanup", "message keys that we should remove! %@", keysToRemove);
-    secnotice("key-cleanup", "total keys: %lu, cleaning up %lu", (unsigned long)[keysAndValues count], (unsigned long)[keysToRemove count]);
-    
+
     SOSAccountRemoveKVSKeys(account, keysToRemove, processQueue);
-    
-    //add last cleanup timestamp
     SOSAccountWriteLastCleanupTimestampToKVS(account);
-    return true;
     
+    CFReleaseNull(keysAndValues);
+    
+    return true;
 }
 
 SOSPeerInfoRef SOSAccountCopyApplication(SOSAccount*  account, CFErrorRef* error) {
@@ -2882,7 +3006,7 @@ CFStringRef SOSAccountCopyStateString(SOSAccount*  account) {
               boolToChars(hasPubKey, 'U', 'u'), boolToChars(pubTrusted, 'T', 't'), boolToChars(hasPriv, 'I', 'i'),
               userPubKeyID,
               SOSAccountGetSOSCCStatusString(stat), getuid(), geteuid(),
-              [account sosIsEnabledString],
+              [account SOSMonitorModeSOSIsActiveDescription],
               profileRestricted ? "User Visible Keychain Disallowed by Profile": "Unrestricted User Visible Views"
               );
     
@@ -2923,7 +3047,9 @@ void SOSAccountLogViewState(SOSAccount*  account) {
         secnotice(ACCOUNTLOGSTATE, "outstanding views: %@", description);
     });
     CFReleaseNull(unsyncedViews);
-
+    if (SOSCompatibilityModeEnabled()) {
+        secnotice(ACCOUNTLOGSTATE, "SOS CompatibilityMode: %@", account.sosCompatibilityMode ? @"enabled" : @"disabled");
+    }
 imOut:
     secnotice(ACCOUNTLOGSTATE, "Finish");
 
@@ -3149,6 +3275,26 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
     });
 }
 
+- (void)triggerRingUpdateNow:(void ((^))(NSError *error))reply
+{
+    self.forceSyncForRecoveryRing = YES;
+ 
+    if (![self.stateMachine isPaused] || ![self.stateMachine.currentState isEqualToString:SOSStateReady]) {
+        [self.stateMachine waitForState:SOSStateReady wait:10*NSEC_PER_SEC];
+    }
+    
+    OctagonStateTransitionPath* path = [OctagonStateTransitionPath pathFromDictionary:@{
+        SOSStatePerformRingUpdate: @{
+            SOSStateReady: [OctagonStateTransitionPathStep success]
+        },
+    }];
+    
+    [self.stateMachine doWatchedStateMachineRPC:@"rpc-perform-rings"
+                                   sourceStates:[NSSet setWithArray:@[SOSStateReady]]
+                                           path:path
+                                          reply:reply];
+}
+
 - (void)triggerRingUpdate
 {
     // this is a guard, it shouldn't be necessary, but let's do it
@@ -3191,6 +3337,7 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
         op.nextState = SOSStateReady;
     }];
 }
+
 
 - (OctagonStateTransitionOperation *)performRingUpdate {
 
@@ -3281,6 +3428,21 @@ static NSSet<OctagonFlag*>* SOSFlagsSet(void) {
             }
         }];
 
+        if (self.forceSyncForRecoveryRing) {
+            [self performTransaction:^(SOSAccountTransaction * _Nonnull txn) {
+                CFErrorRef localError = NULL;
+                NSSet* ignore = CFBridgingRelease(SOSAccountCopyBackupPeersAndForceSync(txn, &localError));
+                (void)ignore;
+                
+                if(localError) {
+                    secerror("sos-register-recovery-public-key: Couldn't process sync with backup peers: %@", localError);
+                } else {
+                    secnotice("sos-register-recovery-public-key", "telling CloudServices about recovery key change");
+                    notify_post(kSecItemBackupNotification);
+                };
+            }];
+            self.forceSyncForRecoveryRing = NO;
+        }
         op.nextState = SOSStateReady;
     }];
 

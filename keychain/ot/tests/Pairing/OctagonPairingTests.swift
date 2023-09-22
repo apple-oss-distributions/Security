@@ -404,6 +404,8 @@ class OctagonPairingTests: OctagonTestsBase {
 
         super.setUp()
 
+        enableSOSCompatibilityForTests()
+
         // The acceptor should have its own SOS state
         self.sosAdapterForAcceptor = CKKSMockSOSPresentAdapter(selfPeer: self.createSOSPeer(peerID: "sos-acceptor"),
                                                                trustedPeers: Set(),
@@ -416,6 +418,7 @@ class OctagonPairingTests: OctagonTestsBase {
                                                                  accountsAdapter: self.mockAuthKit3,
                                                                  authKitAdapter: self.mockAuthKit3,
                                                                  tooManyPeersAdapter: self.mockTooManyPeers,
+                                                                 tapToRadarAdapter: self.mockTapToRadar,
                                                                  lockStateTracker: self.lockStateTracker,
                                                                  deviceInformationAdapter: OTMockDeviceInfoAdapter(modelID: "iPhone9,1", deviceName: "test-SOS-iphone", serialNumber: "456", osVersion: "iOS (fake version)"))
 
@@ -536,7 +539,6 @@ class OctagonPairingTests: OctagonTestsBase {
     func setupOTCliquePair(withNumber count: String) -> (OTClique?, OTClique?) {
         let secondAcceptorData = OTConfigurationContext()
         secondAcceptorData.context = "secondAcceptor"
-        secondAcceptorData.dsid = "a-" + count
         secondAcceptorData.altDSID = "alt-a-" + count
 
         let acceptor = OTClique(contextData: secondAcceptorData)
@@ -544,7 +546,6 @@ class OctagonPairingTests: OctagonTestsBase {
 
         let secondInitiatorData = OTConfigurationContext()
         secondInitiatorData.context = "secondInitiator"
-        secondInitiatorData.dsid = "i-" + count
         secondInitiatorData.altDSID = "alt-i-" + count
 
         let initiator = OTClique(contextData: secondInitiatorData)

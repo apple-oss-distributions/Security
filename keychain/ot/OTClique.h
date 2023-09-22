@@ -66,16 +66,20 @@ NSString* OTCDPStatusToString(OTCDPStatus status);
 
 extern NSString* kSecEntitlementPrivateOctagonEscrow;
 extern NSString* kSecEntitlementPrivateOctagonSecureElement;
+extern NSString* kSecEntitlementPrivateOctagonWalrus;
 
 @interface OTConfigurationContext : NSObject
 @property (nonatomic, copy) NSString* context;
 @property (nonatomic, copy) NSString* containerName;
-@property (nonatomic, copy, nullable) NSString* dsid;
+@property (nonatomic, copy, nullable) NSString* dsid API_DEPRECATED_WITH_REPLACEMENT("altDSID", macos(10.15, 14.0), ios(13.0, 17.0), tvos(13.0, 17.0), watchos(6.0, 10.0));
 @property (nonatomic, copy, nullable) NSString* altDSID;
 @property (nonatomic, copy, nullable) NSString* authenticationAppleID;
 @property (nonatomic, copy, nullable) NSString* passwordEquivalentToken;
-@property (nonatomic) BOOL overrideEscrowCache;
+@property (nonatomic) BOOL overrideEscrowCache; // SPI_DEPRECATED("use 'escrowFetchSource' instead", ios(14.0, 16.2));
+@property (nonatomic) OTEscrowRecordFetchSource escrowFetchSource;
+@property (nonatomic) BOOL octagonCapableRecordsExist;
 @property (nonatomic) BOOL overrideForSetupAccountScript; // this should only be used for the account setup script
+@property (nonatomic) BOOL overrideForJoinAfterRestore; // this should only be used in tests
 
 // Use this to inject your own OTControl object. It must be configured as synchronous.
 @property (nullable, strong) OTControl* otControl;
@@ -279,38 +283,58 @@ extern OTCliqueCDPContextType OTCliqueCDPContextTypeConfirmPasscodeCyrus;
  */
 - (BOOL)fetchUserControllableViewsSyncingEnabled:(NSError* __autoreleasing *)error __attribute__((swift_error(nonnull_error)));
 
+/* *
+ * @abstract Establish a new OT circle
+ * @param   error, This will return an error if anything goes wrong
+ * @return YES if establish successfully created a new Octagon circle, NO if something went wrong.
+ */
+- (BOOL)establish:(NSError**)error;
+
+
 /* SOS glue */
 
-- (BOOL)joinAfterRestore:(NSError * __autoreleasing *)error;
+- (BOOL)joinAfterRestore:(NSError * __autoreleasing *)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)safariPasswordSyncingEnabled:(NSError *__autoreleasing*)error
-API_DEPRECATED_WITH_REPLACEMENT("fetchUserControllableViewsSyncingEnabled",macos(10.15, 10.16), ios(13.0, 14.0), watchos(6.0, 7.0), tvos(13.0,14.0));
+- (BOOL)waitForInitialSync:(NSError *__autoreleasing*)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)isLastFriend:(NSError *__autoreleasing*)error;
+- (NSArray* _Nullable)copyViewUnawarePeerInfo:(NSError *__autoreleasing*)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)waitForInitialSync:(NSError *__autoreleasing*)error;
-
-- (NSArray* _Nullable)copyViewUnawarePeerInfo:(NSError *__autoreleasing*)error;
-
-- (BOOL)viewSet:(NSSet*)enabledViews disabledViews:(NSSet*)disabledViews
-API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15, 10.16), ios(13.0, 14.0), watchos(6.0, 7.0), tvos(13.0,14.0));
-
+- (BOOL)setUserCredentialsWithLabel:(NSString*)userLabel
+                           password:(NSData*)userPassword
+                               dsid:(NSString*)dsid
+                              error:(NSError *__autoreleasing*)error
+    API_DEPRECATED("No longer needed", macos(14.0, 14.0), ios(17.0, 17.0), tvos(17.0, 17.0), watchos(10.0, 10.0));
 
 - (BOOL)setUserCredentialsAndDSID:(NSString*)userLabel
                          password:(NSData*)userPassword
-                            error:(NSError *__autoreleasing*)error;
+                            error:(NSError *__autoreleasing*)error
+    API_DEPRECATED_WITH_REPLACEMENT("setUserCredentialsWithLabel:password:dsid:error:", macos(10.15, 14.0), ios(13.0, 17.0), tvos(13.0, 17.0), watchos(6.0, 10.0));
+
+- (BOOL)tryUserCredentialsWithLabel:(NSString*)userLabel
+                           password:(NSData*)userPassword
+                               dsid:(NSString*)dsid
+                              error:(NSError *__autoreleasing*)error
+    API_DEPRECATED("No longer needed", macos(14.0, 14.0), ios(17.0, 17.0), tvos(17.0, 17.0), watchos(10.0, 10.0));
 
 - (BOOL)tryUserCredentialsAndDSID:(NSString*)userLabel
                          password:(NSData*)userPassword
-                            error:(NSError *__autoreleasing*)error;
+                            error:(NSError *__autoreleasing*)error
+    API_DEPRECATED_WITH_REPLACEMENT("tryUserCredentialsWithLabel:password:dsid:error:", macos(10.15, 14.0), ios(13.0, 17.0), tvos(13.0, 17.0), watchos(6.0, 10.0));
 
-- (NSArray* _Nullable)copyPeerPeerInfo:(NSError *__autoreleasing*)error;
+- (NSArray* _Nullable)copyPeerPeerInfo:(NSError *__autoreleasing*)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)peersHaveViewsEnabled:(NSArray<NSString*>*)viewNames error:(NSError *__autoreleasing*)error;
+- (BOOL)peersHaveViewsEnabled:(NSArray<NSString*>*)viewNames error:(NSError *__autoreleasing*)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)requestToJoinCircle:(NSError *__autoreleasing*)error;
+- (BOOL)requestToJoinCircle:(NSError *__autoreleasing*)error
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
-- (BOOL)accountUserKeyAvailable;
+- (BOOL)accountUserKeyAvailable
+API_DEPRECATED("No longer needed", macos(10.15, 14.0), ios(13.0, 17.0), watchos(6.0, 10.0), tvos(13.0,17.0));
 
 
 /*
@@ -345,11 +369,6 @@ API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15
                             reply:(void(^)(SecRecoveryKey * _Nullable rk,
                                            NSError* _Nullable error))reply;
 
-// used by sbd to recover octagon data by providing a
-+ (void)recoverOctagonUsingData:(OTConfigurationContext*)ctx
-                    recoveryKey:(NSString*)recoveryKey
-                          reply:(void(^)(NSError* _Nullable error))reply;
-
 
 // Create a new custodian recovery key.
 + (void)createCustodianRecoveryKey:(OTConfigurationContext*)ctx
@@ -370,6 +389,11 @@ API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15
 + (void)removeCustodianRecoveryKey:(OTConfigurationContext*)ctx
           custodianRecoveryKeyUUID:(NSUUID *)uuid
                              reply:(void (^)(NSError *_Nullable error))reply;
+
+// Check for the existence of a custodian recovery key.
++ (void)checkCustodianRecoveryKey:(OTConfigurationContext*)ctx
+         custodianRecoveryKeyUUID:(NSUUID *)uuid
+                            reply:(void (^)(bool exists, NSError *_Nullable error))reply;
 
 // Create a new inheritance key.
 + (void)createInheritanceKey:(OTConfigurationContext*)ctx
@@ -401,6 +425,11 @@ API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15
           inheritanceKeyUUID:(NSUUID *)uuid
                        reply:(void (^)(NSError *_Nullable error))reply;
 
+// Check for the existence of an inheritance key.
++ (void)checkInheritanceKey:(OTConfigurationContext*)ctx
+         inheritanceKeyUUID:(NSUUID *)uuid
+                      reply:(void (^)(bool exists, NSError *_Nullable error))reply;
+
 // CoreCDP will call this function when they failed to complete a successful CDP state machine run.
 // Errors provided may be propagated from layers beneath CoreCDP, or contain the CoreCDP cause of failure.
 - (void)performedFailureCDPStateMachineRun:(OTCliqueCDPContextType)type
@@ -424,7 +453,14 @@ API_DEPRECATED_WITH_REPLACEMENT("setUserControllableViewsSyncStatus",macos(10.15
 * @param error Reports any error along the process
 * @return a new clique
 */
-+ (OTClique* _Nullable)resetProtectedData:(OTConfigurationContext*)data error:(NSError**)error;
++ (OTClique* _Nullable)resetProtectedData:(OTConfigurationContext*)data
+                        idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+                   idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+notifyIdMS:(bool)notifyIdMS
+                                    error:(NSError**)error;
+
++ (OTClique* _Nullable)resetProtectedData:(OTConfigurationContext*)data
+                                    error:(NSError**)error;
 @end
 
 NS_ASSUME_NONNULL_END

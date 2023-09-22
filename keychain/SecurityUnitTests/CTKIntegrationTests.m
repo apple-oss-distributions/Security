@@ -77,6 +77,85 @@
     }
 }
 
+#if TARGET_OS_OSX // not yet for embedded
+- (void)testSystemKeychainItemAddQueryDelete {
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecAttrKeyType: (id)kSecAttrKeyTypeECSECPrimeRandom,
+            (id)kSecUseSystemKeychainAlways: @YES,
+            (id)kSecReturnRef: @YES
+        };
+        id result;
+        XCTAssertEqual(SecItemAdd((CFDictionaryRef)query, (void *)&result), errSecSuccess, @"Failed to generate key");
+        XCTAssertEqual(CFGetTypeID((__bridge CFTypeRef)result), SecKeyGetTypeID(), @"Expected SecKey, got %@", result);
+        NSDictionary *attributes = CFBridgingRelease(SecKeyCopyAttributes((SecKeyRef)result));
+        XCTAssertNotNil(attributes);
+        XCTAssertEqualObjects(attributes[(id)kSecUseSystemKeychainAlways], @YES);
+    }
+
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecUseSystemKeychainAlways: @YES,
+            (id)kSecReturnRef: @YES,
+        };
+        id result;
+        OSStatus status = SecItemCopyMatching((CFDictionaryRef)query, (void *)&result);
+        XCTAssertEqual(status, errSecSuccess, @"ItemCopyMatching failed");
+        NSDictionary *attributes = CFBridgingRelease(SecKeyCopyAttributes((SecKeyRef)result));
+        XCTAssertNotNil(attributes);
+        XCTAssertEqualObjects(attributes[(id)kSecUseSystemKeychainAlways], @YES);
+    }
+
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecReturnRef: @YES,
+        };
+        id result;
+        OSStatus status = SecItemCopyMatching((CFDictionaryRef)query, (void *)&result);
+        XCTAssertEqual(status, errSecItemNotFound, @"ItemCopyMatching should not find item in non-system keychain");
+    }
+
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecUseSystemKeychainAlways: @YES,
+        };
+        OSStatus status = SecItemDelete((CFDictionaryRef)query);
+        XCTAssertEqual(status, errSecSuccess, @"Deletion failed");
+    }
+
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecUseSystemKeychainAlways: @YES,
+            (id)kSecReturnRef: @YES,
+        };
+        id result;
+        OSStatus status = SecItemCopyMatching((CFDictionaryRef)query, (void *)&result);
+        XCTAssertEqual(status, errSecItemNotFound, @"ItemCopyMatching should not find deleted item");
+    }
+
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDAppleKeyStore,
+            (id)kSecReturnRef: @YES,
+        };
+        id result;
+        OSStatus status = SecItemCopyMatching((CFDictionaryRef)query, (void *)&result);
+        XCTAssertEqual(status, errSecItemNotFound, @"ItemCopyMatching should not find item in non-system keychain");
+    }
+}
+#endif
+
 - (void)testProtectedItemsAddQueryDelete {
     NSData *password = [@"password" dataUsingEncoding:NSUTF8StringEncoding];
     @autoreleasepool {

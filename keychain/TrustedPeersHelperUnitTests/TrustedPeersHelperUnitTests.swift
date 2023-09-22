@@ -25,8 +25,12 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     var tmpPath: String!
     var tmpURL: URL!
     var cuttlefish: FakeCuttlefishServer!
+    var mcAdapterPlaceholder: OTManagedConfigurationAdapter!
 
     var manateeKeySet: CKKSKeychainBackedKeySet!
+#if SEC_XR
+    var overrideBecomeiPad: Bool!
+#endif
 
     override static func setUp() {
         super.setUp()
@@ -45,12 +49,14 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         super.setUp()
 
 #if SEC_XR
+        self.overrideBecomeiPad = TPBecomeiPadOverride()
         TPClearBecomeiPadOverride()
 #endif
 
         autoreleasepool {
             let testName = self.name.components(separatedBy: CharacterSet(charactersIn: " ]"))[1]
             cuttlefish = FakeCuttlefishServer(nil, ckZones: [:], ckksZoneKeys: [:])
+            mcAdapterPlaceholder = FakeManagedConfiguration()
 
             // Make a new fake keychain
             tmpPath = String(format: "/tmp/%@-%X", testName, Int.random(in: 0..<1000000))
@@ -83,7 +89,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         self.manateeKeySet = nil
 
 #if SEC_XR
-        TPClearBecomeiPadOverride()
+        TPSetBecomeiPadOverride(self.overrideBecomeiPad)
 #endif
 
         autoreleasepool {
@@ -104,6 +110,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             }
         }
         super.tearDown()
+    }
+
+    override static func tearDown() {
     }
 
     func makeFakeKeyHierarchy(zoneID: CKRecordZone.ID) throws -> CKKSKeychainBackedKeySet {
@@ -189,18 +198,13 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     }
 
     func establish(reload: Bool,
-                   store: NSPersistentStoreDescription) throws -> (Container, String) {
-        return try self.establish(reload: reload, contextID: OTDefaultContext, accountIsDemo: false, store: store)
-    }
-
-    func establish(reload: Bool,
                    contextID: String = OTDefaultContext,
                    allowedMachineIDs: Set<String> = Set(["aaa", "bbb", "ccc"]),
                    accountIsDemo: Bool = false,
                    modelID: String = "iPhone1,1",
                    syncUserControllableViews: TPPBPeerStableInfoUserControllableViewStatus = .UNKNOWN,
                    store: NSPersistentStoreDescription) throws -> (Container, String) {
-        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: allowedMachineIDs, accountIsDemo: accountIsDemo, listDifference: !allowedMachineIDs.isEmpty), "should be able to set allowed machine IDs")
 
@@ -228,7 +232,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         if reload {
             do {
-                container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+                container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             } catch {
                 XCTFail("Creating container errored: \(error)")
             }
@@ -312,6 +316,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     }
 
     func testEstablishWithoutUserSyncableViewsOnWatch() throws {
+#if SEC_XR
+        TPSetBecomeiPadOverride(false)
+#endif
         let description = tmpStoreDescription(name: "container.db")
 
         // Watches will listen to the input here. If we set FOLLOWING, it should remain FOLLOWING (as some watches don't have UI to change this value)
@@ -330,11 +337,14 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         XCTAssertNotNil(policy, "Should have a syncing policy")
 
         XCTAssertEqual(policy?.syncUserControllableViews, .FOLLOWING, "Peer should desire to sync user controllable views (ignoring the request)")
+#if SEC_XR
+        TPClearBecomeiPadOverride()
+#endif
     }
 
     func testEstablishNotOnAllowListErrors() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
         do {
@@ -368,6 +378,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let c = try Container(name: ContainerName(container: containerID, context: OTDefaultContext),
                               persistentStoreDescription: store,
                               darwinNotifier: FakeCKKSNotifier.self,
+                              managedConfigurationAdapter: mcAdapterPlaceholder,
                               cuttlefish: cuttlefish)
 
         XCTAssertNil(c.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: accountIsDemo, listDifference: !machineIDs.isEmpty), "Should be able to set machine IDs")
@@ -420,9 +431,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testJoin() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb", "ccc"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -618,8 +629,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testJoinWithEnabledUserControllableViews() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb", "ccc"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -733,8 +744,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testJoinWithoutAllowListErrors() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = containerA.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
         do {
@@ -799,7 +810,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testReset() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -847,7 +858,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testResetLocal() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -907,9 +918,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testReplayAttack() throws {
         let description = tmpStoreDescription(name: "container.db")
-        var containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        var containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: Set(["aaa", "bbb", "ccc"]), accountIsDemo: false))
         XCTAssertNil(containerB.setAllowedMachineIDsSync(test: self, allowedMachineIDs: Set(["aaa", "bbb", "ccc"]), accountIsDemo: false))
@@ -1008,7 +1019,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         _ = containerA.updateSync(test: self)
 
         print("Reload A. Now we see whether it persisted the replayed snapshot in the previous step.")
-        containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         do {
             let state = containerA.getStateSync(test: self)
             let b = state.peers[bPeerID!]!
@@ -1034,7 +1045,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                               "Q2FyZHMSBGZ1bGwiDAoEZnVsbBIEZnVsbCIUCgV3YXRjaBIEZnVsbBIFd2F0Y2giDgoCdHYSBGZ1bGwSAnR2")!
 
         let description = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         // nothing
         let (response1, error1) = container.fetchPolicyDocumentsSync(test: self, versions: [])
@@ -1092,7 +1103,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         do {
-            let reloadedContainer = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            let reloadedContainer = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             let reloadedKnownPolicies = reloadedContainer.model.allRegisteredPolicyVersions()
             XCTAssert(reloadedKnownPolicies.contains(policy1Tuple), "TPModel should know about policy 1 after restart")
             XCTAssert(reloadedKnownPolicies.contains(newPolicy.version), "TPModel should know about newPolicy after a restart")
@@ -1193,8 +1204,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1287,8 +1298,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1372,8 +1383,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testJoiningWithWrongEscrowRecordForBottle() throws {
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1443,8 +1454,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleB: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1513,8 +1524,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1584,8 +1595,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testJoiningWithBottleAndBadSecret() throws {
         var bottleA: ContainerState.Bottle
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1655,8 +1666,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1727,9 +1738,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testJoinByPreapproval() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb", "ccc"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -1941,7 +1952,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         // But all that goes away, and a new peer establishes
         self.cuttlefish.state = FakeCuttlefishServer.State()
-        let (_, peerID2) = try establish(reload: false, contextID: "second", accountIsDemo: false, store: tmpStoreDescription(name: "container-peer2.db"))
+        let (_, peerID2) = try establish(reload: false, contextID: "second", store: tmpStoreDescription(name: "container-peer2.db"))
 
         // And the first container fetches again, which should succeed
         self.cuttlefish.nextFetchErrors.append(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .changeTokenExpired))
@@ -1959,7 +1970,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testFetchEscrowContents() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         let (entropyA, bottleIDA, spkiA, errorA) = containerA.fetchEscrowContentsSync(test: self)
         XCTAssertNotNil(errorA, "Should be an error fetching escrow contents")
         XCTAssertEqual(errorA.debugDescription, "Optional(TrustedPeersHelperUnitTests.ContainerError.noPreparedIdentity)", "error should be no prepared identity")
@@ -2025,7 +2036,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(state.escrowRecords.count, 1, "first container should have an escrow record for peer")
         }
 
-        let c2 = try Container(name: ContainerName(container: "test", context: "newcomer"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: self.cuttlefish)
+        let c2 = try Container(name: ContainerName(container: "test", context: "newcomer"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: self.cuttlefish)
         do {
             let state = c2.getStateSync(test: self)
             XCTAssertEqual(state.bottles.count, 0, "before fetch, second container should not have any stored bottles")
@@ -2048,8 +2059,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -2168,6 +2179,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let preC = try Container(name: ContainerName(container: "preC", context: "preCContext"),
                                  persistentStoreDescription: store,
                                  darwinNotifier: FakeCKKSNotifier.self,
+                                 managedConfigurationAdapter: mcAdapterPlaceholder,
                                  cuttlefish: self.cuttlefish)
         let (preEgoStatus, precStatusError) = preC.trustStatusSync(test: self)
         XCTAssertNil(precStatusError, "No error fetching status")
@@ -2187,6 +2199,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let c2 = try Container(name: ContainerName(container: "differentContainer", context: "a different context"),
                                persistentStoreDescription: store,
                                darwinNotifier: FakeCKKSNotifier.self,
+                               managedConfigurationAdapter: mcAdapterPlaceholder,
                                cuttlefish: self.cuttlefish)
 
         let (egoStatus, statusError) = c2.trustStatusSync(test: self)
@@ -2222,6 +2235,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let c = try Container(name: ContainerName(container: "c", context: "context"),
                               persistentStoreDescription: store,
                               darwinNotifier: FakeCKKSNotifier.self,
+                              managedConfigurationAdapter: mcAdapterPlaceholder,
                               cuttlefish: self.cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb", "ccc"])
@@ -2261,6 +2275,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let c = try Container(name: ContainerName(container: "c", context: "context"),
                               persistentStoreDescription: store,
                               darwinNotifier: FakeCKKSNotifier.self,
+                              managedConfigurationAdapter: mcAdapterPlaceholder,
                               cuttlefish: self.cuttlefish)
 
         let machineIDs = Set(["aaa"])
@@ -2332,6 +2347,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let c = try Container(name: ContainerName(container: "c", context: "context"),
                               persistentStoreDescription: store,
                               darwinNotifier: FakeCKKSNotifier.self,
+                              managedConfigurationAdapter: mcAdapterPlaceholder,
                               cuttlefish: self.cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb", "ccc"])
@@ -2358,7 +2374,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
-        let (repairAccount, repairEscrow, resetOctagon, leaveTrust, healthError) = c.requestHealthCheckSync(requiresEscrowCheck: true, test: self)
+        let (repairAccount, repairEscrow, resetOctagon, leaveTrust, healthError) = c.requestHealthCheckSync(requiresEscrowCheck: true, repair: false, test: self)
         XCTAssertFalse(repairAccount, "")
         XCTAssertFalse(repairEscrow, "")
         XCTAssertFalse(resetOctagon, "")
@@ -2370,8 +2386,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         var bottleA: ContainerState.Bottle
         var entropy: Data
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -2453,8 +2469,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testDistrustedPeerRecoveryKeyNotSet() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let machineIDs = Set(["aaa", "bbb"])
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: machineIDs, accountIsDemo: false))
@@ -2624,7 +2640,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // if we reload the container, does it still match?
-        let reloadedContainer = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: persistentStore, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let reloadedContainer = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: persistentStore, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         reloadedContainer.moc.performAndWait {
             let reloadedMidList = reloadedContainer.onqueueCurrentMIDList()
@@ -2636,7 +2652,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testAllowListManipulation() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
 
@@ -2703,7 +2719,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testAllowListManipulationWithAddsAndRemoves() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
 
@@ -2767,7 +2783,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testSingleDeviceWillNotDepartWhenTakenOffMIDList() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
 
@@ -2823,7 +2839,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // Now TPH boots up with a preexisting model
-        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
 
@@ -2877,7 +2893,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // Now TPH boots up with a preexisting model
-        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         try self.assert(container: container, allowedMachineIDs: Set(["aaa"]), disallowedMachineIDs: ["bbb"], persistentStore: description, cuttlefish: self.cuttlefish)
 
         // Setting a new list should work fine
@@ -3046,7 +3062,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         // reload container
         do {
-            let container = try Container(name: c.name, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            let container = try Container(name: c.name, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             XCTAssertEqual(container.model.allVouchers().count, 2, "voucher count should be 2")
         } catch {
             XCTFail("Creating container errored: \(error)")
@@ -3055,7 +3071,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testMachineIDListSetDisallowedOldUnknownMachineIDs() throws {
         let description = tmpStoreDescription(name: "container.db")
-        var (container, peerID1) = try establish(reload: false, contextID: OTDefaultContext, allowedMachineIDs: Set(["aaa"]), accountIsDemo: false, store: description)
+        var (container, peerID1) = try establish(reload: false, allowedMachineIDs: Set(["aaa"]), store: description)
 
         // and set the machine ID list to something that doesn't include 'ddd'
         XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], accountIsDemo: false, listDifference: true), "should be able to set allowed machine IDs")
@@ -3103,7 +3119,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         // reload container
         do {
-            container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             container.moc.performAndWait {
                 XCTAssertEqual(container.containerMO.honorIDMSListChanges, "YES", "honorIDMSListChanges should be YES")
             }
@@ -3156,7 +3172,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testMachineIDListHandlingInDemoAccounts() throws {
         // Demo accounts have no machine IDs in their lists
         let description = tmpStoreDescription(name: "container.db")
-        var (container, peerID1) = try establish(reload: false, contextID: OTDefaultContext, allowedMachineIDs: Set(), accountIsDemo: true, store: description)
+        var (container, peerID1) = try establish(reload: false, allowedMachineIDs: Set(), accountIsDemo: true, store: description)
 
         // And so we just don't write down any MIDs
         try self.assert(container: container, allowedMachineIDs: Set([]), disallowedMachineIDs: [], unknownMachineIDs: Set([]), persistentStore: description, cuttlefish: self.cuttlefish)
@@ -3185,7 +3201,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         // reload container
         do {
-            container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             container.moc.performAndWait {
                 XCTAssertEqual(container.containerMO.honorIDMSListChanges, "NO", "honorIDMSListChanges should be NO")
             }
@@ -3206,7 +3222,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testContainerAndModelConsistency() throws {
         let preTestContainerName = ContainerName(container: "testToCreatePrepareData", context: "context")
         let description = tmpStoreDescription(name: "container.db")
-        let containerTest = try Container(name: preTestContainerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerTest = try Container(name: preTestContainerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         let (peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, _, error) = containerTest.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
         XCTAssertNil(error)
         XCTAssertNotNil(peerID)
@@ -3245,6 +3261,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                                  policySecrets: containerEgoStableInfo!.policySecrets,
                                                  syncUserControllableViews: containerEgoStableInfo!.syncUserControllableViews,
                                                  secureElementIdentity: containerEgoStableInfo!.secureElementIdentity,
+                                                 walrusSetting: containerEgoStableInfo!.walrusSetting,
+                                                 webAccess: containerEgoStableInfo!.webAccess,
                                                  deviceName: containerEgoStableInfo!.deviceName,
                                                  serialNumber: containerEgoStableInfo!.serialNumber,
                                                  osVersion: containerEgoStableInfo!.osVersion,
@@ -3279,7 +3297,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // Now TPH boots up with a preexisting model
-        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: containerName, persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         container.moc.performAndWait {
             do {
@@ -3334,7 +3352,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         let contextID = "OTDefaultContext"
         let description = tmpStoreDescription(name: "container.db")
 
-        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         container.moc.performAndWait {
             XCTAssertEqual(container.containerMO.honorIDMSListChanges, "UNKNOWN", "honorIDMSListChanges should be unknown")
         }
@@ -3355,7 +3373,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         _ = container.dumpSync(test: self)
 
         do {
-            container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         } catch {
             XCTFail("Creating container errored: \(error)")
         }
@@ -3372,9 +3390,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testJoinWithEnforceIDMSListNotSetBehavior() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerC = try Container(name: ContainerName(container: "c", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         containerA.moc.performAndWait {
             XCTAssertEqual(containerA.containerMO.honorIDMSListChanges, "UNKNOWN", "honorIDMSListChanges should be unknown")
@@ -3566,8 +3584,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     func testPreApprovedJoinWithEnforceIDMSListNotSetBehavior() throws {
         let description = tmpStoreDescription(name: "container.db")
-        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
-        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let containerA = try Container(name: ContainerName(container: "a", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        let containerB = try Container(name: ContainerName(container: "b", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         containerA.moc.performAndWait {
             XCTAssertEqual(containerA.containerMO.honorIDMSListChanges, "UNKNOWN", "honorIDMSListChanges should be unknown")
@@ -3641,7 +3659,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testReloadingContainerIDMSListVariable() throws {
         let store = tmpStoreDescription(name: "container.db")
         let contextID = "contextID"
-        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        var container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
         do {
@@ -3663,7 +3681,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         _ = container.dumpSync(test: self)
 
         do {
-            container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+            container = try Container(name: ContainerName(container: "test", context: contextID), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
             container.moc.performAndWait {
                 XCTAssertEqual(container.containerMO.honorIDMSListChanges, "UNKNOWN", "honorIDMSListChanges should be unknown")
             }
@@ -3681,7 +3699,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     func testCorruptTPHDB() throws {
         let store = tmpStoreDescription(name: "container.db")
         let url = store.url as NSURL?
-        var container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        var container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         XCTAssertNotNil(container, "container should not be nil")
 
         let (peerID, permanentInfo, permanentInfoSig, _, _, _, error) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
@@ -3733,7 +3751,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // now load the DB again
-        container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
         XCTAssertNotNil(container, "container should not be nil")
 
         let (peerID2, permanentInfo2, permanentInfoSig2, _, _, _, error2) = container.prepareSync(test: self, epoch: 1, machineID: "bbb", bottleSalt: "987654321", bottleID: UUID().uuidString, modelID: "iPhone1,1")
@@ -3769,7 +3787,6 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                 self.cuttlefish = FakeCuttlefishServer(nil, ckZones: [:], ckksZoneKeys: [:])
 
                 let (c, peerID1) = try establish(reload: false,
-                                                 contextID: OTDefaultContext,
                                                  allowedMachineIDs: Set(["aaa"] + joiningMIDs),
                                                  store: store)
 
@@ -3800,7 +3817,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     }
 
     func testMemoryUseLoadingManyPeers() throws {
-        let joiningMIDs = (0...10).map {
+        let additionalPeerCount = 49 // not including initial peer
+        let remainingPeerCount = 9 // how many of the additional peers will be trusted at the end
+        let joiningMIDs = (0..<additionalPeerCount).map {
             "mid\($0)"
         }
 
@@ -3808,7 +3827,6 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         self.cuttlefish = FakeCuttlefishServer(nil, ckZones: [:], ckksZoneKeys: [:])
 
         let (c, peerID1) = try establish(reload: false,
-                                         contextID: OTDefaultContext,
                                          allowedMachineIDs: Set(["aaa"] + joiningMIDs),
                                          store: store)
 
@@ -3836,13 +3854,12 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         // Now half of the containers are thrown out
-        let remainingPeerCount = 8
-        let newIDList = Set(["aaa"] + joiningMIDs[0...remainingPeerCount])
-        let newTrustedList = [peerID1] + joinedContainers[0...remainingPeerCount].map { $1 }
+        let newIDList = Set(["aaa"] + joiningMIDs[0..<remainingPeerCount])
+        let newTrustedList = [peerID1] + joinedContainers[0..<remainingPeerCount].map { $1 }
 
-        joinedContainers[0...remainingPeerCount].forEach { joinedContainer, _ in
+        joinedContainers[0..<remainingPeerCount].forEach { joinedContainer, _ in
             XCTAssertNil(joinedContainer.setAllowedMachineIDsSync(test: self,
-                                                                  allowedMachineIDs: Set(newIDList),
+                                                                  allowedMachineIDs: newIDList,
                                                                   accountIsDemo: false,
                                                                   listDifference: true), "should be able to set allowed machine IDs")
 
@@ -3859,20 +3876,21 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         }
 
         let options = XCTMeasureOptions()
-        options.iterationCount = 5 // Note that XCT will always do one more iteration than requested
-        self.measure(metrics: [XCTMemoryMetric()], options: options) {
-            do {
-                let (_, _, updateError) = c.updateSync(test: self)
-                XCTAssertNil(updateError, "Should be able to update first container")
+        options.iterationCount = 25 // Note that XCT will always do one more iteration than requested
+        options.invocationOptions = .manuallyStop // so we can measure memory before our container goes out of scope
+        self.measure(metrics: [XCTCPUMetric(), XCTMemoryMetric()], options: options) {
+            let (_, _, updateError) = c.updateSync(test: self)
+            XCTAssertNil(updateError, "Should be able to update first container")
 
-                // reload: to simulate memory use when the daemon restarts
-                do {
-                    let container = try Container(name: c.name,
-                                                  persistentStoreDescription: store,
-                                                  darwinNotifier: FakeCKKSNotifier.self,
-                                                  cuttlefish: cuttlefish)
-                    self.assertTrusts(context: container, peerIDs: newTrustedList)
-                }
+            // reload: to simulate memory use when the daemon restarts
+            do {
+                let container = try Container(name: c.name,
+                                              persistentStoreDescription: store,
+                                              darwinNotifier: FakeCKKSNotifier.self,
+                                              managedConfigurationAdapter: mcAdapterPlaceholder,
+                                              cuttlefish: cuttlefish)
+                self.assertTrusts(context: container, peerIDs: newTrustedList)
+                self.stopMeasuring()
             } catch {
                 XCTFail("Expected no failures: \(error)")
             }
@@ -3882,7 +3900,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     #if SEC_XR
     func testFetchCurrentPolicyWithModelIDOverride() throws {
         let store = tmpStoreDescription(name: "container.db")
-        let container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, cuttlefish: cuttlefish)
+        let container = try Container(name: ContainerName(container: "test", context: "contextID"), persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
 
         TPSetBecomeiPadOverride(false)
         do {

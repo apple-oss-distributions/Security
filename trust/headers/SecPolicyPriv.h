@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003-2021 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2003-2022 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -215,6 +215,10 @@ extern const CFStringRef kSecPolicyAppleOrderBundleSigner
     API_AVAILABLE(macos(13.0), ios(16.0), watchos(9.0), tvos(16.0));
 extern const CFStringRef kSecPolicyAppleQiSigning
     API_AVAILABLE(macos(13.0), ios(16.0), watchos(9.0), tvos(16.0));
+extern const CFStringRef kSecPolicyApplePPMAggregatorConfigSigning
+    API_AVAILABLE(macos(13.1), ios(16.2), watchos(9.2), tvos(16.2));
+extern const CFStringRef kSecPolicyAppleXROSApplicationSigning
+    API_AVAILABLE(macos(14.0), ios(17.0), watchos(10.0), tvos(17.0));
 
 
 /*!
@@ -671,6 +675,26 @@ SecPolicyRef SecPolicyCreateiPhoneProvisioningProfileSigning(void);
 */
 __nullable CF_RETURNS_RETAINED
 SecPolicyRef SecPolicyCreateAppleTVOSApplicationSigning(void);
+
+/*!
+ @function SecPolicyCreateAppleXROSApplicationSigning
+ @abstract Returns a policy object for evaluating signed application
+ signatures.  This is for apps signed directly by the Apple XROS app store,
+ and allows for both the prod and the dev/test certs.
+ @discussion This policy uses the Basic X.509 policy with no validity check
+ and pinning options:
+     * The chain is anchored to any of the Apple Root CAs.
+     * There are exactly 3 certs in the chain.
+     * The intermediate has a marker extension with OID 1.2.840.113635.100.6.2.1.
+     * The leaf has ExtendedKeyUsage, if any, with the AnyExtendedKeyUsage OID or
+       the CodeSigning OID.
+     * The leaf has a marker extension with OID 1.2.840.113635.100.6.1.36 or OID
+       1.2.840.113635.100.6.1.36.1.
+ @result A policy object. The caller is responsible for calling CFRelease
+ on this when it is no longer needed.
+*/
+__nullable CF_RETURNS_RETAINED
+SecPolicyRef SecPolicyCreateAppleXROSApplicationSigning(void);
 
 /*!
  @function SecPolicyCreateOCSPSigner
@@ -1418,7 +1442,8 @@ SecPolicyRef SecPolicyCreateAppleHomeKitServerAuth(CFStringRef hostname)
  @function SecPolicyCreateAppleExternalDeveloper
  @abstract Returns a policy object for verifying Apple-issued external developer
  certificates.
- @discussion The resulting policy uses the Basic X.509 policy with validity check and
+ @param checkExpiry whether to include the temporal validity check in the policy
+ @discussion The resulting policy uses the Basic X.509 policy with optional validity check and
  pinning options:
     * The chain is anchored to any of the Apple Root CAs.
     * There are exactly 3 certs in the chain.
@@ -1443,6 +1468,11 @@ SecPolicyRef SecPolicyCreateAppleHomeKitServerAuth(CFStringRef hostname)
  @result A policy object. The caller is responsible for calling CFRelease on this when
  it is no longer needed.
  */
+__nullable CF_RETURNS_RETAINED
+SecPolicyRef SecPolicyCreateAppleExternalDeveloperOptionalExpiry(bool checkExpiry)
+    API_AVAILABLE(macos(13.5), ios(16.6), watchos(9.6), tvos(16.6));
+
+/* Variant of the above with checkExpiry = true */
 __nullable CF_RETURNS_RETAINED
 SecPolicyRef SecPolicyCreateAppleExternalDeveloper(void)
     __OSX_AVAILABLE(10.12) __IOS_AVAILABLE(10.0) __TVOS_AVAILABLE(10.0) __WATCHOS_AVAILABLE(3.0);
@@ -1889,7 +1919,8 @@ SecPolicyRef SecPolicyCreateAppleAccessoryUpdateSigning(void)
  */
 __nullable CF_RETURNS_RETAINED
 SecPolicyRef SecPolicyCreateAggregateMetricTransparency(bool facilitator)
-    API_AVAILABLE(macos(10.15.6), ios(13.6), watchos(6.2), tvos(13.4));
+    API_DEPRECATED_WITH_REPLACEMENT("SecPolicyCreateAggregateMetricEncryption",
+     macos(10.15.6, 11.1), ios(13.6, 14.3), watchos(6.2, 7.2), tvos(13.4, 14.3));
 
 /*!
  @function SecPolicyCreateAggregateMetricEncryption
@@ -2048,6 +2079,7 @@ SecPolicyRef SecPolicyCreateApplePayModelSigning(bool checkExpiration)
  @discussion The resulting policy uses the Basic X.509 policy with no validity check and
  pinning options:
      * RSA key sizes are 2048-bit or larger. EC key sizes are P-256 or larger.
+     * Signing algorithm uses SHA-256 or greater (no MD2/MD4/MD5/SHA1/SHA224).
  The intended use of this policy is that the caller pass in the trusted roots to SecTrustSetAnchorCertificates().
  @result A policy object. The caller is responsible for calling CFRelease on this when
  it is no longer needed.
@@ -2107,6 +2139,28 @@ SecPolicyRef SecPolicyCreateOrderBundleSigner(CFStringRef orderTypeId)
 __nullable CF_RETURNS_RETAINED
 SecPolicyRef SecPolicyCreateQiSigning(void)
     API_AVAILABLE(macos(13.0), ios(16.0), watchos(9.0), tvos(16.0));
+
+/*!
+ @function SecPolicyCreatePPMAggregatorConfigSigning
+ @abstract Returns a policy object for verifying Privacy Preserving Metrics Aggregator
+ Configuration Signing certificates
+ @param isApple A boolean to indicate whether the aggregator is Apple or a third-party
+ @discussion The resulting policy uses the Basic X.509 policy with validity check and
+ pinning options:
+     * The chain is anchored to any of the Apple Root CAs.
+     * There are exactly 3 certs in the chain.
+     * The intermediate has a marker extension with OID 1.2.840.113635.100.6.2.26.
+     * The leaf has a marker extension with OID 1.2.840.113635.100.12.44 if isApple is true or
+       1.2.840.113635.100.14.3 if false.
+     * Revocation is checked via any available method.
+     * RSA key sizes are 2048-bit or larger. EC key sizes are P-256 or larger.
+     * Require a positive CT verification result using the non-TLS CT log list
+ @result A policy object. The caller is responsible for calling CFRelease on this when
+ it is no longer needed.
+ */
+__nullable CF_RETURNS_RETAINED
+SecPolicyRef  SecPolicyCreatePPMAggregatorConfigSigning(bool isApple)
+    API_AVAILABLE(macos(13.1), ios(16.2), watchos(9.2), tvos(16.2));
 
 /*
  *  Legacy functions (OS X only)

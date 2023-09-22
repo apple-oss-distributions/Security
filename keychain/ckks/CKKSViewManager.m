@@ -588,11 +588,38 @@ dispatch_once_t globalZoneStateQueueOnce;
                               complete:complete];
 }
 
+- (void)unsetCurrentItemsForAccessGroup:(NSString*)accessGroup
+                            identifiers:(NSArray<NSString*>*)identifiers
+                               viewHint:(NSString*)viewHint
+                               complete:(void (^)(NSError* operror))complete
+{
+    NSError* findViewError = nil;
+    CKKSKeychainView* view = [[OTManager manager] ckksForClientRPC:[[OTControlArguments alloc] init]
+                                                   createIfMissing:YES
+                                           allowNonPrimaryAccounts:YES
+                                                             error:&findViewError];
+
+    if (!view || findViewError) {
+        ckksnotice_global("ckks", "No CKKS view for %@, %@, error: %@", SecCKKSContainerName, OTDefaultContext, findViewError);
+        if (findViewError) {
+            complete(findViewError);
+        } else {
+            complete([self defaultViewError]);
+        }
+        return;
+    }
+
+    [view unsetCurrentItemsForAccessGroup:accessGroup
+                              identifiers:identifiers
+                                 viewHint:viewHint
+                                 complete:complete];
+}
+
 -(void)getCurrentItemForAccessGroup:(NSString*)accessGroup
                          identifier:(NSString*)identifier
                            viewHint:(NSString*)viewHint
                     fetchCloudValue:(bool)fetchCloudValue
-                           complete:(void (^) (NSString* uuid, NSError* operror)) complete
+                           complete:(void (^) (CKKSCurrentItemData* data, NSError* operror)) complete
 {
     NSError* findViewError = nil;
     CKKSKeychainView* view = [[OTManager manager] ckksForClientRPC:[[OTControlArguments alloc] init]
@@ -647,6 +674,7 @@ dispatch_once_t globalZoneStateQueueOnce;
             ckksnotice_global("ckksbackup", "telling CloudServices about TLK arrival");
             notify_post(kSecItemBackupNotification);
         };
+        CFReleaseNull(error);
     }];
 }
 
@@ -1289,8 +1317,6 @@ dispatch_once_t globalZoneStateQueueOnce;
     if (![self waitForTrustReady]) {
         ckksnotice_global("ckks", "Trust not ready, still going ahead");
     }
-
-    [[CKKSAnalytics logger] dailyCoreAnalyticsMetrics:@"com.apple.security.CKKSHealthSummary"];
 
     // For now, poke the views and tell them to update their device states if they'd like
 

@@ -46,6 +46,7 @@
 #import "keychain/ot/OTAccountsAdapter.h"
 #import "keychain/ot/OTAuthKitAdapter.h"
 #import "keychain/ot/OTTooManyPeersAdapter.h"
+#import "keychain/ot/OTTapToRadarAdapter.h"
 #import "keychain/ot/OTDeviceInformationAdapter.h"
 #import "keychain/ot/OTCuttlefishAccountStateHolder.h"
 #import "keychain/ot/OctagonStateMachineHelpers.h"
@@ -55,6 +56,7 @@
 #import <Security/OTJoiningConfiguration.h>
 #import "keychain/ot/OTOperationDependencies.h"
 #import "keychain/ot/CuttlefishXPCWrapper.h"
+#import "keychain/ot/OTStashAccountSettingsOperation.h"
 #import <Security/SecEscrowRequest.h>
 
 #import <CoreCDP/CDPAccount.h>
@@ -65,6 +67,9 @@
 #import "keychain/ckks/CKKSKeychainView.h"
 #import "keychain/ot/proto/generated_source/OTSecureElementPeerIdentity.h"
 #import "keychain/ot/proto/generated_source/OTCurrentSecureElementIdentities.h"
+#import "keychain/ot/proto/generated_source/OTAccountSettings.h"
+#import "keychain/ot/proto/generated_source/OTWalrus.h"
+#import "keychain/ot/proto/generated_source/OTWebAccess.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -73,7 +78,8 @@ NS_ASSUME_NONNULL_BEGIN
                                            OctagonStateMachineEngine,
                                            CKKSCloudKitAccountStateListener,
                                            CKKSPeerUpdateListener,
-                                           OTDeviceInformationNameUpdateListener>
+                                           OTDeviceInformationNameUpdateListener,
+                                           OTAccountSettingsContainer>
 
 @property (readonly) CuttlefishXPCWrapper* cuttlefishXPCWrapper;
 @property (readonly) OTFollowup *followupHandler;
@@ -100,6 +106,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) id<OTPersonaAdapter> personaAdapter;
 @property (readonly) id<OTSOSAdapter> sosAdapter;
 @property (readonly) id<OTTooManyPeersAdapter> tooManyPeersAdapter;
+@property (readonly) id<OTTapToRadarAdapter> tapToRadarAdapter;
 
 // CKKSConditions (for testing teardowns)
 @property (nullable) CKKSCondition* pendingEscrowCacheWarmup;
@@ -116,6 +123,7 @@ NS_ASSUME_NONNULL_BEGIN
                        authKitAdapter:(id<OTAuthKitAdapter>)authKitAdapter
                        personaAdapter:(id<OTPersonaAdapter>)personaAdapter
                   tooManyPeersAdapter:(id<OTTooManyPeersAdapter>)tooManyPeersAdapter
+                    tapToRadarAdapter:(id<OTTapToRadarAdapter>)tapToRadarAdapter
                      lockStateTracker:(CKKSLockStateTracker*)lockStateTracker
                   reachabilityTracker:(CKKSReachabilityTracker*)reachabilityTracker
                   accountStateTracker:(id<CKKSCloudKitAccountStateTrackingProvider, CKKSOctagonStatusMemoizer>)accountStateTracker
@@ -153,7 +161,18 @@ NS_ASSUME_NONNULL_BEGIN
        vouchSig:(NSData*)vouchSig
           reply:(void (^)(NSError * _Nullable error))reply;
 
-- (void)rpcResetAndEstablish:(CuttlefishResetReason)resetReason reply:(nonnull void (^)(NSError * _Nullable))reply;
+- (void)rpcReset:(CuttlefishResetReason)resetReason
+           reply:(nonnull void (^)(NSError * _Nullable))reply;
+
+- (void)rpcResetAndEstablish:(CuttlefishResetReason)resetReason
+           idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+      idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+                  notifyIdMS:(bool)notifyIdMS
+             accountSettings:(OTAccountSettings *_Nullable)accountSettings
+                       reply:(nonnull void (^)(NSError * _Nullable))reply;
+
+- (void)rpcResetAndEstablish:(CuttlefishResetReason)resetReason
+                       reply:(nonnull void (^)(NSError * _Nullable))reply;
 
 - (void)localReset:(nonnull void (^)(NSError * _Nullable))reply;
 
@@ -183,6 +202,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)preflightJoinWithInheritanceKey:(OTInheritanceKey*)ik
                                   reply:(void (^)(NSError * _Nullable error))reply;
 
+- (void)preflightRecoverOctagonUsingRecoveryKey:(NSString *)recoveryKey
+                                          reply:(void (^)(BOOL, NSError * _Nullable))reply;
+
+- (void)getAccountMetadataWithReply:(void (^)(OTAccountMetadataClassC*_Nullable, NSError *_Nullable))reply;
+
 - (void)rpcRemoveFriendsInClique:(NSArray<NSString*>*)peerIDs
                            reply:(void (^)(NSError * _Nullable))reply;
 
@@ -199,12 +223,13 @@ NS_ASSUME_NONNULL_BEGIN
                                  BOOL isLocked,
                                  NSError * _Nullable))reply;
 - (void)rpcFetchDeviceNamesByPeerID:(void (^)(NSDictionary<NSString*, NSString*>* _Nullable peers, NSError* _Nullable error))reply;
-- (void)rpcFetchAllViableBottles:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs,
-                                           NSArray<NSString*>* _Nullable sortedPartialEscrowRecordIDs,
-                                           NSError* _Nullable error))reply;
-
-- (void)rpcFetchAllViableEscrowRecords:(BOOL)forceFetch reply:(void (^)(NSArray<NSData*>* _Nullable records,
-                                                                        NSError* _Nullable error))reply;
+- (void)rpcFetchAllViableBottlesFromSource:(OTEscrowRecordFetchSource)source
+                                     reply:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs,
+                                                     NSArray<NSString*>* _Nullable sortedPartialEscrowRecordIDs,
+                                                     NSError* _Nullable error))reply;
+- (void)rpcFetchAllViableEscrowRecordsFromSource:(OTEscrowRecordFetchSource)source
+                                           reply:(void (^)(NSArray<NSData*>* _Nullable records,
+                                                           NSError* _Nullable error))reply;
 - (void)rpcInvalidateEscrowCache:(void (^)(NSError* _Nullable error))reply;
 
 - (void)fetchEscrowContents:(void (^)(NSData* _Nullable entropy,
@@ -224,6 +249,10 @@ NS_ASSUME_NONNULL_BEGIN
                                         reply:(void (^)(NSError *_Nullable error))reply;
 - (void)rpcRemoveInheritanceKeyWithUUID:(NSUUID *)uuid
                                   reply:(void (^)(NSError *_Nullable error))reply;
+- (void)rpcCheckCustodianRecoveryKeyWithUUID:(NSUUID *)uuid
+                                       reply:(void (^)(bool exists, NSError *_Nullable error))reply;
+- (void)rpcCheckInheritanceKeyWithUUID:(NSUUID *)uuid
+                                 reply:(void (^)(bool exists, NSError *_Nullable error))reply;
 
 - (void)rpcRefetchCKKSPolicy:(void (^)(NSError * _Nullable error))reply;
 
@@ -237,8 +266,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)rpcFetchTrustedSecureElementIdentities:(void (^)(OTCurrentSecureElementIdentities* _Nullable currentSet,
                                                          NSError* _Nullable replyError))reply;
 
-- (void)rpcTlkRecoverabilityForEscrowRecordData:(NSData*)recordData reply:(void (^)(NSArray<NSString*>* views, NSError* replyError))reply;
+- (void)rpcTlkRecoverabilityForEscrowRecordData:(NSData*)recordData
+                                         source:(OTEscrowRecordFetchSource)source
+                                          reply:(void (^)(NSArray<NSString*>* views,
+                                                          NSError* replyError))reply;
 
+- (void)rpcSetAccountSetting:(OTAccountSettings*)setting
+                       reply:(void (^)(NSError* _Nullable))reply;
+
+- (void)rpcFetchAccountSettings:(void (^)(OTAccountSettings* _Nullable setting, NSError* _Nullable replyError))reply;
+- (void)rpcAccountWideSettingsWithForceFetch:(bool)forceFetch reply:(void (^)(OTAccountSettings* _Nullable setting, NSError* _Nullable replyError))reply;
 
 - (void)rpcWaitForPriorityViewKeychainDataRecovery:(void (^)(NSError* _Nullable replyError))reply NS_SWIFT_NAME(rpcWaitForPriorityViewKeychainDataRecovery(reply:));;
 
@@ -255,12 +292,20 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)waitForReady:(int64_t)timeOffset;
 
+- (void)rpcIsRecoveryKeySet:(void (^)(BOOL isSet, NSError * _Nullable error))reply;
+- (void)rpcRemoveRecoveryKey:(void (^)(BOOL removed, NSError * _Nullable error))reply;
+
+- (void)rpcFetchTotalCountOfTrustedPeers:(void (^)(NSNumber* count, NSError* replyError))reply;
+
 // For testing.
 - (OTAccountMetadataClassC_AccountState)currentMemoizedAccountState;
 - (OTAccountMetadataClassC_TrustState)currentMemoizedTrustState;
 - (NSDate* _Nullable) currentMemoizedLastHealthCheck;
 - (void)checkTrustStatusAndPostRepairCFUIfNecessary:(void (^ _Nullable)(CliqueStatus status, BOOL posted, BOOL hasIdentity, BOOL isLocked, NSError * _Nullable error))reply;
-- (void)rpcResetAccountCDPContents:(void (^)(NSError* _Nullable error))reply;
+- (void)rpcResetAccountCDPContentsWithIdmsTargetContext:(NSString *_Nullable)idmsTargetContext
+                                 idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
+                                             notifyIdMS:(bool)notifyIdMS
+                                                  reply:(void (^)(NSError* _Nullable error))reply;
 - (BOOL)checkAllStateCleared;
 - (void)clearCKKS;
 - (void)setMachineIDOverride:(NSString*)machineID;
@@ -268,11 +313,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable) TPPolicyVersion* policyOverride;
 
 // Octagon Health Check Helpers
-- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck reply:(void (^)(NSError * _Nullable error))reply;
+- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck repair:(BOOL)repair reply:(void (^)(NSError * _Nullable error))reply;
 
 // For reporting
 - (BOOL)machineIDOnMemoizedList:(NSString*)machineID error:(NSError**)error NS_SWIFT_NOTHROW;
 - (TrustedPeersHelperEgoPeerStatus* _Nullable)egoPeerStatus:(NSError**)error;
+
+- (void)setAccountSettings:(OTAccountSettings*_Nullable)accountSettings;
 
 @end
 

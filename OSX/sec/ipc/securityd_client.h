@@ -61,7 +61,7 @@ typedef struct __SecTrustStore *SecTrustStoreRef;
 
 #if TARGET_OS_OSX
 #define kSecuritydXPCServiceName "com.apple.securityd.xpc"
-#define kSecuritydSystemXPCServiceName "com.apple.securityd.system.xpc"
+#define kSecuritydSystemXPCServiceName "com.apple.securityd.systemkeychain"
 #define kTrustdAgentXPCServiceName "com.apple.trustd.agent"
 #define kTrustdXPCServiceName "com.apple.trustd"
 #else
@@ -156,6 +156,7 @@ extern const char *kSecXPCOTRReady; // OTR ready for messages
 extern const char *kSecXPCKeyViewName;
 extern const char *kSecXPCKeyViewActionCode;
 extern const char *kSecXPCKeyHSA2AutoAcceptInfo;
+extern const char *kSecXPCKeyDictionary;
 extern const char *kSecXPCKeyString;
 extern const char *kSecXPCKeyArray;
 extern const char *kSecXPCKeySet;
@@ -163,7 +164,7 @@ extern const char *kSecXPCKeySet2;
 extern const char *kSecXPCVersion;
 extern const char *kSecXPCKeySignInAnalytics;
 extern const char *kSecXPCKeyReason;
-
+extern const char *kSecXPCKeySOSCompatibilityMode;
 //
 // MARK: Mach port request IDs
 //
@@ -263,10 +264,14 @@ enum SecXPCOperation {
     kSecXPCOpRegisterRecoveryPublicKey,
     kSecXPCOpGetRecoveryPublicKey,
     kSecXPCOpCopyInitialSyncBlob,
+    kSecXPCOpSetSOSCompatibilityMode,
+    kSecXPCOpFetchCompatibilityMode,
+    kSecXPCOpFetchCompatibilityModeCachedValue,
     /* after this is free for all */
     kSecXPCOpWhoAmI,
     kSecXPCOpTransmogrifyToSyncBubble,
     kSecXPCOpTransmogrifyToSystemKeychain,
+    kSecXPCOpTranscryptToSystemKeychainKeybag,
     sec_item_update_token_items_for_access_groups_id,
     kSecXPCOpDeleteUserView,
     sec_trust_store_copy_all_id,
@@ -301,12 +306,13 @@ enum SecXPCOperation {
     sec_truststore_remove_all_id,
     sec_trust_reset_settings_id,
     sec_delete_items_on_sign_out_id,
+    sec_trust_store_migrate_plist_id,
 };
 
 #define KEYCHAIN_SUPPORTS_PERSONA_MULTIUSER (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_OSX)
 #define KEYCHAIN_SUPPORTS_EDU_MODE_MULTIUSER (TARGET_OS_IOS)
-#define KEYCHAIN_SUPPORTS_SYSTEM_KEYCHAIN (TARGET_OS_IOS || TARGET_OS_TV)
-#define KEYCHAIN_SUPPORTS_SPLIT_SYSTEM_KEYCHAIN (TARGET_OS_IOS)
+#define KEYCHAIN_SUPPORTS_SYSTEM_KEYCHAIN (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_OSX)
+#define KEYCHAIN_SUPPORTS_SPLIT_SYSTEM_KEYCHAIN (TARGET_OS_IOS || TARGET_OS_OSX)
 
 #define KEYCHAIN_SUPPORTS_SINGLE_DATABASE_MULTIUSER (KEYCHAIN_SUPPORTS_PERSONA_MULTIUSER || KEYCHAIN_SUPPORTS_EDU_MODE_MULTIUSER)
 
@@ -431,6 +437,9 @@ struct securityd {
     bool (*socc_clearPeerMessageKeyInKVS)(CFStringRef peerID, CFErrorRef *error);
     bool (*soscc_SOSCCMessageFromPeerIsPending)(SOSPeerInfoRef peer, CFErrorRef* error);
     bool (*soscc_SOSCCSendToPeerIsPending)(SOSPeerInfoRef peer, CFErrorRef* error);
+    bool (*soscc_SOSCCSetCompatibilityMode)(bool compatibilityMode, CFErrorRef* error);
+    bool (*soscc_SOSCCFetchCompatibilityMode)(CFErrorRef* error);
+    bool (*soscc_SOSCCFetchCompatibilityModeCachedValue)(CFErrorRef* error);
     CFTypeRef (*soscc_status)(void);
     bool (*sec_fill_security_client_muser)(SecurityClient *client);
     /* otherstuff */
@@ -469,6 +478,7 @@ struct trustd {
     bool (*sec_trust_settings_set_data)(uid_t uid, CFStringRef domain, CFDataRef auth, CFDataRef trustSettings, CFErrorRef* error);
     bool (*sec_trust_settings_copy_data)(uid_t uid, CFStringRef domain, CFDataRef *trustSettings, CFErrorRef* error);
     bool (*sec_trust_reset_settings)(SecTrustResetFlags flags, CFErrorRef *error);
+    bool (*sec_trust_store_migrate_plist)(uid_t uid, CFPropertyListRef plist, CFDictionaryRef certificates, CFErrorRef *error);
 };
 
 extern struct trustd *gTrustd;
@@ -527,12 +537,17 @@ typedef void (^SecBoolNSErrorCallback) (bool, NSError*);
                            oldCurrentItemHash:(NSData*)oldItemSHA1
                                      complete:(void (^) (NSError* operror)) complete;
 
+- (void)secItemUnsetCurrentItemsAcrossAllDevices:(NSString*)accessGroup
+                                     identifiers:(NSArray<NSString*>*)identifiers
+                                        viewHint:(NSString*)viewHint
+                                        complete:(void (^)(NSError* operror))complete;
+
 // For the given access group and identifier, check the current local idea of the 'current' item
 -(void)secItemFetchCurrentItemAcrossAllDevices:(NSString*)accessGroup
                                     identifier:(NSString*)identifier
                                       viewHint:(NSString*)viewHint
                                fetchCloudValue:(bool)fetchCloudValue
-                                      complete:(void (^) (NSData* persistentref, NSError* operror)) complete;
+                                      complete:(void (^) (NSData* persistentref, NSDate* cipModificationTime, NSError* operror)) complete;
 
 
 // For each item in the keychainClass, return a persistant reference and the digest of the value

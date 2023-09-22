@@ -142,12 +142,6 @@ static CFStringRef kRegistrationFileName = CFSTR("com.apple.security.cloudkeycha
 }
 
 -(id _Nullable) init {
-    
-    if(!OctagonPlatformSupportsSOS()) {
-        secdebug("circleOps", "SOS is currently not supported or enabled");
-        return nil;
-    }
-
     if ((self = [super init])) {
         _registrationFileName = (NSURL *)CFBridgingRelease(SecCopyURLForFileInPreferencesDirectory(kRegistrationFileName));
         _proxyID = [UbiqitousKVSProxy withAccount: [CKDSecuritydAccount securitydAccount]
@@ -486,12 +480,6 @@ static void diagnostics(int argc, const char *argv[]) {
 
 int main(int argc, const char *argv[]) {
     secinfo(PROXYXPCSCOPE, "Starting CloudKeychainProxy");
-    char *wait4debugger = getenv("WAIT4DEBUGGER");
-
-    if (wait4debugger && !strcasecmp("YES", wait4debugger)) {
-        syslog(LOG_ERR, "Waiting for debugger");
-        kill(getpid(), SIGTSTP);
-    }
 
     if (argc > 1) {
         diagnostics(argc, argv);
@@ -503,12 +491,27 @@ int main(int argc, const char *argv[]) {
         ckp = [CloudKeychainProxy sharedObject];
     }
     
+    if (SOSCompatibilityModeEnabled()) {
+        int token = NOTIFY_TOKEN_INVALID;
+        notify_register_dispatch(kSOSCCSOSIsNowOFF, &token, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
+            secnotice(PROXYXPCSCOPE, "SOS has been turned off! Exiting when clean 🖖");
+            xpc_transaction_exit_clean();
+        });
+    }
+
+    if(!SOSCCIsSOSTrustAndSyncingEnabledCachedValue()) {
+        // If we exit immediately, launchd becomes upset that we don't check in, and keeps launching us to handle whatever notification launched us.
+        // As a workaround, handle whatever launched us, and then exit.
+        secnotice(PROXYXPCSCOPE, "SOS is currently not supported or enabled; exiting when possible");
+        xpc_transaction_exit_clean();
+    }
+
     if (ckp) {  // nothing bad happened when initializing
         secinfo(PROXYXPCSCOPE, "Starting mainRunLoop");
         NSRunLoop *runLoop = [NSRunLoop mainRunLoop];
         [runLoop run];
     }
-    secinfo(PROXYXPCSCOPE, "Exiting CloudKeychainProxy");
+    secnotice(PROXYXPCSCOPE, "Exiting CloudKeychainProxy");
 
     return EXIT_FAILURE;
 }

@@ -49,6 +49,11 @@
 #include <Security/SecBasePriv.h>
 #include <Security/SecCertificate.h>
 
+#if SEC_OS_OSX
+#include <Security/cssmtype.h>
+#include <Security/x509defs.h>
+#endif
+
 __BEGIN_DECLS
 
 #if SEC_OS_IPHONE
@@ -202,6 +207,10 @@ CFArrayRef SecCertificateCopyIPAddresses(SecCertificateRef certificate);
  certificate if any. */
 CFArrayRef SecCertificateCopyRFC822Names(SecCertificateRef certificate);
 
+/* Return an array of CFStringRefs representing the URIs in the SAN of the
+ certificate if any. */
+CFArrayRef SecCertificateCopyURIs(SecCertificateRef certificate);
+
 /* Return an array of CFStringRefs representing the common names in the
  certificates subject if any. */
 CFArrayRef SecCertificateCopyCommonNames(SecCertificateRef certificate);
@@ -328,7 +337,8 @@ typedef CF_ENUM(uint32_t, SecSignatureHashAlgorithm){
     kSecSignatureHashAlgorithmSHA224 = 5,
     kSecSignatureHashAlgorithmSHA256 = 6,
     kSecSignatureHashAlgorithmSHA384 = 7,
-    kSecSignatureHashAlgorithmSHA512 = 8
+    kSecSignatureHashAlgorithmSHA512 = 8,
+    kSecSignatureHashAlgorithmSHAKE256 = 9,
 };
 
 /*!
@@ -495,8 +505,6 @@ CFDictionaryRef SecCertificateCopyComponentAttributes(SecCertificateRef certific
  * Legacy functions (OS X only)
  */
 #if SEC_OS_OSX
-#include <Security/cssmtype.h>
-#include <Security/x509defs.h>
 
 /* Given a unified SecCertificateRef, return a copy with a legacy
  C++ ItemImpl-based Certificate instance. Only for internal use;

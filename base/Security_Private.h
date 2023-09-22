@@ -68,7 +68,9 @@
 #include <Security/SecCmsSignerInfo.h>
 #include <Security/SecCodePriv.h>
 #include <Security/SecCodeSigner.h>
+#include <Security/SecCodeSignerRemote.h>
 #include <Security/SecCoreAnalytics.h>
+#include <Security/SecLaunchSequence.h>
 #include <Security/SecDH.h>
 #include <Security/SecECKey.h>
 #include <Security/SecEntitlements.h>
@@ -109,6 +111,8 @@
 #include <Security/SecureObjectSync/SOSTypes.h>
 #include <Security/SecureObjectSync/SOSViews.h>
 #include <Security/SecureTransportPriv.h>
+#include <Security/SecTapToRadar.h>
+#include <Security/SecABC.h>
 #include <Security/SecXPCError.h>
 #include <Security/SecXPCHelper.h>
 #include <Security/SFAnalytics.h>
@@ -121,6 +125,7 @@
 #include <Security/SOSAnalytics.h>
 #include <Security/SOSControlHelper.h>
 #include <Security/X509Templates.h>
+
 
 #if SEC_OS_OSX_INCLUDES
 #include <Security/AuthorizationPriv.h>
@@ -152,7 +157,7 @@
 #include <Security/sslTypes.h>
 #include <Security/TrustSettingsSchema.h>
 #include <Security/tsaSupport.h>
-#else
+#else   // SEC_OS_OSX_INCLUDES
 #include <Security/certextensions.h>
 #include <Security/CMSDecoder.h>
 #include <Security/CMSEncoder.h>
@@ -181,8 +186,9 @@
 #include <Security/SecTask.h>
 #include <Security/SecTrustSettings.h>
 #include <Security/SecureObjectSync/SOSPeerInfoV2.h>
-#endif
-#endif
 
+
+#endif  // SEC_OS_OSX_INCLUDES
+#endif  // __building_module(Security_Private)
 
 #endif // _SECURITY_PRIVATE_H_

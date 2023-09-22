@@ -32,7 +32,7 @@
 
 OctagonState* const OctagonStateNoAccount = (OctagonState*)@"NoAccount";
 
-OctagonState* const OctagonStateWaitForHSA2 = (OctagonState*)@"WaitForHSA2";
+OctagonState* const OctagonStateWaitForCDPCapableSecurityLevel = (OctagonState*)@"WaitForCDPCapableSecurityLevel";
 OctagonState* const OctagonStateWaitForCDP = (OctagonState*)@"WaitForCDP";
 
 OctagonState* const OctagonStateUntrusted = (OctagonState*)@"Untrusted";
@@ -74,6 +74,7 @@ OctagonState* const OctagonStateInitiatorJoinAfterCKKSReset = (OctagonState*)@"I
 /* used in restore (join with bottle)*/
 OctagonState* const OctagonStateBottleJoinCreateIdentity = (OctagonState*)@"BottleJoinCreateIdentity";
 OctagonState* const OctagonStateBottleJoinVouchWithBottle = (OctagonState*)@"BottleJoinVouchWithBottle";
+OctagonState* const OctagonStateStashAccountSettingsForRecoveryKey = (OctagonState*)@"OctagonStateStashAccountSettingsForRecoveryKey";
 OctagonState* const OctagonStateCreateIdentityForRecoveryKey = (OctagonState*)@"CreateIdentityForRecoveryKey";
 OctagonState* const OctagonStateCreateIdentityForCustodianRecoveryKey = (OctagonState*)@"CreateIdentityForCustodianRecoveryKey";
 
@@ -122,8 +123,12 @@ OctagonState* const OctagonStateResetAndEstablishClearLocalContextState = (Octag
 OctagonState* const OctagonStateLocalReset = (OctagonState*)@"LocalReset";
 OctagonState* const OctagonStateLocalResetClearLocalContextState = (OctagonState*)@"LocalResetClearLocalContextState";
 
+/* reset for SOS deferral testing */
+OctagonState* const OctagonStateCuttlefishReset = (OctagonState*)@"CuttlefishReset";
+OctagonState* const OctagonStateCKKSResetAfterOctagonReset = (OctagonState*)@"CKKSResetAfterOctagonReset";
+
 /* used for trust health checks */
-OctagonState* const OctagonStateHSA2HealthCheck = (OctagonState*)@"HSA2HealthCheck";
+OctagonState* const OctagonStateCDPCapableHealthCheck = (OctagonState*)@"CDPCapableHealthCheck";
 OctagonState* const OctagonStateCDPHealthCheck = (OctagonState*)@"CDPHealthCheck";
 OctagonState* const OctagonStateTPHTrustCheck = (OctagonState*)@"TPHTrustCheck";
 OctagonState* const OctagonStateCuttlefishTrustCheck = (OctagonState*)@"CuttlefishTrustCheck";
@@ -146,6 +151,7 @@ OctagonState* const OctagonStateAssistCKKSTLKUploadAfterCKKSReset = (OctagonStat
 
 OctagonState* const OctagonStateHealthCheckLeaveClique = (OctagonState*)@"HealthCheckLeaveClique";
 
+OctagonState* const OctagonStateSetAccountSettings = (OctagonState*)@"SetAccountSettings";
 
 /* escrow */
 OctagonState* const OctagonStateEscrowTriggerUpdate = (OctagonState*)@"EscrowTriggerUpdate";
@@ -205,7 +211,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateVouchWithRecoveryKey,                     @25U,],
                                      @[OctagonStateCreateIdentityForRecoveryKey,             @26U,],
                                      @[OctagonStateUpdateSOSPreapprovals,                    @27U,],
-                                     @[OctagonStateWaitForHSA2,                              @28U,],
+                                     @[OctagonStateWaitForCDPCapableSecurityLevel,           @28U,],
                                      @[OctagonStateAssistCKKSTLKUpload,                      @29U,],
                                      @[OctagonStateStartCompanionPairing,                    @30U,],
                                      @[OctagonStateEscrowTriggerUpdate,                      @31U,],
@@ -226,7 +232,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateSOSUpgradeAfterCKKSReset,                 @46U,],
                                      @[OctagonStateInitiatorJoinCKKSReset,                   @47U,],
                                      @[OctagonStateInitiatorJoinAfterCKKSReset,              @48U,],
-                                     @[OctagonStateHSA2HealthCheck,                          @49U,],
+                                     @[OctagonStateCDPCapableHealthCheck,                    @49U,],
                                      @[OctagonStateHealthCheckReset,                         @50U,],
                                      @[OctagonStateAssistCKKSTLKUploadCKKSReset,             @51U,],
                                      @[OctagonStateAssistCKKSTLKUploadAfterCKKSReset,        @52U,],
@@ -245,6 +251,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateBottlePreloadOctagonKeysInSOS,            @65U,],
                                      @[OctagonStateAttemptSOSUpgradeDetermineCDPState,       @66U,],
                                      @[OctagonStateLostAccountAuth,                          @67U,],
+                                     @[OctagonStateSetAccountSettings,                       @68U,],
                                      @[OctagonStateCreateIdentityForCustodianRecoveryKey,    @69U,],
                                      @[OctagonStateVouchWithCustodianRecoveryKey,            @70U,],
                                      //Removed: @[OctagonStateFixupRefetchCuttlefishForCustodian,       @71U,],
@@ -270,6 +277,9 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateResetAndEstablishClearLocalContextState,  @90U,],
                                      @[OctagonStateLocalReset,                               @91U,],
                                      @[OctagonStateLocalResetClearLocalContextState,         @92U,],
+                                     @[OctagonStateStashAccountSettingsForRecoveryKey,       @93U,],
+                                     @[OctagonStateCuttlefishReset,                          @94U,],
+                                     @[OctagonStateCKKSResetAfterOctagonReset,               @95U,],
                                      ];
     return stateInit;
 }
@@ -327,7 +337,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
         [sourceStates removeObject:OctagonStateDetermineiCloudAccountState];
         [sourceStates removeObject:OctagonStateWaitingForCloudKitAccount];
         [sourceStates removeObject:OctagonStateCloudKitNewlyAvailable];
-        [sourceStates removeObject:OctagonStateWaitForHSA2];
+        [sourceStates removeObject:OctagonStateWaitForCDPCapableSecurityLevel];
         [sourceStates removeObject:OctagonStateLocalReset];
         [sourceStates removeObject:OctagonStateLocalResetClearLocalContextState];
 
@@ -352,7 +362,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
         [sourceStates addObject:OctagonStateDetermineiCloudAccountState];
         [sourceStates addObject:OctagonStateWaitingForCloudKitAccount];
         [sourceStates addObject:OctagonStateCloudKitNewlyAvailable];
-        [sourceStates addObject:OctagonStateWaitForHSA2];
+        [sourceStates addObject:OctagonStateWaitForCDPCapableSecurityLevel];
         [sourceStates addObject:OctagonStateUntrusted];
 
         s = sourceStates;
@@ -370,7 +380,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
         [sourceStates addObject:OctagonStateReady];
         [sourceStates addObject:OctagonStateError];
         [sourceStates addObject:OctagonStateUntrusted];
-        [sourceStates addObject:OctagonStateWaitForHSA2];
+        [sourceStates addObject:OctagonStateWaitForCDPCapableSecurityLevel];
         [sourceStates addObject:OctagonStateWaitForUnlock];
         [sourceStates addObject:OctagonStateWaitForCDP];
 

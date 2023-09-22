@@ -47,6 +47,16 @@
 		<key>Enabled</key>
 		<true/>
 	</dict>
+	<key>TrustSettingsUseTrustStore</key>
+	<dict>
+		<key>DevelopmentPhase</key>
+		<string>FeatureComplete</string>
+	</dict>
+	<key>TrustStoreUsesUUID</key>
+	<dict>
+		<key>DevelopmentPhase</key>
+		<string>FeatureComplete</string>
+	</dict>
 	<key>WarnTooManyPeers</key>
 	<dict>
 		<key>Enabled</key>
@@ -67,6 +77,11 @@
 		<key>Enabled</key>
 		<false/>
 	</dict>
+	<key>SeparateUserKeychain</key>
+	<dict>
+		<key>Enabled</key>
+		<false/>
+	</dict>
 	<key>AllowiProd</key>
 	<dict>
 		<key>Enabled</key>
@@ -82,15 +97,38 @@
 		<key>Enabled</key>
 		<false/>
 	</dict>
+	<key>KCSharingAutomaticSyncing</key>
+	<dict>
+		<key>DisplayName</key>
+		<string>Sync shared items automatically</string>
+		<key>DevelopmentPhase</key>
+		<string>FeatureComplete</string>
+		<key>Radar</key>
+		<real>83175376</real>
+	</dict>
 	<key>SecCMSMessageSecurityShim</key>
 	<dict>
 		<key>Enabled</key>
-		<false/>
+		<true/>
 	</dict>
-	<key>SecSkipSecurityToolAuth</key>
+	<key>KCSharingUsePrototypeIDSService</key>
 	<dict>
+		<key>DisplayName</key>
+		<string>Use a prototype IDS service for kcsharing invites</string>
+		<key>DevelopmentPhase</key>
+		<string>UnderDevelopment</string>
+	</dict>
+	<key>CKKSHighPriorityOperations</key>
+	<dict>
+		<key>DisplayName</key>
+		<string>Use high priority CloudKit operations for Keychain Sync</string>
 		<key>Enabled</key>
 		<true/>
+	</dict>
+	<key>TTRTrustLossOnHomePod</key>
+	<dict>
+		<key>Enabled</key>
+		<false/>
 	</dict>
 </dict>
 </plist>

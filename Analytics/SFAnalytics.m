@@ -30,6 +30,7 @@
 #import "SFAnalyticsMultiSampler+Internal.h"
 #import "SFAnalyticsSQLiteStore.h"
 #import "SFAnalyticsCollection.h"
+#import "keychain/analytics/SecLaunchSequence.h"
 #import "NSDate+SFAnalytics.h"
 #import "utilities/debugging.h"
 #import <utilities/SecFileLocations.h>
@@ -50,6 +51,7 @@
 
 // SFAnalyticsDefines constants
 NSString* const SFAnalyticsTableSuccessCount = @"success_count";
+NSString* const SFAnalyticsTableRockwell = @"rockwell";
 NSString* const SFAnalyticsTableHardFailures = @"hard_failures";
 NSString* const SFAnalyticsTableSoftFailures = @"soft_failures";
 NSString* const SFAnalyticsTableSamples = @"samples";
@@ -131,9 +133,14 @@ NSString* const SFAnalyticsTableSchema =    @"CREATE TABLE IF NOT EXISTS hard_fa
                                                 @"hard_failure_count INTEGER,\n"
                                                 @"soft_failure_count INTEGER\n"
                                             @");\n"
+                                            @"CREATE TABLE IF NOT EXISTS rockwell (\n"
+                                                @"event_type STRING PRIMARY KEY,\n"
+                                                @"timestamp REAL,"
+                                                @"data BLOB\n"
+                                            @");\n"
                                             @"DROP TABLE IF EXISTS all_events;\n";
 
-NSUInteger const SFAnalyticsMaxEventsToReport = 1000;
+NSUInteger const SFAnalyticsMaxEventsToReport = 1000; // Max failures to report (not including health summaries)
 
 NSString* const SFAnalyticsErrorDomain = @"com.apple.security.sfanalytics";
 
@@ -201,6 +208,33 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
     return [(__bridge_transfer NSURL*)SecCopyURLForFileInKeychainDirectory((__bridge CFStringRef)path) path];
 }
 
++ (void)removeLegacyDefaultAnalyticsDatabasePath:(NSString *)basename
+                                  usingDispatchToken:(dispatch_once_t *)onceToken
+{
+    dispatch_once(onceToken, ^{
+        NSString *path = [NSString stringWithFormat:@"Analytics/%@.db", basename];
+        WithPathInKeychainDirectory((__bridge CFStringRef)path, ^(const char *filename) {
+            remove(filename);
+        });
+
+        path = [NSString stringWithFormat:@"Analytics/%@.db-shm", basename];
+        WithPathInKeychainDirectory((__bridge CFStringRef)path, ^(const char *filename) {
+            remove(filename);
+
+        });
+
+        path = [NSString stringWithFormat:@"Analytics/%@.db-wal", basename];
+        WithPathInKeychainDirectory((__bridge CFStringRef)path, ^(const char *filename) {
+            remove(filename);
+
+        });
+
+        WithPathInKeychainDirectory(CFSTR("Analytics"), ^(const char *filename) {
+            remove(filename);
+        });
+    });
+}
+
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename uuid:(NSUUID * __nullable)userUuid
 {
     // Create the top-level directory with full access
@@ -242,6 +276,8 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename
 {
+    static dispatch_once_t onceToken;
+    [self removeLegacyDefaultAnalyticsDatabasePath:basename usingDispatchToken:&onceToken];
 #if TARGET_OS_OSX
     uid_t euid = geteuid();
     uuid_t currentUserUuid;
@@ -356,7 +392,7 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 }
 
 // Instantiate lazily so unit tests can have clean databases each
-- (SFAnalyticsSQLiteStore*)database
+- (SFAnalyticsSQLiteStore* _Nullable)database
 {
     if (!_database) {
         _database = [SFAnalyticsSQLiteStore storeWithPath:self.class.databasePath schema:SFAnalyticsTableSchema];
@@ -367,7 +403,7 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
     return _database;
 }
 
-- (void)removeState
+- (void)removeStateAndUnlinkFile:(BOOL)unlinkFile
 {
     [_samplers removeAllObjects];
     [_multisamplers removeAllObjects];
@@ -377,11 +413,18 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
         __strong __typeof(self) strongSelf = weakSelf;
         if (strongSelf) {
             [strongSelf.database close];
-            [strongSelf.database remove];
+            if (unlinkFile) {
+                [strongSelf.database remove];
+            }
             strongSelf->_database = nil;
             [strongSelf->_metricsHooks removeAllObjects];
         }
     });
+}
+
+- (void)removeState
+{
+    [self removeStateAndUnlinkFile:YES];
 }
 
 - (void)setDateProperty:(NSDate*)date forKey:(NSString*)key
@@ -613,7 +656,7 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 }
 
 // Daily CoreAnalytics metrics
-// Call this once per say if you want to have the once per day sampler collect their data and submit it
+// Call this once per say if you want to have the once per day sampler collect their data and submit i
 
 - (void)dailyCoreAnalyticsMetrics:(NSString *)eventName
 {
@@ -770,6 +813,10 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
         else if (class == SFAnalyticsEventClassSuccess) {
             if (!(actions & SFAnalyticsMetricsHookExcludeCount)) {
                 [strongSelf.database incrementSuccessCountForEventType:eventName];
+            }
+        } else if (class == SFAnalyticsEventClassRockwell) {
+            if (!(actions & SFAnalyticsMetricsHookExcludeEvent)) {
+                [strongSelf.database addRockwellDict:eventName userinfo:eventDict toTable:SFAnalyticsTableRockwell timestampBucket:timestampBucket];
             }
         }
 
@@ -978,6 +1025,18 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
         (void)transaction;
         transaction = nil;
     });
+}
+
+
+- (void)noteLaunchSequence:(nonnull SecLaunchSequence *)launchSequence {
+    NSDictionary *reportAttributes = [launchSequence metricsReport];
+    if (reportAttributes == nil) {
+        return;
+    }
+    [self logEventNamed:[NSString stringWithFormat:@"Launch-%@", launchSequence.name]
+                  class:SFAnalyticsEventClassRockwell
+             attributes:reportAttributes
+        timestampBucket:SFAnalyticsTimestampBucketSecond];
 }
 
 // Flush the pending databases from - logMetrics:withName:oncePerReport:

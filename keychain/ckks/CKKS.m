@@ -22,6 +22,7 @@
  */
 
 #include <dispatch/dispatch.h>
+#import <os/feature_private.h>
 #import <Foundation/Foundation.h>
 #if OCTAGON
 #import <CloudKit/CloudKit.h>
@@ -286,6 +287,34 @@ bool SecCKKSSetReduceRateLimiting(bool value) {
     return CKKSReduceRateLimiting;
 }
 
+typedef enum {
+    CKKSHighPriorityOperation_DEFAULT,
+    CKKSHighPriorityOperation_OVERRIDE_TRUE,
+    CKKSHighPriorityOperation_OVERRIDE_FALSE,
+} CKKSHighPriorityOperation;
+
+static CKKSHighPriorityOperation gCKKSHighPriorityOperation = CKKSHighPriorityOperation_DEFAULT;
+
+bool SecCKKSHighPriorityOperations(void) {
+    if (gCKKSHighPriorityOperation != CKKSHighPriorityOperation_DEFAULT) {
+        return gCKKSHighPriorityOperation == CKKSHighPriorityOperation_OVERRIDE_TRUE;
+    }
+
+    static bool ffCKKSHighPriorityOperation = false;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ffCKKSHighPriorityOperation = os_feature_enabled(Security, CKKSHighPriorityOperations);
+    });
+
+    return ffCKKSHighPriorityOperation;
+}
+
+bool SecCKKSSetHighPriorityOperations(bool value) {
+    gCKKSHighPriorityOperation = value ? CKKSHighPriorityOperation_OVERRIDE_TRUE : CKKSHighPriorityOperation_OVERRIDE_FALSE;
+    secnotice("keychain", "CKKSHighPriorityOperation Supported overridden to %s", value ? "enabled" : "disabled");
+    return value;
+}
+
 // Here's a mechanism for CKKS feature flags with default values from NSUserDefaults:
 /*static bool CKKSShareTLKs = true;
 bool SecCKKSShareTLKs(void) {
@@ -367,6 +396,22 @@ void SecCKKSTestResetFlags(void) {
     SecCKKSSetTestSkipTLKShareHealing(false);
 }
 
+@implementation CKKSCurrentItemData: NSData
+
+- (instancetype)initWithUUID:(NSString *)uuid {
+    if ((self = [super init]) == nil) {
+        return nil;
+    }
+    self.uuid = uuid;
+    return self;
+}
+
+- (NSString *)description {
+    return [NSString stringWithFormat:@"CKKSCurrentItemData(%@, mtime: %@)", self.uuid, self.modificationDate];
+}
+
+@end
+
 #else /* NO OCTAGON */
 
 bool SecCKKSIsEnabled(void) {
@@ -419,9 +464,17 @@ void SecCKKSNotifyBlock(SecDbConnectionRef dbconn, SecDbTransactionPhase phase, 
     }
 
     // Ignore our own changes, otherwise we'd infinite-loop.
-    if(source == kSecDbCKKSTransaction) {
-        ckksinfo_global("ckks", "Ignoring kSecDbCKKSTransaction notification");
-        return;
+    switch (source) {
+        case kSecDbCKKSTransaction:
+            ckksinfo_global("ckks", "Ignoring kSecDbCKKSTransaction notification");
+            return;
+
+        case kSecDbKCSharingTransaction:
+            ckksinfo_global("ckks", "Ignoring kSecDbKCSharingTransaction notification");
+            return;
+
+        default:
+            break;
     }
 
     CFArrayForEach(changes, ^(CFTypeRef r) {

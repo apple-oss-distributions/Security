@@ -25,6 +25,7 @@
 
 #import <CloudKit/CloudKit.h>
 #import <CloudKit/CloudKit_Private.h>
+#import <os/feature_private.h>
 
 #import "keychain/ckks/CKKSKeychainView.h"
 #import "keychain/ckks/CKKSCurrentKeyPointer.h"
@@ -248,19 +249,22 @@
     modifyRecordsOp.longLived = NO;
 
     // very important: get the TLKShares off-device ASAP
-    modifyRecordsOp.configuration.automaticallyRetryNetworkFailures = NO;
-    modifyRecordsOp.configuration.discretionaryNetworkBehavior = CKOperationDiscretionaryNetworkBehaviorNonDiscretionary;
     modifyRecordsOp.configuration.isCloudKitSupportOperation = YES;
+
+    if(SecCKKSHighPriorityOperations()) {
+        // This operation might be needed during CKKS/Manatee bringup, which affects the user experience. Bump our priority to get it off-device and unblock Manatee access.
+        modifyRecordsOp.qualityOfService = NSQualityOfServiceUserInitiated;
+    }
 
     modifyRecordsOp.group = self.deps.ckoperationGroup;
     ckksnotice("ckksshare", viewState.zoneID, "Operation group is %@", self.deps.ckoperationGroup);
 
-    modifyRecordsOp.perRecordCompletionBlock = ^(CKRecord *record, NSError * _Nullable error) {
+    modifyRecordsOp.perRecordSaveBlock = ^(CKRecordID *recordID, CKRecord * _Nullable record, NSError * _Nullable error) {
         // These should all fail or succeed as one. Do the hard work in the records completion block.
         if(!error) {
-            ckksnotice("ckksshare", viewState.zoneID, "Successfully completed upload for record %@", record.recordID.recordName);
+            ckksnotice("ckksshare", viewState.zoneID, "Successfully completed upload for record %@", recordID.recordName);
         } else {
-            ckkserror("ckksshare",  viewState.zoneID, "error on row: %@ %@", record.recordID, error);
+            ckkserror("ckksshare",  viewState.zoneID, "error on row: %@ %@", recordID, error);
         }
     };
 
@@ -521,6 +525,8 @@
 
         // Determine if we think this peer has enough things shared to them
         bool alreadyShared = false;
+        NSMutableArray<CKKSTLKShareRecord*>* existingInsufficientShares = [NSMutableArray array];
+
         for(CKKSTLKShareRecord* existingShare in tlkShares) {
             @autoreleasepool {
                 // Ensure this share is to this peer...
@@ -545,11 +551,11 @@
 
                         if([existingShare.senderPeerID isEqualToString:peerState.currentSelfPeers.currentSelf.peerID] &&
                            [existingShare.share.receiverPublicEncryptionKeySPKI isEqual:currentKey]) {
-                            ckksnotice("ckksshare", keyset.tlk, "Local peer %@ is shared %@ via self: %@", peer, keyset.tlk, existingShare);
+                            ckksnotice("ckksshare", keyset.tlk, "Local peer %@ is shared %@ via self: %@", peer, keyset.tlk.uuid, existingShare);
                             alreadyShared = true;
                             break;
                         } else {
-                            ckksnotice("ckksshare", keyset.tlk, "Local peer %@ is shared %@ via trusted %@, but that's not good enough", peer, keyset.tlk, existingShare);
+                            [existingInsufficientShares addObject:existingShare];
                         }
 
                     } else {
@@ -558,11 +564,12 @@
 
                         if([existingShare.share.receiverPublicEncryptionKeySPKI isEqual:currentKeySPKI]) {
                             // Some other peer has a trusted share. Cool!
-                            ckksnotice("ckksshare", keyset.tlk, "Peer %@ is shared %@ via trusted %@", peer, keyset.tlk, existingShare);
+                            ckksnotice("ckksshare", keyset.tlk, "Peer %@ is shared %@ via trusted %@", peer, keyset.tlk.uuid, existingShare);
                             alreadyShared = true;
                             break;
                         } else {
-                            ckksnotice("ckksshare", keyset.tlk, "Peer %@ has a share for %@, but to old keys: %@", peer, keyset.tlk, existingShare);
+                            ckksnotice("ckksshare", keyset.tlk, "Peer %@ has a share for %@, but to old keys: %@", peer, keyset.tlk.uuid, existingShare);
+                            [existingInsufficientShares addObject:existingShare];
                         }
                     }
                 }
@@ -570,6 +577,8 @@
         }
 
         if(!alreadyShared) {
+            ckksnotice("ckksshare", keyset.tlk, "Peer %@ is shared %@ via insufficient shares: %@", peer, keyset.tlk.uuid, existingInsufficientShares);
+
             // Add this peer to our set, if it has an encryption key to receive the share
             if(peer.publicEncryptionKey) {
                 [peersMissingShares addObject:peer];

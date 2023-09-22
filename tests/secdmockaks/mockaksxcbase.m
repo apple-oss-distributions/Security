@@ -19,8 +19,11 @@
 #import <OCMock/OCMock.h>
 #import <sqlite3.h>
 #import "mockaks.h"
+#import "keychain/Sharing/KCSharingSupport.h"
 
 #import "mockaksxcbase.h"
+
+#include "featureflags/featureflags.h"
 
 NSString* homeDirUUID;
 
@@ -36,10 +39,12 @@ NSString* homeDirUUID;
 {
     [super setUp];
 
+
     securityd_init_local_spi();
     securityd_init(NULL);
 
     SecCKKSDisable();
+
     /*
      * Disable all of SOS syncing since that triggers retains of database
      * and these tests muck around with the database over and over again, so
@@ -120,6 +125,7 @@ NSString* homeDirUUID;
 
 + (void)tearDown
 {
+
     SecSetCustomHomeURLString(NULL);
     SecKeychainDbReset(NULL);
 }
