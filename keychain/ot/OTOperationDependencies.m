@@ -18,6 +18,9 @@
             cuttlefishXPCWrapper:(CuttlefishXPCWrapper *)cuttlefishXPCWrapper
               escrowRequestClass:(Class<SecEscrowRequestable>)escrowRequestClass
                    notifierClass:(Class<CKKSNotifier>)notifierClass
+                          flowID:(NSString* _Nullable)flowID
+                 deviceSessionID:(NSString* _Nullable)deviceSessionID
+          permittedToSendMetrics:(BOOL)permittedToSendMetrics
 {
     if((self = [super init])) {
         _containerName = containerName;
@@ -36,6 +39,9 @@
         _cuttlefishXPCWrapper = cuttlefishXPCWrapper;
         _escrowRequestClass = escrowRequestClass;
         _notifierClass = notifierClass;
+        _flowID = flowID;
+        _deviceSessionID = deviceSessionID;
+        _permittedToSendMetrics = permittedToSendMetrics;
     }
     return self;
 }

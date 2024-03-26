@@ -37,6 +37,10 @@
 #import "keychain/ot/ObjCImprovements.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
 
+#import "keychain/analytics/SecurityAnalyticsConstants.h"
+#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
+#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+
 #import "CKKSPowerCollection.h"
 
 @interface CKKSHealTLKSharesOperation ()
@@ -86,6 +90,13 @@
 
     [self.deps.overallLaunch addEvent:@"heal-tlk-shares-begin"];
     
+    AAFAnalyticsEventSecurity *eventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{}
+                                                                                       altDSID:self.deps.activeAccount.altDSID
+                                                                                     eventName:kSecurityRTCEventNameHealTLKShares
+                                                                               testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                      category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                    sendMetric:self.deps.sendMetric];
+
     self.setResultStateOperation = [CKKSResultOperation named:@"determine-next-state" withBlockTakingSelf:^(CKKSResultOperation * _Nonnull op) {
         STRONGIFY(self);
 
@@ -93,27 +104,37 @@
 
         if(self.failedDueToEssentialTrustState) {
             self.nextState = CKKSStateLoseTrust;
-
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:nil];
         } else if(self.cloudkitWriteFailures) {
             ckksnotice_global("ckksheal", "Due to write failures, we'll retry later");
             self.nextState = CKKSStateHealTLKSharesFailed;
-
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:nil];
         } else {
             self.nextState = self.intendedState;
+            if (self.failedDueToLockState) {
+                [eventS addMetrics:@{kSecurityRTCFieldIsLocked:@(NO)}];
+                [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:nil];
+            } else {
+                [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+            }
         }
     }];
 
     NSArray<CKKSPeerProviderState*>* trustStates = [self.deps currentTrustStates];
 
+    int numViewsEvaluated = 0;
     for(CKKSKeychainViewState* viewState in self.deps.activeManagedViews) {
         if(![viewState.viewKeyHierarchyState isEqualToString:SecCKKSZoneKeyStateReady]) {
             ckkserror("ckksshare", viewState.zoneID, "View key state is %@; not checking TLK share validity", viewState);
             continue;
         }
-
+        
+        numViewsEvaluated++;
         [self checkAndHealTLKShares:viewState
                  currentTrustStates:trustStates];
     }
+
+    [eventS addMetrics:@{kSecurityRTCFieldNumViews:@(numViewsEvaluated)}];
 
     if(self.failedDueToLockState) {
         // This is okay, but we need to recheck these after the next unlock.
@@ -145,6 +166,13 @@
 
     [CKKSPowerCollection CKKSPowerEvent:kCKKSPowerEventTLKShareProcessing zone:viewState.zoneID.zoneName];
 
+    AAFAnalyticsEventSecurity *createMissingSharesEventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{kSecurityRTCFieldIsLocked:@(NO)}
+                                                                                                          altDSID:self.deps.activeAccount.altDSID
+                                                                                                        eventName:kSecurityRTCEventNameCreateMissingTLKShares
+                                                                                                  testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                                         category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                                       sendMetric:self.deps.sendMetric];
+
     @autoreleasepool {
         // Okay! Perform the checks.
         NSError* tlkLoadError = nil;
@@ -153,11 +181,12 @@
             if([self.deps.lockStateTracker isLockedError:tlkLoadError]) {
                 ckkserror("ckksshare", viewState.zoneID, "Keychain is locked: can't fix shares yet: %@", tlkLoadError);
                 self.failedDueToLockState = true;
-
+                [createMissingSharesEventS addMetrics:@{kSecurityRTCFieldIsLocked:@(YES)}];
             } else {
                 ckkserror("ckksshare", viewState.zoneID, "couldn't load current tlk from keychain: %@", tlkLoadError);
                 viewState.viewKeyHierarchyState = SecCKKSZoneKeyStateUnhealthy;
             }
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:createMissingSharesEventS success:NO error:tlkLoadError];
             return;
         }
     }
@@ -182,7 +211,7 @@
                 [newShares unionSet:newTrustShares];
             } else {
                 ckksnotice("ckksshare", keyset.tlk, "Unable to create shares for trust set %@: %@", trustState, stateError);
-
+                [SecurityAnalyticsReporterRTC sendMetricWithEvent:createMissingSharesEventS success:NO error:stateError];
                 if(trustState.essential) {
                     if(([stateError.domain isEqualToString:TrustedPeersHelperErrorDomain] && stateError.code == TrustedPeersHelperErrorNoPreparedIdentity) ||
                        ([stateError.domain isEqualToString:CKKSErrorDomain] && stateError.code == CKKSLackingTrust) ||
@@ -191,11 +220,13 @@
 
                         viewState.viewKeyHierarchyState = SecCKKSZoneKeyStateWaitForTrust;
                         self.failedDueToEssentialTrustState = YES;
+                        [SecurityAnalyticsReporterRTC sendMetricWithEvent:createMissingSharesEventS success:NO error:createSharesError];
                         return;
 
                     } else {
                         ckkserror("ckksshare", viewState.zoneID, "Unable to create shares: %@", createSharesError);
                         viewState.viewKeyHierarchyState = SecCKKSZoneKeyStateUnhealthy;
+                        [SecurityAnalyticsReporterRTC sendMetricWithEvent:createMissingSharesEventS success:NO error:nil];
                         return;
                     }
                 }
@@ -209,6 +240,9 @@
         return;
     }
 
+    [createMissingSharesEventS addMetrics:@{kSecurityRTCFieldNewTLKShares:@(newShares.count)}];
+    [SecurityAnalyticsReporterRTC sendMetricWithEvent:createMissingSharesEventS success:YES error:nil];
+    
     keyset.pendingTLKShares = [newShares allObjects];
 
     // Let's double-check: if we upload these TLKShares, will the world be right?
@@ -224,6 +258,13 @@
     }
 
     // Fire up our CloudKit operation!
+    AAFAnalyticsEventSecurity *uploadMissingTLKSharesEventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{kSecurityRTCFieldIsPrioritized:@(NO)}
+                                                                                                             altDSID:self.deps.activeAccount.altDSID
+                                                                                                           eventName:kSecurityRTCEventNameUploadMissingTLKShares
+                                                                                                     testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                                            category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                                          sendMetric:self.deps.sendMetric];
+    __block BOOL didSucceed = NO;
 
     NSMutableArray<CKRecord *>* recordsToSave = [[NSMutableArray alloc] init];
     NSMutableArray<CKRecordID *>* recordIDsToDelete = [[NSMutableArray alloc] init];
@@ -254,6 +295,7 @@
     if(SecCKKSHighPriorityOperations()) {
         // This operation might be needed during CKKS/Manatee bringup, which affects the user experience. Bump our priority to get it off-device and unblock Manatee access.
         modifyRecordsOp.qualityOfService = NSQualityOfServiceUserInitiated;
+        [uploadMissingTLKSharesEventS addMetrics:@{kSecurityRTCFieldIsPrioritized : @(YES)}];
     }
 
     modifyRecordsOp.group = self.deps.ckoperationGroup;
@@ -280,6 +322,8 @@
                 NSError* localerror = nil;
 
                 // Save the new CKRecords to the database
+                [uploadMissingTLKSharesEventS addMetrics:@{kSecurityRTCFieldTotalCKRecords:@(savedRecords.count)}];
+
                 for(CKRecord* record in savedRecords) {
                     CKKSTLKShareRecord* savedShare = [[CKKSTLKShareRecord alloc] initWithCKRecord:record contextID:self.deps.contextID];
                     bool saved = [savedShare saveToDatabase:&localerror];
@@ -289,20 +333,33 @@
                         // No recovery from this, really...
                         ckkserror("ckksshare", viewState.zoneID, "Couldn't save new TLKShare record to database: %@", localerror);
                         viewState.viewKeyHierarchyState = SecCKKSZoneKeyStateError;
+                        
+                        [uploadMissingTLKSharesEventS addMetrics:@{kSecurityRTCFieldDidSucceed : @(NO)}];
+                        [uploadMissingTLKSharesEventS populateUnderlyingErrorsStartingWithRootError:localerror];
+
                         return CKKSDatabaseTransactionCommit;
 
                     } else {
                         ckksnotice("ckksshare", viewState.zoneID, "Successfully completed upload for %@", savedShare);
                     }
                 }
+                [uploadMissingTLKSharesEventS addMetrics:@{kSecurityRTCFieldDidSucceed : @(YES)}];
+                didSucceed = YES;
 
             } else {
                 ckkserror("ckksshare", viewState.zoneID, "Completed TLK Share heal operation with error: %@", error);
+                [uploadMissingTLKSharesEventS addMetrics:@{kSecurityRTCFieldDidSucceed : @(NO)}];
+                [uploadMissingTLKSharesEventS populateUnderlyingErrorsStartingWithRootError:error];
+
                 [self.deps intransactionCKWriteFailed:error attemptedRecordsChanged:attemptedRecords];
                 self.cloudkitWriteFailures = true;
             }
             return CKKSDatabaseTransactionCommit;
         }];
+
+        // passing a nil to error: will not impact any previously set errors.
+        // AAAFoundation ignores incoming errors that are nil when populating error chains
+        [SecurityAnalyticsReporterRTC sendMetricWithEvent:uploadMissingTLKSharesEventS success:didSucceed error:nil];
 
         // Notify that we're done
         [self.operationQueue addOperation:cloudkitModifyOperationFinished];

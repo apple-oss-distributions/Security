@@ -34,6 +34,10 @@
 #import "keychain/ckks/CloudKitCategories.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
 
+#import "keychain/analytics/SecurityAnalyticsConstants.h"
+#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
+#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+
 @interface CKKSProcessReceivedKeysOperation ()
 @property BOOL allowFullRefetchResult;
 @end
@@ -64,6 +68,15 @@
 
     NSArray<CKKSPeerProviderState*>* currentTrustStates = self.deps.currentTrustStates;
 
+    AAFAnalyticsEventSecurity *eventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{kSecurityRTCFieldNumViews:@(self.deps.activeManagedViews.count)}
+                                                                                       altDSID:self.deps.activeAccount.altDSID
+                                                                                     eventName:kSecurityRTCEventNameProcessReceivedKeys
+                                                                               testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                      category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                    sendMetric:self.deps.sendMetric];
+    __block bool didSucceed = YES;
+    __block int numTotalRemoteKeys = 0;
+    
     for(CKKSKeychainViewState* viewState in self.deps.activeManagedViews) {
         __block CKKSZoneKeyState* newZoneState = nil;
         __block NSError* remoteError = nil;
@@ -83,9 +96,13 @@
             if(!remoteKeys || loadError) {
                 ckkserror("ckkskey", viewState.zoneID, "couldn't fetch list of remote keys: %@", loadError);
                 self.error = loadError;
+                didSucceed = NO;
+                [eventS populateUnderlyingErrorsStartingWithRootError:self.error];
                 viewState.viewKeyHierarchyState = SecCKKSZoneKeyStateError;
                 return CKKSDatabaseTransactionRollback;
             }
+
+            numTotalRemoteKeys += remoteKeys.count;
 
             if(remoteKeys.count > 0) {
                 newZoneState = [self processRemoteKeys:remoteKeys
@@ -112,6 +129,7 @@
             } else if(!allIQEsHaveKeys) {
                 if(self.allowFullRefetchResult) {
                     ckksnotice("ckkskey", viewState.zoneID, "We have some item that encrypts to a non-existent key. This is exceptional; requesting full refetch");
+                    [eventS addMetrics:@{kSecurityRTCFieldFullRefetchNeeded : @(YES)}];
                     newZoneState = SecCKKSZoneKeyStateNeedFullRefetch;
                 } else {
                     ckksnotice("ckkskey", viewState.zoneID, "We have some item that encrypts to a non-existent key, but we cannot request a refetch! Possible inifinite-loop ahead");
@@ -123,6 +141,8 @@
                                        contextID:self.deps.contextID];
 
             if([newZoneState isEqualToString:SecCKKSZoneKeyStateError]) {
+                [eventS populateUnderlyingErrorsStartingWithRootError:self.error];
+                didSucceed = NO;
                 return CKKSDatabaseTransactionRollback;
 
             } else {
@@ -138,13 +158,18 @@
                                                     zoneID:viewState.zoneID
                                         currentTrustStates:currentTrustStates
                                                      error:&localProcessingError];
-
+            [eventS populateUnderlyingErrorsStartingWithRootError:localProcessingError];
             ckksnotice("ckkskey", viewState.zoneID, "Key hierachy is '%@' (error: %@)", newZoneState, localProcessingError);
         }
 
         viewState.viewKeyHierarchyState = newZoneState;
     }
 
+    int averageRemoteKeysPerView = (self.deps.activeManagedViews.count == 0) ? 0 : (numTotalRemoteKeys / self.deps.activeManagedViews.count);
+    [eventS addMetrics:@{kSecurityRTCFieldAvgRemoteKeys:@(averageRemoteKeysPerView), kSecurityRTCFieldTotalRemoteKeys:@(numTotalRemoteKeys)}];
+    // passing a nil to error will not impact any previously set errors.
+    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:didSucceed error:nil];
+    
     self.nextState = self.intendedState;
 }
 

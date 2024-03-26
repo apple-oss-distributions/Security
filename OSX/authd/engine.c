@@ -638,7 +638,7 @@ _evaluate_mechanisms(engine_t engine, CFArrayRef mechanisms)
 				agent_t agent1;
 				for (j = 0; j < i; j++) {
 					agent1 = _get_agent(engine, (mechanism_t)CFArrayGetValueAtIndex(mechanisms, j), false, j == 0);
-					if(agent1 && agent_get_state(agent1) == interrupting) {
+					if (agent1 && agent_get_state(agent1) == interrupting) {
 						break;
 					}
 				}
@@ -665,9 +665,14 @@ _evaluate_mechanisms(engine_t engine, CFArrayRef mechanisms)
 
 				result = agent_run(agent, hints, context, engine->immutable_hints);
 
-				auth_items_copy(context, agent_get_context(agent));
-				auth_items_copy(hints, agent_get_hints(agent));
+                if (engine->dismissed) {
+                    os_log_debug(AUTHD_LOG, "engine %llu: caller dismissed, doing cleanup", engine->engine_index);
+                    break;
+                }
 
+                auth_items_copy(context, agent_get_context(agent));
+                auth_items_copy(hints, agent_get_hints(agent));
+                
 				bool interrupted = false;
 				for (CFIndex i2 = 0; i2 != i; i2++) {
 					agent_t agent2 = _get_agent(engine, (mechanism_t)CFArrayGetValueAtIndex(mechanisms, i2), false, i == 0);
@@ -687,7 +692,7 @@ _evaluate_mechanisms(engine_t engine, CFArrayRef mechanisms)
 
 				// Empty token name means that token doesn't exist (e.g. SC was removed).
 				// Remove empty token name from hints for UI drawing logic.
-				const char * token_name = auth_items_get_string(hints, AGENT_HINT_TOKEN_NAME);
+				const char *token_name = auth_items_get_string(hints, AGENT_HINT_TOKEN_NAME);
 				if (token_name && strlen(token_name) == 0) {
 					auth_items_remove(hints, AGENT_HINT_TOKEN_NAME);
 				}
@@ -697,12 +702,14 @@ _evaluate_mechanisms(engine_t engine, CFArrayRef mechanisms)
 					enum Reason reason = worldChanged;
 					auth_items_set_data(hints, AGENT_HINT_RETRY_REASON, &reason, sizeof(reason));
 					result = kAuthorizationResultAllow;
+                    CFRetain(engine);
                     dispatch_sync(dispatch_get_main_queue(), ^{
                         _cf_dictionary_iterate(engine->mechanism_agents, ^bool(CFTypeRef key __attribute__((__unused__)), CFTypeRef value) {
                             agent_t tempagent = (agent_t)value;
                             agent_clear_interrupt(tempagent);
                             return true;
                         });
+                        CFRelease(engine);
                     });
 				}
 			}
@@ -853,6 +860,10 @@ _evaluate_authentication(engine_t engine, rule_t rule)
         } else if (status == errAuthorizationDenied) {
 			os_log_error(AUTHD_LOG, "Evaluate denied (engine %llu)", engine->engine_index);
 			engine->reason = invalidPassphrase;
+        }
+        if (engine->dismissed) {
+            // caller dismisssed, no need to run other mechanisms
+            break;
         }
     }
     
@@ -1268,12 +1279,12 @@ static void _parse_environment(engine_t engine, auth_items_t environment)
 #if DEBUG
     os_log_debug(AUTHD_LOG, "engine %llu: Dumping Environment: %@", engine->engine_index, environment);
 #endif
+    const char *ahp = auth_items_get_string(environment, AGENT_CONTEXT_AP_PAM_SERVICE_NAME);
 
     // Check if a credential was passed into the environment and we were asked to extend the rights
     if (engine->flags & kAuthorizationFlagExtendRights && !(engine->flags & kAuthorizationFlagSheet)) {
         const char * user = auth_items_get_string(environment, kAuthorizationEnvironmentUsername);
         const char * pass = auth_items_get_string(environment, kAuthorizationEnvironmentPassword);
-        const char *ahp = auth_items_get_string(environment, AGENT_CONTEXT_AP_PAM_SERVICE_NAME);
 		const bool password_was_used = (ahp == nil || strlen(ahp) == 0); // AGENT_CONTEXT_AP_PAM_SERVICE_NAME in the context means alternative PAM was used
         if (!password_was_used) {
             os_log_debug(AUTHD_LOG, "engine %llu: AHP used in environment: %{public}s", engine->engine_index, ahp);
@@ -1287,7 +1298,7 @@ static void _parse_environment(engine_t engine, auth_items_t environment)
         require_action(user != NULL, done, os_log_debug(AUTHD_LOG, "engine %llu: user not used password", engine->engine_index));
 
         struct passwd *pw = getpwnam(user);
-        require_action(pw != NULL, done, os_log_error(AUTHD_LOG, "User not found %{public}s (engine %llu)", user, engine->engine_index));
+        require_action((pw != NULL) || (engine->flags & kAuthorizationFlagSkipInternalAuth), done, os_log_error(AUTHD_LOG, "User not found %{public}s (engine %llu)", user, engine->engine_index));
         
         auth_items_set_string(engine->context, kAuthorizationEnvironmentUsername, user);
         auth_items_set_string(engine->context, kAuthorizationEnvironmentPassword, pass ? pass : "");
@@ -1481,11 +1492,8 @@ OSStatus engine_authorize(engine_t engine, auth_rights_t rights, auth_items_t en
     };
     
     ccaudit = ccaudit_create(engine->proc, engine->auth, AUE_ssauthorize);
-    if (auth_rights_get_count(rights) > 0) {
-        ccaudit_log(ccaudit, "begin evaluation", NULL, 0);
-    }
-    
     if (rights_count) {
+        ccaudit_log(ccaudit, "begin evaluation", NULL, 0);
         __block CFMutableArrayRef rights_list = NULL;
         rights_list = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
         auth_rights_iterate(rights, ^bool(const char *key) {
@@ -1498,7 +1506,7 @@ OSStatus engine_authorize(engine_t engine, auth_rights_t rights, auth_items_t en
             if ((strcmp(key, "system.privilege.admin") == 0) || (strcmp(key, "com.apple.ServiceManagement.blesshelper") == 0)) {
                 forbiddenElevationRightFound = true;
             }
-            if (strcmp(key, "system.login.screensaver") == 0) {
+            if ((strcmp(key, "system.login.screensaver") == 0) || (strcmp(key, "system.login.screensaver.unlock") == 0)) {
                 localFlags |= kAuthorizationFlagSkipInternalAuth;
             }
             
@@ -1823,7 +1831,7 @@ OSStatus engine_authorize(engine_t engine, auth_rights_t rights, auth_items_t en
     }
     
     if (engine->dismissed) {
-		os_log_error(AUTHD_LOG, "Dismissed (engine %llu)", engine->engine_index);
+		os_log_error(AUTHD_LOG, "Caller dismissed (engine %llu)", engine->engine_index);
         status = errAuthorizationDenied;
     }
     
@@ -1943,8 +1951,10 @@ done:
     auth_items_clear(engine->context);
     auth_items_clear(engine->sticky_context);
     CFReleaseSafe(ccaudit);
+    CFRetain(engine);
     dispatch_sync(dispatch_get_main_queue(), ^{
         CFDictionaryRemoveAllValues(engine->mechanism_agents);
+        CFRelease(engine);
     });
     return status;
 }
@@ -2067,26 +2077,29 @@ CFAbsoluteTime engine_get_time(engine_t engine)
 void engine_destroy_agents(engine_t engine)
 {
     engine->dismissed = true;
-    
+    CFRetain(engine);
     dispatch_sync(dispatch_get_main_queue(), ^{
         _cf_dictionary_iterate(engine->mechanism_agents, ^bool(CFTypeRef key __attribute__((__unused__)), CFTypeRef value) {
-            os_log_debug(AUTHD_LOG, "engine %llu: Destroying %{public}s", engine->engine_index, mechanism_get_string((mechanism_t)key));
+            os_log_debug(AUTHD_LOG, "engine %llu: destroying %{public}s", engine->engine_index, mechanism_get_string((mechanism_t)key));
             agent_t agent = (agent_t)value;
             agent_destroy(agent);
             
             return true;
         });
+        CFRelease(engine);
     });
 }
 
 void engine_interrupt_agent(engine_t engine)
 {
+    CFRetain(engine);
     dispatch_sync(dispatch_get_main_queue(), ^{
         _cf_dictionary_iterate(engine->mechanism_agents, ^bool(CFTypeRef key __attribute__((__unused__)), CFTypeRef value) {
             agent_t agent = (agent_t)value;
             agent_notify_interrupt(agent);
             return true;
         });
+        CFRelease(engine);
     });
 }
 

@@ -53,12 +53,13 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(leaveClique:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(removeFriendsInClique:peerIDs:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(peerDeviceNamesByPeerID:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(fetchAllViableBottles:reply:) argumentIndex:2 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(fetchAllViableBottles:source:reply:) argumentIndex:2 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(restoreFromBottle:entropy:bottleID:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(fetchEscrowContents:reply:) argumentIndex:3 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(createRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(joinWithRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(healthCheck:skipRateLimitingCheck:repair:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(healthCheck:skipRateLimitingCheck:repair:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(simulateReceivePush:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(waitForOctagonUpgrade:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(postCDPFollowupResult:success:type:error:reply:) argumentIndex:3 ofReply:NO];
         [interface setClasses:errorClasses forSelector:@selector(postCDPFollowupResult:success:type:error:reply:) argumentIndex:0 ofReply:YES];
@@ -88,7 +89,6 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(preflightJoinWithInheritanceKey:inheritanceKey:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(removeInheritanceKey:uuid:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(tlkRecoverabilityForEscrowRecordData:recordData:source:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(deliverAKDeviceListDelta:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(setMachineIDOverride:machineID:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(isRecoveryKeySet:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(recoverWithRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
@@ -96,6 +96,7 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(preflightRecoverOctagonUsingRecoveryKey:recoveryKey:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(resetAcountData:resetReason:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(totalTrustedPeers:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(areRecoveryKeysDistrusted:reply:) argumentIndex:1 ofReply:YES];
     }
     @catch(NSException* e) {
         secerror("OTSetupControlProtocol failed, continuing, but you might crash later: %@", e);

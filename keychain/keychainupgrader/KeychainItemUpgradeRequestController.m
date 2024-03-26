@@ -37,14 +37,17 @@ OctagonFlag* const KeychainItemUpgradeRequestFlagSchedulePersistentReferenceUpgr
         _lockStateTracker = lockStateTracker;
 
         _stateMachine = [[OctagonStateMachine alloc] initWithName:@"keychainitemupgrade"
-                                                           states:[NSSet setWithArray:@[KeychainItemUpgradeRequestStateNothingToDo,
-                                                                                        KeychainItemUpgradeRequestStateWaitForUnlock,
-                                                                                        KeychainItemUpgradeRequestStateUpgradePersistentRef,
-                                                                                        KeychainItemUpgradeRequestStateWaitForTrigger]]
+                                                           states:@{
+            KeychainItemUpgradeRequestStateNothingToDo : @0,
+            KeychainItemUpgradeRequestStateWaitForUnlock : @1,
+            KeychainItemUpgradeRequestStateUpgradePersistentRef : @2,
+            KeychainItemUpgradeRequestStateWaitForTrigger : @3,
+        }
                                                             flags: [NSSet setWithArray:@[KeychainItemUpgradeRequestFlagSchedulePersistentReferenceUpgrade]]
                                                      initialState:KeychainItemUpgradeRequestStateUpgradePersistentRef
                                                             queue:_queue
                                                       stateEngine:self
+                                       unexpectedStateErrorDomain:@"com.apple.security.keychainitemupgrade.state"
                                                  lockStateTracker:lockStateTracker
                                               reachabilityTracker:nil];
         
@@ -153,10 +156,10 @@ OctagonFlag* const KeychainItemUpgradeRequestFlagSchedulePersistentReferenceUpgr
     OctagonStateTransitionRequest<OctagonStateTransitionOperation*>* request = [[OctagonStateTransitionRequest alloc] init:@"request-item-upgrade"
                                                                                                               sourceStates:sourceStates
                                                                                                                serialQueue:self.queue
-                                                                                                                   timeout:10*NSEC_PER_SEC
                                                                                                               transitionOp:requestUpgrade];
-    [self.stateMachine handleExternalRequest:request];
-    
+    [self.stateMachine handleExternalRequest:request
+                                startTimeout:10*NSEC_PER_SEC];
+
     reply(nil);
 }
 

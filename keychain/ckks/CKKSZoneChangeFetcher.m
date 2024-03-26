@@ -92,6 +92,10 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
 @property NSMutableSet<CKKSFetchBecause*>* currentFetchReasons;
 @property NSMutableSet<CKRecordZoneNotification*>* apnsPushes;
 @property bool newRequests; // true if there's someone pending on successfulFetchDependency
+
+// Used for RTC reporting
+@property NSString* altDSID;
+
 @property CKKSZoneChangeFetchDependencyOperation* successfulFetchDependency;
 
 @property NSMutableSet<CKKSZoneChangeFetchDependencyOperation*>* inflightFetchDependencies;
@@ -106,6 +110,8 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
 - (instancetype)initWithContainer:(CKContainer*)container
                        fetchClass:(Class<CKKSFetchRecordZoneChangesOperation>)fetchRecordZoneChangesOperationClass
               reachabilityTracker:(CKKSReachabilityTracker *)reachabilityTracker
+                          altDSID:(NSString*)altDSID
+                       sendMetric:(bool)sendMetric
 {
     if((self = [super init])) {
         _container = container;
@@ -120,12 +126,14 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
         _name = @"zone-change-fetcher";
         _queue = dispatch_queue_create([_name UTF8String], DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
         _operationQueue = [[NSOperationQueue alloc] init];
-        _successfulFetchDependency = [self createSuccesfulFetchDependency];
+        _successfulFetchDependency = [self createSuccessfulFetchDependency];
 
         _inflightFetchDependencies = [NSMutableSet set];
         _inflightFetchDependency = nil;
 
         _newRequests = false;
+        _altDSID = altDSID;
+        _sendMetric = sendMetric;
 
         // If we're testing, for the initial delay, use 0.5 second. Otherwise, 2s.
         dispatch_time_t initialDelay = (SecCKKSReduceRateLimiting() ? 500 * NSEC_PER_MSEC : 2 * NSEC_PER_SEC);
@@ -308,7 +316,7 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
 
     // create a new fetch dependency, for all those who come in while this operation is executing
     self.newRequests = false;
-    self.successfulFetchDependency = [self createSuccesfulFetchDependency];
+    self.successfulFetchDependency = [self createSuccessfulFetchDependency];
 
     NSMutableSet<CKKSFetchBecause*>* lastFetchReasons = self.currentFetchReasons;
     self.currentFetchReasons = [[NSMutableSet alloc] init];
@@ -335,7 +343,10 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
                                                                                                                    fetchReasons:lastFetchReasons
                                                                                                                      apnsPushes:lastAPNSPushes
                                                                                                                     forceResync:false
-                                                                                                               ckoperationGroup:operationGroup];
+                                                                                                               ckoperationGroup:operationGroup
+                                                                                                                        altDSID:self.altDSID
+                                                                                                                     sendMetric:self.sendMetric
+    ];
 
     if ([lastFetchReasons containsObject:CKKSFetchBecauseNetwork]) {
         ckksnotice_global("ckksfetcher", "blocking fetch on network reachability");
@@ -355,13 +366,15 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
             ckkserror_global("ckksfetcher", "Interrogating clients about fetch error: %@", fetchAllChanges.error);
 
             // Check in with clients: should we keep fetching for them?
-            @synchronized(self.clientMap) {
-                for(CKRecordZoneID* zoneID in fetchAllChanges.fetchedZoneIDs) {
-                    id<CKKSChangeFetcherClient> client = [self.clientMap objectForKey:zoneID];
-                    if(client) {
-                        attemptAnotherFetch |= [client shouldRetryAfterFetchError:fetchAllChanges.error
-                                                                           zoneID:zoneID];
-                    }
+            // Copy the client map so we can iterate without thread-safety issues. We can't be on a serial queue when we upcall -shouldRetryAfterFetchError
+            // to the client, on pain of potential deadlock with -registerClient.
+            NSDictionary<CKRecordZoneID*, id<CKKSChangeFetcherClient>>* threadClientMap = [self strongClientMap];
+
+            for(CKRecordZoneID* zoneID in fetchAllChanges.fetchedZoneIDs) {
+                id<CKKSChangeFetcherClient> client = [threadClientMap objectForKey:zoneID];
+                if(client) {
+                    attemptAnotherFetch |= [client shouldRetryAfterFetchError:fetchAllChanges.error
+                                                                       zoneID:zoneID];
                 }
             }
         }
@@ -425,7 +438,7 @@ CKKSFetchBecause* const CKKSFetchBecausePeriodicRefetch = (CKKSFetchBecause*) @"
     [self.operationQueue addOperation:self.currentFetch];
 }
 
--(CKKSZoneChangeFetchDependencyOperation*)createSuccesfulFetchDependency {
+-(CKKSZoneChangeFetchDependencyOperation*)createSuccessfulFetchDependency {
     CKKSZoneChangeFetchDependencyOperation* dep = [[CKKSZoneChangeFetchDependencyOperation alloc] init];
 
     dep.name = @"successful-fetch-dependency";

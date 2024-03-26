@@ -30,6 +30,8 @@
 #import "keychain/ot/OTConstants.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
 
+NSString* const OctagonStateTransitionErrorDomain = @"com.apple.security.octagon.state";
+
 OctagonState* const OctagonStateNoAccount = (OctagonState*)@"NoAccount";
 
 OctagonState* const OctagonStateWaitForCDPCapableSecurityLevel = (OctagonState*)@"WaitForCDPCapableSecurityLevel";
@@ -86,8 +88,6 @@ OctagonState* const OctagonStateVouchWithCustodianRecoveryKey = (OctagonState*)@
 OctagonState* const OctagonStateJoinSOSAfterCKKSFetch = (OctagonState*)@"JoinSOSAfterCKKSFetch";
 OctagonState* const OctagonStatePrepareAndRecoverTLKSharesForInheritancePeer = (OctagonState*)@"PrepareAndRecoverTLKSharesForInheritancePeer";
 
-OctagonState* const OctagonStateStartCompanionPairing = (OctagonState*)@"StartCompanionPairing";
-
 OctagonState* const OctagonStateWaitForCDPUpdated = (OctagonState*)@"WaitForCDPUpdated";
 
 // Untrusted cuttlefish notification.
@@ -128,7 +128,6 @@ OctagonState* const OctagonStateCuttlefishReset = (OctagonState*)@"CuttlefishRes
 OctagonState* const OctagonStateCKKSResetAfterOctagonReset = (OctagonState*)@"CKKSResetAfterOctagonReset";
 
 /* used for trust health checks */
-OctagonState* const OctagonStateCDPCapableHealthCheck = (OctagonState*)@"CDPCapableHealthCheck";
 OctagonState* const OctagonStateCDPHealthCheck = (OctagonState*)@"CDPHealthCheck";
 OctagonState* const OctagonStateTPHTrustCheck = (OctagonState*)@"TPHTrustCheck";
 OctagonState* const OctagonStateCuttlefishTrustCheck = (OctagonState*)@"CuttlefishTrustCheck";
@@ -156,6 +155,11 @@ OctagonState* const OctagonStateSetAccountSettings = (OctagonState*)@"SetAccount
 /* escrow */
 OctagonState* const OctagonStateEscrowTriggerUpdate = (OctagonState*)@"EscrowTriggerUpdate";
 
+/* reroll */
+OctagonState* const OctagonStateStashAccountSettingsForReroll = (OctagonState*)@"OctagonStateStashAccountSettingsForReroll";
+OctagonState* const OctagonStateCreateIdentityForReroll = (OctagonState*)@"OctagonStateCreateIdentityForReroll";
+OctagonState* const OctagonStateVouchWithReroll = (OctagonState*)@"OctagonStateVouchWithReroll";
+
 // Flags
 OctagonFlag* const OctagonFlagIDMSLevelChanged = (OctagonFlag*) @"idms_level";
 OctagonFlag* const OctagonFlagEgoPeerPreapproved = (OctagonFlag*) @"preapproved";
@@ -170,11 +174,11 @@ OctagonFlag* const OctagonFlagFetchAuthKitMachineIDList = (OctagonFlag*)@"attemp
 OctagonFlag* const OctagonFlagUnlocked = (OctagonFlag*)@"unlocked";
 OctagonFlag* const OctagonFlagAttemptSOSUpdatePreapprovals = (OctagonFlag*)@"attempt_sos_update_preapprovals";
 OctagonFlag* const OctagonFlagAttemptSOSConsistency = (OctagonFlag*)@"attempt_sos_consistency";
-OctagonFlag* const OctagonFlagEscrowRequestInformCloudServicesOperation = (OctagonFlag*)@"escrowrequest_inform_cloudservices";
 OctagonFlag* const OctagonFlagAttemptBottleTLKExtraction = (OctagonFlag*)@"retry_bottle_tlk_extraction";
 OctagonFlag* const OctagonFlagAttemptRecoveryKeyTLKExtraction = (OctagonFlag*)@"retry_rk_tlk_extraction";
 OctagonFlag* const OctagonFlagSecureElementIdentityChanged  = (OctagonFlag*)@"se_id_changed";
 OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (OctagonFlag*)@"attempt_ucv_upgrade";
+OctagonFlag* const OctagonFlagCheckOnRTCMetrics = (OctagonFlag*)@"check_on_rtc_metrics";
 
 @implementation OTStates
 
@@ -213,7 +217,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateUpdateSOSPreapprovals,                    @27U,],
                                      @[OctagonStateWaitForCDPCapableSecurityLevel,           @28U,],
                                      @[OctagonStateAssistCKKSTLKUpload,                      @29U,],
-                                     @[OctagonStateStartCompanionPairing,                    @30U,],
+                                     //Removed: @[OctagonStateStartCompanionPairing,                    @30U,],
                                      @[OctagonStateEscrowTriggerUpdate,                      @31U,],
                                      @[OctagonStateEnsureConsistency,                        @32U,],
                                      @[OctagonStateResetBecomeUntrusted,                     @33U,],
@@ -232,7 +236,7 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateSOSUpgradeAfterCKKSReset,                 @46U,],
                                      @[OctagonStateInitiatorJoinCKKSReset,                   @47U,],
                                      @[OctagonStateInitiatorJoinAfterCKKSReset,              @48U,],
-                                     @[OctagonStateCDPCapableHealthCheck,                    @49U,],
+                                     //Removed: @[OctagonStateCDPCapableHealthCheck,                    @49U,],
                                      @[OctagonStateHealthCheckReset,                         @50U,],
                                      @[OctagonStateAssistCKKSTLKUploadCKKSReset,             @51U,],
                                      @[OctagonStateAssistCKKSTLKUploadAfterCKKSReset,        @52U,],
@@ -280,6 +284,9 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
                                      @[OctagonStateStashAccountSettingsForRecoveryKey,       @93U,],
                                      @[OctagonStateCuttlefishReset,                          @94U,],
                                      @[OctagonStateCKKSResetAfterOctagonReset,               @95U,],
+                                     @[OctagonStateStashAccountSettingsForReroll,            @96U,],
+                                     @[OctagonStateCreateIdentityForReroll,                  @97U,],
+                                     @[OctagonStateVouchWithReroll,                          @98U,],
                                      ];
     return stateInit;
 }
@@ -349,27 +356,6 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
     return s;
 }
 
-+ (NSSet<OctagonState*>*) OctagonNotInCliqueStates
-{
-    static NSSet<OctagonState*>* s = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSMutableSet* sourceStates = [NSMutableSet set];
-
-        [sourceStates addObject:OctagonStateNoAccount];
-        [sourceStates addObject:OctagonStateNoAccountDoReset];
-        [sourceStates addObject:OctagonStateInitializing];
-        [sourceStates addObject:OctagonStateDetermineiCloudAccountState];
-        [sourceStates addObject:OctagonStateWaitingForCloudKitAccount];
-        [sourceStates addObject:OctagonStateCloudKitNewlyAvailable];
-        [sourceStates addObject:OctagonStateWaitForCDPCapableSecurityLevel];
-        [sourceStates addObject:OctagonStateUntrusted];
-
-        s = sourceStates;
-    });
-    return s;
-}
-
 + (NSSet<OctagonState *>*) OctagonHealthSourceStates
 {
     static NSSet<OctagonState*>* s = nil;
@@ -389,7 +375,49 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
     return s;
 }
 
-+ (NSSet<OctagonFlag *>*) AllOctagonFlags
++ (NSSet<OctagonState*>*) OctagonNotInCliqueStates
+{
+    static NSSet<OctagonState*>* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableSet* sourceStates = [NSMutableSet set];
+
+        [sourceStates addObject:OctagonStateNoAccount];
+        [sourceStates addObject:OctagonStateNoAccountDoReset];
+        [sourceStates addObject:OctagonStateInitializing];
+        [sourceStates addObject:OctagonStateDetermineiCloudAccountState];
+        [sourceStates addObject:OctagonStateWaitingForCloudKitAccount];
+        [sourceStates addObject:OctagonStateCloudKitNewlyAvailable];
+        [sourceStates addObject:OctagonStateWaitForCDPCapableSecurityLevel];
+        [sourceStates addObject:OctagonStateWaitForCDP];
+        [sourceStates addObject:OctagonStateUntrusted];
+
+        s = sourceStates;
+    });
+    return s;
+}
+
++ (NSSet<OctagonState*>*) OctagonReadyStates
+{
+    static NSSet<OctagonState*>* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+         s = [NSSet setWithObject:OctagonStateReady];
+    });
+    return s;
+}
+
++ (NSSet<OctagonState*>*) OctagonAllStates
+{
+    static NSSet<OctagonState*>* s = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        s = [NSSet setWithArray: [self OctagonStateMap].allKeys];
+    });
+    return s;
+}
+
++ (NSSet<OctagonFlag*>*) AllOctagonFlags
 {
     static NSSet<OctagonFlag*>* f = nil;
     static dispatch_once_t onceToken;
@@ -409,10 +437,11 @@ OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade = (Octago
         [flags addObject:OctagonFlagUnlocked];
         [flags addObject:OctagonFlagAttemptSOSUpdatePreapprovals];
         [flags addObject:OctagonFlagAttemptSOSConsistency];
-        [flags addObject:OctagonFlagAttemptUserControllableViewStatusUpgrade];
         [flags addObject:OctagonFlagAttemptBottleTLKExtraction];
         [flags addObject:OctagonFlagAttemptRecoveryKeyTLKExtraction];
         [flags addObject:OctagonFlagSecureElementIdentityChanged];
+        [flags addObject:OctagonFlagAttemptUserControllableViewStatusUpgrade];
+        [flags addObject:OctagonFlagCheckOnRTCMetrics];
 
         f = flags;
     });

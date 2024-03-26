@@ -6,7 +6,6 @@
  //
 
 _SOSCCAcceptApplicants
-_SOSCCAccountGetAccountPrivateCredential
 _SOSCCAccountGetPublicKey
 _SOSCCAccountGetKeyCircleGeneration
 _SOSCCAccountHasPublicKey
@@ -227,6 +226,7 @@ _bskbRkbgPrefix
 
 _SOSBSKBHasRecoveryKey
 _SOSBSKBHasThisRecoveryKey
+_SOSBSKBRemoveRecoveryKey
 
  //
  // View SPI
@@ -612,3 +612,4 @@ __SOSControlSetupInterface
 
 _SOSCreateRandomDateBetweenNowPlus
 _SOSCCSetSOSDisabledError
+_SOSCCPushResetCircle

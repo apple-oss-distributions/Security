@@ -47,17 +47,31 @@ NS_ASSUME_NONNULL_BEGIN
 @class OTSecureElementPeerIdentity;
 @class OTAccountMetadataClassC;
 
+@class TrustedPeersHelperHealthCheckResult;
+
 @interface OTControlArguments : NSObject <NSSecureCoding>
 @property (strong) NSString* contextID;
 @property (strong) NSString* containerName;
 @property (strong, nullable) NSString* altDSID;
+@property (strong, nullable) NSString* flowID;
+@property (strong, nullable) NSString* deviceSessionID;
 
 - (instancetype)init;
 - (instancetype)initWithConfiguration:(OTConfigurationContext*)configuration;
 - (instancetype)initWithAltDSID:(NSString* _Nullable)altDSID;
+- (instancetype)initWithAltDSID:(NSString* _Nullable)altDSID
+                         flowID:(NSString* _Nullable)flowID
+                deviceSessionID:(NSString* _Nullable)deviceSessionID;
 - (instancetype)initWithContainerName:(NSString* _Nullable)containerName
                             contextID:(NSString*)contextID
                               altDSID:(NSString* _Nullable)altDSID;
+
+- (instancetype)initWithContainerName:(NSString* _Nullable)containerName
+                            contextID:(NSString*)contextID
+                              altDSID:(NSString* _Nullable)altDSID
+                               flowID:(NSString* _Nullable)flowID
+                      deviceSessionID:(NSString* _Nullable)deviceSessionID;
+
 
 - (OTConfigurationContext*)makeConfigurationContext;
 @end
@@ -189,6 +203,7 @@ API_DEPRECATED("No longer needed", macos(10.14, 10.15), ios(4, 17));
                           reply:(void (^)(NSDictionary<NSString*, NSString*>* _Nullable peers, NSError* _Nullable error))reply;
 
 - (void)fetchAllViableBottles:(OTControlArguments*)arguments
+                       source:(OTEscrowRecordFetchSource)source
                         reply:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs, NSArray<NSString*> * _Nullable sortedPartialBottleIDs, NSError* _Nullable error))reply;
 
 - (void)restoreFromBottle:(OTControlArguments*)arguments
@@ -261,7 +276,10 @@ API_DEPRECATED("No longer needed", macos(10.14, 10.15), ios(4, 17));
 - (void)healthCheck:(OTControlArguments*)arguments
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
              repair:(BOOL)repair
-              reply:(void (^)(NSError *_Nullable error))reply;
+reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError *_Nullable error))reply;
+
+- (void)simulateReceivePush:(OTControlArguments*)arguments
+                      reply:(void (^)(NSError *_Nullable error))reply;
 
 - (void)waitForOctagonUpgrade:(OTControlArguments*)arguments
                         reply:(void (^)(NSError* _Nullable error))reply;
@@ -340,10 +358,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                       source:(OTEscrowRecordFetchSource)source
                                        reply:(void (^)(NSArray<NSString*>* _Nullable views, NSError* _Nullable error))reply;
 
-// Note the lack of arguments: these are global notifications, and don't come in for any particular context/account
-- (void)deliverAKDeviceListDelta:(NSDictionary*)notificationDictionary
-                           reply:(void (^)(NSError* _Nullable error))reply;
-
 - (void)setMachineIDOverride:(OTControlArguments*)arguments
                    machineID:(NSString*)machineID
                        reply:(void (^)(NSError* _Nullable replyError))reply;
@@ -371,6 +385,13 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 
 - (void)totalTrustedPeers:(OTControlArguments*)arguments
                     reply:(void (^)(NSNumber* _Nullable count, NSError* _Nullable error))reply;
+
+- (void)areRecoveryKeysDistrusted:(OTControlArguments*)arguments
+                            reply:(void (^)(BOOL distrustedRecoveryKeysExist, NSError* _Nullable error))reply;
+
+- (void)reroll:(OTControlArguments*)arguments
+         reply:(void (^)(NSError *_Nullable error))reply;
+
 @end
 
 NS_ASSUME_NONNULL_END

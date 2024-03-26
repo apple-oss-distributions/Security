@@ -128,6 +128,50 @@ NS_ASSUME_NONNULL_BEGIN
                          tlkRecoveryErrors:(NSDictionary<NSString*, NSArray<NSError*>*>*)tlkRecoveryErrors;
 @end
 
+@interface TrustedPeersHelperHealthCheckResult: NSObject<NSSecureCoding>
+@property bool postRepairCFU;
+@property bool postEscrowCFU;
+@property bool resetOctagon;
+@property bool leaveTrust;
+@property bool reroll;
+@property (nullable) OTEscrowMoveRequestContext* moveRequest;
+@property uint64_t totalEscrowRecords;
+@property uint64_t collectableEscrowRecords;
+@property uint64_t collectedEscrowRecords;
+@property bool escrowRecordGarbageCollectionEnabled;
+@property uint64_t totalTlkShares;
+@property uint64_t collectableTlkShares;
+@property uint64_t collectedTlkShares;
+@property bool tlkShareGarbageCollectionEnabled;
+@property uint64_t totalPeers;
+@property uint64_t trustedPeers;
+@property uint64_t superfluousPeers;
+@property uint64_t peersCleanedup;
+@property bool superfluousPeersCleanupEnabled;
+
+- (instancetype)initWithPostRepairCFU:(bool)postRepairCFU
+                        postEscrowCFU:(bool)postEscrowCFU
+                         resetOctagon:(bool)resetOctagon
+                           leaveTrust:(bool)leaveTrust
+                               reroll:(bool)reroll
+                          moveRequest:(OTEscrowMoveRequestContext* _Nullable)moveRequest
+                   totalEscrowRecords:(uint64_t)totalEscrowRecords
+             collectableEscrowRecords:(uint64_t)collectableEscrowRecords
+               collectedEscrowRecords:(uint64_t)collectedEscrowRecords
+ escrowRecordGarbageCollectionEnabled:(bool)escrowRecordGarbageCollectionEnabled
+                       totalTlkShares:(uint64_t)totalTlkShares
+                 collectableTlkShares:(uint64_t)collectableTlkShares
+                   collectedTlkShares:(uint64_t)collectedTlkShares
+     tlkShareGarbageCollectionEnabled:(bool)tlkShareGarbageCollectionEnabled
+                           totalPeers:(uint64_t)totalPeers
+                         trustedPeers:(uint64_t)trustedPeers
+                     superfluousPeers:(uint64_t)superfluousPeers
+                       peersCleanedup:(uint64_t)peersCleanedup
+       superfluousPeersCleanupEnabled:(bool)superfluousPeersCleanupEnabled;
+
+- (NSDictionary*)dictionaryRepresentation;
+@end
+
 // This protocol describes the interface of the TrustedPeersHelper XPC service.
 @protocol TrustedPeersHelperProtocol
 
@@ -157,6 +201,8 @@ NS_ASSUME_NONNULL_BEGIN
             idmsTargetContext:(NSString*_Nullable)idmsTargetContext
        idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
                    notifyIdMS:(bool)notifyIdMS
+              internalAccount:(bool)internalAccount
+                  demoAccount:(bool)demoAccount
                         reply:(void (^)(NSError * _Nullable error))reply;
 
 - (void)localResetWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
@@ -170,19 +216,15 @@ NS_ASSUME_NONNULL_BEGIN
 
 // listDifferences: False if the allowedMachineIDs list passed in exactly matches the previous state,
 //                  True if there were any differences
+
 - (void)setAllowedMachineIDsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                           allowedMachineIDs:(NSSet<NSString*> *)allowedMachineIDs
+                           allowedMachineIDs:(NSSet<NSString *> *)allowedMachineIDs
+                       userInitiatedRemovals:(NSSet<NSString *> * _Nullable)userInitiatedRemovals
+                             evictedRemovals:(NSSet<NSString *> * _Nullable)evictedRemovals
+                       unknownReasonRemovals:(NSSet<NSString *> * _Nullable)unknownReasonRemovals
                         honorIDMSListChanges:(BOOL)honorIDMSListChanges
                                      version:(NSString* _Nullable)version
                                        reply:(void (^)(BOOL listDifferences, NSError * _Nullable error))reply;
-
-- (void)addAllowedMachineIDsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                                  machineIDs:(NSArray<NSString*> *)machineIDs
-                                       reply:(void (^)(NSError * _Nullable error))reply;
-
-- (void)removeAllowedMachineIDsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                                     machineIDs:(NSArray<NSString*> *)machineIDs
-                                          reply:(void (^)(NSError * _Nullable error))reply;
 
 - (void)fetchAllowedMachineIDsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                          reply:(void (^)(NSSet<NSString*>* _Nullable machineIDs, NSError* _Nullable error))reply;
@@ -261,6 +303,9 @@ NS_ASSUME_NONNULL_BEGIN
                    stableInfo:(NSData *)stableInfo
                 stableInfoSig:(NSData *)stableInfoSig
                      ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)viewKeySets
+                       flowID:(NSString * _Nullable)flowID
+              deviceSessionID:(NSString * _Nullable)deviceSessionID
+               canSendMetrics:(BOOL)canSendMetrics
                         reply:(void (^)(NSData * _Nullable voucher,
                                         NSData * _Nullable voucherSig,
                                         NSError * _Nullable error))reply;
@@ -334,6 +379,16 @@ NS_ASSUME_NONNULL_BEGIN
                                                                 TrustedPeersHelperTLKRecoveryResult* _Nullable tlkRecoveryResults,
                                                                 NSError * _Nullable error))reply;
 
+// Returns a voucher for our own identity, reroll
+- (void)vouchWithRerollWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                              oldPeerID:(NSString*)oldPeerID
+                              tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
+                                  reply:(void (^)(NSData * _Nullable voucher,
+                                                  NSData * _Nullable voucherSig,
+                                                  NSArray<CKKSTLKShare*>* _Nullable newSelfTLKShares,
+                                                  TrustedPeersHelperTLKRecoveryResult* _Nullable tlkRecoveryResults,
+                                                  NSError * _Nullable error))reply;
+
 // As of right now, join and attemptPreapprovedJoin will upload TLKShares for any TLKs that this peer already has.
 // Note that in The Future, a device might decide to join an existing Octagon set while introducing a new view.
 // These interfaces will have to change...
@@ -343,6 +398,9 @@ NS_ASSUME_NONNULL_BEGIN
                     ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)viewKeySets
                    tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
              preapprovedKeys:(nullable NSArray<NSData*> *)preapprovedKeys
+                      flowID:(NSString * _Nullable)flowID
+             deviceSessionID:(NSString * _Nullable)deviceSessionID
+              canSendMetrics:(BOOL)canSendMetrics
                        reply:(void (^)(NSString * _Nullable peerID,
                                        NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                        TPSyncingPolicy* _Nullable syncingPolicy,
@@ -464,27 +522,21 @@ NS_ASSUME_NONNULL_BEGIN
                                             uuid:(NSUUID *)uuid
                                            reply:(void (^)(TrustedPeersHelperCustodianRecoveryKey* _Nullable crk, NSError* _Nullable error))reply;
 
-- (void)reportHealthWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                   stateMachineState:(NSString *)state
-                          trustState:(NSString *)trustState
-                               reply:(void (^)(NSError* _Nullable error))reply;
-
-- (void)pushHealthInquiryWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                                    reply:(void (^)(NSError* _Nullable error))reply;
-
 - (void)requestHealthCheckWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                        requiresEscrowCheck:(BOOL)requiresEscrowCheck
                                     repair:(BOOL)repair
                           knownFederations:(NSArray<NSString *> *)knownFederations
-                                     reply:(void (^)(BOOL postRepairCFU, BOOL postEscrowCFU, BOOL resetOctagon, BOOL leaveTrust, OTEscrowMoveRequestContext* _Nullable moveRequest, NSError* _Nullable error))reply;
+                                     reply:(void (^)(TrustedPeersHelperHealthCheckResult* _Nullable result, NSError* _Nullable error))reply;
 
 - (void)getSupportAppInfoWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                     reply:(void (^)(NSData * _Nullable, NSError * _Nullable))reply;
 
 - (void)resetAccountCDPContentsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-idmsTargetContext:(NSString*_Nullable)idmsTargetContext
-idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
-notifyIdMS:(bool)notifyIdMS
+                              idmsTargetContext:(NSString*_Nullable)idmsTargetContext
+                         idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
+                                     notifyIdMS:(bool)notifyIdMS
+                                internalAccount:(bool)internalAccount
+                                    demoAccount:(bool)demoAccount
                                           reply:(void (^)(NSError * _Nullable))reply;
 
 - (void)removeEscrowCacheWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
@@ -517,6 +569,9 @@ notifyIdMS:(bool)notifyIdMS
 - (void)fetchTrustedPeerCountWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                         reply:(void (^)(NSNumber* _Nullable count,
                                                         NSError* _Nullable error))reply;
+
+- (void)octagonContainsDistrustedRecoveryKeysWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                                        reply:(void (^)(BOOL containsDistrusted, NSError* _Nullable error))reply;
 @end
 
 /*

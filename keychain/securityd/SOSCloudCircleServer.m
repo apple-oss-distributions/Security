@@ -2142,7 +2142,7 @@ CFDataRef SOSCCCopyCircleJoiningBlob_Server(SOSPeerInfoRef applicant, CFErrorRef
     OctagonSignpost signPost = OctagonSignpostBegin(SOSSignpostNameSOSCCCopyCircleJoiningBlob);
 
     do_with_account_while_unlocked(error, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
-        pbblob = SOSAccountCopyCircleJoiningBlob(txn.account, applicant, error);
+        pbblob = SOSAccountCopyCircleJoiningBlob(txn.account, nil, nil, nil, NO, applicant, error);
         return pbblob != NULL;
     });
     OctagonSignpostEnd(signPost, SOSSignpostNameSOSCCCopyCircleJoiningBlob, OctagonSignpostNumber1(SOSSignpostNameSOSCCCopyCircleJoiningBlob), (int)(pbblob != NULL));
@@ -2477,6 +2477,23 @@ bool SOSCCIsSOSTrustAndSyncingEnabled_Server(void)
         isEnabled = false;
     }
     return isEnabled;
+}
+
+bool SOSCCPushResetCircle_Server(CFErrorRef* error)
+{
+    CFErrorRef localError = NULL;
+     do_with_account_while_unlocked(&localError, ^bool(SOSAccountTransaction* txn, CFErrorRef *error) {
+         SOSAccountWriteEmptyCircleToKVS(txn.account);
+         return true;
+    });
+
+    if (localError) {
+        secerror("SOSCCPushResetCircle_Server: error writing reset circle to kvs: %@", localError);
+        if (error) {
+            *error = localError;
+        }
+    }
+    return true;
 }
 
 void SOSCCResetOTRNegotiation_Server(CFStringRef peerid)

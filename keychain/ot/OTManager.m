@@ -29,6 +29,7 @@
 #import <Foundation/NSXPCConnection_Private.h>
 
 #import <os/feature_private.h>
+#import "utilities/debugging.h"
 
 #if OCTAGON
 #import <TargetConditionals.h>
@@ -47,6 +48,7 @@
 #import "keychain/ot/OTStates.h"
 #import "keychain/ot/OTJoiningConfiguration.h"
 #import "keychain/ot/OTSOSAdapter.h"
+#import "keychain/ot/proto/generated_source/OTAccountMetadataClassC.h"
 
 #import "keychain/OctagonTrust/OTCustodianRecoveryKey.h"
 #import "keychain/OctagonTrust/OTInheritanceKey.h"
@@ -224,10 +226,10 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         _accountStateTracker = [[CKKSAccountStateTracker alloc] init:_cloudKitContainer
                                            nsnotificationCenterClass:cloudKitClassDependencies.nsnotificationCenterClass];
         _cloudKitClassDependencies = cloudKitClassDependencies;
-        self.contexts = [NSMutableDictionary dictionary];
-        self.clients = [NSMutableDictionary dictionary];
+        _contexts = [NSMutableDictionary dictionary];
+        _clients = [NSMutableDictionary dictionary];
 
-        self.queue = dispatch_queue_create("otmanager", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create("otmanager", DISPATCH_QUEUE_SERIAL);
 
         _apsConnectionClass = apsConnectionClass;
         _escrowRequestClass = escrowRequestClass;
@@ -293,7 +295,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
                                         cloudKitClassDependencies:cloudKitClassDependencies
                                                   accountsAdapter:self.accountsAdapter];
 
-        self.queue = dispatch_queue_create("otmanager", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create("otmanager", DISPATCH_QUEUE_SERIAL);
 
         WEAKIFY(self);
         _savedTLKNotifier = [[CKKSNearFutureScheduler alloc] initWithName:@"newtlks"
@@ -525,25 +527,27 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 
     secnotice("octagon", "signing out of octagon trust: %@", arguments);
 
-    __block BOOL foundContext = NO;
-
+    BOOL foundContext = NO;
+    __block NSArray* allContexts;
     dispatch_sync(self.queue, ^{
-        // We want to sign out of every context with this altDSID, while ignoring the persona.
-        for(OTCuttlefishContext* context in self.contexts.allValues) {
-            if([arguments.altDSID isEqualToString:context.activeAccount.altDSID]) {
-                secnotice("octagon", "signing out of octagon trust for context: %@", context);
-                foundContext = YES;
-
-                SFAnalyticsActivityTracker *tracker = [[self.loggerClass logger] startLogSystemMetricsForActivityNamed:OctagonActivityAccountNotAvailable];
-                NSError* error = nil;
-                [context accountNoLongerAvailable:&error];
-                if(error) {
-                    secnotice("octagon", "signing out failed: %@", error);
-                }
-                [tracker stopWithEvent:OctagonEventSignOut result:error];
-            }
-        }
+        allContexts = self.contexts.allValues;
     });
+
+    // We want to sign out of every context with this altDSID, while ignoring the persona.
+    for(OTCuttlefishContext* context in allContexts) {
+        if([arguments.altDSID isEqualToString:context.activeAccount.altDSID]) {
+            secnotice("octagon", "signing out of octagon trust for context: %@", context);
+            foundContext = YES;
+
+            SFAnalyticsActivityTracker *tracker = [[self.loggerClass logger] startLogSystemMetricsForActivityNamed:OctagonActivityAccountNotAvailable];
+            NSError* error = nil;
+            [context accountNoLongerAvailable:&error];
+            if(error) {
+                secnotice("octagon", "signing out failed: %@", error);
+            }
+            [tracker stopWithEvent:OctagonEventSignOut result:error];
+        }
+    }
 
     if(!foundContext) {
         secnotice("octagon", "Failed to find a context to sign out.");
@@ -665,8 +669,8 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
     return otc.ckks;
 }
 
-- (OTCuttlefishContext* _Nullable)restartCKKSAccountSyncWithoutSettingPolicyForContext:(OTCuttlefishContext*)cuttlefishContext
-{        
+- (OTCuttlefishContext* _Nullable)restartOctagonContext:(OTCuttlefishContext*)cuttlefishContext
+{
     CKKSKeychainView* view = cuttlefishContext.ckks;
     NSSet<NSString*>* viewAllowList = view.viewAllowList;
     NSString *containerName = cuttlefishContext.containerName;
@@ -713,7 +717,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         return nil;
     }
 
-    OTCuttlefishContext* newctx = [self restartCKKSAccountSyncWithoutSettingPolicyForContext: cuttlefishContext];
+    OTCuttlefishContext* newctx = [self restartOctagonContext:cuttlefishContext];
     return newctx.ckks;
 }
 
@@ -790,6 +794,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
             CKKSKeychainView* ckks = nil;
             if((OctagonSupportsPersonaMultiuser() && !SecCKKSTestsEnabled()) || ([containerName isEqualToString:SecCKKSContainerName] && [contextID isEqualToString:OTDefaultContext])) {
                 NSString* ckksContextID = [contextID isEqualToString:OTDefaultContext] ? CKKSDefaultContextID : contextID;
+
                 ckks = [[CKKSKeychainView alloc] initWithContainer:cloudKitContainer
                                                          contextID:ckksContextID
                                                      activeAccount:possibleAccount
@@ -897,7 +902,9 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
                                                allowNonPrimaryAccounts:(BOOL)allowNonPrimaryAccounts
                                                                  error:(NSError**)error
 {
-    secnotice("octagon-account", "Finding a context for user: %@", activeAccount);
+    if(OctagonSupportsPersonaMultiuser() || !activeAccount.isPrimaryAccount) {
+        secnotice("octagon-account", "Finding a context for user: %@", activeAccount);
+    }
     OTCuttlefishContext* context = [self contextForContainerName:activeAccount.cloudkitContainerName
                                                        contextID:activeAccount.octagonContextID
                                                  possibleAccount:activeAccount
@@ -964,7 +971,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
            && arguments.altDSID == nil
            && [arguments.containerName isEqualToString:OTCKContainerName]
            && [arguments.contextID isEqualToString:OTDefaultContext]) {
-            secnotice("octagon-account", "Cannot find an account matching persona/altDSID, allowing default context return: %@ %@", arguments, accountLookupError);
+            secinfo("octagon-account", "Cannot find an account matching primary persona/altDSID, allowing default context return: %@ %@", arguments, accountLookupError);
             return [self contextForContainerName:arguments.containerName
                                        contextID:arguments.contextID];
 
@@ -1083,7 +1090,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         return;
     }
 
-    secnotice("octagon", "Received a trust status for arguments (%@)", arguments);
+    secinfo("octagon", "Received a trust status for arguments (%@)", arguments);
     [cfshContext rpcTrustStatus:configuration reply:^(CliqueStatus status,
                                                       NSString * _Nullable peerID,
                                                       NSDictionary<NSString *,NSNumber *> * _Nullable peerCountByModelID,
@@ -1142,7 +1149,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         return;
     }
 
-    secnotice("octagon", "Received a status RPC for arguments (%@): %@", arguments, context);
+    secinfo("octagon", "Received a status RPC for arguments (%@): %@", arguments, context);
     [context rpcStatus:reply];
 }
 
@@ -1304,6 +1311,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 }
 
 - (void)fetchAllViableBottles:(OTControlArguments*)arguments
+                       source:(OTEscrowRecordFetchSource)source
                         reply:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs, NSArray<NSString*>* _Nullable sortedPartialBottleIDs, NSError* _Nullable error))reply
 {
     NSError* clientError = nil;
@@ -1317,7 +1325,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 
     SFAnalyticsActivityTracker *tracker = [[self.loggerClass logger] startLogSystemMetricsForActivityNamed:OctagonActivityFetchAllViableBottles];
 
-    [cfshContext rpcFetchAllViableBottlesFromSource:OTEscrowRecordFetchSourceDefault
+    [cfshContext rpcFetchAllViableBottlesFromSource:source
                                               reply:^(NSArray<NSString *> * _Nullable sortedBottleIDs,
                                                       NSArray<NSString *> * _Nullable sortedPartialEscrowRecordIDs,
                                                       NSError * _Nullable error) {
@@ -1395,6 +1403,10 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
     OctagonSignpost prepareSignPost = OctagonSignpostBegin(OctagonSignpostNamePairingChannelInitiatorPrepare);
     __block bool subTaskSuccess = false;
 
+    cfshContext.flowID = arguments.flowID;
+    cfshContext.deviceSessionID = arguments.deviceSessionID;
+    cfshContext.shouldSendMetricsForOctagon = OTAccountMetadataClassC_MetricsState_PERMITTED;
+
     [cfshContext rpcPrepareIdentityAsApplicantWithConfiguration:config
                                                           epoch:config.epoch
                                                           reply:^(NSString * _Nullable peerID,
@@ -1406,8 +1418,9 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         if (error == nil) {
             subTaskSuccess = true;
         }
+        cfshContext.flowID = nil;
+        cfshContext.deviceSessionID = nil;
         OctagonSignpostEnd(prepareSignPost, OctagonSignpostNamePairingChannelInitiatorPrepare, OctagonSignpostNumber1(OctagonSignpostNamePairingChannelInitiatorPrepare), (int)subTaskSuccess);
-
         reply(peerID, permanentInfo, permanentInfoSig, stableInfo, stableInfoSig, error);
     }];
 }
@@ -1430,6 +1443,10 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
     [cfshContext handlePairingRestart:config];
     [cfshContext startOctagonStateMachine];
 
+    cfshContext.flowID = arguments.flowID;
+    cfshContext.deviceSessionID = arguments.deviceSessionID;
+    cfshContext.shouldSendMetricsForOctagon = OTAccountMetadataClassC_MetricsState_PERMITTED;
+
     OctagonSignpost joinSignPost = OctagonSignpostBegin(OctagonSignpostNamePairingChannelInitiatorJoinOctagon);
     __block bool subTaskSuccess = false;
     [cfshContext rpcJoin:vouchData vouchSig:vouchSig reply:^(NSError * _Nullable error) {
@@ -1437,6 +1454,8 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
             [cfshContext clearPairingUUID];
             subTaskSuccess = true;
         }
+        cfshContext.flowID = nil;
+        cfshContext.deviceSessionID = nil;
         OctagonSignpostEnd(joinSignPost, OctagonSignpostNamePairingChannelInitiatorJoinOctagon, OctagonSignpostNumber1(OctagonSignpostNamePairingChannelInitiatorJoinOctagon), (int)subTaskSuccess);
         reply(error);
     }];
@@ -1465,10 +1484,13 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
     // Let's assume that the new device's machine ID has made it to the IDMS list by now, and let's refresh our idea of that list
     [acceptorCfshContext requestTrustedDeviceListRefresh];
 
+    acceptorCfshContext.flowID = arguments.flowID;
+    acceptorCfshContext.deviceSessionID = arguments.deviceSessionID;
+    acceptorCfshContext.shouldSendMetricsForOctagon = OTAccountMetadataClassC_MetricsState_PERMITTED;
+
     OTClientStateMachine *clientStateMachine = [self clientStateMachineForContainerName:acceptorCfshContext.containerName contextID:acceptorCfshContext.contextID clientName:config.pairingUUID];
 
     [clientStateMachine startOctagonStateMachine];
-
 
     OctagonSignpost epochSignPost = OctagonSignpostBegin(OctagonSignpostNamePairingChannelAcceptorEpoch);
     __block bool subTaskSuccess = false;
@@ -1476,6 +1498,8 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         if (error == nil) {
             subTaskSuccess = true;
         }
+        acceptorCfshContext.flowID = nil;
+        acceptorCfshContext.deviceSessionID = nil;
         OctagonSignpostEnd(epochSignPost, OctagonSignpostNamePairingChannelAcceptorEpoch, OctagonSignpostNumber1(OctagonSignpostNamePairingChannelAcceptorEpoch), (int)subTaskSuccess);
         reply(epoch, error);
     }];
@@ -1503,14 +1527,27 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 
     // Let's assume that the new device's machine ID has made it to the IDMS list by now, and let's refresh our idea of that list
     [acceptorCfshContext requestTrustedDeviceListRefresh];
-    OTClientStateMachine *clientStateMachine = [self clientStateMachineForContainerName:acceptorCfshContext.containerName contextID:acceptorCfshContext.contextID clientName:config.pairingUUID];
+    OTClientStateMachine *clientStateMachine = [self clientStateMachineForContainerName:acceptorCfshContext.containerName 
+                                                                              contextID:acceptorCfshContext.contextID
+                                                                             clientName:config.pairingUUID];
+    acceptorCfshContext.flowID = arguments.flowID;
+    acceptorCfshContext.deviceSessionID = arguments.deviceSessionID;
+    acceptorCfshContext.shouldSendMetricsForOctagon = OTAccountMetadataClassC_MetricsState_PERMITTED;
 
     OctagonSignpost voucherSignPost = OctagonSignpostBegin(OctagonSignpostNamePairingChannelAcceptorVoucher);
     __block bool subTaskSuccess = false;
-    [clientStateMachine rpcVoucher:acceptorCfshContext peerID:peerID permanentInfo:permanentInfo permanentInfoSig:permanentInfoSig stableInfo:stableInfo stableInfoSig:stableInfoSig reply:^(NSData *voucher, NSData *voucherSig, NSError *error) {
+    [clientStateMachine rpcVoucher:acceptorCfshContext
+                            peerID:peerID
+                     permanentInfo:permanentInfo
+                  permanentInfoSig:permanentInfoSig
+                        stableInfo:stableInfo
+                     stableInfoSig:stableInfoSig
+                             reply:^(NSData *voucher, NSData *voucherSig, NSError *error) {
         if (error == nil) {
             subTaskSuccess = true;
         }
+        acceptorCfshContext.flowID = nil;
+        acceptorCfshContext.deviceSessionID = nil;
         OctagonSignpostEnd(voucherSignPost, OctagonSignpostNamePairingChannelAcceptorVoucher, OctagonSignpostNumber1(OctagonSignpostNamePairingChannelAcceptorVoucher), (int)subTaskSuccess);
         reply(voucher, voucherSig, error);
     }];
@@ -1565,6 +1602,38 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 // MARK: Analytics
 ////
 
+- (BOOL)fetchSendingMetricsPermitted:(OTControlArguments*)arguments error:(NSError**)error
+{
+    NSError* clientError = nil;
+    OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
+                                                           error:&clientError];
+    if(cfshContext == nil || clientError != nil) {
+        secnotice("octagon", "Rejecting a fetchSendingMetricsPermitted for arguments (%@): %@", arguments, clientError);
+        if (error) {
+            *error = clientError;
+        }
+        return NO;
+    }
+
+    return [cfshContext fetchSendingMetricsPermitted:error];
+}
+
+- (BOOL)persistSendingMetricsPermitted:(OTControlArguments*)arguments sendingMetricsPermitted:(BOOL)sendingMetricsPermitted error:(NSError**)error
+{
+    NSError* clientError = nil;
+    OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
+                                                           error:&clientError];
+    if(cfshContext == nil || clientError != nil) {
+        secnotice("octagon", "Rejecting a fetchSendingMetricsPermitted for arguments (%@): %@", arguments, clientError);
+        if (error) {
+            *error = clientError;
+        }
+        return NO;
+    }
+    return [cfshContext persistSendingMetricsPermitted:sendingMetricsPermitted error:error];
+}
+
+
 - (void)setupAnalytics
 {
     WEAKIFY(self);
@@ -1614,7 +1683,11 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
             values[OctagonAnalyticsAttemptedJoin] = @(metadata.attemptedJoin);
 
             NSError* machineIDError = nil;
-            NSString* machineID = [cuttlefishContext.authKitAdapter machineID:&machineIDError];
+            NSString* machineID = [cuttlefishContext.authKitAdapter machineID:nil
+                                                                       flowID:nil
+                                                              deviceSessionID:nil
+                                                               canSendMetrics:NO
+                                                                        error:&machineIDError];
             if(machineIDError) {
                 secnotice("octagon-analytics", "Error fetching machine ID: %@", metadataError);
             }
@@ -1744,19 +1817,9 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
 }
 
 - (bool)isFullPeer {
-    NSString* modelID = self.deviceInformationAdapter.modelID;
-
-#if TARGET_OS_XR
-    for (NSString* p in @[@"Mac", @"iPhone", @"iPad", @"iPod", @"Watch", @"RealityDevice"]) {
-#else
-    for (NSString* p in @[@"Mac", @"iPhone", @"iPad", @"iPod", @"Watch"]) {
-#endif
-        if ([modelID containsString:p]) {
-            return true;
-        }
-    }
-    return false;
+    return [OTDeviceInformation isFullPeer:self.deviceInformationAdapter.modelID];
 }
+
 
 ////
 // MARK: Recovery Key
@@ -2037,6 +2100,13 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         return;
     }
 
+    if (os_feature_enabled(Security, TTROnCRKRemoval)) {
+        SecTapToRadar *ttr = [[SecTapToRadar alloc] initTapToRadar:@"Custodian key removal"
+                                                       description:@"Please TTR unless you were just removing a recovery contact"
+                                                             radar:@"114829039"];
+        [ttr trigger];
+    }
+
     [cfshContext startOctagonStateMachine];
 
     [cfshContext rpcRemoveCustodianRecoveryKeyWithUUID:uuid reply:^(NSError *_Nullable error) {
@@ -2259,6 +2329,13 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
         return;
     }
 
+    if (os_feature_enabled(Security, TTROnCRKRemoval)) {
+        SecTapToRadar *ttr = [[SecTapToRadar alloc] initTapToRadar:@"Inheritance key removal"
+                                                       description:@"Please TTR unless you were just removing a legacy contact"
+                                                             radar:@"114829039"];
+        [ttr trigger];
+    }
+
     [cfshContext startOctagonStateMachine];
 
     [cfshContext rpcRemoveInheritanceKeyWithUUID:uuid reply:^(NSError *_Nullable error) {
@@ -2300,7 +2377,7 @@ static NSString* const kOTRampZoneName = @"metadata_zone";
     [self healthCheck:[[OTControlArguments alloc] init]
 skipRateLimitingCheck:NO
                repair:NO
-                reply:^(NSError * _Nullable error) {
+                reply:^(TrustedPeersHelperHealthCheckResult *_Nullable, NSError * _Nullable error) {
         if(error) {
             secerror("octagon: error attempting to check octagon health: %@", error);
         } else {
@@ -2309,17 +2386,17 @@ skipRateLimitingCheck:NO
     }];
 }
 
-- (void)healthCheck:(OTControlArguments*)arguments
+-   (void)healthCheck:(OTControlArguments*)arguments
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
-             repair:(BOOL)repair
-              reply:(void (^)(NSError *_Nullable error))reply
+               repair:(BOOL)repair
+                reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError *_Nullable error))reply
 {
     NSError* clientError = nil;
     OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
                                                            error:&clientError];
     if(cfshContext == nil || clientError != nil) {
         secnotice("octagon", "Rejecting a healthCheck RPC for arguments (%@): %@", arguments, clientError);
-        reply(clientError);
+        reply(nil, clientError);
         return;
     }
 
@@ -2327,13 +2404,25 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 
     [cfshContext notifyContainerChange:nil];
 
-    [cfshContext checkOctagonHealth:skipRateLimitingCheck repair:repair reply:^(NSError *error) {
-        if(error) {
-            reply(error);
-        } else {
-            reply(nil);
-        }
-    }];
+    [cfshContext checkOctagonHealth:skipRateLimitingCheck repair:repair reply:reply];
+}
+
+- (void)simulateReceivePush:(OTControlArguments*)arguments
+                      reply:(void (^)(NSError *_Nullable error))reply
+{
+    NSError* clientError = nil;
+    OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
+                                                           error:&clientError];
+    if(cfshContext == nil || clientError != nil) {
+        secnotice("octagon", "Rejecting updateOctagon for arguments (%@): %@", arguments, clientError);
+        reply(clientError);
+        return;
+    }
+
+    secnotice("octagon-push", "notifying container of change (simulated)");
+
+    [cfshContext notifyContainerChange:nil];
+    reply(nil);
 }
 
 - (void)setSOSEnabledForPlatformFlag:(bool) value
@@ -2749,13 +2838,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
     [cfshContext rpcTlkRecoverabilityForEscrowRecordData:recordData source:source reply:reply];
 }
 
-- (void)deliverAKDeviceListDelta:(NSDictionary*)notificationDictionary
-                           reply:(void (^)(NSError* _Nullable error))reply
-{
-    [self.authKitAdapter deliverAKDeviceListDeltaMessagePayload:notificationDictionary];
-    reply(nil);
-}
-
 - (void)isRecoveryKeySet:(OTControlArguments*)arguments
                    reply:(void (^)(BOOL isSet, NSError* _Nullable error))reply
 {
@@ -2861,6 +2943,44 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
     }
     
     [cfshContext getAccountMetadataWithReply:reply];
+}
+    
+- (void)areRecoveryKeysDistrusted:(OTControlArguments *)arguments
+                            reply:(void (^)(BOOL, NSError * _Nullable))reply
+{
+    NSError* clientError = nil;
+    OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
+                                                           error:&clientError];
+    if(cfshContext == nil || clientError != nil) {
+        secnotice("octagon", "Rejecting a areRecoveryKeysDistrusted RPC for arguments (%@): %@", arguments, clientError);
+        reply(NO, clientError);
+        return;
+    }
+    
+    [cfshContext areRecoveryKeysDistrusted:reply];
+}    
+
+- (void)reroll:(OTControlArguments*)arguments
+         reply:(void (^)(NSError *_Nullable error))reply
+{
+    NSError* clientError = nil;
+    OTCuttlefishContext* cfshContext = [self contextForClientRPC:arguments
+                                                           error:&clientError];
+    if(cfshContext == nil || clientError != nil) {
+        secnotice("octagon", "Rejecting a reroll RPC for arguments (%@): %@", arguments, clientError);
+        reply(clientError);
+        return;
+    }
+
+    secnotice("octagon", "reroll invoked for arguments (%@)", arguments);
+
+    SFAnalyticsActivityTracker *tracker = [[self.loggerClass logger] startLogSystemMetricsForActivityNamed:OctagonActivityReroll];
+
+    [cfshContext startOctagonStateMachine];
+    [cfshContext rerollWithReply:^(NSError *_Nullable error) {
+        [tracker stopWithEvent:OctagonEventReroll result:error];
+        reply(error);
+    }];
 }
 
 + (CKContainer*)makeCKContainer:(NSString*)containerName

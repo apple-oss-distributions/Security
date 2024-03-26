@@ -17,6 +17,10 @@ class FakeCKOperationRunner: CKOperationRunner {
         return true
     }
 
+    func altDSID() -> String? {
+        return nil
+    }
+
     func add<RequestType, ResponseType>(_ operation: CKCodeOperation<RequestType, ResponseType>) where RequestType: InternalSwiftProtobuf.Message, ResponseType: InternalSwiftProtobuf.Message {
         if let request = operation.request as? ResetRequest {
             if let completionBlock = operation.codeOperationResultBlock as? ((Result<ResetResponse, Error>) -> Void) {
@@ -50,14 +54,6 @@ class FakeCKOperationRunner: CKOperationRunner {
             if let completionBlock = operation.codeOperationResultBlock as? ((Result<FetchPolicyDocumentsResponse, Error>) -> Void) {
                 self.server.fetchPolicyDocuments(request, completion: completionBlock)
             }
-        } else if let request = operation.request as? ReportHealthRequest {
-            if let completionBlock = operation.codeOperationResultBlock as? ((Result<ReportHealthResponse, Error>) -> Void) {
-                self.server.reportHealth(request, completion: completionBlock)
-            }
-        } else if let request = operation.request as? PushHealthInquiryRequest {
-            if let completionBlock = operation.codeOperationResultBlock as? ((Result<PushHealthInquiryResponse, Error>) -> Void) {
-                self.server.pushHealthInquiry(request, completion: completionBlock)
-            }
         } else if let request = operation.request as? GetRepairActionRequest {
             if let completionBlock = operation.codeOperationResultBlock as? ((Result<GetRepairActionResponse, Error>) -> Void) {
                 self.server.getRepairAction(request, completion: completionBlock)
@@ -65,14 +61,6 @@ class FakeCKOperationRunner: CKOperationRunner {
         } else if let request = operation.request as? GetSupportAppInfoRequest {
             if let completionBlock = operation.codeOperationResultBlock as? ((Result<GetSupportAppInfoResponse, Error>) -> Void) {
                 self.server.getSupportAppInfo(request, completion: completionBlock)
-            }
-        } else if let request = operation.request as? GetClubCertificatesRequest {
-            if let completionBlock = operation.codeOperationResultBlock as? ((Result<GetClubCertificatesResponse, Error>) -> Void) {
-                self.server.getClubCertificates(request, completion: completionBlock)
-            }
-        } else if let request = operation.request as? FetchSOSiCloudIdentityRequest {
-            if let completionBlock = operation.codeOperationResultBlock as? ((Result<FetchSOSiCloudIdentityResponse, Error>) -> Void) {
-                self.server.fetchSosiCloudIdentity(request, completion: completionBlock)
             }
         } else if let request = operation.request as? ResetAccountCDPContentsRequest {
             if let completionBlock = operation.codeOperationResultBlock as? ((Result<ResetAccountCDPContentsResponse, Error>) -> Void) {
@@ -159,6 +147,14 @@ class OTMockDeviceInfoAdapter: OTDeviceInformationAdapter {
     func isHomePod() -> Bool {
         return mockModelID.hasPrefix("AudioAccessory")
     }
+
+    func isAppleTV() -> Bool {
+        return mockModelID.hasPrefix("AppleTV")
+    }
+
+    func isWatch() -> Bool {
+        return mockModelID.hasPrefix("Watch")
+    }
 }
 
 class OTMockTooManyPeersAdapter: OTTooManyPeersAdapter {
@@ -186,7 +182,7 @@ class OTMockTooManyPeersAdapter: OTTooManyPeersAdapter {
 }
 
 class OTMockTapToRadarAdapter: OTTapToRadarAdapter {
-    func postHomePodLostTrustTTR() {
+    func postHomePodLostTrustTTR(_ identifiers: String) {
         self.timesHomePodTTRSent += 1
     }
 
@@ -329,6 +325,9 @@ class OctagonTestsBase: CloudKitKeychainSyncingMockXCTest {
 
         // Set the global CKKS bool to TRUE
         SecCKKSEnable()
+
+        // Set the global metrics bool to FALSE
+        soft_MetricsDisable()
 
         // Until we can reasonably run SOS in xctest, this must be off. Note that this makes our tests
         // not accurately reproduce what a real device would do.
@@ -537,6 +536,9 @@ class OctagonTestsBase: CloudKitKeychainSyncingMockXCTest {
         #if !os(watchOS)
         SecSecuritySetPersonaMusr(nil)
         #endif
+
+        // Set the global metrics bool to TRUE
+        soft_MetricsEnable()
     }
 
     override func managedViewList() -> Set<String> {
@@ -803,6 +805,14 @@ class OctagonTestsBase: CloudKitKeychainSyncingMockXCTest {
 
     func releaseCKKSStateMachine(from: String) {
         self.defaultCKKS.stateMachine.testReleasePause(from)
+    }
+
+    func pauseOctagonStateMachine(context: OTCuttlefishContext, entering: String) {
+        context.stateMachine.testPause(afterEntering: entering)
+    }
+
+    func releaseOctagonStateMachine(context: OTCuttlefishContext, from: String) {
+        context.stateMachine.testReleasePause(from)
     }
 
     func assertAllCKKSViewsUploadKeyHierarchy(tlkShares: UInt, file: StaticString = #file, line: UInt = #line) {
@@ -1474,6 +1484,57 @@ class OctagonTestsBase: CloudKitKeychainSyncingMockXCTest {
 }
 
 class OctagonTests: OctagonTestsBase {
+
+    // add 'test' to this if you wish to stress test metrics sending
+    func metricSend() throws {
+
+        let group1 = DispatchGroup()
+        let group2 = DispatchGroup()
+
+        let eventS = AAFAnalyticsEventSecurity(keychainCircleMetrics: nil, altDSID: "altDSID", flowID: "flowID", deviceSessionID: "deviceSessionID", eventName: "eventName", testsAreEnabled: false, canSendMetrics: false, category: 100)
+
+        for _ in 0...500 {
+            let queue1 = DispatchQueue(label: "sendMetricWithEvent1")
+            let queue2 = DispatchQueue(label: "sendMetricWithEvent2")
+
+            queue1.async(group: group1) {
+                SecurityAnalyticsReporterRTC.sendMetric(withEvent: eventS, success: false, error: NSError(domain: "testErrorDomain", code: 10))
+            }
+            queue2.async(group: group2) {
+                SecurityAnalyticsReporterRTC.sendMetric(withEvent: eventS, success: true, error: nil)
+            }
+        }
+
+        group1.wait()
+        group2.wait()
+    }
+
+    // add 'test' to this if you wish to stress test metrics populating errors
+    func PopulateError() throws {
+
+        let group1 = DispatchGroup()
+        let group2 = DispatchGroup()
+
+        let eventS = AAFAnalyticsEventSecurity(keychainCircleMetrics: nil, altDSID: "altDSID", flowID: "flowID", deviceSessionID: "deviceSessionID", eventName: "eventName", testsAreEnabled: false, canSendMetrics: false, category: 100)
+
+        let error = NSError(domain: "error_domain", code: 1)
+
+        for _ in 0...500 {
+            let queue1 = DispatchQueue(label: "testPopulateError1")
+            let queue2 = DispatchQueue(label: "stestPopulateError2")
+
+            queue1.async(group: group1) {
+                eventS.populateUnderlyingErrorsStarting(withRootError: error)
+            }
+            queue2.async(group: group2) {
+                eventS.populateUnderlyingErrorsStarting(withRootError: error)
+            }
+        }
+
+        group1.wait()
+        group2.wait()
+    }
+
     func testTPHPrepare() throws {
         self.startCKAccountStatusMock()
 
@@ -1729,7 +1790,7 @@ class OctagonTests: OctagonTestsBase {
         self.fakeCuttlefishServer.resetListener = {  request in
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
-            XCTAssertTrue(request.resetReason.rawValue == CuttlefishResetReason.testGenerated.rawValue, "reset reason should be unknown")
+            XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.testGenerated.rawValue, "reset reason should be unknown")
             return nil
         }
 
@@ -2416,7 +2477,10 @@ class OctagonTests: OctagonTestsBase {
                                  permanentInfoSig: permanentInfoSig!,
                                  stableInfo: stableInfo!,
                                  stableInfoSig: stableInfoSig!,
-                                 ckksKeys: []) { voucher, voucherSig, error in
+                                 ckksKeys: [],
+                                 flowID: nil,
+                                 deviceSessionID: nil,
+                                 canSendMetrics: false) { voucher, voucherSig, error in
                 XCTAssertNil(error, "Should be no error vouching")
                 XCTAssertNotNil(voucher, "Should have a voucher")
                 XCTAssertNotNil(voucherSig, "Should have a voucher signature")
@@ -2425,7 +2489,10 @@ class OctagonTests: OctagonTestsBase {
                                     voucherSig: voucherSig!,
                                     ckksKeys: [],
                                     tlkShares: [],
-                                    preapprovedKeys: []) { peerID, _, _, error in
+                                    preapprovedKeys: [],
+                                    flowID: nil,
+                                    deviceSessionID: nil,
+                                    canSendMetrics: false) { peerID, _, _, error in
                     XCTAssertNil(error, "Should be no error joining")
                     XCTAssertNotNil(peerID, "Should have a peerID")
                     peer2ID = peerID
@@ -2593,10 +2660,10 @@ class OctagonTests: OctagonTestsBase {
                 ],
             ])
         let watcher = OctagonStateTransitionWatcher(named: "should-fail",
-                                                    serialQueue: self.cuttlefishContext.queue,
+                                                    stateMachine: self.cuttlefishContext.stateMachine,
                                                     path: try XCTUnwrap(path),
                                                     initialRequest: nil)
-        self.cuttlefishContext.stateMachine.register(watcher)
+        self.cuttlefishContext.stateMachine.register(watcher, startTimeout: 10 * NSEC_PER_SEC)
 
         let watcherCompleteOperationExpectation = self.expectation(description: "watcherCompleteOperationExpectation returns")
         let watcherFinishOp = CKKSResultOperation.named("should-fail-cleanup") {
@@ -2633,7 +2700,6 @@ class OctagonTests: OctagonTestsBase {
         let requestNever = OctagonStateTransitionRequest("name",
                                                          sourceStates: Set([OctagonStateWaitForCDPCapableSecurityLevel]),
                                                          serialQueue: self.cuttlefishContext.queue,
-                                                         timeout: 1 * NSEC_PER_SEC,
                                                          transitionOp: stateTransitionOp)
 
         // Set up a watcher that we expect to fail due to its initial transition op timing out...
@@ -2645,10 +2711,11 @@ class OctagonTests: OctagonTestsBase {
             ],
         ])
         let watcher = OctagonStateTransitionWatcher(named: "should-fail",
-                                                    serialQueue: self.cuttlefishContext.queue,
+                                                    stateMachine: self.cuttlefishContext.stateMachine,
                                                     path: try XCTUnwrap(path),
                                                     initialRequest: (requestNever as! OctagonStateTransitionRequest<CKKSResultOperation & OctagonStateTransitionOperationProtocol>))
-        self.cuttlefishContext.stateMachine.register(watcher)
+        self.cuttlefishContext.stateMachine.register(watcher, startTimeout: 5 * NSEC_PER_SEC)
+        self.cuttlefishContext.stateMachine.handleExternalRequest((requestNever as! OctagonStateTransitionRequest<CKKSResultOperation & OctagonStateTransitionOperationProtocol>), startTimeout: 1 * NSEC_PER_SEC)
 
         let watcherCompleteOperationExpectation = self.expectation(description: "watcherCompleteOperationExpectation returns")
         let watcherFinishOp = CKKSResultOperation.named("should-fail-cleanup") {
@@ -3181,7 +3248,7 @@ class OctagonTests: OctagonTestsBase {
         var count: NSNumber?
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 1, "count should be 1")
+        XCTAssertEqual(count?.intValue, 1, "count should be 1")
 
         // until there's another peer around
         let joiningContext = self.makeInitiatorContext(contextID: "joiner", authKitAdapter: self.mockAuthKit2)
@@ -3189,14 +3256,14 @@ class OctagonTests: OctagonTestsBase {
 
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 2, "count should be 2")
+        XCTAssertEqual(count?.intValue, 2, "count should be 2")
 
         let secondJoiningContext = self.makeInitiatorContext(contextID: "second_joiner", authKitAdapter: self.mockAuthKit3)
         self.assertJoinViaEscrowRecoveryFromDefaultContextWithReciprocationAndTLKShares(joiningContext: secondJoiningContext)
 
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 3, "count should be 3")
+        XCTAssertEqual(count?.intValue, 3, "count should be 3")
     }
 
     func testTrustedPeerCountAPIWhileNotTrusted() throws {
@@ -3208,7 +3275,7 @@ class OctagonTests: OctagonTestsBase {
         var count: NSNumber?
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 1, "count should be 1")
+        XCTAssertEqual(count?.intValue, 1, "count should be 1")
 
         // until there's another peer around
         let joiningContext = self.makeInitiatorContext(contextID: "joiner", authKitAdapter: self.mockAuthKit2)
@@ -3216,14 +3283,14 @@ class OctagonTests: OctagonTestsBase {
 
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 2, "count should be 2")
+        XCTAssertEqual(count?.intValue, 2, "count should be 2")
 
         let secondJoiningContext = self.makeInitiatorContext(contextID: "second_joiner", authKitAdapter: self.mockAuthKit3)
         self.assertJoinViaEscrowRecoveryFromDefaultContextWithReciprocationAndTLKShares(joiningContext: secondJoiningContext)
 
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 3, "count should be 3")
+        XCTAssertEqual(count?.intValue, 3, "count should be 3")
 
         let clique = self.cliqueFor(context: self.cuttlefishContext)
         XCTAssertNoThrow(try clique.leave(), "Should not be an error departing clique")
@@ -3231,7 +3298,7 @@ class OctagonTests: OctagonTestsBase {
 
         XCTAssertNoThrow(count = try OctagonTrustCliqueBridge.totalTrustedPeers(self.otcliqueContext), "totalTrustedPeers should not error")
         XCTAssertNotNil(count, "count should not be nil")
-        XCTAssertTrue(count?.intValue == 2, "count should be 2")
+        XCTAssertEqual(count?.intValue, 2, "count should be 2")
     }
 
     func testPersistRefSchedulerLessThan100Items() throws {
@@ -3924,6 +3991,85 @@ class OctagonTests: OctagonTestsBase {
     func testPersistRefSchedulerMoreThan100ItemsErrSecNotAvailableRandomInsertion() throws {
         try self.sharedTestsForMoreThan100ItemsRandomInsertion(errorCode: errSecNotAvailable)
     }
+
+    func testNFSMetricsEnabledOnUntrusted() throws {
+        self.startCKAccountStatusMock()
+        self.cuttlefishContext.startOctagonStateMachine()
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        let account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.PERMITTED, "metrics should be permitted")
+    }
+
+    func testNFSMetricsDisabledOnReady() throws {
+        self.startCKAccountStatusMock()
+        self.cuttlefishContext.startOctagonStateMachine()
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        var account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.PERMITTED, "metrics should be permitted")
+
+        self.pauseOctagonStateMachine(context: self.cuttlefishContext, entering: OctagonStateBecomeReady)
+
+        self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { error in
+            XCTAssertNil(error, "error should be nil")
+        }
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateBecomeReady, within: 10 * NSEC_PER_SEC)
+
+        self.releaseOctagonStateMachine(context: self.cuttlefishContext, from: OctagonStateBecomeReady)
+
+        sleep(3)
+
+        account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.NOTPERMITTED, "metrics should NOT be permitted")
+
+        XCTAssertNil(self.cuttlefishContext.checkMetricsTrigger, "check metrics nfs should be nil")
+    }
+
+    func testNFSMetricsRetriesOnLockedState() throws {
+        self.startCKAccountStatusMock()
+        self.cuttlefishContext.startOctagonStateMachine()
+
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        var account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.PERMITTED, "metrics should be permitted")
+
+        self.pauseOctagonStateMachine(context: self.cuttlefishContext, entering: OctagonStateBecomeReady)
+
+        self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { error in
+            XCTAssertNil(error, "error should be nil")
+        }
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateBecomeReady, within: 10 * NSEC_PER_SEC)
+
+        self.releaseOctagonStateMachine(context: self.cuttlefishContext, from: OctagonStateBecomeReady)
+
+        sleep(2)
+
+        // now the device is locked
+        self.aksLockState = true
+        self.lockStateProvider.aksCurrentlyLocked = true
+        self.lockStateTracker.recheck()
+
+        account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.PERMITTED, "metrics should be permitted")
+
+        XCTAssertNotNil(self.cuttlefishContext.checkMetricsTrigger!.nextFireTime, "next fire time should not be nil")
+
+        // now the device is unlocked
+        self.aksLockState = false
+        self.lockStateProvider.aksCurrentlyLocked = false
+        self.lockStateTracker.recheck()
+
+        sleep(3)
+
+        account = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata()
+        XCTAssertEqual(account.sendingMetricsPermitted, OTAccountMetadataClassC_MetricsState.NOTPERMITTED, "metrics should NOT be permitted")
+
+        XCTAssertNil(self.cuttlefishContext.checkMetricsTrigger, "check metrics nfs should be nil")
+    }
 }
 
 class OctagonTestsOverrideModelBase: OctagonTestsBase {
@@ -3936,10 +4082,17 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
 
     override func setUp() {
 #if SEC_XR
-        TPClearBecomeiPadOverride()
+        TPSetBecomeiPadOverride(false)
 #endif
         TPClearBecomeiProdOverride()
         super.setUp()
+    }
+
+    override func tearDown() {
+#if SEC_XR
+        TPClearBecomeiPadOverride()
+#endif
+        super.tearDown()
     }
 
     func assertTLKs(expectation: TestCase, receiverPeerID: String, senderPeerID: String, file: StaticString = #file, line: UInt = #line) {
@@ -4035,7 +4188,10 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                              permanentInfoSig: permanentInfoSig!,
                                                              stableInfo: stableInfo!,
                                                              stableInfoSig: stableInfoSig!,
-                                                             ckksKeys: ckksKeys) { voucher, voucherSig, error in
+                                                             ckksKeys: ckksKeys,
+                                                             flowID: nil,
+                                                             deviceSessionID: nil,
+                                                             canSendMetrics: false) { voucher, voucherSig, error in
                                                                 XCTAssertNil(error, "Should be no error vouching")
                                                                 XCTAssertNotNil(voucher, "Should have a voucher")
                                                                 XCTAssertNotNil(voucherSig, "Should have a voucher signature")
@@ -4049,7 +4205,10 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                                                     voucherSig: voucherSig!,
                                                                                     ckksKeys: [],
                                                                                     tlkShares: [],
-                                                                                    preapprovedKeys: []) { peerID, _, _, error in
+                                                                                    preapprovedKeys: [],
+                                                                                    flowID: nil,
+                                                                                    deviceSessionID: nil,
+                                                                                    canSendMetrics: false) { peerID, _, _, error in
                                                                                         XCTAssertNil(error, "Should be no error joining")
                                                                                         XCTAssertNotNil(peerID, "Should have a peerID")
                                                                                         joinExpectation.fulfill()
@@ -4062,7 +4221,10 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                              permanentInfoSig: permanentInfoSig!,
                                                              stableInfo: stableInfo!,
                                                              stableInfoSig: stableInfoSig!,
-                                                             ckksKeys: []) { voucher, voucherSig, error in
+                                                             ckksKeys: [],
+                                                             flowID: nil,
+                                                             deviceSessionID: nil,
+                                                             canSendMetrics: false) { voucher, voucherSig, error in
                                                                 XCTAssertNil(voucher, "voucher should be nil")
                                                                 XCTAssertNil(voucherSig, "voucherSig should be nil")
                                                                 XCTAssertNotNil(error, "error should be non nil")
@@ -4154,7 +4316,10 @@ class OctagonTestsOverrideModelBase: OctagonTestsBase {
                                                         voucherSig: voucher!.sig,
                                                         ckksKeys: [],
                                                         tlkShares: [],
-                                                        preapprovedKeys: []) { peerID, _, _, error in
+                                                        preapprovedKeys: [],
+                                                        flowID: nil,
+                                                        deviceSessionID: nil,
+                                                        canSendMetrics: false) { peerID, _, _, error in
                                                             if expectedSuccess {
                                                                 XCTAssertNil(error, "expected success")
                                                                 XCTAssertNotNil(peerID, "peerID should be set")
@@ -4212,17 +4377,10 @@ class OctagonTestsOverrideModelTV: OctagonTestsOverrideModelBase {
                                                       serialNumber: "456",
                                                       osVersion: "tvOS (whatever TV version)")
         super.setUp()
-#if os(xrOS)
-        TPSetBecomeiPadOverride(false)
-#endif
     }
 
     override func tearDown() {
         super.tearDown()
-
-#if os(xrOS)
-        TPClearBecomeiPadOverride()
-#endif
     }
 
     func testVoucherFromTV() throws {
@@ -4250,17 +4408,10 @@ class OctagonTestsOverrideModelWindows: OctagonTestsOverrideModelBase {
                                                       osVersion: "Windows (whatever Windows version)")
 
         super.setUp()
-#if os(xrOS)
-        TPSetBecomeiPadOverride(false)
-#endif
     }
 
     override func tearDown() {
         super.tearDown()
-
-#if os(xrOS)
-        TPClearBecomeiPadOverride()
-#endif
     }
 
     func testVoucherFromTV() throws {
@@ -4289,24 +4440,17 @@ class OctagonTestsOverrideModelMac: OctagonTestsOverrideModelBase {
                                                       serialNumber: "456",
                                                       osVersion: "OSX 11")
         super.setUp()
-#if os(xrOS)
-        TPSetBecomeiPadOverride(false)
-#endif
     }
 
     override func tearDown() {
         super.tearDown()
-
-#if os(xrOS)
-        TPClearBecomeiPadOverride()
-#endif
     }
 
     func testVoucherFromMac() throws {
         try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
                                               TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
                                               TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true),
-                                              TestCase(model: "WinPC0,0", success: true, manateeTLKs: false, limitedTLKs: true),
+                                              TestCase(model: "WinPC0,0", success: true, manateeTLKs: true, limitedTLKs: true),
                                              ])
     }
 
@@ -4314,7 +4458,33 @@ class OctagonTestsOverrideModelMac: OctagonTestsOverrideModelBase {
         try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
                                           TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
                                           TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true),
-                                          TestCase(model: "WinPC0,0", success: true, manateeTLKs: false, limitedTLKs: true),
+                                          TestCase(model: "WinPC0,0", success: true, manateeTLKs: true, limitedTLKs: true),
+                                         ])
+    }
+}
+
+class OctagonTestsOverrideModelVisionPro: OctagonTestsOverrideModelBase {
+    override func setUp() {
+        self.mockDeviceInfo = OTMockDeviceInfoAdapter(modelID: "RealityDevice14,1",
+                                                      deviceName: "visionpro",
+                                                      serialNumber: "456",
+                                                      osVersion: "OSX 11")
+        super.setUp()
+    }
+
+    func testVoucherFromVisionPro() throws {
+        try self._testVouchers(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                              TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
+                                              TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true),
+                                              TestCase(model: "WinPC0,0", success: true, manateeTLKs: true, limitedTLKs: true),
+                                             ])
+    }
+
+    func testJoinFromVisionPro() throws {
+        try self._testJoin(expectations: [TestCase(model: "AppleTV5,3", success: true, manateeTLKs: false, limitedTLKs: true),
+                                          TestCase(model: "MacFoo", success: true, manateeTLKs: true, limitedTLKs: true),
+                                          TestCase(model: "Watch17", success: true, manateeTLKs: true, limitedTLKs: true),
+                                          TestCase(model: "WinPC0,0", success: true, manateeTLKs: true, limitedTLKs: true),
                                          ])
     }
 }

@@ -127,6 +127,7 @@ CFArrayRef SOSAccountCopyPeersToListenTo(SOSAccount*  account, CFErrorRef *error
 CFArrayRef SOSAccountCopyNotValidPeers(SOSAccount*  account, CFErrorRef *error);
 CFArrayRef SOSAccountCopyRetired(SOSAccount*  account, CFErrorRef *error);
 CFArrayRef SOSAccountCopyViewUnaware(SOSAccount*  account, CFErrorRef *error);
+CFArrayRef SOSAccountCopyViewUnawareIncludingInvalid(SOSAccount* account, CFErrorRef *error);
 CFArrayRef SOSAccountCopyPeers(SOSAccount*  account, CFErrorRef *error);
 CFArrayRef SOSAccountCopyActivePeers(SOSAccount*  account, CFErrorRef *error);
 CFArrayRef CF_RETURNS_RETAINED SOSAccountCopyActiveValidPeers(SOSAccount*  account, CFErrorRef *error);
@@ -251,7 +252,7 @@ CFStringRef SOSInterestListCopyDescription(CFArrayRef interests);
 // MARK: HSA2 Piggyback Support Functions
 //
 SOSPeerInfoRef SOSAccountCopyApplication(SOSAccount*  account, CFErrorRef*);
-CFDataRef SOSAccountCopyCircleJoiningBlob(SOSAccount*  account, SOSPeerInfoRef applicant, CFErrorRef *error);
+CFDataRef SOSAccountCopyCircleJoiningBlob(SOSAccount*  account, NSString* altDSID, NSString* flowID, NSString* deviceSessionID, BOOL canSendMetrics, SOSPeerInfoRef applicant, CFErrorRef *error);
 bool SOSAccountJoinWithCircleJoiningBlob(SOSAccount*  account, CFDataRef joiningBlob, PiggyBackProtocolVersion version, CFErrorRef *error);
 CFDataRef SOSAccountCopyInitialSyncData(SOSAccount* account, SOSInitialSyncFlags flags, CFErrorRef *error);
     

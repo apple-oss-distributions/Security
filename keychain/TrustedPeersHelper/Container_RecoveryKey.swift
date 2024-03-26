@@ -22,7 +22,10 @@ extension Container {
             }
 
             // Ensure we have all policy versions claimed by peers, including our sponsor
-            self.fetchPolicyDocumentsWithSemaphore(versions: self.model.allPolicyVersions()) { _, fetchPolicyDocumentsError in
+            let allPolicyVersions: Set<TPPolicyVersion> = self.moc.performAndWait {
+                self.model.allPolicyVersions()
+            }
+            self.fetchPolicyDocumentsWithSemaphore(versions: allPolicyVersions) { _, fetchPolicyDocumentsError in
                 guard fetchPolicyDocumentsError == nil else {
                     logger.info("preflightRecoveryKey unable to fetch policy documents: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
                     reply(nil, nil, fetchPolicyDocumentsError)
@@ -55,9 +58,15 @@ extension Container {
                     var recoveryKeys: RecoveryKey
                     do {
                         recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+
+                        let signingPublicKey: Data = recoveryKeys.peerKeys.signingVerificationKey.keyData
+                        let encryptionPublicKey: Data = recoveryKeys.peerKeys.encryptionVerificationKey.keyData
+
+                        logger.info("preflightVouchWithRecoveryKey signingPubKey: \(signingPublicKey.base64EncodedString(), privacy: .public)")
+                        logger.info("preflightVouchWithRecoveryKey encryptionPubKey: \(encryptionPublicKey.base64EncodedString(), privacy: .public)")
                     } catch {
                         logger.error("preflightRecoveryKey: failed to create recovery keys: \(String(describing: error), privacy: .public)")
-                        reply(nil, nil, ContainerError.failedToCreateRecoveryKey)
+                        reply(nil, nil, ContainerError.failedToCreateRecoveryKey(suberror: error))
                         return
                     }
 
@@ -87,6 +96,7 @@ extension Container {
                         let bestPolicy = try self.model.policy(forPeerIDs: sponsor.dynamicInfo?.includedPeerIDs ?? [sponsor.peerID],
                                                                candidatePeerID: egoPeerID,
                                                                candidateStableInfo: sponsor.stableInfo)
+
                         let syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
                                                                          syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
 
@@ -118,7 +128,10 @@ extension Container {
             }
 
             // Ensure we have all policy versions claimed by peers, including our sponsor
-            self.fetchPolicyDocumentsWithSemaphore(versions: self.model.allPolicyVersions()) { _, fetchPolicyDocumentsError in
+            let allPolicyVersions: Set<TPPolicyVersion> = self.moc.performAndWait {
+                self.model.allPolicyVersions()
+            }
+            self.fetchPolicyDocumentsWithSemaphore(versions: allPolicyVersions) { _, fetchPolicyDocumentsError in
                 guard fetchPolicyDocumentsError == nil else {
                     logger.info("preflightCustodianRecoveryKey unable to fetch policy documents: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
                     reply(nil, nil, fetchPolicyDocumentsError)
@@ -170,14 +183,14 @@ extension Container {
                         crkRecoveryKey = try CustodianRecoveryKey(tpCustodian: tpcrk, recoveryKeyString: recoveryKeyString, recoverySalt: recoverySalt)
                     } catch {
                         logger.error("preflightCustodianRecoveryKey: failed to create custodian recovery keys: \(String(describing: error), privacy: .public)")
-                        reply(nil, nil, ContainerError.failedToCreateRecoveryKey)
+                        reply(nil, nil, ContainerError.failedToCreateRecoveryKey(suberror: error))
                         return
                     }
 
                     // Dear model: if I were to use this custodian recovery key, what peers would I end up using?
-                    guard self.model.isCustodianRecoveryKeyTrusted(tpcrk.peerID) else {
-                        logger.info("preflightCustodianRecoveryKey: custodian recovery Key is not enrolled")
-                        reply(nil, nil, ContainerError.recoveryKeysNotEnrolled)
+                    guard self.model.isCustodianRecoveryKeyTrusted(tpcrk) else {
+                        logger.info("preflightCustodianRecoveryKey: custodian recovery key is not trusted")
+                        reply(nil, nil, ContainerError.untrustedRecoveryKeys)
                         return
                     }
 
@@ -199,9 +212,9 @@ extension Container {
                         let bestPolicy = try self.model.policy(forPeerIDs: sponsor.dynamicInfo?.includedPeerIDs ?? [sponsor.peerID],
                                                                candidatePeerID: egoPeerID,
                                                                candidateStableInfo: sponsor.stableInfo)
+
                         let syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
                                                                          syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
-
                         reply(crkRecoveryKey.peerKeys.peerID, syncingPolicy, nil)
                     } catch {
                         logger.error("preflightCustodianRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
@@ -236,9 +249,15 @@ extension Container {
                 var recoveryKeys: RecoveryKey
                 do {
                     recoveryKeys = try RecoveryKey(recoveryKeyString: recoveryKey, recoverySalt: salt)
+
+                    let signingPublicKey: Data = recoveryKeys.peerKeys.signingVerificationKey.keyData
+                    let encryptionPublicKey: Data = recoveryKeys.peerKeys.encryptionVerificationKey.keyData
+
+                    logger.info("preflightRecoverOctagonWithRecoveryKey signingPubKey: \(signingPublicKey.base64EncodedString(), privacy: .public)")
+                    logger.info("preflightRecoverOctagonWithRecoveryKey encryptionPubKey: \(encryptionPublicKey.base64EncodedString(), privacy: .public)")
                 } catch {
                     logger.error("preflightRecoverOctagonWithRecoveryKey: failed to create recovery keys: \(String(describing: error), privacy: .public)")
-                    reply(false, ContainerError.failedToCreateRecoveryKey)
+                    reply(false, ContainerError.failedToCreateRecoveryKey(suberror: error))
                     return
                 }
 

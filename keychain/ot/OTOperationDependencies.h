@@ -40,6 +40,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property Class<SecEscrowRequestable> escrowRequestClass;
 @property Class<CKKSNotifier> notifierClass;
 
+@property (nullable, strong) NSString* flowID;
+@property (nullable, strong) NSString* deviceSessionID;
+@property (nonatomic) BOOL permittedToSendMetrics;
+
 - (instancetype)initForContainer:(NSString*)containerName
                        contextID:(NSString*)contextID
                    activeAccount:(TPSpecificUser* _Nullable)activeAccount
@@ -55,7 +59,11 @@ NS_ASSUME_NONNULL_BEGIN
                 lockStateTracker:(CKKSLockStateTracker *)lockStateTracker
             cuttlefishXPCWrapper:(CuttlefishXPCWrapper *)cuttlefishXPCWrapper
               escrowRequestClass:(Class<SecEscrowRequestable>)escrowRequestClass
-                   notifierClass:(Class<CKKSNotifier>)notifierClass;
+                   notifierClass:(Class<CKKSNotifier>)notifierClass
+                          flowID:(NSString* _Nullable)flowID
+                 deviceSessionID:(NSString* _Nullable)deviceSessionID
+          permittedToSendMetrics:(BOOL)permittedToSendMetrics;
+
 @end
 
 NS_ASSUME_NONNULL_END

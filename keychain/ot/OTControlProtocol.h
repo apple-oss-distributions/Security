@@ -45,6 +45,8 @@ NS_ASSUME_NONNULL_BEGIN
 @class OTControlArguments;
 @class OTAccountMetadataClassC;
 
+@class TrustedPeersHelperHealthCheckResult;
+
 @protocol OTControlProtocol
 
 // The altDSID must be filled in for these three. Otherwise, they will error.
@@ -128,6 +130,7 @@ NS_ASSUME_NONNULL_BEGIN
                           reply:(void (^)(NSDictionary<NSString*, NSString*>* _Nullable peers, NSError* _Nullable error))reply;
 
 - (void)fetchAllViableBottles:(OTControlArguments*)arguments
+                       source:(OTEscrowRecordFetchSource)escrowSource
                         reply:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs, NSArray<NSString*> * _Nullable sortedPartialBottleIDs, NSError* _Nullable error))reply;
 
 -(void)restoreFromBottle:(OTControlArguments*)arguments
@@ -197,10 +200,13 @@ NS_ASSUME_NONNULL_BEGIN
                        uuid:(NSUUID *)uuid
                       reply:(void (^)(bool exists, NSError *_Nullable error))reply;
 
-- (void)healthCheck:(OTControlArguments*)arguments
+-   (void)healthCheck:(OTControlArguments*)arguments
 skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
-             repair:(BOOL)repair
-              reply:(void (^)(NSError *_Nullable error))reply;
+               repair:(BOOL)repair
+                reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError *_Nullable error))reply;
+
+- (void)simulateReceivePush:(OTControlArguments*)arguments
+                      reply:(void (^)(NSError *_Nullable error))reply;
 
 - (void)waitForOctagonUpgrade:(OTControlArguments*)arguments
                         reply:(void (^)(NSError* _Nullable error))reply;
@@ -279,9 +285,6 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
                                       source:(OTEscrowRecordFetchSource)source
                                        reply:(void (^)(NSArray<NSString*>* _Nullable views, NSError* _Nullable error))reply;
 
-- (void)deliverAKDeviceListDelta:(NSDictionary*)notificationDictionary
-                           reply:(void (^)(NSError* _Nullable error))reply;
-
 - (void)setMachineIDOverride:(OTControlArguments*)arguments
                    machineID:(NSString*)machineID
                        reply:(void (^)(NSError* _Nullable replyError))reply;
@@ -308,6 +311,12 @@ skipRateLimitingCheck:(BOOL)skipRateLimitingCheck
 
 - (void)totalTrustedPeers:(OTControlArguments*)arguments
                     reply:(void (^)(NSNumber* _Nullable count, NSError* _Nullable error))reply;
+
+- (void)areRecoveryKeysDistrusted:(OTControlArguments*)arguments
+                            reply:(void (^)(BOOL distrustedRecoveryKeysExist, NSError* _Nullable error))reply;
+
+- (void)reroll:(OTControlArguments*)arguments
+         reply:(void (^)(NSError *_Nullable error))reply;
 
 @end
 

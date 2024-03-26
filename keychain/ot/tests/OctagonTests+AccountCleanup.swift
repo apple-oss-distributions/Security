@@ -174,7 +174,10 @@ class OctagonAccountCleanupTests: OctagonTestsBase {
         self.wait(for: [dumpCallback], timeout: 10)
 
         let container = try self.tphClient.getContainer(with: try XCTUnwrap(self.cuttlefishContext.activeAccount))
-        XCTAssertTrue(container.model.allPeerIDs().contains(clique.cliqueMemberIdentifier!), "model should still contain the untrusted peer")
+        let hasPeer = container.moc.performAndWait {
+            container.model.hasPeer(withID: clique.cliqueMemberIdentifier!)
+        }
+        XCTAssertTrue(hasPeer, "model should still contain the untrusted peer")
 
         let dropExpectation = self.expectation(description: "dropPeerIDs callback occurs")
 
@@ -224,7 +227,7 @@ class OctagonAccountCleanupTests: OctagonTestsBase {
 
     func testRecoveryKeyCleanupAfterRemoval() throws {
         try self.skipOnRecoveryKeyNotSupported()
-        
+
         let initiatorContextID = "initiator-context-id"
         let clique = try self.getTwoPeersInCircle(contextID: initiatorContextID)
         XCTAssertNotNil(clique, "clique should not be nil")
@@ -343,8 +346,9 @@ class OctagonAccountCleanupTests: OctagonTestsBase {
         self.wait(for: [removeExpectation], timeout: 10)
 
         let healthCheckCallback = self.expectation(description: "healthCheckCallback callback occurs")
-        self.manager.healthCheck(OTControlArguments(configuration: self.otcliqueContext), skipRateLimitingCheck: false, repair: false) { error in
+        self.manager.healthCheck(OTControlArguments(configuration: self.otcliqueContext), skipRateLimitingCheck: false, repair: false) { response, error in
             XCTAssertNil(error, "error should be nil")
+            XCTAssertNotNil(response, "response should not be nil")
             healthCheckCallback.fulfill()
         }
         self.wait(for: [healthCheckCallback], timeout: 10)

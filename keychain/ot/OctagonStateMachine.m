@@ -1,6 +1,7 @@
 
 #if OCTAGON
 
+#import "keychain/categories/NSError+UsefulConstructors.h"
 #import "keychain/ot/OctagonStateMachine.h"
 #import "keychain/ot/OctagonStateMachineObservers.h"
 #import "keychain/ot/ObjCImprovements.h"
@@ -25,7 +26,6 @@ format,                                                                         
 
 @property NSMutableDictionary<OctagonState*, CKKSCondition*>* mutableStateConditions;
 
-@property dispatch_queue_t queue;
 @property NSOperationQueue* operationQueue;
 
 @property NSString* name;
@@ -60,11 +60,12 @@ format,                                                                         
 @implementation OctagonStateMachine
 
 - (instancetype)initWithName:(NSString*)name
-                      states:(NSSet<OctagonState*>*)possibleStates
+                      states:(NSDictionary<OctagonState*, NSNumber*>*)possibleStates
                        flags:(NSSet<OctagonFlag*>*)possibleFlags
                 initialState:(OctagonState*)initialState
                        queue:(dispatch_queue_t)queue
                  stateEngine:(id<OctagonStateMachineEngine>)stateEngine
+  unexpectedStateErrorDomain:(NSString*)unexpectedStateErrorDomain
             lockStateTracker:(CKKSLockStateTracker*)lockStateTracker
          reachabilityTracker:(CKKSReachabilityTracker*)reachabilityTracker
 {
@@ -77,7 +78,14 @@ format,                                                                         
         _currentConditions = 0;
 
         // Every state machine starts in OctagonStateMachineNotStarted, so help them out a bit.
-        _allowableStates = [possibleStates setByAddingObjectsFromArray:@[OctagonStateMachineNotStarted, OctagonStateMachineHalted]];
+        NSMutableDictionary<OctagonState*, NSNumber*>* actualPossibleStates = [possibleStates mutableCopy];
+        actualPossibleStates[OctagonStateMachineNotStarted] = @-1;
+        actualPossibleStates[OctagonStateMachineHalted] = @-2;
+
+        _stateNumberMap = actualPossibleStates;
+        _unexpectedStateErrorDomain = unexpectedStateErrorDomain;
+
+        _allowableStates = [NSSet setWithArray:[actualPossibleStates allKeys]];
 
         _queue = queue;
         _operationQueue = [[NSOperationQueue alloc] init];
@@ -90,9 +98,9 @@ format,                                                                         
         _halted = false;
 
         _mutableStateConditions = [[NSMutableDictionary alloc] init];
-        [possibleStates enumerateObjectsUsingBlock:^(OctagonState * _Nonnull obj, BOOL * _Nonnull stop) {
-            self.mutableStateConditions[obj] = [[CKKSCondition alloc] init];
-        }];
+        for(OctagonState* state in actualPossibleStates.allKeys) {
+            self.mutableStateConditions[state] = [[CKKSCondition alloc] init];
+        };
 
         // Use the setter method to set the condition variables
         self.currentState = OctagonStateMachineNotStarted;
@@ -585,37 +593,76 @@ format,                                                                         
     [self.nextStateMachineCycleOperation waitUntilFinished];
 }
 
+- (NSError* _Nullable)timeoutErrorForState:(OctagonState*)state
+{
+    NSNumber* number = self.stateNumberMap[state];
+    if(number != nil) {
+        return [NSError errorWithDomain:self.unexpectedStateErrorDomain
+                                   code:[number integerValue]
+                            description:[NSString stringWithFormat:@"Current state: '%@'", state]];
+    }
+
+    return nil;
+}
+
 - (void)handleExternalRequest:(OctagonStateTransitionRequest<CKKSResultOperation<OctagonStateTransitionOperationProtocol>*>*)request
+                 startTimeout:(dispatch_time_t)timeout
 {
     dispatch_sync(self.queue, ^{
         [self.stateMachineRequests addObject:request];
         [self _onqueuePokeStateMachine];
+
+        if(timeout != 0 && timeout != DISPATCH_TIME_FOREVER) {
+            WEAKIFY(self);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, timeout), self.queue, ^{
+                STRONGIFY(self);
+                [request onqueueHandleStartTimeout:[self timeoutErrorForState:self.currentState]];
+            });
+        }
     });
 }
 
-
 - (void)registerStateTransitionWatcher:(OctagonStateTransitionWatcher*)watcher
+                          startTimeout:(dispatch_time_t)timeout
 {
     dispatch_sync(self.queue, ^{
         [self.stateMachineWatchers addObject: watcher];
         [self _onqueuePokeStateMachine];
+
+        if(timeout != 0 && timeout != DISPATCH_TIME_FOREVER) {
+            WEAKIFY(self);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, timeout), self.queue, ^{
+                STRONGIFY(self);
+                [watcher onqueueHandleStartTimeout:[self timeoutErrorForState:self.currentState]];
+            });
+        }
     });
 }
 
 - (void)registerMultiStateArrivalWatcher:(OctagonStateMultiStateArrivalWatcher*)watcher
+                            startTimeout:(dispatch_time_t)timeout
 {
     dispatch_sync(self.queue, ^{
-        [self _onqueueRegisterMultiStateArrivalWatcher:watcher];
+        [self _onqueueRegisterMultiStateArrivalWatcher:watcher startTimeout:timeout];
     });
 }
 
 - (void)_onqueueRegisterMultiStateArrivalWatcher:(OctagonStateMultiStateArrivalWatcher*)watcher
+                                    startTimeout:(dispatch_time_t)timeout
 {
     if([watcher.states containsObject:self.currentState]) {
         [watcher onqueueEnterState:self.currentState];
     } else {
         [self.stateMachineWatchers addObject:watcher];
         [self _onqueuePokeStateMachine];
+
+        if(timeout != 0 && timeout != DISPATCH_TIME_FOREVER) {
+            WEAKIFY(self);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, timeout), self.queue, ^{
+                STRONGIFY(self);
+                [watcher onqueueHandleStartTimeout:[self timeoutErrorForState:self.currentState]];
+            });
+        }
     }
 }
 
@@ -634,9 +681,9 @@ format,                                                                         
     OctagonStateTransitionRequest* request = [[OctagonStateTransitionRequest alloc] init:name
                                                                             sourceStates:sourceStates
                                                                              serialQueue:self.queue
-                                                                                 timeout:30*NSEC_PER_SEC
                                                                             transitionOp:op];
-    [self handleExternalRequest:request];
+    [self handleExternalRequest:request
+                   startTimeout:30*NSEC_PER_SEC];
 
     WEAKIFY(self);
     CKKSResultOperation* callback = [CKKSResultOperation named:[NSString stringWithFormat: @"%@-callback", name]
@@ -682,20 +729,18 @@ format,                                                                         
         [self.lockStateTracker recheck];
     }
 
-    // Note that this has an initial timeout of 30s, and isn't configurable.
     OctagonStateTransitionRequest* request = [[OctagonStateTransitionRequest alloc] init:name
                                                                             sourceStates:sourceStates
                                                                              serialQueue:self.queue
-                                                                                 timeout:30 * NSEC_PER_SEC
                                                                             transitionOp:initialTransitionOp];
 
     OctagonStateTransitionWatcher* watcher = [[OctagonStateTransitionWatcher alloc] initNamed:[NSString stringWithFormat:@"watcher-%@", name]
-                                                                                  serialQueue:self.queue
+                                                                                  stateMachine:self
                                                                                          path:path
                                                                                initialRequest:request];
-    [watcher timeout:self.timeout?:120*NSEC_PER_SEC];
 
-    [self registerStateTransitionWatcher:watcher];
+    [self registerStateTransitionWatcher:watcher
+                            startTimeout:self.timeout?:120*NSEC_PER_SEC];
 
     CKKSResultOperation* replyOp = [CKKSResultOperation named:[NSString stringWithFormat: @"%@-callback", name]
                                           withBlockTakingSelf:^(CKKSResultOperation * _Nonnull op) {
@@ -709,8 +754,8 @@ format,                                                                         
     [replyOp addDependency:watcher.result];
     [self.operationQueue addOperation:replyOp];
 
-
-    [self handleExternalRequest:request];
+    [self handleExternalRequest:request
+                   startTimeout:self.timeout?:120*NSEC_PER_SEC];
     return replyOp;
 }
 

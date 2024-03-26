@@ -42,6 +42,10 @@
 #include "keychain/securityd/SecItemDb.h"
 #include <Security/SecItemPriv.h>
 
+#import "keychain/analytics/SecurityAnalyticsConstants.h"
+#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
+#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+
 #import <utilities/SecCoreAnalytics.h>
 
 #if OCTAGON
@@ -392,36 +396,67 @@
         ckkserror_global("ckksincoming", "Will handle mismatched view items along the way");
     }
 
+    AAFAnalyticsEventSecurity *eventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{kSecurityRTCFieldMissingKey: @(NO),
+                                                                                                 kSecurityRTCFieldPendingClassA: @(NO),
+                                                                                                 kSecurityRTCFieldNumViews: @(viewsToProcess.count)}
+                                                                                       altDSID:self.deps.activeAccount.altDSID
+                                                                                     eventName:kSecurityRTCEventNameProcessIncomingQueue
+                                                                               testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                      category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                    sendMetric:self.deps.sendMetric];
+    
+    AAFAnalyticsEventSecurity *loadAndProcessIQEsEventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{kSecurityRTCFieldNumViews:@(viewsToProcess.count)}
+                                                                                                         altDSID:self.deps.activeAccount.altDSID
+                                                                                                       eventName:kSecurityRTCEventNameLoadAndProcessIQEs
+                                                                                                 testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                                        category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                                      sendMetric:self.deps.sendMetric];
+    
     [self.deps.overallLaunch addEvent:@"incoming-processing-begin"];
 
+    long totalQueueEntries = 0;
+    
     for(CKKSKeychainViewState* viewState in viewsToProcess) {
         [viewState.launch addEvent:@"incoming-processing-begin"];
 
         // First, process all item deletions.
         // Then, process all modifications and additions.
         // Therefore, if there's both a delete and a re-add of a single Primary Key item in the queue,
-        // we should end up with the item still existing in tthe keychain afterward.
+        // we should end up with the item still existing in the keychain afterward.
         // But, since we're dropping off the queue inbetween, we might accidentally tell our clients that
         // their item doesn't exist. Fixing that would take quite a bit of complexity and memory.
 
-        BOOL success = [self loadAndProcessEntries:viewState withActionFilter:SecCKKSActionDelete];
+        long deletions = 0;
+        long modifications = 0;
+
+        BOOL success = [self loadAndProcessEntries:viewState withActionFilter:SecCKKSActionDelete totalQueueEntries:&deletions];
+        totalQueueEntries += deletions;
+        
         if(!success) {
             ckksnotice("ckksincoming", viewState, "Early-exiting from IncomingQueueOperation (after processing deletes): %@", self.error);
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:loadAndProcessIQEsEventS success:NO error:self.error];
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:self.error];
             return;
         }
 
-        success = [self loadAndProcessEntries:viewState withActionFilter:nil];
+        success = [self loadAndProcessEntries:viewState withActionFilter:nil totalQueueEntries:&modifications];
+        totalQueueEntries += modifications;
+        
         if(!success) {
             ckksnotice("ckksincoming", viewState, "Early-exiting from IncomingQueueOperation (after processing all incoming entries): %@", self.error);
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:loadAndProcessIQEsEventS success:NO error:self.error];
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:self.error];
             return;
         }
 
         if(self.successfulItemsProcessed > 0 || self.errorItemsProcessed > 0) {
             ckksnotice("ckksincoming", viewState, "Processed %lu items in incoming queue (%lu errors)", (unsigned long)self.successfulItemsProcessed, (unsigned long)self.errorItemsProcessed);
         }
-
+        
         if(![self fixMismatchedViewItems:viewState]) {
             ckksnotice("ckksincoming", viewState, "Early-exiting from IncomingQueueOperation due to failure fixing mismatched items");
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:loadAndProcessIQEsEventS success:YES error:nil];
+            [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:self.error];
             return;
         }
 
@@ -448,6 +483,14 @@
 
     }
 
+    // Average out number of queue entries processed per view
+    int avgCKRecords = (viewsToProcess.count == 0) ? 0 : (int)totalQueueEntries / viewsToProcess.count;
+    [loadAndProcessIQEsEventS addMetrics:@{
+        kSecurityRTCFieldAvgCKRecords:@(avgCKRecords),
+        kSecurityRTCFieldTotalCKRecords:@(totalQueueEntries)
+    }];
+    [SecurityAnalyticsReporterRTC sendMetricWithEvent:loadAndProcessIQEsEventS success:YES error:nil];
+    
     if(self.newOutgoingEntries) {
         self.deps.currentOutgoingQueueOperationGroup = [CKOperationGroup CKKSGroupWithName:@"incoming-queue-response"];
         [self.deps.flagHandler handleFlag:CKKSFlagProcessOutgoingQueue];
@@ -497,13 +540,28 @@
                                    zoneName:viewState.zoneID.zoneName
                              withAttributes:NULL];
             }
+            
         }
     }
+
+    int avgSuccessfulItemsProcessedPerView = (self.deps.activeManagedViews.count == 0) ? 0 : (int)self.successfulItemsProcessed / self.deps.activeManagedViews.count;
+    int avgErrorItemsProcessedPerView = (self.deps.activeManagedViews.count == 0) ? 0 : (int)self.errorItemsProcessed / self.deps.activeManagedViews.count;
+    
+    [eventS addMetrics:@{kSecurityRTCFieldPendingClassA: @(self.pendingClassAEntries),
+                         kSecurityRTCFieldMissingKey: @(self.missingKey),
+                         kSecurityRTCFieldAvgSuccessfulItemsProcessed: @(avgSuccessfulItemsProcessedPerView),
+                         kSecurityRTCFieldAvgErrorItemsProcessed: @(avgErrorItemsProcessedPerView),
+                         kSecurityRTCFieldSuccessfulItemsProcessed: @(self.successfulItemsProcessed),
+                         kSecurityRTCFieldErrorItemsProcessed: @(self.errorItemsProcessed)
+                       }];
+    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:!(self.pendingClassAEntries || self.missingKey) error:self.error];
 
     [self.deps.overallLaunch addEvent:@"incoming-processing-complete"];
 }
 
-- (BOOL)loadAndProcessEntries:(CKKSKeychainViewState*)viewState withActionFilter:(NSString* _Nullable)actionFilter
+- (BOOL)loadAndProcessEntries:(CKKSKeychainViewState*)viewState
+             withActionFilter:(NSString* _Nullable)actionFilter
+            totalQueueEntries:(long*)totalQueueEntries
 {
     __block bool errored = false;
 
@@ -514,6 +572,7 @@
     __block NSString* lastMaxUUID = nil;
 
     id<CKKSDatabaseProviderProtocol> databaseProvider = self.deps.databaseProvider;
+    __block long numQueueEntries = 0;
 
     while(lastCount == SecCKKSIncomingQueueItemsAtOnce) {
         [databaseProvider dispatchSyncWithSQLTransaction:^CKKSDatabaseTransactionResult{
@@ -541,7 +600,7 @@
             }
 
             lastCount = queueEntries.count;
-
+            numQueueEntries += queueEntries.count;
             if([queueEntries count] == 0) {
                 // Nothing to do! exit.
                 ckksinfo("ckksincoming", viewState, "Nothing in incoming queue to process (filter: %@)", actionFilter);
@@ -566,10 +625,12 @@
 
         if(errored) {
             ckksnotice("ckksincoming", viewState, "Early-exiting from IncomingQueueOperation");
+            *totalQueueEntries = numQueueEntries;
             return false;
         }
     }
 
+    *totalQueueEntries = numQueueEntries;
     return true;
 }
 - (BOOL)fixMismatchedViewItems:(CKKSKeychainViewState*)viewState
@@ -578,11 +639,19 @@
         return YES;
     }
 
+    AAFAnalyticsEventSecurity *fixMismatchedViewItemsEventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{}
+                                                                                                             altDSID:self.deps.activeAccount.altDSID
+                                                                                                           eventName:kSecurityRTCEventNameFixMismatchedViewItems
+                                                                                                     testsAreEnabled:SecCKKSTestsEnabled()
+                                                                                                            category:kSecurityRTCEventCategoryAccountDataAccessRecovery
+                                                                                                          sendMetric:self.deps.sendMetric];
+
     ckksnotice("ckksincoming", viewState, "Handling policy-mismatched items");
     __block NSUInteger lastCount = SecCKKSIncomingQueueItemsAtOnce;
     __block NSString* lastMaxUUID = nil;
     __block BOOL errored = NO;
-
+    __block long numMismatchedItems = 0;
+    
     id<CKKSDatabaseProviderProtocol> databaseProvider = self.deps.databaseProvider;
 
     while(lastCount == SecCKKSIncomingQueueItemsAtOnce) {
@@ -610,7 +679,8 @@
             }
 
             ckksnotice("ckksincoming", viewState, "Inspecting %lu mismatched items", (unsigned long)queueEntries.count);
-
+            numMismatchedItems += queueEntries.count;
+            
             if (![self intransaction:viewState processQueueEntries:queueEntries]) {
                 ckksnotice("ckksincoming", viewState, "processQueueEntries didn't complete successfully");
                 errored = true;
@@ -623,6 +693,11 @@
 
             return CKKSDatabaseTransactionCommit;
         }];
+    }
+
+    if (numMismatchedItems > 0) {
+        [fixMismatchedViewItemsEventS addMetrics:@{kSecurityRTCFieldNumMismatchedItems:@(numMismatchedItems)}];
+        [SecurityAnalyticsReporterRTC sendMetricWithEvent:fixMismatchedViewItemsEventS success:!errored error:self.error];
     }
 
     return !errored;

@@ -46,6 +46,7 @@ bool _SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate, S
 bool _SecItemDelete(CFDictionaryRef query, SecurityClient *client, CFErrorRef *error);
 bool _SecItemDeleteAll(CFErrorRef *error);
 bool _SecItemServerDeleteAllWithAccessGroups(CFArrayRef accessGroups, SecurityClient *client, CFErrorRef *error);
+CFTypeRef _SecItemShareWithGroup(CFDictionaryRef query, CFStringRef sharingGroup, SecurityClient *client, CFErrorRef *error) CF_RETURNS_RETAINED;
 bool _SecDeleteItemsOnSignOut(SecurityClient *client, CFErrorRef *error);
 
 bool _SecServerRestoreKeychain(CFErrorRef *error);
@@ -117,6 +118,9 @@ void SecItemServerSetKeychainKeybag(int32_t keybag);
 void SecItemServerSetKeychainKeybagToDefault(void);
 
 void SecItemServerSetKeychainChangedNotification(const char *notification_name);
+/// Overrides the notification center to use for the "shared items changed"
+/// notification. Defaults to the distributed notification center if `NULL`.
+void SecServerSetSharedItemNotifier(CFNotificationCenterRef notifier);
 
 CFStringRef __SecKeychainCopyPath(void);
 
@@ -132,7 +136,7 @@ bool _SecServerRollKeysGlue(bool force, CFErrorRef *error);
 
 #define PERSISTENT_REF_UUID_BYTES_LENGTH (sizeof(uuid_t))
 
-CFArrayRef _SecServerCopyInitialSyncCredentials(uint32_t flags, CFErrorRef *error);
+CFArrayRef _SecServerCopyInitialSyncCredentials(uint32_t flags, uint64_t* tlks, uint64_t* pcs, uint64_t* bluetooth, CFErrorRef *error);
 bool _SecServerImportInitialSyncCredentials(CFArrayRef array, CFErrorRef *error);
 
 CF_RETURNS_RETAINED CFArrayRef _SecItemCopyParentCertificates(CFDataRef normalizedIssuer, CFArrayRef accessGroups, CFErrorRef *error);
@@ -146,6 +150,7 @@ bool match_item(SecDbConnectionRef dbt, Query *q, CFArrayRef accessGroups, CFDic
 bool accessGroupsAllows(CFArrayRef accessGroups, CFStringRef accessGroup, SecurityClient* client);
 bool itemInAccessGroup(CFDictionaryRef item, CFArrayRef accessGroups);
 void SecKeychainChanged(void);
+void SecSharedItemsChanged(void);
 
 void deleteCorruptedItemAsync(SecDbConnectionRef dbt, CFStringRef tablename, sqlite_int64 rowid);
 

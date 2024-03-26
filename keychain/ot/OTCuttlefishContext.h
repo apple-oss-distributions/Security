@@ -89,12 +89,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (readonly, nullable) TPSpecificUser               *activeAccount;
 
-@property (nonatomic,strong) NSString                       *_Nullable pairingUUID;
+@property (nonatomic, strong, nullable) NSString            *pairingUUID;
 @property (nonatomic, readonly) CKKSLockStateTracker        *lockStateTracker;
 @property (nonatomic, readonly) OTCuttlefishAccountStateHolder* accountMetadataStore;
 @property (readonly) OctagonStateMachine* stateMachine;
 @property (nullable, nonatomic) CKKSNearFutureScheduler* apsRateLimiter;
 @property (nullable, nonatomic) CKKSNearFutureScheduler* sosConsistencyRateLimiter;
+@property (nullable, nonatomic) CKKSNearFutureScheduler* checkMetricsTrigger;
+
+@property (nonatomic, strong, nullable) NSString* flowID;
+@property (nonatomic, strong, nullable) NSString* deviceSessionID;
+@property (nonatomic) OTAccountMetadataClassC_MetricsState shouldSendMetricsForOctagon;
 
 @property (readonly, nullable) CKKSKeychainView*            ckks;
 
@@ -211,7 +216,7 @@ NS_ASSUME_NONNULL_BEGIN
                            reply:(void (^)(NSError * _Nullable))reply;
 
 - (void)notifyContainerChange:(APSIncomingMessage* _Nullable)notification;
-- (void)notifyContainerChangeWithUserInfo:(NSDictionary*)userInfo;
+- (void)notifyContainerChangeWithUserInfo:(NSDictionary* _Nullable)userInfo;
 
 - (void)rpcStatus:(void (^)(NSDictionary* _Nullable result, NSError* _Nullable error))reply;
 - (void)rpcFetchEgoPeerID:(void (^)(NSString* _Nullable peerID, NSError* _Nullable error))reply;
@@ -294,8 +299,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)rpcIsRecoveryKeySet:(void (^)(BOOL isSet, NSError * _Nullable error))reply;
 - (void)rpcRemoveRecoveryKey:(void (^)(BOOL removed, NSError * _Nullable error))reply;
+- (void)areRecoveryKeysDistrusted:(void (^)(BOOL, NSError *_Nullable))reply;
 
 - (void)rpcFetchTotalCountOfTrustedPeers:(void (^)(NSNumber* count, NSError* replyError))reply;
+
+- (void)rerollWithReply:(void (^)(NSError *_Nullable error))reply;
 
 // For testing.
 - (OTAccountMetadataClassC_AccountState)currentMemoizedAccountState;
@@ -313,13 +321,16 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable) TPPolicyVersion* policyOverride;
 
 // Octagon Health Check Helpers
-- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck repair:(BOOL)repair reply:(void (^)(NSError * _Nullable error))reply;
+- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck repair:(BOOL)repair reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError * _Nullable error))reply;
 
 // For reporting
 - (BOOL)machineIDOnMemoizedList:(NSString*)machineID error:(NSError**)error NS_SWIFT_NOTHROW;
 - (TrustedPeersHelperEgoPeerStatus* _Nullable)egoPeerStatus:(NSError**)error;
 
 - (void)setAccountSettings:(OTAccountSettings*_Nullable)accountSettings;
+
+- (BOOL)fetchSendingMetricsPermitted:(NSError**)error;
+- (BOOL)persistSendingMetricsPermitted:(BOOL)sendingMetricsPermitted error:(NSError**)error;
 
 @end
 

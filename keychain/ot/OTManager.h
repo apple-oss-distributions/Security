@@ -206,7 +206,7 @@ NS_ASSUME_NONNULL_BEGIN
                                                  contextID:(NSString*)contextID
                                            possibleAccount:(TPSpecificUser* _Nullable)possibleAccount;
 
-- (OTCuttlefishContext* _Nullable)restartCKKSAccountSyncWithoutSettingPolicyForContext:(OTCuttlefishContext*)cuttlefishContext;
+- (OTCuttlefishContext* _Nullable)restartOctagonContext:(OTCuttlefishContext*)cuttlefishContext;
 - (CKKSKeychainView* _Nullable)restartCKKSAccountSyncWithoutSettingPolicy:(CKKSKeychainView*)view;
 
 - (void)haltAll;
@@ -218,6 +218,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)waitForOctagonUpgrade:(OTControlArguments*)arguments
                         reply:(void (^)(NSError* _Nullable error))reply;
+
+- (BOOL)fetchSendingMetricsPermitted:(OTControlArguments*)arguments error:(NSError**)error;
+- (BOOL)persistSendingMetricsPermitted:(OTControlArguments*)arguments sendingMetricsPermitted:(BOOL)sendingMetricsPermitted error:(NSError**)error;
 
 // Metrics and analytics
 - (void)postCDPFollowupResult:(OTControlArguments*)arguments

@@ -174,7 +174,7 @@
 
     // The fetch fails with partial results
     ckzone.limitFetchTo = ck1;
-    ckzone.limitFetchError = [[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:4]}];
+    ckzone.limitFetchError = [[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:4]}];
 
     self.silentFetchesAllowed = false;
     [self expectCKFetch];
@@ -225,7 +225,7 @@
 
     // The fetch fails with partial results
     ckzone.limitFetchTo = ck1;
-    ckzone.limitFetchError = [[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:4]}];
+    ckzone.limitFetchError = [[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:4]}];
 
     self.silentFetchesAllowed = false;
     [self expectCKFetchWithFilter:^BOOL(FakeCKFetchRecordZoneChangesOperation * _Nonnull frzco) {
@@ -257,9 +257,13 @@
         }
     } runBeforeFinished:^{}];
 
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateProcessIncomingQueue];
     [self.reachabilityTracker setNetworkReachability:true];
 
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateProcessIncomingQueue] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'processincomingqueue'");
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateProcessIncomingQueue];
 
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"key state should enter 'ready'");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
@@ -296,10 +300,17 @@
     self.silentFetchesAllowed = false;
     [self expectCKFetch];
 
+    // Ensure that we wait for the IncomingQueueOperation
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateProcessIncomingQueue];
+
     // Trigger a notification (with hilariously fake data)
     [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];
 
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateProcessIncomingQueue] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'processincomingqueue'");
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateProcessIncomingQueue];
+
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"key state should enter 'ready'");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
 
@@ -420,9 +431,9 @@
 
     FakeCKZone* ckzone = self.zones[self.keychainZoneID];
 
-    [ckzone failNextFetchWith:[[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
-    [ckzone failNextFetchWith:[[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
-    [ckzone failNextFetchWith:[[CKPrettyError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
+    [ckzone failNextFetchWith:[[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
+    [ckzone failNextFetchWith:[[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
+    [ckzone failNextFetchWith:[[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorNetworkFailure userInfo:@{CKErrorRetryAfterKey : [NSNumber numberWithInt:1]}]];
 
     // Call direct to set our own timeouts
     CKKSResultOperation* fetchOp = [self.defaultCKKS rpcFetchAndProcessIncomingQueue:nil

@@ -54,17 +54,16 @@
                           errorState:(OctagonState*)errorState
                           deviceInfo:(nonnull OTDeviceInformation *)deviceInfo
                 skipRateLimitedCheck:(BOOL)skipRateLimitedCheck
+             reportRateLimitingError:(BOOL)reportRateLimitingError
                               repair:(BOOL)repair
 {
     if((self = [super init])) {
         _deps = dependencies;
         _intendedState = intendedState;
         _nextState = errorState;
-        _postRepairCFU = NO;
-        _postEscrowCFU = NO;
-        _resetOctagon = NO;
-        _leaveTrust = NO;
+        _results = nil;
         _skipRateLimitingCheck = skipRateLimitedCheck;
+        _reportRateLimitingError = reportRateLimitingError;
         _repair = repair;
     }
     return self;
@@ -73,18 +72,15 @@
 - (BOOL) checkIfPasscodeIsSetForDevice
 {
     BOOL passcodeIsSet = NO;
-#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-    int lockState = MKBGetDeviceLockState(NULL);
-    if (lockState != kMobileKeyBagDisabled && lockState >= 0) {
-        passcodeIsSet = YES;
+#if TARGET_OS_MAC && !TARGET_OS_SIMULATOR
+    aks_device_state_s deviceState;
+    kern_return_t retCode = aks_get_device_state(session_keybag_handle, &deviceState);
+    if (kAKSReturnSuccess == retCode){
+        passcodeIsSet = (deviceState.lock_state != aks_lock_state_disabled ? YES : NO);
+    } else {
+        secerror("octagon-health: aks_get_device_state failed with: %d", retCode);
     }
-#elif TARGET_OS_MAC && !TARGET_OS_SIMULATOR
-    NSDictionary *options = @{ (id)kKeyBagDeviceHandle : [[NSNumber alloc] initWithInt: getuid()] };
-    int lockState = MKBGetDeviceLockState((__bridge CFDictionaryRef)(options));
-    if (lockState != kMobileKeyBagDisabled && lockState >= 0) {
-        passcodeIsSet = YES;
-    }
-#else
+    secnotice("octagon-health", "checkIfPasscodeIsSetForDevice is %{BOOL}d", passcodeIsSet);
 #endif
     return passcodeIsSet;
 }
@@ -130,7 +126,11 @@
                                                              code:errSecInternalError
                                                          userInfo:@{NSLocalizedDescriptionKey: description}];
             secnotice("octagon-health", "rate limited! %@", rateLimitedError);
-            self.nextState = self.intendedState; //not setting the error on the results op as I don't want a CFU posted.
+            if (self.reportRateLimitingError) {
+                self.error = rateLimitedError;
+            } else {
+                self.nextState = self.intendedState; //not setting the error on the results op as I don't want a CFU posted.
+            }
             [self runBeforeGroupFinished:self.finishOp];
             return;
         }
@@ -156,11 +156,7 @@
                                                    requiresEscrowCheck:[self checkIfPasscodeIsSetForDevice]
                                                                 repair:self.repair
                                                       knownFederations:[SecureBackup knownICDPFederations:NULL]
-                                                                 reply:^(BOOL postRepairCFU,
-                                                                         BOOL postEscrowCFU,
-                                                                         BOOL resetOctagon,
-                                                                         BOOL leaveTrust,
-                                                                         OTEscrowMoveRequestContext *moveRequest, NSError *error) {
+                                                                 reply:^(TrustedPeersHelperHealthCheckResult* result, NSError *error) {
             STRONGIFY(self);
             if(error) {
                 secerror("octagon-health: error: %@", error);
@@ -169,28 +165,20 @@
                 [self runBeforeGroupFinished:self.finishOp];
                 return;
             } else {
-                secnotice("octagon-health", "cuttlefish came back with these suggestions: post repair? %d, post escrow? %d, reset octagon? %d, leave trust? %d, move record? %d", postRepairCFU, postEscrowCFU, resetOctagon, leaveTrust, moveRequest != nil);
-                [self handleRepairSuggestions:postRepairCFU
-                                postEscrowCFU:postEscrowCFU
-                                 resetOctagon:resetOctagon
-                                   leaveTrust:leaveTrust
-                                  moveRequest:moveRequest];
+                secnotice("octagon-health", "cuttlefish came back with these suggestions: %@", result);
+                [self handleRepairSuggestions:result];
             }
         }];
 }
 
-- (void)handleRepairSuggestions:(BOOL)postRepairCFU postEscrowCFU:(BOOL)postEscrowCFU resetOctagon:(BOOL)resetOctagon leaveTrust:(BOOL)leaveTrust moveRequest:(OTEscrowMoveRequestContext*)moveRequest
+- (void)handleRepairSuggestions:(TrustedPeersHelperHealthCheckResult*)results
 {
-    self.postEscrowCFU = postEscrowCFU;
-    self.postRepairCFU = postRepairCFU;
-    self.resetOctagon = resetOctagon;
-    self.leaveTrust = leaveTrust;
-    self.moveRequest = moveRequest;
+    self.results = results;
 
-    if (resetOctagon) {
+    if (self.results.resetOctagon) {
         secnotice("octagon-health", "Resetting Octagon as per Cuttlefish request");
         self.nextState = OctagonStateHealthCheckReset;
-    } else if(leaveTrust) {
+    } else if(self.results.leaveTrust) {
         secnotice("octagon-health", "Leaving clique as per Cuttlefish request");
         self.nextState = OctagonStateHealthCheckLeaveClique;
     } else {

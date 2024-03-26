@@ -23,7 +23,7 @@ extension Container {
     func resetSync(resetReason: CuttlefishResetReason, test: XCTestCase) -> Error? {
         let expectation = XCTestExpectation(description: "reset replied")
         var reterr: Error?
-        self.reset(resetReason: resetReason, idmsTargetContext: nil, idmsCuttlefishPassword: nil, notifyIdMS: false) { error in
+        self.reset(resetReason: resetReason, idmsTargetContext: nil, idmsCuttlefishPassword: nil, notifyIdMS: false, internalAccount: false, demoAccount: false) { error in
             reterr = error
             expectation.fulfill()
         }
@@ -117,7 +117,11 @@ extension Container {
                    permanentInfoSig: Data,
                    stableInfo: Data,
                    stableInfoSig: Data,
-                   ckksKeys: [CKKSKeychainBackedKeySet]) -> (Data?, Data?, Error?) {
+                   ckksKeys: [CKKSKeychainBackedKeySet],
+                   altDSID: String?,
+                   flowID: String?,
+                   deviceSessionID: String?,
+                   canSendMetrics: Bool) -> (Data?, Data?, Error?) {
         let expectation = XCTestExpectation(description: "vouch replied")
         var reta: Data?, retb: Data?, reterr: Error?
         self.vouch(peerID: peerID,
@@ -125,7 +129,11 @@ extension Container {
                    permanentInfoSig: permanentInfoSig,
                    stableInfo: stableInfo,
                    stableInfoSig: stableInfoSig,
-                   ckksKeys: ckksKeys) { a, b, err in
+                   ckksKeys: ckksKeys,
+                   altDSID: altDSID,
+                   flowID: flowID,
+                   deviceSessionID: deviceSessionID,
+                   canSendMetrics: canSendMetrics) { a, b, err in
                     reta = a
                     retb = b
                     reterr = err
@@ -153,7 +161,7 @@ extension Container {
 
     func vouchWithBottleSync(test: XCTestCase, b: String, entropy: Data, bottleSalt: String, tlkShares: [CKKSTLKShare]) -> (Data?, Data?, [CKKSTLKShare]?, TrustedPeersHelperTLKRecoveryResult?, Error?) {
         let expectation = XCTestExpectation(description: "vouchWithBottle replied")
-        var reta: Data?, retb: Data?, retc: [CKKSTLKShare]? = nil, retd: TrustedPeersHelperTLKRecoveryResult?, reterr: Error?
+        var reta: Data?, retb: Data?, retc: [CKKSTLKShare]?, retd: TrustedPeersHelperTLKRecoveryResult?, reterr: Error?
         self.vouchWithBottle(bottleID: b, entropy: entropy, bottleSalt: bottleSalt, tlkShares: tlkShares) { a, b, c, d, err in
             reta = a
             retb = b
@@ -171,7 +179,11 @@ extension Container {
                   voucherSig: Data,
                   ckksKeys: [CKKSKeychainBackedKeySet],
                   tlkShares: [CKKSTLKShare],
-                  preapprovedKeys: [Data]? = nil) -> (String?, [CKRecord]?, TPSyncingPolicy?, Error?) {
+                  preapprovedKeys: [Data]? = nil,
+                  altDSID: String?,
+                  flowID: String?,
+                  deviceSessionID: String?,
+                  canSendMetrics: Bool) -> (String?, [CKRecord]?, TPSyncingPolicy?, Error?) {
         let expectation = XCTestExpectation(description: "join replied")
         var reta: String?, retkhr: [CKRecord]?, reterr: Error?
         var retpolicy: TPSyncingPolicy?
@@ -179,7 +191,11 @@ extension Container {
                   voucherSig: voucherSig,
                   ckksKeys: ckksKeys,
                   tlkShares: tlkShares,
-                  preapprovedKeys: preapprovedKeys) { a, khr, policy, err in
+                  preapprovedKeys: preapprovedKeys,
+                  altDSID: altDSID,
+                  flowID: flowID,
+                  deviceSessionID: deviceSessionID,
+                  canSendMetrics: canSendMetrics) { a, khr, policy, err in
                     reta = a
                     retkhr = khr
                     retpolicy = policy
@@ -246,34 +262,18 @@ extension Container {
         return (retstate, retpolicy, reterr)
     }
 
-    func setAllowedMachineIDsSync(test: XCTestCase, allowedMachineIDs: Set<String>, accountIsDemo: Bool, listDifference: Bool = true) -> (Error?) {
+    func setAllowedMachineIDsSync(test: XCTestCase,
+                                  allowedMachineIDs: Set<String>,
+                                  userInitiatedRemovals: Set<String>? = nil,
+                                  evictedRemovals: Set<String>? = nil,
+                                  unknownReasonRemovals: Set<String>? = nil,
+                                  accountIsDemo: Bool,
+                                  listDifference: Bool = true) -> (Error?) {
         let expectation = XCTestExpectation(description: "setAllowedMachineIDs replied")
         var reterr: Error?
         let honorIDMSListChanges = accountIsDemo ? false : true
-        self.setAllowedMachineIDs(allowedMachineIDs, honorIDMSListChanges: honorIDMSListChanges, version: nil) { differences, err in
+        self.setAllowedMachineIDs(allowedMachineIDs, userInitiatedRemovals: userInitiatedRemovals, evictedRemovals: evictedRemovals, unknownReasonRemovals: unknownReasonRemovals, honorIDMSListChanges: honorIDMSListChanges, version: nil) { differences, err in
             XCTAssertEqual(differences, listDifference, "Reported list difference should match expectation")
-            reterr = err
-            expectation.fulfill()
-        }
-        test.wait(for: [expectation], timeout: 10.0)
-        return reterr
-    }
-
-    func addAllowedMachineIDsSync(test: XCTestCase, machineIDs: [String]) -> Error? {
-        let expectation = XCTestExpectation(description: "addAllow replied")
-        var reterr: Error?
-        self.addAllow(machineIDs) { err in
-            reterr = err
-            expectation.fulfill()
-        }
-        test.wait(for: [expectation], timeout: 10.0)
-        return reterr
-    }
-
-    func removeAllowedMachineIDsSync(test: XCTestCase, machineIDs: [String]) -> Error? {
-        let expectation = XCTestExpectation(description: "removeAllow replied")
-        var reterr: Error?
-        self.removeAllow(machineIDs) { err in
             reterr = err
             expectation.fulfill()
         }
@@ -451,27 +451,20 @@ extension Container {
         return (retentropy, retbottleID, retspki, reterror)
     }
 
-    func requestHealthCheckSync(requiresEscrowCheck: Bool, repair: Bool, test: XCTestCase) -> (Bool, Bool, Bool, Bool, Error?) {
+    func requestHealthCheckSync(requiresEscrowCheck: Bool, repair: Bool, test: XCTestCase) -> (TrustedPeersHelperHealthCheckResult?, Error?) {
         let expectation = XCTestExpectation(description: "requestHealthCheck replied")
-        var retrepairaccount: Bool = false
-        var retrepairescrow: Bool = false
-        var retresetoctagon: Bool = false
-        var retleavetrust: Bool = false
+        var retresponse: TrustedPeersHelperHealthCheckResult?
         var reterror: Error?
 
         self.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck,
                                 repair: repair,
-                                knownFederations: []) { repairAccount, repairEscrow, resetOctagon, leaveTrust, _, error in
-            retrepairaccount = repairAccount
-            retrepairescrow = repairEscrow
-            retresetoctagon = resetOctagon
-            retleavetrust = leaveTrust
-            // moveRequest ignored
+                                knownFederations: []) { response, error in
+            retresponse = response
             reterror = error
 
             expectation.fulfill()
         }
         test.wait(for: [expectation], timeout: 10.0)
-        return (retrepairaccount, retrepairescrow, retresetoctagon, retleavetrust, reterror)
+        return (retresponse, reterror)
     }
 }

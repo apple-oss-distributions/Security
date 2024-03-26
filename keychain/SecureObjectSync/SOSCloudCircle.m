@@ -1706,7 +1706,7 @@ bool SOSCCSetCompatibilityMode(bool compatibilityMode, CFErrorRef *error) {
 }
 
 bool SOSCCFetchCompatibilityMode(CFErrorRef *error) {
-    secnotice("sos-compatibility-mode", "enter SOSCCFetchCompatibilityMode");
+    secinfo("sos-compatibility-mode", "enter SOSCCFetchCompatibilityMode");
 
     sec_trace_return_bool_api(^{
         do_if_registered(soscc_SOSCCFetchCompatibilityMode, error);
@@ -1717,7 +1717,7 @@ bool SOSCCFetchCompatibilityMode(CFErrorRef *error) {
 
 bool SOSCCIsSOSTrustAndSyncingEnabled(void)
 {
-    secnotice("sos-compatibility-mode", "enter SOSCCIsSOSTrustAndSyncingEnabled");
+    secinfo("sos-compatibility-mode", "enter SOSCCIsSOSTrustAndSyncingEnabled");
 
     bool isEnabled = true;
     if (OctagonPlatformSupportsSOS() && SOSCompatibilityModeEnabled()) {
@@ -1738,7 +1738,7 @@ bool SOSCCIsSOSTrustAndSyncingEnabled(void)
 
 
 bool SOSCCFetchCompatibilityModeCachedValue(CFErrorRef *error) {
-    secnotice("sos-compatibility-mode-cached", "enter SOSCCFetchCompatibilityModeCachedValue");
+    secinfo("sos-compatibility-mode-cached", "enter SOSCCFetchCompatibilityModeCachedValue");
 
     sec_trace_return_bool_api(^{
         do_if_registered(soscc_SOSCCFetchCompatibilityModeCachedValue, error);
@@ -1749,7 +1749,7 @@ bool SOSCCFetchCompatibilityModeCachedValue(CFErrorRef *error) {
 
 bool SOSCCIsSOSTrustAndSyncingEnabledCachedValue(void)
 {
-    secnotice("sos-compatibility-mode-cached", "enter SOSCCIsSOSTrustAndSyncingEnabledCachedValue");
+    secinfo("sos-compatibility-mode-cached", "enter SOSCCIsSOSTrustAndSyncingEnabledCachedValue");
 
     bool isEnabled = true;
     if (OctagonPlatformSupportsSOS() && SOSCompatibilityModeEnabled()) {
@@ -1767,6 +1767,19 @@ bool SOSCCIsSOSTrustAndSyncingEnabledCachedValue(void)
     
     return isEnabled;
 }
+
+bool SOSCCPushResetCircle(CFErrorRef *error) {
+    secinfo("push-reset-circle-to-kvs", "enter SOSCCPushResetCircle");
+    sec_trace_enter_api(NULL);
+    sec_trace_return_bool_api(^{
+        do_if_registered(soscc_SOSCCPushResetCircle, error);
+
+        return simple_bool_error_request(kSecXPCOpPushResetCircle, error);
+    }, NULL)
+
+    return false;
+}
+
 /*
  * SecSOSStatus interfaces
  */
@@ -1870,24 +1883,6 @@ SOSCCAccountGetPublicKey(void (^reply)(BOOL trusted, NSData *data, NSError *erro
     }
 
     [status userPublicKey:reply];
-}
-
-void
-SOSCCAccountGetAccountPrivateCredential(void (^complete)(NSData *data, NSError *error))
-{
-    IF_SOS_DISABLED {
-        complete(NULL, sosDisabledNSError());
-        return;
-    }
-    CFErrorRef error = NULL;
-    id<SOSControlProtocol> status = SOSCCGetStatusObject(&error);
-    if (status == NULL) {
-        complete(NULL, (__bridge NSError *)error);
-        CFReleaseNull(error);
-        return;
-    }
-
-    [status validatedStashedAccountCredential:complete];
 }
 
 void

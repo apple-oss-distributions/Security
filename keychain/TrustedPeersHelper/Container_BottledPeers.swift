@@ -42,7 +42,9 @@ extension Container {
                     }
 
                     // Ensure we have all policy versions claimed by peers, including our sponsor
-                    let allPolicyVersions = self.model.allPolicyVersions()
+                    let allPolicyVersions: Set<TPPolicyVersion> = self.moc.performAndWait {
+                        self.model.allPolicyVersions()
+                    }
                     self.fetchPolicyDocumentsWithSemaphore(versions: allPolicyVersions) { _, fetchPolicyDocumentsError in
                         guard fetchPolicyDocumentsError == nil else {
                             logger.info("preflightVouchWithBottle unable to fetch policy documents: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
@@ -100,7 +102,6 @@ extension Container {
             throw ContainerError.sponsorNotRegistered(bottleMO.peerID ?? "no peer ID given")
         }
 
-        // We need to extract the syncing policy that the remote peer would have used (if they were the type of device that we are)
         let policy = try self.syncingPolicyFor(modelID: egoPermanentInfo.modelID, stableInfo: sponsorPeerStableInfo)
         return (bottleMO, sponsorPeer.peerID, policy)
     }

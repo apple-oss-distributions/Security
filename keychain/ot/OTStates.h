@@ -30,6 +30,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+extern NSString* const OctagonStateTransitionErrorDomain;
+
 // Two 'bad states':
 //   No iCloud Account (the state machine won't help at all)
 //   Untrusted (user interaction is required to resolve)
@@ -148,7 +150,6 @@ extern OctagonState* const OctagonStateEstablishAfterCKKSReset;
 // End of account reset state flow
 
 /* used for trust health checks */
-extern OctagonState* const OctagonStateCDPCapableHealthCheck;
 extern OctagonState* const OctagonStateCDPHealthCheck;
 extern OctagonState* const OctagonStateSecurityTrustCheck;
 extern OctagonState* const OctagonStateTPHTrustCheck;
@@ -192,9 +193,6 @@ extern OctagonState* const OctagonStateAssistCKKSTLKUpload;
 extern OctagonState* const OctagonStateAssistCKKSTLKUploadCKKSReset;
 extern OctagonState* const OctagonStateAssistCKKSTLKUploadAfterCKKSReset;
 
-// Call out to otpaird (KCPairing via IDS), then proceed to BecomeUntrusted
-extern OctagonState* const OctagonStateStartCompanionPairing;
-
 // Cuttlefish notification while waiting for CDP
 extern OctagonState* const OctagonStateWaitForCDPUpdated;
 
@@ -203,6 +201,10 @@ extern OctagonState* const OctagonStateUntrustedUpdated;
 
 // Cuttlefish notifiation while ready.
 extern OctagonState* const OctagonStateReadyUpdated;
+
+extern OctagonState* const OctagonStateStashAccountSettingsForReroll;
+extern OctagonState* const OctagonStateCreateIdentityForReroll;
+extern OctagonState* const OctagonStateVouchWithReroll;
 
 extern OctagonState* const OctagonStateUnimplemented;
 
@@ -214,9 +216,11 @@ extern OctagonState* const OctagonStateUnimplemented;
 // of our state machine RPCs will work in the SA case.
 // <rdar://problem/54094162> Octagon: ensure Octagon operations can't occur on SA accounts
 + (NSSet<OctagonState*>*) OctagonInAccountStates;
-+ (NSSet<OctagonState *>*) OctagonHealthSourceStates;
-+ (NSSet<OctagonFlag *>*) AllOctagonFlags;
++ (NSSet<OctagonState*>*) OctagonHealthSourceStates;
 + (NSSet<OctagonState*>*) OctagonNotInCliqueStates;
++ (NSSet<OctagonState*>*) OctagonReadyStates;
++ (NSSet<OctagonState*>*) OctagonAllStates;
++ (NSSet<OctagonFlag*>*)  AllOctagonFlags;
 
 @end
 
@@ -234,26 +238,26 @@ extern OctagonFlag* const OctagonFlagCKKSViewSetChanged;
 // We've received a change notification from cuttlefish; we should probably see what's new
 extern OctagonFlag* const OctagonFlagCuttlefishNotification NS_SWIFT_NAME(OctagonFlagCuttlefishNotification);
 
-
-extern OctagonFlag* const OctagonFlagFetchAuthKitMachineIDList;
-
 extern OctagonFlag* const OctagonFlagAccountIsAvailable;
 extern OctagonFlag* const OctagonFlagCDPEnabled;
 
 extern OctagonFlag* const OctagonFlagAttemptSOSUpgrade;
+
+extern OctagonFlag* const OctagonFlagFetchAuthKitMachineIDList;
+
 extern OctagonFlag* const OctagonFlagUnlocked;
 
 extern OctagonFlag* const OctagonFlagAttemptSOSUpdatePreapprovals;
 extern OctagonFlag* const OctagonFlagAttemptSOSConsistency;
 
-extern OctagonFlag* const OctagonFlagEscrowRequestInformCloudServicesOperation;
-
 extern OctagonFlag* const OctagonFlagAttemptBottleTLKExtraction;
 extern OctagonFlag* const OctagonFlagAttemptRecoveryKeyTLKExtraction;
 
+extern OctagonFlag* const OctagonFlagSecureElementIdentityChanged;
+
 extern OctagonFlag* const OctagonFlagAttemptUserControllableViewStatusUpgrade;
 
-extern OctagonFlag* const OctagonFlagSecureElementIdentityChanged;
+extern OctagonFlag* const OctagonFlagCheckOnRTCMetrics;
 
 NS_ASSUME_NONNULL_END
 

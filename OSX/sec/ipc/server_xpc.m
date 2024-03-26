@@ -357,6 +357,7 @@
                                                                       extraLoggingString:[NSString stringWithFormat:@"%@,%@", accessGroup, identifier]
                                                                                   client:client
                                                                                 complete:^(NSData *persistentref, NSError *operror) {
+
                                                            complete(persistentref, data.modificationDate, operror);
                                                            if (OctagonSupportsPersonaMultiuser()) {
                                                                CFReleaseNull(client->musr);

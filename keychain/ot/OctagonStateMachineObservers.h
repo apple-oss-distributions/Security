@@ -8,6 +8,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class OctagonStateMachine;
+
 @interface OctagonStateTransitionPathStep : NSObject
 @property BOOL successState;
 @property (readonly) NSDictionary<OctagonState*, OctagonStateTransitionPathStep*>* followStates;
@@ -48,6 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol OctagonStateTransitionWatcherProtocol
 @property (readonly) CKKSResultOperation* result;
 - (void)onqueueHandleTransition:(CKKSResultOperation<OctagonStateTransitionOperationProtocol>*)attempt;
+- (void)onqueueHandleStartTimeout:(NSError*)stateMachineStateError;
 @end
 
 @interface OctagonStateTransitionWatcher : NSObject <OctagonStateTransitionWatcherProtocol>
@@ -57,12 +60,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 // If the initial request times out, the watcher will fail as well.
 - (instancetype)initNamed:(NSString*)name
-              serialQueue:(dispatch_queue_t)queue
+             stateMachine:(OctagonStateMachine*)stateMachine
                      path:(OctagonStateTransitionPath*)path
            initialRequest:(OctagonStateTransitionRequest* _Nullable)initialRequest;
-
-- (instancetype)timeout:(dispatch_time_t)timeout;
-
 @end
 
 // Reports on if any of the given states are entered
@@ -83,8 +83,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Called by the state machine if it's already in a state at registration time
 - (void)onqueueEnterState:(OctagonState*)state;
-
-- (instancetype)timeout:(dispatch_time_t)timeout;
 
 // If the watcher is still waiting to complete or timeout, cause it to finish with this error
 - (void)completeWithErrorIfPending:(NSError*)error;

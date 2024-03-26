@@ -130,5 +130,15 @@
 		<key>Enabled</key>
 		<false/>
 	</dict>
+	<key>TTROnCRKRemoval</key>
+	<dict>
+		<key>Enabled</key>
+		<true/>
+	</dict>
+	<key>WatchForceDeviceListFailure</key>
+	<dict>
+		<key>DevelopmentPhase</key>
+		<string>UnderDevelopment</string>
+	</dict>
 </dict>
 </plist>

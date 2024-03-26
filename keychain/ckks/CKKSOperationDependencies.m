@@ -48,6 +48,7 @@
                   databaseProvider:(id<CKKSDatabaseProviderProtocol>)databaseProvider
                   savedTLKNotifier:(CKKSNearFutureScheduler*)savedTLKNotifier
                     personaAdapter:(id<OTPersonaAdapter>)personaAdapter
+                        sendMetric:(bool)sendMetric
 {
     if((self = [super init])) {
         _allViews = viewStates;
@@ -75,6 +76,7 @@
 
         _limitOperationToPriorityViewsSet = NO;
         _personaAdapter = personaAdapter;
+        _sendMetric = sendMetric;
     }
     return self;
 }
@@ -246,7 +248,7 @@
     return set;
 }
 
-- (void)applyNewSyncingPolicy:(TPSyncingPolicy*)policy
+- (void)applyNewSyncingPolicy:(TPSyncingPolicy* _Nullable)policy
                    viewStates:(NSSet<CKKSKeychainViewState*>*)viewStates
 {
     self.syncingPolicy = policy;
@@ -494,7 +496,7 @@
             ckksnotice("ckks", recordID.zoneID, "Examining 'write failed' error: %@ %@ %@", error, underlyingError, thirdLevelError);
 
             if([error.domain isEqualToString:CKErrorDomain] && error.code == CKErrorServerRejectedRequest &&
-               underlyingError && [underlyingError.domain isEqualToString:CKInternalErrorDomain] && underlyingError.code == CKErrorInternalPluginError &&
+               underlyingError && [underlyingError.domain isEqualToString:CKUnderlyingErrorDomain] && underlyingError.code == CKUnderlyingErrorPluginError &&
                thirdLevelError && [thirdLevelError.domain isEqualToString:@"CloudkitKeychainService"]) {
 
                 if(thirdLevelError.code == CKKSServerUnexpectedSyncKeyInChain) {
