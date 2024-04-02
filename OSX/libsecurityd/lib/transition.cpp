@@ -747,6 +747,7 @@ void ClientSession::getAcl(AclKind kind, GenericHandle key, const char *tag,
 	IPC(ucsp_client_getAcl(UCSP_ARGS, kind, key,
 		(tag != NULL), tag ? tag : "",
 		&count, &info, &infoLength));
+	VMGuard _(info, infoLength);
 
 	CSSM_ACL_ENTRY_INFO_ARRAY_PTR aclsArray;
 	if (!::copyout_chunked(info, infoLength, reinterpret_cast<xdrproc_t>(xdr_CSSM_ACL_ENTRY_INFO_ARRAY_PTR), reinterpret_cast<void**>(&aclsArray)))
