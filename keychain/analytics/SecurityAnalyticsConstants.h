@@ -67,6 +67,21 @@ extern NSString *const kSecurityRTCEventNameInitiatorImportsInitialSyncData;
 extern NSString *const kSecurityRTCEventNameAcceptorCreatesVoucher;
 extern NSString *const kSecurityRTCEventNameAcceptorFetchesInitialSyncData;
 extern NSString *const kSecurityRTCEventNameNumberOfTrustedOctagonPeers;
+extern NSString *const kSecurityRTCEventNameCliqueMemberIdentifier;
+extern NSString *const kSecurityRTCEventNameDuplicateMachineID;
+extern NSString *const kSecurityRTCEventNameMIDVanishedFromTDL;
+extern NSString *const kSecurityRTCEventNameTDLProcessingSuccess;
+extern NSString *const kSecurityRTCEventNameAllowedMIDHashMismatch;
+extern NSString *const kSecurityRTCEventNameDeletedMIDHashMismatch;
+extern NSString *const kSecurityRTCEventNameTrustedDeviceListFailure;
+extern NSString *const kSecurityRTCEventNamePairingDidNotReceivePCSData;
+extern NSString *const kSecurityRTCEventNamePairingFailedToAddItemToKeychain;
+extern NSString *const kSecurityRTCEventNamePairingImportKeychainResults;
+extern NSString *const kSecurityRTCEventNamePairingFailedToUpdateItemInKeychain;
+extern NSString *const kSecurityRTCEventNamePairingFailedFetchPCSItems;
+extern NSString *const kSecurityRTCEventNamePairingEmptyOctagonPayload;
+extern NSString *const kSecurityRTCEventNamePairingEmptyAckPayload;
+extern NSString *const kSecurityRTCEventNameRPDDeleteAllRecords;
 
 // MARK: RTC Fields
 
@@ -76,7 +91,6 @@ extern NSString *const kSecurityRTCFieldDidSucceed;
 extern NSString *const kSecurityRTCFieldNumberOfTLKsFetched;
 extern NSString *const kSecurityRTCFieldNumberOfPCSItemsFetched;
 extern NSString *const kSecurityRTCFieldNumberOfBluetoothMigrationItemsFetched;
-extern NSString *const kSecurityRTCFieldAccountAvailability;
 extern NSString *const kSecurityRTCFieldOctagonSignInResult;
 extern NSString *const kSecurityRTCFieldNumberOfKeychainItemsCollected;
 extern NSString *const kSecurityRTCFieldNumberOfKeychainItemsAdded;
@@ -84,6 +98,9 @@ extern NSString *const kSecurityRTCFieldNumberOfTrustedPeers;
 extern NSString *const kSecurityRTCFieldSecurityLevel;
 extern NSString *const kSecurityRTCFieldRetryAttemptCount;
 extern NSString *const kSecurityRTCFieldTotalRetryDuration;
+extern NSString *const kSecurityRTCFieldEgoMachineIDVanishedFromTDL;
+extern NSString *const kSecurityRTCFieldPairingSuccessfulImportCount;
+extern NSString *const kSecurityRTCFieldPairingFailedImportCount;
 
 extern NSString *const kSecurityRTCEventNameLaunchStart;
 extern NSString *const kSecurityRTCEventNameSyncingPolicySet;

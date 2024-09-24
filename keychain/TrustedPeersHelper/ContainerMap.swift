@@ -21,7 +21,8 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-@_spi(CloudKitPrivate) import CloudKit
+@_spi(CloudKitPrivate)
+import CloudKit
 import CloudKit_Private
 import CloudKitCode
 import CoreData
@@ -58,6 +59,38 @@ func ~= (pattern: CKUnderlyingErrorMatcher, value: Error?) -> Bool {
             return true
         }
         return underlyingError.userInfo[NSUnderlyingErrorKey] == nil
+    default:
+        return false
+    }
+}
+
+struct CKErrorNSURLErrorMatcher {
+    let code: CKError.Code
+    let underlyingCode: Int
+}
+
+// Match a CKError/NSError
+func ~= (pattern: CKErrorNSURLErrorMatcher, value: Error?) -> Bool {
+    guard let value else {
+        return false
+    }
+    switch value {
+    case let error as CKError:
+        guard error.code == pattern.code else {
+            return false
+        }
+        guard let underlyingError = error.userInfo[NSUnderlyingErrorKey] else {
+            return false
+        }
+        guard let underlyingError = underlyingError as? NSError else {
+            return false
+        }
+        switch underlyingError {
+        case NSURLErrorMatcher(code: pattern.underlyingCode):
+            return true
+        default:
+            return false
+        }
     default:
         return false
     }
@@ -125,6 +158,14 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
             return true
         case CKErrorMatcher(code: CKError.networkFailure):
             return true
+        case CKErrorMatcher(code: CKError.serviceUnavailable):
+            return true
+        case CKErrorMatcher(code: CKError.requestRateLimited):
+            return true
+        case CKErrorMatcher(code: CKError.zoneBusy):
+            return true
+        case CKErrorNSURLErrorMatcher(code: CKError.networkUnavailable, underlyingCode: NSURLErrorNetworkConnectionLost):
+            return true
         case CKUnderlyingErrorMatcher(code: CKError.serverRejectedRequest, underlyingCode: CKUnderlyingError.serverInternalError, noL3Error: false):
             return true
         case CKUnderlyingErrorMatcher(code: CKError.serverRejectedRequest, underlyingCode: CKUnderlyingError.pluginError, noL3Error: true):
@@ -134,7 +175,7 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
         case CuttlefishErrorMatcher(code: CuttlefishErrorCode.transactionalFailure):
             return true
         default:
-            return false
+            return CKCanRetryForError(error)
         }
     }
 
@@ -172,7 +213,7 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
 
         // we only want to send Cuttlefish metrics if there's an associated flowID
         var shouldSendMetrics: Bool = false
-        if flowID != nil && flowID != "" && deviceSessionID != nil && deviceSessionID != "" {
+        if let flowID, !flowID.isEmpty, let deviceSessionID, !deviceSessionID.isEmpty {
             shouldSendMetrics = true
         }
 
@@ -345,6 +386,18 @@ public class RetryingCKCodeService: ConfiguredCuttlefishAPIAsync {
                                      completion: @escaping (Result<PerformATOPRVActionsResponse, any Error>) -> Void) {
         retry(functionName: #function, deviceSessionID: request.metrics.deviceSessionID, flowID: request.metrics.flowID, operationCreator: {
             return CuttlefishAPI.PerformAtoprvactionsOperation(request: request)
+        }, completion: completion)
+    }
+
+    public func fetchCurrentItem(_ request: CurrentItemFetchRequest, completion: @escaping (Result<CurrentItemFetchResponse, any Error>) -> Void) {
+        retry(functionName: #function, deviceSessionID: request.metrics.deviceSessionID, flowID: request.metrics.flowID, operationCreator: {
+            return CuttlefishAPI.FetchCurrentItemOperation(request: request)
+        }, completion: completion)
+    }
+
+    public func fetchPcsidentityByPublicKey(_ request: DirectPCSIdentityFetchRequest, completion: @escaping (Result<DirectPCSIdentityFetchResponse, any Error>) -> Void) {
+        retry(functionName: #function, deviceSessionID: request.metrics.deviceSessionID, flowID: request.metrics.flowID, operationCreator: {
+            return CuttlefishAPI.FetchPcsidentityByPublicKeyOperation(request: request)
         }, completion: completion)
     }
 }

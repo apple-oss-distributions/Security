@@ -135,7 +135,7 @@ CKKSAnalyticsFailableEvent* const OctagonEventLaunchBottle = (CKKSAnalyticsFaila
 CKKSAnalyticsFailableEvent* const OctagonEventRestoreBottle = (CKKSAnalyticsFailableEvent*)@"OctagonEventRestoreBottle";
 CKKSAnalyticsFailableEvent* const OctagonEventScrubBottle = (CKKSAnalyticsFailableEvent*)@"OctagonEventScrubBottle";
 CKKSAnalyticsFailableEvent* const OctagonEventSignIn = (CKKSAnalyticsFailableEvent *)@"OctagonEventSignIn";
-CKKSAnalyticsFailableEvent* const OctagonEventSignOut = (CKKSAnalyticsFailableEvent *)@"OctagonEventSignIn";
+CKKSAnalyticsFailableEvent* const OctagonEventSignOut = (CKKSAnalyticsFailableEvent *)@"OctagonEventSignOut";
 CKKSAnalyticsFailableEvent* const OctagonEventRamp = (CKKSAnalyticsFailableEvent *)@"OctagonEventRamp";
 CKKSAnalyticsFailableEvent* const OctagonEventBottleCheck = (CKKSAnalyticsFailableEvent *)@"OctagonEventBottleCheck";
 CKKSAnalyticsFailableEvent* const OctagonEventCoreFollowUp = (CKKSAnalyticsFailableEvent *)@"OctagonEventCoreFollowUp";
@@ -159,6 +159,8 @@ CKKSAnalyticsFailableEvent* const OctagonEventJoinInheritanceKey = (CKKSAnalytic
 CKKSAnalyticsFailableEvent* const OctagonEventPreflightInheritanceKey = (CKKSAnalyticsFailableEvent*)@"OctagonEventPreflightInheritanceKey";
 CKKSAnalyticsFailableEvent* const OctagonEventRemoveInheritanceKey = (CKKSAnalyticsFailableEvent*)@"OctagonEventRemoveInheritanceKey";
 CKKSAnalyticsFailableEvent* const OctagonEventCheckInheritanceKey = (CKKSAnalyticsFailableEvent*)@"OctagonEventCheckInheritanceKey";
+CKKSAnalyticsFailableEvent* const OctagonEventRecreateInheritanceKey = (CKKSAnalyticsFailableEvent*)@"OctagonEventRecreateInheritanceKey";
+CKKSAnalyticsFailableEvent* const OctagonEventCreateInheritanceKeyWithClaimTokenAndWrappingKey = (CKKSAnalyticsFailableEvent*)@"OctagonEventCreateInheritanceKeyWithClaimTokenAndWrappingKey";
 CKKSAnalyticsFailableEvent* const OctagonEventReroll = (CKKSAnalyticsFailableEvent*)@"OctagonEventReroll";
 
 CKKSAnalyticsFailableEvent* const OctagonEventFetchAllBottles = (CKKSAnalyticsFailableEvent*)@"OctagonEventFetchAllBottles";
@@ -264,6 +266,7 @@ CKKSAnalyticsActivity* const OctagonActivityJoinWithInheritanceKey = (CKKSAnalyt
 CKKSAnalyticsActivity* const OctagonActivityPreflightJoinWithInheritanceKey = (CKKSAnalyticsActivity*)@"OctagonActivityPreflightJoinWithInheritanceKey";
 CKKSAnalyticsActivity* const OctagonActivityRemoveInheritanceKey = (CKKSAnalyticsActivity *)@"OctagonActivityRemoveInheritanceKey";
 CKKSAnalyticsActivity* const OctagonActivityCheckInheritanceKey = (CKKSAnalyticsActivity *)@"OctagonActivityCheckInheritanceKey";
+CKKSAnalyticsActivity* const OctagonActivityRecreateInheritanceKey = (CKKSAnalyticsActivity *)@"OctagonActivityRecreateInheritanceKey";
 CKKSAnalyticsActivity* const OctagonActivityReroll = (CKKSAnalyticsActivity*)@"OctagonActivityReroll";
 
 CKKSAnalyticsActivity* const OctagonActivityLeaveClique = (CKKSAnalyticsActivity *)@"OctagonActivityLeaveClique";

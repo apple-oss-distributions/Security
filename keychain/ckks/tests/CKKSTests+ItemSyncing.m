@@ -42,6 +42,7 @@
 #import "keychain/ckks/tests/CloudKitMockXCTest.h"
 #import "keychain/ckks/tests/CKKSTests.h"
 #import "keychain/ckks/tests/MockCloudKit.h"
+#import "keychain/ot/Affordance_OTConstants.h"
 
 @interface CloudKitKeychainSyncingItemSyncingTests : CloudKitKeychainSyncingTestsBase
 @end
@@ -307,7 +308,8 @@
 
         CKRecordID* ckrid = [[CKRecordID alloc] initWithRecordName:@"50184A35-4480-E8BA-769B-567CF72F1EC0" zoneID:self.keychainZoneID];
 
-        CKKSItem* item = [self newItem:ckrid withNewItemData:[self fakeRecordDictionary:account zoneID:self.keychainZoneID] key:self.keychainZoneKeys.classC];
+        CKKSItem* item = [self newItem:ckrid withNewItemData:[self fakeRecordDictionary:account zoneID:self.keychainZoneID] key:self.keychainZoneKeys.classC plaintextPCSServiceIdentifier:nil plaintextPCSPublicKey:nil plaintextPCSPublicIdentity:nil];
+        
         XCTAssertNotNil(item, "Should be able to create a new fake item");
 
         CKKSOutgoingQueueEntry* oqe = [[CKKSOutgoingQueueEntry alloc] initWithCKKSItem:item
@@ -437,38 +439,38 @@
 }
 
 - (void)testOutgoingQueueRecoverFromCKServerLastingOutage {
-   [self createAndSaveFakeKeyHierarchy: self.keychainZoneID];
-   NSString* account = @"account-delete-me";
+    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID];
+    NSString* account = @"account-delete-me";
 
-   [self startCKKSSubsystem];
-   [self holdCloudKitModifications];
+    [self startCKKSSubsystem];
+    [self holdCloudKitModifications];
 
-   // Set up error hierarchy to reflect CK Server Internal HTTP Error
-   NSError* underlyingError = [[NSError alloc] initWithDomain:CKUnderlyingErrorDomain code:CKUnderlyingErrorServerHTTPError userInfo:@{}];
-   NSError* greyMode = [[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorServerRejectedRequest userInfo:@{
-       NSUnderlyingErrorKey: underlyingError
-   }];
+    // Set up error hierarchy to reflect CK Server Internal HTTP Error
+    NSError* underlyingError = [[NSError alloc] initWithDomain:CKUnderlyingErrorDomain code:CKUnderlyingErrorServerHTTPError userInfo:@{}];
+    NSError* greyMode = [[NSError alloc] initWithDomain:CKErrorDomain code:CKErrorServerRejectedRequest userInfo:@{
+        NSUnderlyingErrorKey: underlyingError
+    }];
 
-   // Patch record upload to fail with our error
-   [self failNextCKAtomicModifyItemRecordsUpdateFailure:self.keychainZoneID blockAfterReject:nil withError:greyMode];
+    // Patch record upload to fail with our error
+    [self failNextCKAtomicModifyItemRecordsUpdateFailure:self.keychainZoneID blockAfterReject:nil withError:greyMode];
 
-   [self addGenericPassword: @"data" account: account];
-   OCMVerifyAllWithDelay(self.mockDatabase, 20);
+    [self addGenericPassword: @"data" account: account];
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
 
     // Let's assume that CK Server is still down. Patch upload to fail with our error and verify that nothing happens again.
     [self failNextCKAtomicModifyItemRecordsUpdateFailure:self.keychainZoneID blockAfterReject:nil withError:greyMode];
     [self releaseCloudKitModificationHold];
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
 
-   // Now, let's assume that CK Server is back up. CKKS should try uploading again after a delay.
+    // Now, let's assume that CK Server is back up. CKKS should try uploading again after a delay.
     [self expectCKModifyItemRecords:1 currentKeyPointerRecords:1 zoneID:self.keychainZoneID];
     [self releaseCloudKitModificationHold];
 
     // Item should have been successfully uploaded.
-   OCMVerifyAllWithDelay(self.mockDatabase, 20);
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
 
-   [self.defaultCKKS waitUntilAllOperationsAreFinished];
-   [self waitForCKModifications];
+    [self.defaultCKKS waitUntilAllOperationsAreFinished];
+    [self waitForCKModifications];
 }
 
 - (void)testOutgoingQueueRecoverFromCKServerLastingOutageWithMultipleItems {
@@ -782,7 +784,11 @@
                                     recordName:@"E025708D-F288-4068-A016-792E82B0BF53"
                                 itemDictionary:[self fakeCertificateRecordDictionary:[@"1234" dataUsingEncoding:NSUTF8StringEncoding]
                                                                               zoneID:self.keychainZoneID]
-                                           key:nil];
+                                           key:nil
+                 plaintextPCSServiceIdentifier:nil
+                         plaintextPCSPublicKey:nil
+                    plaintextPCSPublicIdentity:nil
+    ];
     [self.keychainZone addToZone:ckrCert];
 
     // Trigger a notification (with hilariously fake data)
@@ -893,10 +899,8 @@
     [self.keychainZone addToZone:ckr];
     [self.keychainZone addToZone:ckr2];
 
-    // We expect a delete operation with the "higher" UUID.
-    [self expectCKDeleteItemRecords:1
-                             zoneID:self.keychainZoneID
-         expectedOperationGroupName:@"incoming-queue-response"];
+    // We expect an operation to delete the item with the "higher" UUID and re-add the item with the "lower" UUID.
+    [self expectCKModifyItemRecords:1 deletedRecords:1 currentKeyPointerRecords:1 zoneID:self.keychainZoneID checkItem:nil expectedOperationGroupName:@"incoming-queue-response"];
 
     // Trigger a notification (with hilariously fake data)
     [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];
@@ -906,6 +910,53 @@
 
     [self waitForCKModifications];
     XCTAssertNil(self.keychainZone.currentDatabase[ckr2.recordID], "Correct record was deleted from CloudKit");
+
+    // And the local item should have ckr's UUID
+    [self checkGenericPasswordStoredUUID:ckr.recordID.recordName account:@"account-delete-me"];
+}
+
+- (void)testReceiveIncomingItemConflictsWithExistingItemAtLowerUUID {
+    [self createAndSaveFakeKeyHierarchy: self.keychainZoneID]; // Make life easy for this test.
+    [self startCKKSSubsystem];
+
+    NSDictionary *query = @{(id)kSecClass : (id)kSecClassGenericPassword,
+                            (id)kSecAttrAccessGroup : @"com.apple.security.ckks",
+                            (id)kSecAttrAccount : @"account-delete-me",
+                            (id)kSecAttrSynchronizable : (id)kCFBooleanTrue,
+                            (id)kSecMatchLimit : (id)kSecMatchLimitOne,
+    };
+
+    CFTypeRef item = NULL;
+    XCTAssertEqual(errSecItemNotFound, SecItemCopyMatching((__bridge CFDictionaryRef) query, &item), "item should not yet exist");
+
+    // Add first item at lower UUID
+    CKRecord* ckr = [self createFakeRecord:self.keychainZoneID recordName: @"11111111-1111-1111-1111-111111111111"];
+    [self.keychainZone addToZone:ckr];
+
+    // Trigger a notification (with hilariously fake data)
+    [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];
+    [self.defaultCKKS waitForFetchAndIncomingQueueProcessing];
+
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+    XCTAssertEqual(errSecSuccess, SecItemCopyMatching((__bridge CFDictionaryRef) query, &item), "item should exist now");
+    [self waitForCKModifications];
+
+    // Add second item at higher UUID into CloudKit
+    CKRecord* ckr2 = [self createFakeRecord:self.keychainZoneID recordName: @"F9C58D31-7B59-481E-98AC-5A507ACB2D85"];
+    [self.keychainZone addToZone:ckr2];
+
+    // Trigger a notification (with hilariously fake data)
+    [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];
+
+    // Set expectation that incoming item is deleted and existing item is re-affirmed
+    [self expectCKModifyItemRecords:1 deletedRecords:1 currentKeyPointerRecords:1 zoneID:self.keychainZoneID checkItem:nil expectedOperationGroupName:@"incoming-queue-response"];
+
+    [self.defaultCKKS waitForFetchAndIncomingQueueProcessing];
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    // Verify that incoming item is also deleted from CloudKit and existing item is retained
+    XCTAssertNil(self.keychainZone.currentDatabase[ckr2.recordID], "Correct record was deleted from CloudKit");
+    XCTAssertNotNil(self.keychainZone.currentDatabase[ckr.recordID], "Correct record should have been retained in CloudKit");
 
     // And the local item should have ckr's UUID
     [self checkGenericPasswordStoredUUID:ckr.recordID.recordName account:@"account-delete-me"];
@@ -983,7 +1034,10 @@
                                     recordName:@"E025708D-F288-4068-A016-792E82B0BF53"
                                 itemDictionary:[self fakeCertificateRecordDictionary:[@"1234" dataUsingEncoding:NSUTF8StringEncoding]
                                                                               zoneID:self.keychainZoneID]
-                                           key:nil];
+                                           key:nil
+                 plaintextPCSServiceIdentifier:nil
+                         plaintextPCSPublicKey:nil
+                    plaintextPCSPublicIdentity:nil];
     [self.keychainZone addToZone:ckrCert];
 
     [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];
@@ -1099,7 +1153,10 @@
     CKRecord* ckrKey = [self createFakeRecord:self.keychainZoneID
                                     recordName:recordName
                                 itemDictionary:keyDict
-                                           key:nil];
+                                           key:nil
+                plaintextPCSServiceIdentifier:nil
+                        plaintextPCSPublicKey:nil
+                   plaintextPCSPublicIdentity:nil];
     [self.keychainZone addToZone:ckrKey];
 
     [self.defaultCKKS.zoneChangeFetcher notifyZoneChange:nil];

@@ -24,11 +24,16 @@ NS_ASSUME_NONNULL_BEGIN
                            error:(NSError**)error;
 
 - (void)fetchCurrentDeviceListByAltDSID:(NSString*)altDSID 
+                                 flowID:(NSString*)flowID
+                        deviceSessionID:(NSString*)deviceSessionID
                                   reply:(void (^)(NSSet<NSString*>* _Nullable machineIDs,
                                                   NSSet<NSString*>* _Nullable userInitiatedRemovals,
                                                   NSSet<NSString*>* _Nullable evictedRemovals,
                                                   NSSet<NSString*>* _Nullable unknownReasonRemovals,
                                                   NSString* _Nullable version,
+                                                  NSString* _Nullable trustedDeviceHash,
+                                                  NSString* _Nullable deletedDeviceHash,
+                                                  NSNumber* _Nullable trustedDevicesUpdateTimestamp,
                                                   NSError* _Nullable error))complete;
 
 - (void)registerNotification:(id<OTAuthKitAdapterNotifier>)notifier;

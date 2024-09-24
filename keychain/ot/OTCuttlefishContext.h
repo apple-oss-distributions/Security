@@ -73,6 +73,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@interface OTMetricsSessionData : NSObject
+
+@property (readonly, atomic, strong, nullable) NSString* flowID;
+@property (readonly, atomic, strong, nullable) NSString* deviceSessionID;
+
+-(instancetype)init NS_UNAVAILABLE;
+-(instancetype)initWithFlowID:(NSString* _Nullable)flowID deviceSessionID:(NSString* _Nullable)deviceSessionID;
+@end
+
 @interface OTCuttlefishContext : NSObject <OctagonCuttlefishUpdateReceiver,
                                            OTAuthKitAdapterNotifier,
                                            OctagonStateMachineEngine,
@@ -97,8 +106,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, nonatomic) CKKSNearFutureScheduler* sosConsistencyRateLimiter;
 @property (nullable, nonatomic) CKKSNearFutureScheduler* checkMetricsTrigger;
 
-@property (nonatomic, strong, nullable) NSString* flowID;
-@property (nonatomic, strong, nullable) NSString* deviceSessionID;
+@property (atomic, strong, nullable) OTMetricsSessionData* sessionMetrics;
 @property (nonatomic) OTAccountMetadataClassC_MetricsState shouldSendMetricsForOctagon;
 
 @property (readonly, nullable) CKKSKeychainView*            ckks;
@@ -140,7 +148,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Call one of these when the account state changes. OTCuttlefishContext is responsible for maintaining this state across daemon restarts.
 - (BOOL)accountAvailable:(NSString*)altDSID error:(NSError**)error;
-- (BOOL)accountNoLongerAvailable:(NSError**)error;
+- (BOOL)accountNoLongerAvailable;
 - (BOOL)idmsTrustLevelChanged:(NSError**)error;
 
 // Call these to manipulate the "CDP-ness" of the account
@@ -165,6 +173,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)rpcJoin:(NSData*)vouchData
        vouchSig:(NSData*)vouchSig
           reply:(void (^)(NSError * _Nullable error))reply;
+
+- (void)rpcEpoch:(void (^)(uint64_t epoch,
+                           NSError * _Nullable error))reply;
+
+- (void)rpcVoucherWithConfiguration:(NSString*)peerID
+                      permanentInfo:(NSData *)permanentInfo
+                   permanentInfoSig:(NSData *)permanentInfoSig
+                         stableInfo:(NSData *)stableInfo
+                      stableInfoSig:(NSData *)stableInfoSig
+                              reply:(void (^)(NSData* _Nullable voucher, NSData* _Nullable voucherSig, NSError * _Nullable error))reply;
 
 - (void)rpcReset:(CuttlefishResetReason)resetReason
            reply:(nonnull void (^)(NSError * _Nullable))reply;
@@ -236,7 +254,6 @@ NS_ASSUME_NONNULL_BEGIN
                                            reply:(void (^)(NSArray<NSData*>* _Nullable records,
                                                            NSError* _Nullable error))reply;
 - (void)rpcInvalidateEscrowCache:(void (^)(NSError* _Nullable error))reply;
-
 - (void)fetchEscrowContents:(void (^)(NSData* _Nullable entropy,
                                       NSString* _Nullable bottleID,
                                       NSData* _Nullable signingPublicKey,
@@ -258,6 +275,13 @@ NS_ASSUME_NONNULL_BEGIN
                                        reply:(void (^)(bool exists, NSError *_Nullable error))reply;
 - (void)rpcCheckInheritanceKeyWithUUID:(NSUUID *)uuid
                                  reply:(void (^)(bool exists, NSError *_Nullable error))reply;
+- (void)rpcRecreateInheritanceKeyWithUUID:(NSUUID *_Nullable)uuid
+                                    oldIK:(OTInheritanceKey *)oldIK
+                                    reply:(void (^)(OTInheritanceKey *_Nullable crk, NSError *_Nullable error))reply;
+- (void)rpcCreateInheritanceKeyWithUUID:(NSUUID *_Nullable)uuid
+                         claimTokenData:(NSData *)claimTokenData
+                        wrappingKeyData:(NSData *)wrappingKeyData
+                                  reply:(void (^)(OTInheritanceKey *_Nullable crk, NSError *_Nullable error))reply;
 
 - (void)rpcRefetchCKKSPolicy:(void (^)(NSError * _Nullable error))reply;
 
@@ -305,6 +329,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)rerollWithReply:(void (^)(NSError *_Nullable error))reply;
 
+// Used to reset CKKS's trust status if CKKS mistakenly thinks it's not trusted.
+- (BOOL)recheckCKKSTrustStatus:(NSError**)error;
+
 // For testing.
 - (OTAccountMetadataClassC_AccountState)currentMemoizedAccountState;
 - (OTAccountMetadataClassC_TrustState)currentMemoizedTrustState;
@@ -316,7 +343,7 @@ NS_ASSUME_NONNULL_BEGIN
                                                   reply:(void (^)(NSError* _Nullable error))reply;
 - (BOOL)checkAllStateCleared;
 - (void)clearCKKS;
-- (void)setMachineIDOverride:(NSString*)machineID;
+- (void)setMachineIDOverride:(NSString* _Nullable)machineID;
 
 @property (nullable) TPPolicyVersion* policyOverride;
 
@@ -326,8 +353,7 @@ NS_ASSUME_NONNULL_BEGIN
 // For reporting
 - (BOOL)machineIDOnMemoizedList:(NSString*)machineID error:(NSError**)error NS_SWIFT_NOTHROW;
 - (TrustedPeersHelperEgoPeerStatus* _Nullable)egoPeerStatus:(NSError**)error;
-
-- (void)setAccountSettings:(OTAccountSettings*_Nullable)accountSettings;
+- (NSNumber* _Nullable)currentlyEnforcingIDMSTDL:(NSError**)error;
 
 - (BOOL)fetchSendingMetricsPermitted:(NSError**)error;
 - (BOOL)persistSendingMetricsPermitted:(BOOL)sendingMetricsPermitted error:(NSError**)error;

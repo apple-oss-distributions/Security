@@ -33,8 +33,6 @@
 
 @property OctagonState* stateIfListUpdates;
 
-@property OctagonState* stateIfAuthenticationError;
-
 @property (nullable) OctagonFlag* retryFlag;
 
 // Since we're making callback based async calls, use this operation trick to hold off the ending of this operation
@@ -48,7 +46,6 @@
 - (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
                        intendedState:(OctagonState*)intendedState
                     listUpdatesState:(OctagonState*)stateIfListUpdates
-            authenticationErrorState:(OctagonState*)stateIfNotAuthenticated
                           errorState:(OctagonState*)errorState
                            retryFlag:(OctagonFlag*)retryFlag
 
@@ -59,7 +56,6 @@
         _intendedState = intendedState;
         _nextState = errorState;
         _stateIfListUpdates = stateIfListUpdates;
-        _stateIfAuthenticationError = stateIfNotAuthenticated;
 
         _retryFlag = retryFlag;
     }
@@ -130,11 +126,17 @@
         secerror("octagon-authkit: failed to fetch demo account flag: %@", localError);
     }
 
-    [self.deps.authKitAdapter fetchCurrentDeviceListByAltDSID:altDSID reply:^(NSSet<NSString *> * _Nullable machineIDs,
+    [self.deps.authKitAdapter fetchCurrentDeviceListByAltDSID:altDSID 
+                                                       flowID:self.deps.flowID
+                                              deviceSessionID:self.deps.deviceSessionID
+                                                        reply:^(NSSet<NSString *> * _Nullable machineIDs,
                                                                               NSSet<NSString*>* _Nullable userInitiatedRemovals,
                                                                               NSSet<NSString*>* _Nullable evictedRemovals,
                                                                               NSSet<NSString*>* _Nullable unknownReasonRemovals,
                                                                               NSString* _Nullable version,
+                                                                              NSString* _Nullable trustedDeviceHash,
+                                                                              NSString* _Nullable deletedDeviceHash,
+                                                                              NSNumber* _Nullable trustedDevicesUpdateTimestamp,
                                                                               NSError * _Nullable error) {
         STRONGIFY(self);
 
@@ -156,11 +158,17 @@
             }
             self.error = error;
 
-            if([AKAppleIDAuthenticationErrorDomain isEqualToString:error.domain] && error.code == AKAuthenticationErrorNotPermitted) {
-                self.nextState = self.stateIfAuthenticationError;
-            }
+            [self.deps.cuttlefishXPCWrapper markTrustedDeviceListFetchFailed:self.deps.activeAccount
+                                                                       reply:^(NSError * _Nullable error) {
+                if(error) {
+                    secnotice("octagon-authkit", "Unable to mark machineID list as out of date: %@", error);
+                    self.error = error;
+                } else {
+                    secnotice("octagon-authkit", "Successfully marked machineID list as out of date");
+                }
+                [self runBeforeGroupFinished:self.finishedOp];
+            }];
 
-            [self runBeforeGroupFinished:self.finishedOp];
 
         } else if (!machineIDs) {
             secerror("octagon-authkit: empty machine id list");
@@ -179,6 +187,9 @@
               userInitiatedRemovals:userInitiatedRemovals
                     evictedRemovals:evictedRemovals
               unknownReasonRemovals:unknownReasonRemovals
+                  trustedDeviceHash:trustedDeviceHash
+                  deletedDeviceHash:deletedDeviceHash
+      trustedDevicesUpdateTimestamp:trustedDevicesUpdateTimestamp
                       accountIsDemo:isAccountDemo
                             version:version];
         }
@@ -189,7 +200,11 @@
     userInitiatedRemovals:(NSSet<NSString *>*)userInitiatedRemovals
           evictedRemovals:(NSSet<NSString *>*)evictedRemovals
     unknownReasonRemovals:(NSSet<NSString *>*)unknownReasonRemovals
-            accountIsDemo:(BOOL)accountIsDemo version:(NSString* _Nullable)version
+        trustedDeviceHash:(NSString * _Nullable)trustedDeviceHash
+        deletedDeviceHash:(NSString * _Nullable)deletedDeviceHash
+trustedDevicesUpdateTimestamp:(NSNumber * _Nullable)trustedDevicesUpdateTimestamp
+            accountIsDemo:(BOOL)accountIsDemo 
+                  version:(NSString* _Nullable)version
 {
     WEAKIFY(self);
     BOOL honorIDMSListChanges = accountIsDemo ? NO : YES;
@@ -204,7 +219,14 @@
                                                          evictedRemovals:evictedRemovals
                                                    unknownReasonRemovals:unknownReasonRemovals
                                                     honorIDMSListChanges:honorIDMSListChanges
-                                                                 version:version
+                                                                 version:version 
+                                                                  flowID:self.deps.flowID
+                                                         deviceSessionID:self.deps.deviceSessionID
+                                                          canSendMetrics:self.deps.permittedToSendMetrics
+                                                                 altDSID:self.deps.activeAccount.altDSID
+                                                       trustedDeviceHash:trustedDeviceHash
+                                                       deletedDeviceHash:deletedDeviceHash 
+                                           trustedDevicesUpdateTimestamp:trustedDevicesUpdateTimestamp
                                                                    reply:^(BOOL listDifferences, NSError * _Nullable error) {
         STRONGIFY(self);
 

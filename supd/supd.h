@@ -86,6 +86,8 @@
 - (NSArray<NSDictionary *> *)createChunkedLoggingJSON:(NSArray<NSDictionary *> *)healthSummaries failures:(NSArray<NSDictionary *> *)failures error:(NSError **)error;
 - (NSArray<NSArray *> *)chunkFailureSet:(size_t)sizeCapacity events:(NSArray<NSDictionary *> *)events error:(NSError **)error;
 - (size_t)serializedEventSize:(NSObject *)event error:(NSError**)error;
+- (BOOL)ckDeviceAccountApprovedTopic:(NSString *)topic;
+
 + (NSString*)databasePathForCKKS;
 + (NSString*)databasePathForSOS;
 + (NSString*)databasePathForPCS;
@@ -94,6 +96,7 @@
 + (NSString*)databasePathForNetworking;
 + (NSString*)databasePathForCloudServices;
 + (NSString*)databasePathForTransparency;
++ (NSString*)databasePathForSWTransparency;
 
 #if TARGET_OS_OSX
 + (NSString*)databasePathForRootTrust;
@@ -106,21 +109,25 @@
 @end
 
 extern NSString* const SupdErrorDomain;
-typedef NS_ENUM(NSInteger, SupdError) {
+typedef NS_ERROR_ENUM(SupdErrorDomain, SupdError) {
     SupdNoError = 0,
     SupdGenericError,
     SupdInvalidJSONError,
+    SupdMissingParamError,
 };
 
 @interface supd : NSObject <supdProtocol, TrustdFileHelper_protocol>
+- (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithConnection:(NSXPCConnection *)connection;
-
+- (void)performRegularlyScheduledUpload;
 // --------------------------------
 // Things below are for unit testing
 @property (readonly) NSArray<SFAnalyticsTopic*>* analyticsTopics;
 @property (readonly) SFAnalyticsReporter *reporter;
 - (void)sendNotificationForOncePerReportSamplers;
 - (instancetype)initWithConnection:(NSXPCConnection *)connection reporter:(SFAnalyticsReporter *)reporter;
++ (NSData *)serializeLoggingEvent:(NSDictionary *)event
+                            error:(NSError **)error;
 @end
 
 // --------------------------------

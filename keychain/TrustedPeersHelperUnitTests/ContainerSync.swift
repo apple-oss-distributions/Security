@@ -267,12 +267,19 @@ extension Container {
                                   userInitiatedRemovals: Set<String>? = nil,
                                   evictedRemovals: Set<String>? = nil,
                                   unknownReasonRemovals: Set<String>? = nil,
+                                  flowID: String? = nil,
+                                  deviceSessionID: String? = nil,
+                                  canSendMetrics: Bool = false,
+                                  altDSID: String? = nil,
                                   accountIsDemo: Bool,
+                                  trustedDeviceHash: String? = nil,
+                                  deletedDeviceHash: String? = nil,
+                                  trustedDevicesUpdateTimestamp: NSNumber? = nil,
                                   listDifference: Bool = true) -> (Error?) {
         let expectation = XCTestExpectation(description: "setAllowedMachineIDs replied")
         var reterr: Error?
         let honorIDMSListChanges = accountIsDemo ? false : true
-        self.setAllowedMachineIDs(allowedMachineIDs, userInitiatedRemovals: userInitiatedRemovals, evictedRemovals: evictedRemovals, unknownReasonRemovals: unknownReasonRemovals, honorIDMSListChanges: honorIDMSListChanges, version: nil) { differences, err in
+        self.setAllowedMachineIDs(allowedMachineIDs, userInitiatedRemovals: userInitiatedRemovals, evictedRemovals: evictedRemovals, unknownReasonRemovals: unknownReasonRemovals, honorIDMSListChanges: honorIDMSListChanges, version: nil, flowID: flowID, deviceSessionID: deviceSessionID, canSendMetrics: canSendMetrics, altDSID: altDSID, trustedDeviceHash: trustedDeviceHash, deletedDeviceHash: deletedDeviceHash, trustedDevicesUpdateTimestamp: trustedDevicesUpdateTimestamp) { differences, err in
             XCTAssertEqual(differences, listDifference, "Reported list difference should match expectation")
             reterr = err
             expectation.fulfill()
@@ -324,6 +331,8 @@ extension Container {
             expectation.fulfill()
         }
         test.wait(for: [expectation], timeout: 10.0)
+        XCTAssertNil(retstate!.peerError, "getStateSync peerError should be nil")
+        XCTAssertNil(retstate!.voucherError, "getStateSync voucherError should be nil")
         return retstate!
     }
 
@@ -376,7 +385,7 @@ extension Container {
         var retescrowRecordIDs: [String]?
         var retpartialEscrowRecordIDs: [String]?
         var reterror: Error?
-        self.fetchViableBottles(from: .default) { escrowRecordIDs, partialEscrowRecordIDs, error in
+        self.fetchViableBottles(from: .default, flowID: nil, deviceSessionID: nil) { escrowRecordIDs, partialEscrowRecordIDs, error in
             retescrowRecordIDs = escrowRecordIDs
             retpartialEscrowRecordIDs = partialEscrowRecordIDs
             reterror = error
@@ -458,7 +467,9 @@ extension Container {
 
         self.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck,
                                 repair: repair,
-                                knownFederations: []) { response, error in
+                                knownFederations: [],
+                                flowID: nil,
+                                deviceSessionID: nil) { response, error in
             retresponse = response
             reterror = error
 
@@ -466,5 +477,39 @@ extension Container {
         }
         test.wait(for: [expectation], timeout: 10.0)
         return (retresponse, reterror)
+    }
+
+    func fetchCurrentItemSync(items: [CuttlefishCurrentItemSpecifier], test: XCTestCase) -> ([CuttlefishCurrentItem]?, [CKRecord]?, Error?) {
+        let expectation = XCTestExpectation(description: "fetchCurrentItem replied")
+        var retCurrentItems: [CuttlefishCurrentItem]?
+        var retSyncKeys: [CKRecord]?
+        var retError: Error?
+
+        self.fetchCurrentItem(items: items) { items, keys, error in
+            retCurrentItems = items
+            retSyncKeys = keys
+            retError = error
+
+            expectation.fulfill()
+        }
+        test.wait(for: [expectation], timeout: 10.0)
+        return (retCurrentItems, retSyncKeys, retError)
+    }
+
+    func fetchPCSIdentityByKeySync(services: [CuttlefishPCSServiceIdentifier], test: XCTestCase) -> ([CuttlefishPCSIdentity]?, [CKRecord]?, Error?) {
+        let expectation = XCTestExpectation(description: "fetchPCSIdentityByKey replied")
+        var retPCSIdentities: [CuttlefishPCSIdentity]?
+        var retSyncKeys: [CKRecord]?
+        var retError: Error?
+
+        self.fetchPCSIdentityByKey(services: services) { items, keys, error in
+            retPCSIdentities = items
+            retSyncKeys = keys
+            retError = error
+
+            expectation.fulfill()
+        }
+        test.wait(for: [expectation], timeout: 10.0)
+        return (retPCSIdentities, retSyncKeys, retError)
     }
 }

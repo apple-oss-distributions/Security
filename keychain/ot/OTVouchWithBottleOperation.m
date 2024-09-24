@@ -28,7 +28,6 @@
 #import <os/feature_private.h>
 
 #import "keychain/ot/OTVouchWithBottleOperation.h"
-#import "keychain/ot/OTClientStateMachine.h"
 #import "keychain/ot/OTCuttlefishContext.h"
 #import "keychain/ot/OTFetchCKKSKeysOperation.h"
 #import "keychain/ot/OTStates.h"
@@ -130,7 +129,9 @@
 
         if(error) {
             secerror("octagon: Error fetching TLKShares to recover: %@", error);
-            // recovering these is best-effort, so fall through.
+            self.error = error;
+            [self runBeforeGroupFinished:self.finishedOp];
+            return;
         }
 
         NSMutableArray<CKKSTLKShare*>* filteredTLKShares = [NSMutableArray array];

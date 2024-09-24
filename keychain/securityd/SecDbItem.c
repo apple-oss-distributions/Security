@@ -52,6 +52,7 @@
 
 #include <keychain/ckks/CKKS.h>
 #include <keychain/ot/OTConstants.h>
+#include <keychain/ot/Affordance_OTConstants.h>
 
 #define PERSISTENT_REF_UUID_BYTES_LENGTH (sizeof(uuid_t))
 
@@ -401,7 +402,7 @@ CFDataRef SecDbItemCopyEncryptedDataToBackup(SecDbItemRef item, uint64_t handle,
     keybag_handle_t keybag = (keybag_handle_t)handle;
     CFMutableDictionaryRef attributes = SecDbItemCopyPListWithMask(item, kSecDbInCryptoDataFlag, error);
     CFMutableDictionaryRef auth_attributes = SecDbItemCopyPListWithMask(item, kSecDbInAuthenticatedDataFlag, error);
-    if (attributes || auth_attributes) {
+    if (attributes && auth_attributes) {
         SecAccessControlRef access_control = SecDbItemCopyAccessControl(item, error);
         if (access_control) {
             if (ks_encrypt_data_legacy(keybag, access_control, item->credHandle, attributes, auth_attributes, &edata, false, false, error)) {
@@ -411,9 +412,17 @@ CFDataRef SecDbItemCopyEncryptedDataToBackup(SecDbItemRef item, uint64_t handle,
             }
             CFRelease(access_control);
         }
-        CFReleaseNull(attributes);
-        CFReleaseNull(auth_attributes);
+    } else if (attributes || auth_attributes) {
+        if (__security_simulatecrash_enabled()) {
+            os_log_fault(secLogObjForScope("SecEmergency"),
+                         "SecDbItemCopyEncryptedDataToBackup: not all plists are present: attributes: %@, auth_attributes: %@ : %@",
+                         attributes  ? CFSTR("present") : CFSTR("missing"),
+                         auth_attributes? CFSTR("present") : CFSTR("missing"),
+                         (error != nil) ? (CFTypeRef)*error : (CFTypeRef)CFSTR("no error pointer"));
+        }
     }
+    CFReleaseNull(attributes);
+    CFReleaseNull(auth_attributes);
 
     return edata;
 }
@@ -1653,6 +1662,7 @@ bool SecDbItemInsertOrReplace(SecDbItemRef item, SecDbConnectionRef dbconn, CFEr
                 SecDbItemRef replace = NULL;
                 if (is_corrupt) {
                     // If old_item is corrupted pretend it's not there and just replace it.
+                    secnotice("item", "replacing corrupted item " SECDBITEM_FMT " with " SECDBITEM_FMT, old_item, item);
                     replace = item;
                     CFRetain(replace);
                     if(error)
