@@ -82,6 +82,8 @@ SEC_CONST_DECL (kSecTrustInfoCompanyNameKey, "CompanyName");
 SEC_CONST_DECL (kSecTrustInfoRevocationKey, "Revocation");
 SEC_CONST_DECL (kSecTrustInfoRevocationValidUntilKey, "RevocationValidUntil");
 SEC_CONST_DECL (kSecTrustInfoCertificateTransparencyKey, "CertificateTransparency");
+SEC_CONST_DECL (kSecTrustInfoQCStatementsKey, "QCStatements");
+SEC_CONST_DECL (kSecTrustInfoQWACValidationKey, "QWACValidation");
 
 /* This is the "real" trust validity date which includes all inputs. */
 SEC_CONST_DECL (kSecTrustInfoResultNotBefore, "TrustResultNotBefore");
@@ -96,6 +98,8 @@ SEC_CONST_DECL (kSecTrustRevocationChecked, "TrustRevocationChecked");
 SEC_CONST_DECL (kSecTrustRevocationReason, "TrustRevocationReason");
 SEC_CONST_DECL (kSecTrustResultDetails, "TrustResultDetails");
 SEC_CONST_DECL (kSecTrustCertificateTransparency, "TrustCertificateTransparency");
+SEC_CONST_DECL (kSecTrustQCStatements, "TrustQCStatements");
+SEC_CONST_DECL (kSecTrustQWACValidation, "TrustQWACValidation");
 
 /* Deprecated public constants */
 SEC_CONST_DECL (kSecTrustCertificateTransparencyWhiteList, "TrustCertificateTransparencyWhiteList");
@@ -464,7 +468,7 @@ static bool to_bool_error_request(enum SecXPCOperation op, CFErrorRef *error) {
 }
 
 Boolean SecTrustFlushResponseCache(CFErrorRef *error) {
-    return SecTrustResetSettings(kSecTrustResetOCSPCache, error);
+    return SecTrustResetSettings(kSecTrustResetOCSPCache | kSecTrustResetValidDB, error);
 }
 
 OSStatus SecTrustSetOCSPResponse(SecTrustRef trust, CFTypeRef responseData) {
@@ -879,51 +883,6 @@ Boolean SecTrustIsExpiredOnly(SecTrustRef trust) {
 out:
     CFReleaseSafe(details);
     return result;
-}
-
-#if TARGET_OS_IPHONE
-static CFArrayRef SecTrustCreatePolicyAnchorsArray(const UInt8* certData, CFIndex certLength)
-{
-    CFArrayRef array = NULL;
-    CFAllocatorRef allocator = kCFAllocatorDefault;
-    SecCertificateRef cert = SecCertificateCreateWithBytes(allocator, certData, certLength);
-    if (cert) {
-        array = CFArrayCreate(allocator, (const void **)&cert, 1, &kCFTypeArrayCallBacks);
-        CFReleaseSafe(cert);
-    }
-    return array;
-}
-#endif
-
-static void SecTrustAddPolicyAnchors(SecTrustRef trust)
-{
-    /* Provide anchor certificates specifically required by certain policies.
-       This is used to evaluate test policies where the anchor is not provided
-       in the root store and may not be able to be supplied by the caller.
-     */
-    if (!trust) { return; }
-    __block CFArrayRef policies = NULL;
-    dispatch_sync(trust->_trustQueue, ^{
-        policies = CFRetain(trust->_policies);
-    });
-    CFIndex ix, count = CFArrayGetCount(policies);
-    for (ix = 0; ix < count; ++ix) {
-        SecPolicyRef policy = (SecPolicyRef) CFArrayGetValueAtIndex(policies, ix);
-        if (policy) {
-            #if TARGET_OS_IPHONE
-            if (CFEqual(policy->_oid, kSecPolicyAppleTestSMPEncryption)) {
-                __block CFArrayRef policyAnchors = SecTrustCreatePolicyAnchorsArray(_SEC_TestAppleRootCAECC, sizeof(_SEC_TestAppleRootCAECC));
-                dispatch_sync(trust->_trustQueue, ^{
-                    CFReleaseSafe(trust->_anchors);
-                    trust->_anchors = policyAnchors;
-                });
-                trust->_anchorsOnly = true;
-                break;
-            }
-            #endif
-        }
-    }
-    CFReleaseSafe(policies);
 }
 
 // uncomment for verbose debug logging (debug builds only)
@@ -1826,7 +1785,6 @@ static OSStatus SecTrustEvaluateIfNecessary(SecTrustRef trust) {
     SecTrustEvaluateThreadRuntimeCheck();
 
     __block CFAbsoluteTime verifyTime = SecTrustGetVerifyTime(trust);
-    SecTrustAddPolicyAnchors(trust);
     dispatch_sync(trust->_trustQueue, ^{
         if (SecTrustIsTrustResultValid(trust, verifyTime)) {
             result = errSecSuccess;
@@ -1901,7 +1859,6 @@ static void SecTrustEvaluateIfNecessaryFastAsync(SecTrustRef trust,
     }
 
     __block CFAbsoluteTime verifyTime = SecTrustGetVerifyTime(trust);
-    SecTrustAddPolicyAnchors(trust);
 
     // retain the caller's queue and trust so we have it whenever our evalBlock runs
     dispatch_retain(queue);
@@ -1946,6 +1903,11 @@ static void SecTrustEvaluateIfNecessaryFastAsync(SecTrustRef trust,
 
         SecTrustValidateInput(trust);
 
+        struct {
+            CFArrayRef details;
+            CFDictionaryRef info;
+            CFArrayRef chain;
+        } *trustContext = calloc(1, sizeof(*trustContext));
         TRUSTD_XPC_ASYNC(sec_trust_evaluate,
                          handle_trust_evaluate_xpc_async,
                          queue,
@@ -1954,6 +1916,10 @@ static void SecTrustEvaluateIfNecessaryFastAsync(SecTrustRef trust,
             __block OSStatus result = errSecInternalError;
             dispatch_sync(trust->_trustQueue, ^{
                 trust->_trustResult = tr;
+                CFAssignRetained(trust->_details, trustContext->details);
+                CFAssignRetained(trust->_info, trustContext->info);
+                CFAssignRetained(trust->_chain, trustContext->chain);
+                free(trustContext);
                 if (trust->_trustResult == kSecTrustResultInvalid /* TODO check domain */ &&
                     SecErrorGetOSStatus(error) == errSecNotAvailable &&
                     CFArrayGetCount(trust->_certificates)) {
@@ -1971,9 +1937,9 @@ static void SecTrustEvaluateIfNecessaryFastAsync(SecTrustRef trust,
                     result = errSecSuccess;
                     return;
                 }
-                result = SecOSStatusWith(^bool (CFErrorRef *error2) {
+                result = SecOSStatusWith(^bool (CFErrorRef CF_CONSUMED *error2) {
                     if (error2 != NULL) {
-                        *error2 = error;
+                        *error2 = CFRetainSafe(error);
                     }
                     return trust->_trustResult != kSecTrustResultInvalid;
                 });
@@ -1990,7 +1956,7 @@ static void SecTrustEvaluateIfNecessaryFastAsync(SecTrustRef trust,
                          trust->_certificates, trust->_anchors, trust->_anchorsOnly, trust->_keychainsAllowed,
                          trust->_policies, trust->_responses, trust->_SCTs, trust->_trustedLogs,
                          verifyTime, SecTrustGetCurrentAccessGroups(), trust->_exceptions, trust->_auditToken, trust->_attribution,
-                         &trust->_details, &trust->_info, &trust->_chain);
+                         &trustContext->details, &trustContext->info, &trustContext->chain);
         dispatch_release(queue); // dispatch_async call above retained the queue for the block
     };
 
@@ -2334,12 +2300,20 @@ bool SecTrustSetExceptions(SecTrustRef trust, CFDataRef encodedExceptions) {
 		exceptions = NULL;
 	}
 
+    __block bool same = false;
     dispatch_sync(trust->_trustQueue, ^{
+        if (trust->_exceptions == exceptions) {
+            same = true;
+            return;
+        }
         CFReleaseSafe(trust->_exceptions);
         /* take an extra retain for local use, since another thread could release trust->_exceptions */
         CFRetainSafe(exceptions);
         trust->_exceptions = exceptions;
     });
+    if (same) {
+        return true;
+    }
 
     /* We changed the exceptions -- so we need to re-evaluate */
     SecTrustSetNeedsEvaluation(trust);
@@ -2387,6 +2361,7 @@ SecTrustSetOptions(SecTrustRef trustRef, SecTrustOptionFlags options)
             if (!exception_dictionary) { status = errSecAllocate; goto out; }
             if ((options & kSecTrustOptionAllowExpired) != 0) {
                 CFDictionaryAddValue(exception_dictionary, kSecPolicyCheckTemporalValidity, kCFBooleanFalse);
+                CFDictionaryAddValue(exception_dictionary, kSecPolicyCheckValidLeaf, kCFBooleanFalse);
             }
             if ((options & (kSecTrustOptionImplicitAnchors | kSecTrustOptionAllowExpiredRoot)) != 0) {
                 /* Check that root is self-signed. */
@@ -2413,6 +2388,7 @@ SecTrustSetOptions(SecTrustRef trustRef, SecTrustOptionFlags options)
         if (!exception_dictionary) { status = errSecAllocate; goto out; }
         if ((options & kSecTrustOptionAllowExpired) != 0) {
             CFDictionaryAddValue(exception_dictionary, kSecPolicyCheckTemporalValidity, kCFBooleanFalse);
+            CFDictionaryAddValue(exception_dictionary, kSecPolicyCheckValidLeaf, kCFBooleanFalse);
         }
         if ((options & kSecTrustOptionAllowExpiredRoot) != 0) {
             CFDictionaryAddValue(exception_dictionary, kSecPolicyCheckValidRoot, kCFBooleanFalse);
@@ -2746,6 +2722,16 @@ CFDictionaryRef SecTrustCopyResult(SecTrustRef trust) {
         CFDateRef validUntilDate;
         if (CFDictionaryGetValueIfPresent(info, kSecTrustRevocationValidUntilDate, (const void **)&validUntilDate)) {
             CFDictionarySetValue(results, (const void *)kSecTrustRevocationValidUntilDate, (const void *)validUntilDate);
+        }
+
+        // kSecTrustQCStatements
+        CFStringRef qcsValue;
+        CFBooleanRef qwacValue;
+        if (CFDictionaryGetValueIfPresent(info, kSecTrustInfoQCStatementsKey, (const void **)&qcsValue)) {
+            CFDictionarySetValue(results, (const void *)kSecTrustQCStatements, (const void *)qcsValue);
+        }
+        if (CFDictionaryGetValueIfPresent(info, kSecTrustInfoQWACValidationKey, (const void **)&qwacValue)) {
+            CFDictionarySetValue(results, (const void *)kSecTrustQWACValidation, (const void *)qwacValue);
         }
     });
 
@@ -3298,6 +3284,27 @@ SecTrustRef SecTrustDeserialize(CFDataRef serializedTrust, CFErrorRef *error) {
 
 out:
     CFReleaseNull(plist);
+    return trust;
+}
+
+CFPropertyListRef SecTrustCopyPropertyListRepresentation(SecTrustRef trust, CFErrorRef *error) {
+    CFPropertyListRef trustPlist = NULL;
+    require_action_quiet(trust, out,
+                         SecError(errSecParam, error, CFSTR("null trust input")));
+    require_action_quiet(trustPlist = SecTrustCopyPlist(trust), out,
+                         SecError(errSecDecode, error, CFSTR("unable to create trust plist")));
+out:
+    return trustPlist;
+}
+
+SecTrustRef SecTrustCreateFromPropertyListRepresentation(CFPropertyListRef trustPlist, CFErrorRef *error) {
+    SecTrustRef trust = NULL;
+    OSStatus status = errSecSuccess;
+    require_action_quiet(trustPlist, out,
+                         SecError(errSecParam, error, CFSTR("null property list input")));
+    require_noerr_action_quiet(status = SecTrustCreateFromPlist(trustPlist, &trust), out,
+                               SecError(status, error, CFSTR("unable to create trust ref")));
+out:
     return trust;
 }
 

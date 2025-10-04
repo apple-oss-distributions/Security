@@ -48,6 +48,7 @@
 #import "keychain/categories/NSError+UsefulConstructors.h"
 
 #import "OctagonTrustTests.h"
+#import <KeychainCircle/MetricsOverrideForTests.h>
 
 @implementation ProxyXPCConnection
 
@@ -160,14 +161,32 @@
     return nil;
 }
 
+- (NSDictionary *)recoverWithCDPContext:(OTICDPRecordContext *)cdpContext
+                           escrowRecord:(OTEscrowRecord*)escrowRecord
+                                altDSID:(NSString* _Nullable)altDSID
+                                 flowID:(NSString* _Nullable)flowID
+                        deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                  error:(NSError *__autoreleasing *)error
+{
+    return [NSDictionary dictionary];
+}
+
+- (NSDictionary* _Nullable)recoverSilentWithCDPContext:(OTICDPRecordContext*)cdpContext
+                                            allRecords:(NSArray<OTEscrowRecord*>*)allRecords
+                                               altDSID:(NSString* _Nullable)altDSID
+                                                flowID:(NSString* _Nullable)flowID
+                                       deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                                 error:(NSError * __autoreleasing *)error
+{
+    return [NSDictionary dictionary];
+}
+
 - (NSError *)recoverWithInfo:(NSDictionary *)info results:(NSDictionary *__autoreleasing *)results {
     return nil;
 }
 
-#ifndef __clang_analyzer__
-- (void)restoreKeychainAsyncWithPassword:(id)password keybagDigest:(NSData *)keybagDigest haveBottledPeer:(BOOL)haveBottledPeer viewsNotToBeRestored:(NSMutableSet<NSString *> *)viewsNotToBeRestored error:(NSError *__autoreleasing *)error {
+- (void)restoreKeychainAsyncWithPassword:(id)password keybagDigest:(NSData *)keybagDigest haveBottledPeer:(BOOL)haveBottledPeer viewsNotToBeRestored:(NSMutableSet<NSString *> *)viewsNotToBeRestored error:(NSError *__autoreleasing *)error [[clang::suppress]] {
 }
-#endif
 
 - (bool)isRecoveryKeySet:(NSError *__autoreleasing *)error {
     if (self.failRecoveryKeySet) {
@@ -603,6 +622,18 @@
     self.otControl = [[OTControl alloc] initWithConnection:self.otXPCProxy.connection sync: true];
 
     self.mockClique = OCMClassMock([OTClique class]);
+
+    self.mockControl = OCMClassMock([OTControl class]);
+
+    // Set the global metrics bool to FALSE
+    MetricsDisable();
+}
+
+- (void)tearDown
+{
+    MetricsEnable();
+
+    [super tearDown];
 }
 
 - (void)testFetchOneViableEscrowRecord
@@ -1166,6 +1197,51 @@
 
     OTEscrowRecord *secondRecord = escrowRecords[1];
     XCTAssertNotNil(secondRecord.serialNumber, "serialNumber should not be nil");
+}
+
+- (void)mockResetAndEstablish:(OTControlArguments*)arguments
+                  resetReason:(CuttlefishResetReason)resetReason
+            idmsTargetContext:(NSString *_Nullable)idmsTargetContext
+       idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
+                   notifyIdMS:(bool)notifyIdMS
+              accountSettings:(OTAccountSettings *_Nullable)accountSettings
+                   accountIsW:(BOOL)accountIsW
+                        reply:(void (^)(NSError* _Nullable error))reply
+{
+    reply(nil);
+}
+
+- (void)testPerformEscrowRecoveryExpectResetAndEstablish {
+    OTConfigurationContext *cliqueContextConfiguration = [[OTConfigurationContext alloc]init];
+    cliqueContextConfiguration.context = OTDefaultContext;
+    cliqueContextConfiguration.altDSID = @"altdsid";
+
+    OCMStub([[self.mockControl ignoringNonObjectArgs] resetAndEstablish:[OCMArg any]
+                               resetReason:CuttlefishResetReasonNoBottleDuringEscrowRecovery
+                         idmsTargetContext:[OCMArg any]
+                    idmsCuttlefishPassword:[OCMArg any]
+                                notifyIdMS:[OCMArg any]
+                           accountSettings:[OCMArg any]
+                                accountIsW:NO
+                                     reply:[OCMArg any]]).andCall(self, @selector(mockResetAndEstablish:resetReason:idmsTargetContext:idmsCuttlefishPassword:notifyIdMS:accountSettings:accountIsW:reply:));
+
+    cliqueContextConfiguration.otControl = self.mockControl;
+    cliqueContextConfiguration.sbd = [[OTMockSecureBackup alloc] initWithBottleID:nil entropy:nil];
+    OTICDPRecordContext* recordContext = [[OTICDPRecordContext alloc] init];
+    OTEscrowRecord* record = [[OTEscrowRecord alloc] init];
+
+    NSError* error = nil;
+    OTClique* clique = [OTClique performEscrowRecovery:cliqueContextConfiguration cdpContext:recordContext escrowRecord:record error:&error];
+    XCTAssertNotNil(clique, "clique should not be nil");
+
+    OCMVerify([[self.mockControl ignoringNonObjectArgs] resetAndEstablish:[OCMArg any]
+                                      resetReason:CuttlefishResetReasonNoBottleDuringEscrowRecovery
+                                idmsTargetContext:[OCMArg any]
+                           idmsCuttlefishPassword:[OCMArg any]
+                                       notifyIdMS:[OCMArg any]
+                                  accountSettings:[OCMArg any]
+                                       accountIsW:NO
+                                            reply:[OCMArg any]]);
 }
 
 @end

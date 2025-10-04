@@ -6,6 +6,111 @@
 		<key>CertDirectory</key>
 		<string>si-20-sectrust-policies-data</string>
 		<key>MajorTestName</key>
+		<string>TestAppleRoots</string>
+		<key>MinorTestName</key>
+		<string>G1</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>TestAppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2024-12-01T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestAppleRoots</string>
+		<key>MinorTestName</key>
+		<string>G1Jun</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>TestAppleRootCAJun</string>
+		<key>VerifyDate</key>
+		<date>2024-12-01T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestAppleRoots</string>
+		<key>MinorTestName</key>
+		<string>G2</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>TestAppleRootCAG2</string>
+		<key>VerifyDate</key>
+		<date>2024-12-01T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestAppleRoots</string>
+		<key>MinorTestName</key>
+		<string>G3</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-12-01T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestAppleRoots</string>
+		<key>MinorTestName</key>
+		<string>GlobalRoot</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.2</string>
+		</dict>
+		<key>Leaf</key>
+		<string>TestAppleGlobalRootCA</string>
+		<key>VerifyDate</key>
+		<date>2024-12-01T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
 		<string>AST2</string>
 		<key>MinorTestName</key>
 		<string>NegativeTest</string>
@@ -60,7 +165,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>AppleServerAuthenticationAllowUATAST2</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -92,7 +197,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>AppleServerAuthenticationAllowUATEscrow</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -152,7 +257,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>AppleServerAuthenticationAllowUATFMiP</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -472,7 +577,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsTLSPinningTest</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -540,7 +645,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsTestAST2ServerAuth</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -567,7 +672,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsATVVPNProfile</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -747,6 +852,11 @@
 		<dict>
 			<key>PolicyIdentifier</key>
 			<string>1.2.840.113635.100.1.33</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>bbasile-test.scv.apple.com</string>
+			</dict>
 		</dict>
 		<key>Leaf</key>
 		<string>generic_apple_server</string>
@@ -919,7 +1029,7 @@
 		<key>MajorTestName</key>
 		<string>TestSMP</string>
 		<key>MinorTestName</key>
-		<string>PositiveTest</string>
+		<string>OldTestCA-ExpectFailure</string>
 		<key>Policies</key>
 		<dict>
 			<key>PolicyIdentifier</key>
@@ -934,7 +1044,7 @@
 		<key>VerifyDate</key>
 		<date>2014-04-11T19:00:00Z</date>
 		<key>ExpectedResult</key>
-		<integer>4</integer>
+		<integer>5</integer>
 		<key>ChainLength</key>
 		<integer>3</integer>
 	</dict>
@@ -944,7 +1054,7 @@
 		<key>MajorTestName</key>
 		<string>TestSMP</string>
 		<key>MinorTestName</key>
-		<string>NegativeTest</string>
+		<string>ProdCert</string>
 		<key>Policies</key>
 		<dict>
 			<key>PolicyIdentifier</key>
@@ -959,7 +1069,7 @@
 		<key>VerifyDate</key>
 		<date>2014-04-11T19:00:00Z</date>
 		<key>ExpectedResult</key>
-		<integer>5</integer>
+		<integer>4</integer>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -1107,7 +1217,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsiPhoneApplicationSigning</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -1232,7 +1342,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsiPhoneProvisioningProfileSigning</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -1361,6 +1471,33 @@
 		<key>CertDirectory</key>
 		<string>si-20-sectrust-policies-data</string>
 		<key>MajorTestName</key>
+		<string>SoftwareSigning-ProdQA</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.64</string>
+		</dict>
+		<key>Leaf</key>
+		<string>softwaresigning-prodqa</string>
+		<key>Intermediates</key>
+		<string>AppleCodeSigningCAG2</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2025-07-28T19:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
 		<string>SoftwareSigning</string>
 		<key>MinorTestName</key>
 		<string>NegativeTest</string>
@@ -1440,7 +1577,7 @@
 		<key>ChainLength</key>
 		<integer>3</integer>
 		<key>EnableTestCertificates</key>
-		<string>AppleServerAuthenticationAllowUATIDS</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -1965,7 +2102,7 @@
 		<key>ExpectedResult</key>
 		<integer>4</integer>
 		<key>EnableTestCertificates</key>
-		<string>ApplePinningAllowTestCertsUCRT</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -2459,7 +2596,7 @@
 		<key>ExpectedResult</key>
 		<integer>4</integer>
 		<key>EnableTestCertificates</key>
-		<string>AllowAppleTestCertificatesSecureIOStaticAsset</string>
+		<true/>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -3239,6 +3376,118 @@
 		<key>CertDirectory</key>
 		<string>si-20-sectrust-policies-data</string>
 		<key>MajorTestName</key>
+		<string>BAA_UCRT</string>
+		<key>MinorTestName</key>
+		<string>ExpiredRoot</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.85</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyRootDigest</key>
+				<data>NqCgd9yzhNoPMhUuraTsHymSa21aO1wlFQGRKu7xsRI=</data>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>fake_baa_valid_leaf</string>
+		<key>Intermediates</key>
+		<string>fake_baa_expired_subca</string>
+		<key>Anchors</key>
+		<string>fake_baa_expired_root</string>
+		<key>VerifyDate</key>
+		<date>2024-09-01T06:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>BAA_SCRT</string>
+		<key>MinorTestName</key>
+		<string>ExpiredRoot</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.84</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyRootDigest</key>
+				<data>NqCgd9yzhNoPMhUuraTsHymSa21aO1wlFQGRKu7xsRI=</data>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>fake_baa_valid_leaf</string>
+		<key>Intermediates</key>
+		<string>fake_baa_expired_subca</string>
+		<key>Anchors</key>
+		<string>fake_baa_expired_root</string>
+		<key>VerifyDate</key>
+		<date>2024-09-01T06:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>BAA_UCRT</string>
+		<key>MinorTestName</key>
+		<string>ExpiredLeaf</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.85</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyRootDigest</key>
+				<data>NqCgd9yzhNoPMhUuraTsHymSa21aO1wlFQGRKu7xsRI=</data>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>fake_baa_valid_leaf</string>
+		<key>Intermediates</key>
+		<string>fake_baa_expired_subca</string>
+		<key>Anchors</key>
+		<string>fake_baa_expired_root</string>
+		<key>VerifyDate</key>
+		<date>2026-09-01T06:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>BAA_SCRT</string>
+		<key>MinorTestName</key>
+		<string>ExpiredLeaf</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.84</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyRootDigest</key>
+				<data>NqCgd9yzhNoPMhUuraTsHymSa21aO1wlFQGRKu7xsRI=</data>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>fake_baa_valid_leaf</string>
+		<key>Intermediates</key>
+		<string>fake_baa_expired_subca</string>
+		<key>Anchors</key>
+		<string>fake_baa_expired_root</string>
+		<key>VerifyDate</key>
+		<date>2026-09-01T06:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
 		<string>AssetReceipt</string>
 		<key>MinorTestName</key>
 		<string>Positive-TemporallyValid</string>
@@ -3365,73 +3614,6 @@
 		<integer>4</integer>
 		<key>VerifyDate</key>
 		<date>2019-11-14T20:00:00Z</date>
-	</dict>
-	<dict>
-		<key>CertDirectory</key>
-		<string>si-20-sectrust-policies-data</string>
-		<key>BridgeOSDisable</key>
-		<true/>
-		<key>MajorTestName</key>
-		<string>ISTCrossSignPinning</string>
-		<key>MinorTestName</key>
-		<string>PositiveTest</string>
-		<key>Policies</key>
-		<dict>
-			<key>PolicyIdentifier</key>
-			<string>1.2.840.113635.100.1.74</string>
-			<key>Properties</key>
-			<dict>
-				<key>SecPolicyName</key>
-				<string>p02-ckdatabasews.icloud.com</string>
-			</dict>
-		</dict>
-		<key>Leaf</key>
-		<string>ckdatabasews</string>
-		<key>Intermediates</key>
-		<string>AppleISTCA2G1-Baltimore</string>
-		<key>Anchors</key>
-		<string>BaltimoreCyberTrustRoot</string>
-		<key>ExpectedResult</key>
-		<integer>4</integer>
-		<key>VerifyDate</key>
-		<date>2022-06-01T00:00:00Z</date>
-		<key>ChainLength</key>
-		<integer>3</integer>
-	</dict>
-	<dict>
-		<key>CertDirectory</key>
-		<string>si-20-sectrust-policies-data</string>
-		<key>BridgeOSDisable</key>
-		<true/>
-		<key>MajorTestName</key>
-		<string>ISTCrossSignPinning</string>
-		<key>MinorTestName</key>
-		<string>BothPositiveTest</string>
-		<key>Policies</key>
-		<dict>
-			<key>PolicyIdentifier</key>
-			<string>1.2.840.113635.100.1.74</string>
-			<key>Properties</key>
-			<dict>
-				<key>SecPolicyName</key>
-				<string>p02-ckdatabasews.icloud.com</string>
-			</dict>
-		</dict>
-		<key>Leaf</key>
-		<string>ckdatabasews</string>
-		<key>Intermediates</key>
-		<array>
-			<string>AppleISTCA2G1</string>
-			<string>AppleISTCA2G1-Baltimore</string>
-		</array>
-		<key>Anchors</key>
-		<string>BaltimoreCyberTrustRoot</string>
-		<key>ExpectedResult</key>
-		<integer>4</integer>
-		<key>VerifyDate</key>
-		<date>2022-06-01T00:00:00Z</date>
-		<key>ChainLength</key>
-		<integer>3</integer>
 	</dict>
 	<dict>
 		<key>CertDirectory</key>
@@ -4334,6 +4516,1077 @@
 		<integer>5</integer>
 		<key>ChainLength</key>
 		<integer>2</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>DCAttestation</string>
+		<key>MinorTestName</key>
+		<string>TemporallyValid</string>
+		<key>Policies</key>
+		<array>
+			<dict>
+				<key>PolicyIdentifier</key>
+				<string>1.2.840.113635.100.1.119</string>
+			</dict>
+		</array>
+		<key>Leaf</key>
+		<string>dc_attestation_leaf</string>
+		<key>Anchors</key>
+		<string>DCAttestationRootG1</string>
+		<key>VerifyDate</key>
+		<date>2025-01-01T00:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>2</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>DCAttestation</string>
+		<key>MinorTestName</key>
+		<string>ExpiredLeaf</string>
+		<key>Policies</key>
+		<array>
+			<dict>
+				<key>PolicyIdentifier</key>
+				<string>1.2.840.113635.100.1.119</string>
+			</dict>
+		</array>
+		<key>Leaf</key>
+		<string>dc_attestation_leaf</string>
+		<key>Anchors</key>
+		<string>DCAttestationRootG1</string>
+		<key>VerifyDate</key>
+		<date>2032-01-01T00:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>ChainLength</key>
+		<integer>2</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>DCAttestation</string>
+		<key>MinorTestName</key>
+		<string>ExpiredRoot</string>
+		<key>Policies</key>
+		<array>
+			<dict>
+				<key>PolicyIdentifier</key>
+				<string>1.2.840.113635.100.1.119</string>
+			</dict>
+		</array>
+		<key>Leaf</key>
+		<string>fake_baa_valid_leaf</string>
+		<key>Intermediates</key>
+		<string>fake_baa_expired_subca</string>
+		<key>Anchors</key>
+		<string>fake_baa_expired_root</string>
+		<key>VerifyDate</key>
+		<date>2024-09-01T06:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-Krypton-32</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.32</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-kr</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-NonProduction-32</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.32</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-np</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-Krypton-31</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.31</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-kr</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-NonProduction-31</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.31</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-np</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-Krypton-39</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.39</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-kr</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>TestSMP</string>
+		<key>MinorTestName</key>
+		<string>TestG3-NonProduction-39</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.39</string>
+		</dict>
+		<key>Leaf</key>
+		<string>ecc-smp-np</string>
+		<key>Intermediates</key>
+		<string>TestAppleSystemIntegrationCAG3</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-NoParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-URI</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017834000</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-VendorID</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-AllParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017834000</string>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-Expired</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-07-19T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-URI</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017833333</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-VendorID</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>2</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-AllParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017833333</string>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>2</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>SwiftMLSToolLeaf</string>
+		<key>Anchors</key>
+		<string>SwiftMLSToolRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-EKU</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+		</dict>
+		<key>Leaf</key>
+		<string>softwaresigning</string>
+		<key>Intermediates</key>
+		<string>AppleCodeSigningCA</string>
+		<key>Anchors</key>
+		<string>AppleRootCA</string>
+		<key>VerifyDate</key>
+		<date>2020-11-19T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>FeatureFlags</key>
+		<array>
+			<string>QWACValidation</string>
+			<string>RootConstraints</string>
+		</array>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>QWAC</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.120</string>
+		</dict>
+		<key>Leaf</key>
+		<string>qwac</string>
+		<key>Intermediates</key>
+		<string>harica_qwac_ca</string>
+		<key>Anchors</key>
+		<string>harica_root_2021</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>FFExpectedResult</key>
+		<integer>5</integer>
+		<key>DisableCT</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>FeatureFlags</key>
+		<array>
+			<string>QWACValidation</string>
+			<string>RootConstraints</string>
+		</array>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>QWAC</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.120</string>
+		</dict>
+		<key>Leaf</key>
+		<string>qwac</string>
+		<key>Anchors</key>
+		<string>harica_qwac_ca</string>
+		<key>VerifyDate</key>
+		<date>2024-09-23T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>FFExpectedResult</key>
+		<integer>5</integer>
+		<key>DisableCT</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>QWAC</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.120</string>
+		</dict>
+		<key>Leaf</key>
+		<string>googleapis</string>
+		<key>Intermediates</key>
+		<string>GoogleTrustServicesCA101</string>
+		<key>Anchors</key>
+		<string>GlobalSignRootCAR2</string>
+		<key>VerifyDate</key>
+		<date>2019-11-14T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>DisableCT</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>3PMA</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.122</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<array>
+					<string>Apple Inc.</string>
+					<string>Test Org</string>
+				</array>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>test_document_signer</string>
+		<key>Anchors</key>
+		<string>TestDocumentSigningCA</string>
+		<key>VerifyDate</key>
+		<date>2025-02-01T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>3PMA</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest-EKU</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.122</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<array>
+					<string>Google LLC</string>
+					<string>Test Org</string>
+				</array>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>googleapis</string>
+		<key>Intermediates</key>
+		<string>GoogleTrustServicesCA101</string>
+		<key>Anchors</key>
+		<string>GlobalSignRootCAR2</string>
+		<key>VerifyDate</key>
+		<date>2019-11-14T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>DisableCT</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>3PMA</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest - Org</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.122</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<array>
+					<string>Apple</string>
+					<string>Test Org</string>
+				</array>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>test_document_signer</string>
+		<key>Anchors</key>
+		<string>TestDocumentSigningCA</string>
+		<key>VerifyDate</key>
+		<date>2025-02-01T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>3PMA</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest - Anchor</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.122</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<array>
+					<string>Apple Inc.</string>
+					<string>Test Org</string>
+				</array>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>test_document_signer</string>
+		<key>Intermediates</key>
+		<string>TestDocumentSigningCA</string>
+		<key>VerifyDate</key>
+		<date>2025-02-01T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>3PMA</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest-AATL-EKU</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.122</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<array>
+					<string>阿里巴巴（中国）网络技术有限公司</string>
+				</array>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>mobile_asset_3p</string>
+		<key>Intermediates</key>
+		<string>GlobalSignR45AATLCA2020</string>
+		<key>Anchors</key>
+		<string>GlobalSignR45AATLRoot2020</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T20:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSEAppleKDS</string>
+		<key>MinorTestName</key>
+		<string>Positive-NoParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSEAppleKDS</string>
+		<key>MinorTestName</key>
+		<string>Positive-URI</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14082027224</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-VendorID</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Positive-AllParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14082027224</string>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-Expired</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-07-19T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-URI</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017833333</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-VendorID</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>2</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>RCSE</string>
+		<key>MinorTestName</key>
+		<string>Negative-AllParams</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.121</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>tel:+14017833333</string>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<integer>2</integer>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>AppleRCSTestLeaf</string>
+		<key>Intermediates</key>
+		<string>AppleRCSTestCA</string>
+		<key>Anchors</key>
+		<string>AppleRCSTestRoot</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T16:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>ApplePinned</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest-WebPresentment</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.62</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyPolicyName</key>
+				<string>WebPresentment</string>
+				<key>SecPolicyIntermediateMarkerOid</key>
+				<string>1.2.840.113635.100.6.2.31</string>
+				<key>SecPolicyLeafMarkerOid</key>
+				<string>1.2.840.113635.100.6.92</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>web_presentment</string>
+		<key>Intermediates</key>
+		<string>TestAppleApplicationIntegrationCA7G1</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T09:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>DisableNetwork</key>
+		<true/>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>JibeTLS</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.123</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>rcs-us.telephony.goog</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>rcs-us-telephony-goog</string>
+		<key>Intermediates</key>
+		<string>GTS_WR2</string>
+		<key>Anchors</key>
+		<string>GTSRootR1</string>
+		<key>VerifyDate</key>
+		<date>2025-05-01T09:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>JibeTLS</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.123</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>rcs.staging.telephony.goog</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>rcs-staging-telephony-goog</string>
+		<key>Intermediates</key>
+		<string>GTS_WR2</string>
+		<key>Anchors</key>
+		<string>GTSRootR1</string>
+		<key>VerifyDate</key>
+		<date>2025-05-01T09:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>IdentityWebPresentment</string>
+		<key>MinorTestName</key>
+		<string>PositiveTest</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.124</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>pages.github.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>web_presentment</string>
+		<key>Intermediates</key>
+		<string>TestAppleApplicationIntegrationCA7G1</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T09:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>4</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>DisableNetwork</key>
+		<true/>
+		<key>EnableTestCertificates</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>CertDirectory</key>
+		<string>si-20-sectrust-policies-data</string>
+		<key>MajorTestName</key>
+		<string>IdentityWebPresentment</string>
+		<key>MinorTestName</key>
+		<string>NegativeTest-SSLHostname</string>
+		<key>Policies</key>
+		<dict>
+			<key>PolicyIdentifier</key>
+			<string>1.2.840.113635.100.1.124</string>
+			<key>Properties</key>
+			<dict>
+				<key>SecPolicyName</key>
+				<string>github.apple.com</string>
+			</dict>
+		</dict>
+		<key>Leaf</key>
+		<string>web_presentment</string>
+		<key>Intermediates</key>
+		<string>TestAppleApplicationIntegrationCA7G1</string>
+		<key>Anchors</key>
+		<string>TestAppleRootCAG3</string>
+		<key>VerifyDate</key>
+		<date>2025-03-01T09:00:00Z</date>
+		<key>ExpectedResult</key>
+		<integer>5</integer>
+		<key>ChainLength</key>
+		<integer>3</integer>
+		<key>DisableNetwork</key>
+		<true/>
+		<key>EnableTestCertificates</key>
+		<true/>
 	</dict>
 </array>
 </plist>

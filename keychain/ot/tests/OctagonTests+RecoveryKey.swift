@@ -526,6 +526,10 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
             let vouchers = dump!["vouchers"]
             XCTAssertNotNil(vouchers, "vouchers should not be nil")
+            let sponsoredBeneficiaryIDs = dump!["egoSponsoredBeneficiaryIDs"] as? [String]
+            XCTAssertNotNil(sponsoredBeneficiaryIDs)
+            XCTAssertTrue(sponsoredBeneficiaryIDs!.contains(joinedPeerID))
+            XCTAssertEqual(sponsoredBeneficiaryIDs!.count, 1, "should have sponsored 1 peer")
             stableInfoAcceptorCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoAcceptorCheckDumpCallback], timeout: 10)
@@ -836,7 +840,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         self.assertEnters(context: initiatorContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
 
-        var initiatorDumpCallback = self.expectation(description: "initiatorDumpCallback callback occurs")
+        let initiatorDumpCallback = self.expectation(description: "initiatorDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(initiatorContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -890,7 +894,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         var firstDeviceRecoveryEncryptionKey: Data?
 
         // now let's ensure recovery keys are set for both the first device and second device
-        initiatorDumpCallback = self.expectation(description: "initiatorDumpCallback callback occurs")
+        let initiatorDumpCallback2 = self.expectation(description: "initiatorDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(initiatorContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -911,9 +915,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
             let vouchers = dump!["vouchers"]
             XCTAssertNotNil(vouchers, "vouchers should not be nil")
-            initiatorDumpCallback.fulfill()
+            initiatorDumpCallback2.fulfill()
         }
-        self.wait(for: [initiatorDumpCallback], timeout: 10)
+        self.wait(for: [initiatorDumpCallback2], timeout: 10)
 
         let firstDeviceDumpCallback = self.expectation(description: "firstDeviceDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
@@ -1063,6 +1067,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
             let vouchers = dump!["vouchers"]
             XCTAssertNotNil(vouchers, "vouchers should not be nil")
+            let sponsoredBeneficiaryIDs = dump!["egoSponsoredBeneficiaryIDs"] as? [String]
+            XCTAssertNotNil(sponsoredBeneficiaryIDs)
+            XCTAssertEqual(sponsoredBeneficiaryIDs!.count, 1, "should have sponsored 1 peer")
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
@@ -1147,7 +1154,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         var peerIDBeforeRestore: String?
 
-        var dumpExpectation = self.expectation(description: "dump callback occurs")
+        let dumpExpectation = self.expectation(description: "dump callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, error in
             XCTAssertNil(error, "Should be no error dumping data")
             XCTAssertNotNil(dump, "dump should not be nil")
@@ -1176,7 +1183,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
 
         // ensure the ego peer id hasn't changed
-        dumpExpectation = self.expectation(description: "dump callback occurs")
+        let dumpExpectation2 = self.expectation(description: "dump callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, error in
             XCTAssertNil(error, "Should be no error dumping data")
             XCTAssertNotNil(dump, "dump should not be nil")
@@ -1186,9 +1193,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(egoPeerID, "egoPeerID should not be nil")
             XCTAssertEqual(egoPeerID, peerIDBeforeRestore, "peerIDs should be the same")
 
-            dumpExpectation.fulfill()
+            dumpExpectation2.fulfill()
         }
-        self.wait(for: [dumpExpectation], timeout: 10)
+        self.wait(for: [dumpExpectation2], timeout: 10)
     }
 
     func testJoinWithUnknownRecoveryKey() throws {
@@ -1470,6 +1477,97 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         self.assertEnters(context: brandNewDeviceContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+    }
+
+    func testRecoveryKeyRemainsTrustedEvenAsOtherPeersDepart() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        self.startCKAccountStatusMock()
+
+        let establishContextID = "establish-context-id"
+        let establishContext = self.createEstablishContext(contextID: establishContextID)
+
+        let establishPeerID = self.assertResetAndBecomeTrusted(context: establishContext)
+
+        // Fake that this peer also created some TLKShares for itself
+        self.putFakeKeyHierarchiesInCloudKit()
+        try self.putSelfTLKSharesInCloudKit(context: establishContext)
+        self.assertSelfTLKSharesInCloudKit(context: establishContext)
+
+        let recoveryKey = try XCTUnwrap(SecRKCreateRecoveryKeyString(nil), "recoveryKey should not be nil")
+
+        do {
+            let setRKExpectation = self.expectation(description: "setRecoveryKey")
+            self.fakeCuttlefishServer.setRecoveryKeyListener = { request in
+                let newStableInfo = request.stableInfoAndSig.stableInfo()
+
+                XCTAssertNotNil(newStableInfo.recoverySigningPublicKey, "Peer should trust the RK's signing key")
+                XCTAssertNotNil(newStableInfo.recoveryEncryptionPublicKey, "Peer should trust the RK's public key")
+
+                XCTAssertEqual(request.peerID, establishPeerID, "update() should come from establish peer")
+
+                setRKExpectation.fulfill()
+                return nil
+            }
+
+            let setRecoveryKeyCallbackExpectation = self.expectation(description: "setRecoveryKeyExpectation callback occurs")
+            TestsObjectiveC.setNewRecoveryKeyWithData(self.createOTConfigurationContextForTests(contextID: establishContextID), recoveryKey: recoveryKey) { _, error in
+                XCTAssertNil(error, "error should be nil")
+                setRecoveryKeyCallbackExpectation.fulfill()
+            }
+            self.wait(for: [setRecoveryKeyCallbackExpectation, setRKExpectation], timeout: 10)
+            self.assertEnters(context: establishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+            self.fakeCuttlefishServer.setRecoveryKeyListener = nil
+        }
+
+        let serverJoinExpectation = self.expectation(description: "joinWithVoucher callback occurs")
+        self.fakeCuttlefishServer.joinListener = { joinRequest in
+            let newStableInfo = joinRequest.peer.stableInfoAndSig.stableInfo()
+
+            XCTAssertNotNil(newStableInfo.recoverySigningPublicKey, "Joining peer should trust the RK's signing key")
+            XCTAssertNotNil(newStableInfo.recoveryEncryptionPublicKey, "Joining peer should trust the RK's public key")
+            serverJoinExpectation.fulfill()
+            return nil
+        }
+        let willBeRemovedContext = self.makeInitiatorContext(contextID: "jumpsInALakePeerContext", authKitAdapter: self.mockAuthKit3)
+        let secondPeerID = self.assertJoinViaEscrowRecovery(joiningContext: willBeRemovedContext, sponsor: establishContext)
+        self.wait(for: [serverJoinExpectation], timeout: 10)
+
+        // Ensure that the first peer trusts it
+
+        self.sendContainerChangeWaitForFetch(context: establishContext)
+        self.assertEnters(context: establishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+
+        XCTAssertTrue(self.fakeCuttlefishServer.assertCuttlefishState(FakeCuttlefishAssertion(peer: establishPeerID, opinion: .trusts, target: secondPeerID)),
+                      "establish peer should trust joined peer")
+
+        // Now, distrust that peer from `establishPeer`
+        do {
+            let updateTrustExpectation = self.expectation(description: "updateTrust")
+            self.fakeCuttlefishServer.updateListener = { request in
+                // This request should not change the stableInfo. So, the peer should remain trusting the RK.
+                XCTAssertFalse(request.hasStableInfoAndSig)
+                let newDynamicInfo = request.dynamicInfoAndSig.dynamicInfo()
+
+                XCTAssertEqual(request.peerID, establishPeerID, "update() should come from establish peer")
+
+                XCTAssertFalse(newDynamicInfo.includedPeerIDs.contains(secondPeerID), "establish peer should no longer trust peer1")
+                XCTAssertTrue(newDynamicInfo.excludedPeerIDs.contains(secondPeerID), "establish peer should no longer trust peer1")
+
+                XCTAssertEqual(newDynamicInfo.excludedPeerIDs.filter { $0.hasPrefix("RK-") }.count, 0, "Should have distrusted 0 RKs")
+
+                updateTrustExpectation.fulfill()
+                return nil
+            }
+
+            self.mockAuthKit2.removeAndSendNotification(self.mockAuthKit3.currentMachineID)
+            self.wait(for: [updateTrustExpectation], timeout: 10)
+            self.assertEnters(context: establishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+
+            self.fakeCuttlefishServer.updateListener = nil
+        }
+
+        XCTAssertTrue(self.fakeCuttlefishServer.assertCuttlefishState(FakeCuttlefishAssertion(peer: establishPeerID, opinion: .excludes, target: secondPeerID)),
+                      "establish peer should no longer trust joined peer")
     }
 
     func testMalformedRecoveryKey() throws {
@@ -1918,9 +2016,12 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
 
         let fetchChangesExpectation = self.expectation(description: "fetch changes occurs")
-        fetchChangesExpectation.expectedFulfillmentCount = 6
+        var fetchChangesCalls = 0
         self.fakeCuttlefishServer.fetchChangesListener = { _ in
-            fetchChangesExpectation.fulfill()
+            fetchChangesCalls += 1
+            if fetchChangesCalls == 2 {
+                fetchChangesExpectation.fulfill()
+            }
             return FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         }
 
@@ -2018,7 +2119,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2034,8 +2135,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -2045,7 +2146,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2060,16 +2161,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRecoverWithRecoveryKeyWithRecoveryKeyNotSetInSOSAndOctagon() throws {
@@ -2153,6 +2254,85 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNil(error, "error should be nil")
         XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "recovery key should not be set")
+
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
+            XCTAssertNotNil(dump, "dump should not be nil")
+            let egoSelf = dump!["self"] as? [String: AnyObject]
+            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
+            let dynamicInfo = egoSelf!["dynamicInfo"] as? [String: AnyObject]
+            XCTAssertNotNil(dynamicInfo, "dynamicInfo should not be nil")
+
+            let stableInfo = egoSelf!["stableInfo"] as? [String: AnyObject]
+            XCTAssertNotNil(stableInfo, "stableInfo should not be nil")
+            XCTAssertNil(stableInfo!["recovery_signing_public_key"], "recoverySigningPublicKey should be nil")
+            XCTAssertNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should be nil")
+
+            XCTAssertNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should be nil")
+            XCTAssertNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should be nil")
+
+            let included = dynamicInfo!["included"] as? [String]
+            XCTAssertNotNil(included, "included should not be nil")
+            XCTAssertEqual(included!.count, 1, "should be 1 peer id")
+
+            stableInfoCheckDumpCallback.fulfill()
+        }
+        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+    }
+
+    func testRemoveRecoveryKeyMultipleTimes() throws {
+        try self.skipOnRecoveryKeyNotSupported()
+        self.startCKAccountStatusMock()
+        self.assertResetAndBecomeTrustedInDefaultContext()
+
+        let clique = self.cliqueFor(context: self.cuttlefishContext)
+        let cliqueBridge = OctagonTrustCliqueBridge(clique: clique)
+        var error: NSError?
+        var recoveryString: String?
+        XCTAssertNoThrow(recoveryString = cliqueBridge.createAndSetRecoveryKey(with: self.otcliqueContext, error: &error), "createAndSetRecoveryKey should not error")
+        XCTAssertNil(error, "error should be nil")
+        XCTAssertNotNil(recoveryString, "recoveryString should not be nil")
+
+        let mockSBD = self.otcliqueContext.sbd as! OTMockSecureBackup
+        mockSBD.setRecoveryKey(recoveryKey: recoveryString!)
+        self.otcliqueContext.sbd = mockSBD
+
+        // Recovery Key should be set
+        XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "recovery key should be set")
+
+        let removeExpectation = self.expectation(description: "removeExpectation")
+        self.fakeCuttlefishServer.removeRecoveryKeyListener = { _ in
+            self.fakeCuttlefishServer.removeRecoveryKeyListener = nil
+            removeExpectation.fulfill()
+            return nil
+        }
+
+        XCTAssertNoThrow(try cliqueBridge.removeRecoveryKey(with: self.otcliqueContext), "removeRecoveryKey should not error")
+        mockSBD.setRecoveryKey(recoveryKey: nil)
+
+        self.wait(for: [removeExpectation], timeout: 10)
+
+        XCTAssertNil(error, "error should be nil")
+        XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "recovery key should not be set")
+
+        XCTAssertNoThrow(recoveryString = cliqueBridge.createAndSetRecoveryKey(with: self.otcliqueContext, error: &error), "createAndSetRecoveryKey should not error")
+
+        XCTAssertNoThrow(try cliqueBridge.removeRecoveryKey(with: self.otcliqueContext), "removeRecoveryKey should not error")
+
+        XCTAssertNoThrow(recoveryString = cliqueBridge.createAndSetRecoveryKey(with: self.otcliqueContext, error: &error), "createAndSetRecoveryKey should not error")
+
+        XCTAssertNoThrow(try cliqueBridge.removeRecoveryKey(with: self.otcliqueContext), "removeRecoveryKey should not error")
+
+        XCTAssertNoThrow(recoveryString = cliqueBridge.createAndSetRecoveryKey(with: self.otcliqueContext, error: &error), "createAndSetRecoveryKey should not error")
+
+        XCTAssertNoThrow(try cliqueBridge.removeRecoveryKey(with: self.otcliqueContext), "removeRecoveryKey should not error")
+
+        XCTAssertNoThrow(recoveryString = cliqueBridge.createAndSetRecoveryKey(with: self.otcliqueContext, error: &error), "createAndSetRecoveryKey should not error")
+
+        XCTAssertNoThrow(try OctagonTrustCliqueBridge.recover(withRecoveryKey: self.otcliqueContext, recoveryKey: recoveryString!), "recoverWithRecoveryKey should not throw an error")
+        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+
+        XCTAssertNoThrow(try cliqueBridge.removeRecoveryKey(with: self.otcliqueContext), "removeRecoveryKey should not error")
 
         let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
@@ -2267,9 +2447,12 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         let ckError = FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
 
-        removeExpectation.expectedFulfillmentCount = 6
+        var removeRecoveryKeyCalls = 0
         self.fakeCuttlefishServer.removeRecoveryKeyListener = { _ in
-            removeExpectation.fulfill()
+            removeRecoveryKeyCalls += 1
+            if removeRecoveryKeyCalls == 2 {
+                removeExpectation.fulfill()
+            }
             return FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .transactionalFailure)
         }
 
@@ -2447,7 +2630,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "recovery key should not be set")
         XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueContext), "recovery key should not be set")
 
-        var recoveryKeyRemovalCallback = self.expectation(description: "recoveryKeyRemovalCallback callback occurs")
+        let recoveryKeyRemovalCallback = self.expectation(description: "recoveryKeyRemovalCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2475,7 +2658,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [recoveryKeyRemovalCallback], timeout: 10)
 
-        recoveryKeyRemovalCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let recoveryKeyRemovalCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2499,9 +2682,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            recoveryKeyRemovalCallback.fulfill()
+            recoveryKeyRemovalCallback2.fulfill()
         }
-        self.wait(for: [recoveryKeyRemovalCallback], timeout: 10)
+        self.wait(for: [recoveryKeyRemovalCallback2], timeout: 10)
     }
 
     func testIsRecoveryKeySetWithoutAccount() throws {
@@ -2604,7 +2787,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2620,8 +2803,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -2631,7 +2814,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2646,16 +2829,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMatchAndInCorrectlyEntered() throws {
@@ -2715,20 +2898,20 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
             XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2743,16 +2926,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupNORKInOctagon() throws {
@@ -2811,7 +2994,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: newGuyContext)
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2827,8 +3010,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -2838,7 +3021,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2855,9 +3038,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(dump?["modelRecoverySigningPublicKey"], "recovery signing key should not be nil")
             XCTAssertNotNil(dump?["modelRecoveryEncryptionPublicKey"], "recovery encryption key should not be nil")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupNORKInOctagonIncorrectRKEntered() throws {
@@ -2918,7 +3101,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2933,7 +3116,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -2953,9 +3136,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testNORKInSecureBackupRKInOctagonAndCorrect() throws {
@@ -2998,7 +3181,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3014,8 +3197,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -3025,7 +3208,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3040,16 +3223,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testNORKInSecureBackupRKInOctagonAndIncorrect() throws {
@@ -3114,7 +3297,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3122,14 +3305,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3144,16 +3327,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMisMatchCorrectInSOS() throws {
@@ -3200,7 +3383,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3208,14 +3391,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3230,16 +3413,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMisMatchCorrectInOctagon() throws {
@@ -3296,7 +3479,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: newGuyContext)
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3311,8 +3494,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -3322,7 +3505,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3337,16 +3520,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndIncorrectForBoth() throws {
@@ -3405,7 +3588,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3413,14 +3596,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3435,16 +3618,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     // MARK: tests for case device has KVS, Octagon and NO SOS
@@ -3521,7 +3704,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3537,8 +3720,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -3548,7 +3731,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3563,16 +3746,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMatchIncorrectlyEnteredRKNOSOS() throws {
@@ -3627,7 +3810,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3635,14 +3818,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3657,16 +3840,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupNORKInOctagonOctagonRecordsExistNOSOS() throws {
@@ -3726,7 +3909,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3741,7 +3924,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3761,9 +3944,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupNORKInOctagonResetInlineNOSOS() throws {
@@ -3822,7 +4005,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: newGuyContext)
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3838,8 +4021,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -3849,7 +4032,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3866,9 +4049,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(dump?["modelRecoverySigningPublicKey"], "recovery signing key should not be nil")
             XCTAssertNotNil(dump?["modelRecoveryEncryptionPublicKey"], "recovery encryption key should not be nil")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupNORKInOctagonIncorrectRKEnteredNOSOS() throws {
@@ -3929,7 +4112,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3944,7 +4127,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -3964,9 +4147,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testNORKInSecureBackupRKInOctagonAndCorrectNOSOS() throws {
@@ -4008,7 +4191,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4024,8 +4207,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -4035,7 +4218,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4050,16 +4233,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testNORKInSecureBackupRKInOctagonAndIncorrectNOSOS() throws {
@@ -4123,7 +4306,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4131,14 +4314,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4153,16 +4336,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMisMatchCorrectInSOSNOSOS() throws {
@@ -4226,7 +4409,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4234,14 +4417,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4256,16 +4439,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndMisMatchCorrectInOctagonNOSOS() throws {
@@ -4329,7 +4512,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: newGuyContext)
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContext)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4344,8 +4527,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -4355,7 +4538,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4370,16 +4553,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRKInSecureBackupRKInOctagonAndIncorrectForBothNOSOS() throws {
@@ -4445,7 +4628,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4453,14 +4636,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be empty")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4477,16 +4660,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     // MARK: tests for case device has Octagon and NO KVS and NO SOS
@@ -4568,7 +4751,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4585,8 +4768,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -4596,7 +4779,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4613,16 +4796,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testNORKInSecureBackupRKInOctagonAndInCorrectNOSOSNOKVS() throws {
@@ -4687,7 +4870,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4695,14 +4878,14 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNil(egoSelf?["dynamicInfo"], "dynamicInfo should be nil")
             XCTAssertNil(egoSelf?["stableInfo"], "stableInfo should be nil")
 
-            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"] as! Data, "modelRecoverySigningPublicKey should not be nil")
-            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"] as! Data, "modelRecoveryEncryptionPublicKey should not be nil")
+            XCTAssertNotNil(dump!["modelRecoverySigningPublicKey"], "modelRecoverySigningPublicKey should not be nil")
+            XCTAssertNotNil(dump!["modelRecoveryEncryptionPublicKey"], "modelRecoveryEncryptionPublicKey should not be nil")
 
             stableInfoCheckDumpCallback.fulfill()
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -4719,16 +4902,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testPreflightRecoveryKeySuccess() throws {
@@ -4930,7 +5113,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertFalse(result, "recovery key should be incorrect")
         XCTAssertNotNil(localError, "error should not be nil")
         XCTAssertEqual(localError!.domain, TrustedPeersHelperErrorDomain, "error domain should be TrustedPeersHelperErrorDomain")
-        XCTAssertEqual(localError!.code, TrustedPeersHelperErrorCode.codeNotEnrolled.rawValue, "error code should be recovery key not enrolled")
+        XCTAssertEqual(localError!.code, TrustedPeersHelperErrorCode.notEnrolled.rawValue, "error code should be recovery key not enrolled")
     }
 
     func testPreflightRecoveryKeyFailureErrorFetching() throws {
@@ -5023,9 +5206,12 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         self.fakeCuttlefishServer.nextFetchErrors.append(ckError)
 
         let fetchExpectation = self.expectation(description: "fetch expectation")
-        fetchExpectation.expectedFulfillmentCount = 6
+        var fetchChangesCalls = 0
         self.fakeCuttlefishServer.fetchChangesListener = { _ in
-            fetchExpectation.fulfill()
+            fetchChangesCalls += 1
+            if fetchChangesCalls == 2 {
+                fetchExpectation.fulfill()
+            }
             return nil
         }
 
@@ -5148,7 +5334,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertNoThrow(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should not throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -5164,8 +5350,8 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
@@ -5175,7 +5361,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -5190,16 +5376,16 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(stableInfo!["recovery_encryption_public_key"], "recoveryEncryptionPublicKey should not be nil")
             let recoveryEncryptionData = stableInfo!["recovery_encryption_public_key"]
 
-            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! Data, recoverySigningData as! Data, "modelRecoverySigningPublicKey should not be empty")
-            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! Data, recoveryEncryptionData as! Data, "modelRecoveryEncryptionPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoverySigningPublicKey"] as! String, recoverySigningData as! String, "modelRecoverySigningPublicKey should not be empty")
+            XCTAssertEqual(dump!["modelRecoveryEncryptionPublicKey"] as! String, recoveryEncryptionData as! String, "modelRecoveryEncryptionPublicKey should not be empty")
 
             let included = dynamicInfo!["included"] as? [String]
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 2, "should be 2 peer ids")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     func testRegisterRecoveryKeyAPIFail() throws {
@@ -5237,7 +5423,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
 
         XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(newCliqueConfiguration), "isRecoveryKeySet should throw an error")
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(newGuyContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -5250,7 +5436,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
 
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -5267,9 +5453,9 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
             XCTAssertNotNil(included, "included should not be nil")
             XCTAssertEqual(included!.count, 1, "should be 1 peer id")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
     }
 
     // MARK: tests for case device SOS not enabled, in SOS and not in SOS
@@ -5414,7 +5600,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertThrowsError(try cliqueBridge.registerRecoveryKey(with: self.otcliqueContext, recoveryKey: recoveryString!), "registerRecoveryKey should throw error") { error in
             XCTAssertNotNil(error, "error should not be nil")
             XCTAssertEqual((error as NSError).domain, TrustedPeersHelperErrorDomain, "error domain should be com.apple.security.trustedpeers.container")
-            XCTAssertEqual((error as NSError).code, TrustedPeersHelperErrorCode.codeUntrustedRecoveryKeys.rawValue, "error code should be untrusted recovery keys")
+            XCTAssertEqual((error as NSError).code, TrustedPeersHelperErrorCode.untrustedRecoveryKeys.rawValue, "error code should be untrusted recovery keys")
             reRegisterRecoveryKeyExpectation.fulfill()
         }
         self.wait(for: [reRegisterRecoveryKeyExpectation], timeout: 10)
@@ -5536,7 +5722,7 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         XCTAssertNil(error, "error should be nil")
         XCTAssertThrowsError(try OctagonTrustCliqueBridge.isRecoveryKeySet(self.otcliqueContext), "recovery key should not be set")
 
-        var rkSetExpectation = self.expectation(description: "rpcIsRecoveryKeySet on joiner")
+        let rkSetExpectation = self.expectation(description: "rpcIsRecoveryKeySet on joiner")
         joiningContext.rpcIsRecoveryKeySet { isSet, error in
             XCTAssertFalse(isSet, "should be false")
             XCTAssertNil(error, "error should be nil")
@@ -5544,13 +5730,13 @@ class OctagonRecoveryKeyTests: OctagonTestsBase {
         }
         self.wait(for: [rkSetExpectation], timeout: 10)
 
-        rkSetExpectation = self.expectation(description: "rpcIsRecoveryKeySet on joiner2")
+        let rkSetExpectation2 = self.expectation(description: "rpcIsRecoveryKeySet on joiner2")
         secondJoiningContext.rpcIsRecoveryKeySet { isSet, error in
             XCTAssertFalse(isSet, "should be false")
             XCTAssertNil(error, "error should be nil")
-            rkSetExpectation.fulfill()
+            rkSetExpectation2.fulfill()
         }
-        self.wait(for: [rkSetExpectation], timeout: 10)
+        self.wait(for: [rkSetExpectation2], timeout: 10)
     }
 
     func testExcludedRecoveryKeyInPreflightVouchWithRK() throws {

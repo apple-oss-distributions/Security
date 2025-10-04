@@ -74,9 +74,9 @@
 #include <ipc/securityd_client.h>
 #include <Security/SecKeyInternal.h>
 #include "AppleExternalRootCertificates.h"
-#include "AppleCorporateRootCertificates.h"
 #include <Security/SecInternalReleasePriv.h>
 #include <CoreTrust/CTCompress.h>
+#include <corecrypto/ccsha1.h>
 
 #pragma clang diagnostic ignored "-Wformat=2"
 
@@ -94,12 +94,14 @@
 #define MAX_EXTENSIONS 10000
 #define MAX_ATTRIBUTE_TYPE_AND_VALUES 1024
 #define MAX_CRL_DPS 1024
-#define MAX_CERTIFICATE_POLICIES 8192
-#define MAX_POLICY_MAPPINGS 8192
+#define MAX_CERTIFICATE_POLICIES 1024
+#define MAX_POLICY_MAPPINGS 1024
 #define MAX_EKUS 8192
 #define MAX_AIAS 1024
 #define MAX_GENERAL_NAMES 8192
 #define MAX_SUBTREE_NAMES 8192
+#define MAX_QCSTATEMENTS 1024
+#define MAX_QCTYPES 10
 
 typedef struct SecCertificateExtension {
 	DERItem extnID;
@@ -187,8 +189,6 @@ struct __SecCertificate {
      Name Constraints. */
     CFArrayRef          _excludedSubtrees;
 
-    CFMutableArrayRef   _embeddedSCTs;
-
     /* All other (non known) extensions.   The _extensions array is malloced. */
     CFIndex             _extensionCount;
     SecCertificateExtension *_extensions;
@@ -199,6 +199,7 @@ struct __SecCertificate {
     SecKeyRef           _pubKey;
     CFDataRef           _der_data;
     CFArrayRef          _properties;
+    CFArrayRef          _localizedProperties;
     CFDataRef           _serialNumber;
     CFDataRef           _normalizedIssuer;
     CFDataRef           _normalizedSubject;
@@ -208,6 +209,13 @@ struct __SecCertificate {
     CFDataRef           _sha1Digest;
     CFTypeRef           _keychain_item;
     uint8_t             _isSelfSigned;
+
+    /* Qualified certificate statements extension, if present.
+       Not malloced, just points to an element in the _extensions array. */
+    CFDictionaryRef     _qcStatements;
+
+    /* Dispatch queue for thread-safety of cached fields */
+    dispatch_queue_t     _certificateQueue;
 
     /* NOTE: If you add fields to the middle of this struct, tests may break unless you also install
      *   updated Security framework. */
@@ -245,6 +253,33 @@ typedef bool (*SecCertificateExtensionParser)(SecCertificateRef certificate,
 /* Mapping from extension OIDs (as a DERItem *) to
    SecCertificateExtensionParser extension parsing routines. */
 static CFDictionaryRef sExtensionParsers;
+
+/* Dictionary key callback for comparing to DERItems. */
+static Boolean SecDERItemEqual(const void *value1, const void *value2) {
+    return DEROidCompare((const DERItem *)value1, (const DERItem *)value2);
+}
+
+/* Dictionary key callback calculating the hash of a DERItem. */
+static CFHashCode SecDERItemHash(const void *value) {
+    const DERItem *derItem = (const DERItem *)value;
+    CFHashCode hash = derItem->length;
+    DERSize ix = derItem->length > 8 ? derItem->length - 8 : 0;
+    for (; ix < derItem->length; ++ix) {
+        hash = (hash << 9) + (hash >> 23) + derItem->data[ix];
+    }
+
+    return hash;
+}
+
+/* Dictionary key callbacks using the above 2 functions. */
+static const CFDictionaryKeyCallBacks SecDERItemKeyCallBacks = {
+    0,                    /* version */
+    NULL,                /* retain */
+    NULL,                /* release */
+    NULL,                /* copyDescription */
+    SecDERItemEqual,    /* equal */
+    SecDERItemHash        /* hash */
+};
 
 /* Forward declarations of static functions. */
 static bool SecCertificateIsCertificate(SecCertificateRef certificate);
@@ -285,6 +320,7 @@ static void SecCertificateDestroy(CFTypeRef cf) {
     CFReleaseNull(certificate->_pubKey);
     CFReleaseNull(certificate->_der_data);
     CFReleaseNull(certificate->_properties);
+    CFReleaseNull(certificate->_localizedProperties);
     CFReleaseNull(certificate->_serialNumber);
     CFReleaseNull(certificate->_normalizedIssuer);
     CFReleaseNull(certificate->_normalizedSubject);
@@ -294,6 +330,8 @@ static void SecCertificateDestroy(CFTypeRef cf) {
     CFReleaseNull(certificate->_keychain_item);
     CFReleaseNull(certificate->_permittedSubtrees);
     CFReleaseNull(certificate->_excludedSubtrees);
+    CFReleaseNull(certificate->_qcStatements);
+    dispatch_release_null(certificate->_certificateQueue);
 }
 
 static Boolean SecCertificateEqual(CFTypeRef cf1, CFTypeRef cf2) {
@@ -499,9 +537,7 @@ static OSStatus parseX501Name(const DERItem *x501Name, void *context,
     }
 }
 
-/************************************************************************/
-/********************** Extension Parsing Routines **********************/
-/************************************************************************/
+/* MARK: Extension Parsing Routines */
 
 static bool SecCEPSubjectKeyIdentifier(SecCertificateRef certificate,
 	const SecCertificateExtension *extn) {
@@ -1147,32 +1183,158 @@ static bool SecCEPOCSPNoCheck(SecCertificateRef certificate,
     return true;
 }
 
-/* Dictionary key callback for comparing to DERItems. */
-static Boolean SecDERItemEqual(const void *value1, const void *value2) {
-	return DEROidCompare((const DERItem *)value1, (const DERItem *)value2);
-}
+/* MARK: QC Statements */
+/*  see RFC 3739
+    id-pe-qcStatements OBJECT IDENTIFIER ::= { id-pe 3}
 
-/* Dictionary key callback calculating the hash of a DERItem. */
-static CFHashCode SecDERItemHash(const void *value) {
-	const DERItem *derItem = (const DERItem *)value;
-	CFHashCode hash = derItem->length;
-	DERSize ix = derItem->length > 8 ? derItem->length - 8 : 0;
-	for (; ix < derItem->length; ++ix) {
-		hash = (hash << 9) + (hash >> 23) + derItem->data[ix];
-	}
+    QCStatements ::= SEQUENCE OF QCStatement
 
-	return hash;
-}
+    QCStatement ::= SEQUENCE {
+        statementId        OBJECT IDENTIFIER,
+        statementInfo      ANY DEFINED BY statementId OPTIONAL}
+*/
+typedef struct {
+    DERItem        statementId;
+    DERItem        statementInfo;
+} DERQCStatement;
 
-/* Dictionary key callbacks using the above 2 functions. */
-static const CFDictionaryKeyCallBacks SecDERItemKeyCallBacks = {
-	0,					/* version */
-	NULL,				/* retain */
-	NULL,				/* release */
-	NULL,				/* copyDescription */
-	SecDERItemEqual,	/* equal */
-	SecDERItemHash		/* hash */
+const DERItemSpec DERQCStatementItemSpecs[] = {
+    { DER_OFFSET(DERQCStatement, statementId),
+            ASN1_OBJECT_ID,
+            DER_DEC_NO_OPTS },
+    { DER_OFFSET(DERQCStatement, statementInfo),
+            0,                    /* no tag - ANY */
+        DER_DEC_ASN_ANY | DER_DEC_SAVE_DER | DER_DEC_OPTIONAL }
 };
+
+const DERSize DERNumQCStatementItemSpecs =
+    sizeof(DERQCStatementItemSpecs) / sizeof(DERItemSpec);
+
+typedef bool (*SecCertificateQCStatementParser)(CFMutableDictionaryRef statements,
+                                                const DERQCStatement *statement);
+
+SEC_CONST_DECL(kSecQCStatementCompliance, "QCSCompliance");
+SEC_CONST_DECL(kSecQCStatementType, "QCSType");
+SEC_CONST_DECL(kSecQCStatementTypeWeb, "QCSTypeWeb");
+SEC_CONST_DECL(kSecQCStatementTypeEseal, "QCSTypeEseal");
+SEC_CONST_DECL(kSecQCStatementTypeEsign, "QCSTypeEsign");
+
+/* ETSI EN 319 412-5 V2.4.1 (2023-09) 4.2.1
+    Absent statementInfo    
+*/
+static bool SecQCPCompliance(CFMutableDictionaryRef statements, const DERQCStatement *statement) {
+    CFDictionaryAddValue(statements, kSecQCStatementCompliance, kCFBooleanTrue);
+    return true;
+}
+
+/* ETSI EN 319 412-5 V2.4.1 (2023-09) 4.2.3
+    esi4-qcStatement-6 QC-STATEMENT ::= { SYNTAX QcType IDENTIFIED BY id-etsi-qcs-QcType }
+
+    id-etsi-qcs-QcType OBJECT IDENTIFIER ::= { id-etsi-qcs 6 }
+    QcType::= SEQUENCE OF OBJECT IDENTIFIER (id-etsi-qct-esign | id-etsi-qct-eseal | id-etsi-qct-web, ...)
+*/
+static bool SecQCPType(CFMutableDictionaryRef statements, const DERQCStatement *statement) {
+    DERSequence typeSeq;
+    DERTag typeTag;
+    CFMutableSetRef types = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+    DERReturn drtn = DERDecodeSeqInit(&statement->statementInfo, &typeTag, &typeSeq);
+    require_quiet((drtn == DR_Success) && (typeTag == ASN1_CONSTR_SEQUENCE), badDER);
+    require_quiet(typeSeq.nextItem != typeSeq.end, badDER);
+    DERDecodedInfo typeContent;
+    int type_count = 0;
+    while ((drtn = DERDecodeSeqNext(&typeSeq, &typeContent)) == DR_Success) {
+        require_quiet(typeContent.tag == ASN1_OBJECT_ID, badDER);
+        type_count++;
+        require_quiet(type_count < MAX_QCTYPES, badDER);
+        if (DEROidCompare(&oidQCTypeWeb, &typeContent.content)) {
+            CFSetAddValue(types, kSecQCStatementTypeWeb);
+        } else if (DEROidCompare(&oidQCTypeEseal, &typeContent.content)) {
+            CFSetAddValue(types, kSecQCStatementTypeEseal);
+        } else if (DEROidCompare(&oidQCTypeEsign, &typeContent.content)) {
+            CFSetAddValue(types, kSecQCStatementTypeEsign);
+        }
+    }
+    require_quiet(drtn == DR_EndOfSequence, badDER);
+    CFDictionarySetValue(statements, kSecQCStatementType, types);
+    CFReleaseNull(types);
+    return true;
+badDER:
+    CFReleaseNull(types);
+    secwarning("Invalid QCS Type");
+    return false;
+}
+
+static CFDictionaryRef SecCertificateInitializeQCStatementParsers(void) {
+    /* Build a dictionary that maps from QC Statement OIDs to callback functions
+     which can parse the statement of the type given. */
+    static const void *extnOIDs[] = {
+        &oidQCCompliance,
+        &oidQCType,
+    };
+    static const void *extnParsers[] = {
+        SecQCPCompliance,
+        SecQCPType,
+    };
+    return CFDictionaryCreate(kCFAllocatorDefault, extnOIDs,
+                              extnParsers, array_size(extnOIDs),
+                              &SecDERItemKeyCallBacks, NULL);
+}
+
+static bool SecCEPQCStatements(SecCertificateRef certificate,
+    const SecCertificateExtension *extn) {
+    secdebug("cert", "critical: %{BOOL}d", extn->critical);
+
+    /* Mapping from extension OIDs (as a DERItem *) to
+       SecCertificateQCStatementParser QCS parsing routines. */
+    static CFDictionaryRef sQCSParsers;
+
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sQCSParsers = SecCertificateInitializeQCStatementParsers();
+    });
+    CFMutableDictionaryRef statements = CFDictionaryCreateMutable(NULL, 0,
+                                                                  &kCFTypeDictionaryKeyCallBacks,
+                                                                  &kCFTypeDictionaryValueCallBacks);
+    require_quiet(extn != NULL && sQCSParsers != NULL && statements != NULL, badDER);
+
+
+    DERTag tag;
+    DERSequence qcSeq;
+    DERReturn drtn = DERDecodeSeqInit(&extn->extnValue, &tag, &qcSeq);
+    require_noerr_quiet(drtn, badDER);
+    require_quiet(tag == ASN1_CONSTR_SEQUENCE, badDER);
+    require_quiet(qcSeq.nextItem != qcSeq.end, badDER);
+    DERDecodedInfo statementContent;
+    int statement_count = 0;
+    while ((drtn = DERDecodeSeqNext(&qcSeq, &statementContent)) == DR_Success) {
+        require_quiet(statementContent.tag == ASN1_CONSTR_SEQUENCE, badDER);
+        DERQCStatement statement;
+        drtn = DERParseSequenceContent(&statementContent.content,
+                                       DERNumQCStatementItemSpecs,
+                                       DERQCStatementItemSpecs,
+                                       &statement, sizeof(statement));
+        require_noerr_quiet(drtn, badDER);
+        statement_count++;
+        require_quiet(statement_count < MAX_QCSTATEMENTS, badDER);
+
+        SecCertificateQCStatementParser parser = (SecCertificateQCStatementParser)CFDictionaryGetValue(sQCSParsers,
+                                                                                                       &statement.statementId);
+        if (parser) {
+            require_quiet(parser(statements, &statement), badDER);
+        } else {
+            secdebug("cert", "Found unknown QC Statement");
+        }
+    }
+    require_quiet(drtn == DR_EndOfSequence, badDER);
+
+    certificate->_qcStatements = statements;
+    return true;
+badDER:
+    CFReleaseNull(statements);
+    certificate->_qcStatements = NULL;
+    secwarning("Invalid QCStatements Extension");
+    return false;
+}
 
 static void SecCertificateInitializeExtensionParsers(void) {
 	/* Build a dictionary that maps from extension OIDs to callback functions
@@ -1198,6 +1360,7 @@ static void SecCertificateInitializeExtensionParsers(void) {
 		&oidEntrustVersInfo,
         &oidApplePolicyEscrowService,
         &oidOCSPNoCheck,
+        &oidQCStatements
 	};
 	static const void *extnParsers[] = {
 		SecCEPSubjectKeyIdentifier,
@@ -1220,6 +1383,7 @@ static void SecCertificateInitializeExtensionParsers(void) {
 		SecCEPEntrustVersInfo,
         SecCEPEscrowMarker,
         SecCEPOCSPNoCheck,
+        SecCEPQCStatements,
 	};
 	sExtensionParsers = CFDictionaryCreate(kCFAllocatorDefault, extnOIDs,
                                            extnParsers, array_size(extnOIDs),
@@ -1249,6 +1413,7 @@ static bool isAppleExtensionOID(const DERItem *extnID)
 
 /* @@@ if this gets out of hand, it should move to its own file */
 static const uint8_t cccArc[] = { 0x2B,0x06,0x01,0x04,0x01,0x82,0xC4,0x69,0x05 };
+static const uint8_t rcsArc[] = {0x67, 0x81, 0x12, 0x02, 0x01};
 static const uint8_t mdlPolicy[] = { 0x2B,0x06,0x01,0x04,0x01,0x82,0x37,0x15,0x0A };
 static const uint8_t qiPolicy[] = {0x67,0x81,0x14,0x01,0x01};
 static const uint8_t qiRSID[] = {0x67,0x81,0x14,0x01,0x02};
@@ -1266,6 +1431,7 @@ const known_extension_entry_t unparsed_known_extensions[] = {
 
 const known_extension_entry_t unparsed_known_arcs[] = {
     { cccArc, sizeof(cccArc) },
+    { rcsArc, sizeof(rcsArc) },
 };
 
 static bool isOtherKnownExtensionOID(const DERItem *extnID) {
@@ -1583,12 +1749,23 @@ static bool SecCertificateParse(SecCertificateRef certificate)
     check(certificate);
     require_quiet(certificate, badCert);
     CFAllocatorRef allocator = CFGetAllocator(certificate);
+    certificate->_certificateQueue = dispatch_queue_create("cert", DISPATCH_QUEUE_SERIAL);
 
 	/* top level decode */
+    DERDecodedInfo certInfo;
+    drtn = DERDecodeItem(&certificate->_der, &certInfo);
+    require_noerr_quiet(drtn, badCert);
+    require_quiet(certInfo.tag == ASN1_CONSTR_SEQUENCE, badCert);
+
+    long headerLen = certInfo.content.data - certificate->_der.data;
+    require(headerLen > 0 && headerLen < UINT8_MAX, badCert);
+    certificate->_der.length = certInfo.content.length + (DERSize)headerLen;
+
 	DERSignedCertCrl signedCert;
-	drtn = DERParseSequence(&certificate->_der, DERNumSignedCertCrlItemSpecs,
-		DERSignedCertCrlItemSpecs, &signedCert,
-		sizeof(signedCert));
+    drtn = DERParseSequenceContent(&certInfo.content,
+                                   DERNumSignedCertCrlItemSpecs,
+                                   DERSignedCertCrlItemSpecs,
+                                   &signedCert, sizeof(signedCert));
 	require_noerr_quiet(drtn, badCert);
 	/* Store tbs since we need to digest it for verification later on. */
 	certificate->_tbs = signedCert.tbs;
@@ -1894,9 +2071,9 @@ OSStatus SecCertificateSetKeychainItem(SecCertificateRef certificate,
 	if (!certificate) {
 		return errSecParam;
 	}
-	CFRetainSafe(keychain_item);
-	CFReleaseSafe(certificate->_keychain_item);
-	certificate->_keychain_item = keychain_item;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        CFRetainAssign(certificate->_keychain_item, keychain_item);
+    });
 	return errSecSuccess;
 }
 
@@ -1906,12 +2083,9 @@ CFDataRef SecCertificateCopyData(SecCertificateRef certificate) {
     if (!certificate) {
         return result;
     }
-    if (certificate->_der_data) {
-        CFRetain(certificate->_der_data);
-        result = certificate->_der_data;
-    } else {
-        result = CFDataCreate(CFGetAllocator(certificate), certificate->_der.data, (CFIndex)certificate->_der.length);
-    }
+
+    // Return the _parsed_ cert, not all the data that was input to SecCertificateCreate*
+    result = CFDataCreate(CFGetAllocator(certificate), certificate->_der.data, (CFIndex)certificate->_der.length);
 
     return result;
 }
@@ -2004,9 +2178,9 @@ CFDataRef SecCertificateCopyPrecertTBS(SecCertificateRef certificate)
     extensionsOut.length = DERLengthOfEncodedSequence(ASN1_CONSTR_SEQUENCE, extensionsList, extensionsCount, extensionsListSpecs);
     extensionsOut.data = malloc(extensionsOut.length);
     require_quiet(extensionsOut.data, out);
-#ifndef __clang_analyzer__ // rdar://83126788
-    drtn = DEREncodeSequence(ASN1_CONSTR_SEQUENCE, extensionsList, extensionsCount, extensionsListSpecs, extensionsOut.data, &extensionsOut.length);
-#endif
+    [[clang::suppress]] { // rdar://83126788
+        drtn = DEREncodeSequence(ASN1_CONSTR_SEQUENCE, extensionsList, extensionsCount, extensionsListSpecs, extensionsOut.data, &extensionsOut.length);
+    }
     require_noerr_quiet(drtn, out);
 
     tbsCert.extensions = extensionsOut;
@@ -2015,9 +2189,9 @@ CFDataRef SecCertificateCopyPrecertTBS(SecCertificateRef certificate)
     require_quiet(tbsOut.length < LONG_MAX, out);
     tbsOut.data = malloc(tbsOut.length);
     require_quiet(tbsOut.data, out);
-#ifndef __clang_analyzer__ // rdar://83126788
-    drtn = DEREncodeSequence(ASN1_CONSTR_SEQUENCE, &tbsCert, DERNumTBSCertItemSpecs, DERTBSCertItemSpecs, tbsOut.data, &tbsOut.length);
-#endif
+    [[clang::suppress]] { // rdar://83126788
+        drtn = DEREncodeSequence(ASN1_CONSTR_SEQUENCE, &tbsCert, DERNumTBSCertItemSpecs, DERTBSCertItemSpecs, tbsOut.data, &tbsOut.length);
+    }
     require_noerr_quiet(drtn, out);
 
     outData = CFDataCreate(kCFAllocatorDefault, tbsOut.data, (CFIndex)tbsOut.length);
@@ -2562,6 +2736,9 @@ static void appendAlgorithmProperty(CFMutableArrayRef properties,
     CFRelease(alg_props);
 }
 
+// Forward Declaration
+static SecKeyRef _SecCertificateCopyKey_onqueue(SecCertificateRef certificate);
+
 static void appendPublicKeyProperty(CFMutableArrayRef parent, CFStringRef label,
                                     SecCertificateRef certificate, bool localized) {
     CFAllocatorRef allocator = CFGetAllocator(parent);
@@ -2572,7 +2749,7 @@ static void appendPublicKeyProperty(CFMutableArrayRef parent, CFStringRef label,
                             &certificate->_algId, localized);
 
     /* Public Key Size */
-    SecKeyRef publicKey = SecCertificateCopyKey(certificate);
+    SecKeyRef publicKey = _SecCertificateCopyKey_onqueue(certificate);
     if (publicKey) {
         /* To get key size in bits, call SecKeyCopyAttributes() and examine kSecAttrKeySizeInBits.
            This is expected to work for both RSA and EC public keys. */
@@ -2637,8 +2814,12 @@ static void appendFingerprintsProperty(CFMutableArrayRef parent, CFStringRef lab
     }
     CFReleaseNull(sha256Fingerprint);
 
-    appendProperty(properties, kSecPropertyTypeData, SEC_SHA1_FINGERPRINT_KEY,
-                   NULL, SecCertificateGetSHA1Digest(certificate), localized);
+    CFDataRef sha1Fingerprint = SecCertificateCopySHA1Digest(certificate);
+    if (sha1Fingerprint) {
+        appendProperty(properties, kSecPropertyTypeData, SEC_SHA1_FINGERPRINT_KEY,
+                       NULL, sha1Fingerprint, localized);
+    }
+    CFReleaseNull(sha1Fingerprint);
 
     appendProperty(parent, kSecPropertyTypeSection, label, NULL,
                    properties, localized);
@@ -3795,6 +3976,78 @@ badDER:
                           extnValue, localized);
 }
 
+static void appendQCSTypes(CFMutableArrayRef properties,
+                           const DERItem *extnValue, bool localized) {
+    DERTag tag;
+    DERSequence derSeq;
+    DERReturn drtn = DERDecodeSeqInit(extnValue, &tag, &derSeq);
+    require_noerr_quiet(drtn, badDER);
+    require_quiet(tag == ASN1_CONSTR_SEQUENCE, badDER);
+    DERDecodedInfo currDecoded;
+    while ((drtn = DERDecodeSeqNext(&derSeq, &currDecoded)) == DR_Success) {
+        require_quiet(currDecoded.tag == ASN1_OBJECT_ID, badDER);
+        appendOIDProperty(properties, SEC_QCS_TYPE, NULL,
+            &currDecoded.content, localized);
+    }
+    require_quiet(drtn == DR_EndOfSequence, badDER);
+    return;
+badDER:
+    appendInvalidProperty(properties, SEC_QCS_TYPE,
+                          extnValue, localized);
+}
+
+static void appendQCStatements(CFMutableArrayRef properties,
+                               const DERItem *extnValue, bool localized) {
+    CFMutableDictionaryRef statements = CFDictionaryCreateMutable(NULL, 0,
+                                                                  &kCFTypeDictionaryKeyCallBacks,
+                                                                  &kCFTypeDictionaryValueCallBacks);
+    require_quiet(extnValue != NULL && statements != NULL, badDER);
+
+    DERTag tag;
+    DERSequence qcSeq;
+    DERReturn drtn = DERDecodeSeqInit(extnValue, &tag, &qcSeq);
+    require_noerr_quiet(drtn, badDER);
+    require_quiet(tag == ASN1_CONSTR_SEQUENCE, badDER);
+    require_quiet(qcSeq.nextItem != qcSeq.end, badDER);
+    DERDecodedInfo statementContent;
+    int statement_count = 0;
+    while ((drtn = DERDecodeSeqNext(&qcSeq, &statementContent)) == DR_Success) {
+        require_quiet(statementContent.tag == ASN1_CONSTR_SEQUENCE, badDER);
+        DERQCStatement statement;
+        drtn = DERParseSequenceContent(&statementContent.content,
+                                       DERNumQCStatementItemSpecs,
+                                       DERQCStatementItemSpecs,
+                                       &statement, sizeof(statement));
+        require_noerr_quiet(drtn, badDER);
+        statement_count++;
+        require_quiet(statement_count < MAX_QCSTATEMENTS, badDER);
+        if (DEROidCompare(&oidQCCompliance, &statement.statementId)) {
+            appendBoolProperty(properties, SEC_QCS_EU_COMPLIANCE, true, localized);
+        } else if (DEROidCompare(&oidQCType, &statement.statementId)) {
+            appendQCSTypes(properties, &statement.statementInfo, localized);
+        } else {
+            /* unknown QC Statement */
+            CFAllocatorRef allocator = CFGetAllocator(properties);
+            CFStringRef label = SecDERItemCopyOIDDecimalRepresentation(allocator, &statement.statementId);
+            CFStringRef localizedLabel = copyOidDescription(allocator, &statement.statementId, localized);
+            CFStringRef info_string = copyDERThingDescription(allocator, &statement.statementInfo, false, localized);
+            if (info_string) {
+                appendProperty(properties, kSecPropertyTypeString, label, localizedLabel, info_string, localized);
+            } else {
+                appendUnparsedProperty(properties, label, localizedLabel, &statement.statementInfo, localized);
+            }
+            CFReleaseNull(label);
+            CFReleaseNull(localizedLabel);
+            CFReleaseNull(info_string);
+        }
+    }
+    require_quiet(drtn == DR_EndOfSequence, badDER);
+    return;
+badDER:
+    appendInvalidProperty(properties, SEC_QUAL_CERT_STATMENTS,
+                          extnValue, localized);
+}
+
 static void appendNetscapeCertType(CFMutableArrayRef properties,
     const DERItem *extnValue, bool localized) {
     static const CFStringRef certTypes[] = {
@@ -3937,7 +4190,7 @@ static void appendExtension(CFMutableArrayRef parent,
 			appendInfoAccess(properties, extnValue, localized);
 			break;
 		case  3: /* QCStatements             id-pe 3 */
-			handled = false;
+            appendQCStatements(properties, extnValue, localized);
 			break;
 		case 11: /* SubjectInfoAccess        id-pe 11 */
 			appendInfoAccess(properties, extnValue, localized);
@@ -4115,38 +4368,6 @@ CFStringRef SecCertificateCopyIssuerSummary(SecCertificateRef certificate) {
 	return summary.summary;
 }
 
-/* Return the earliest date on which all certificates in this chain are still
-   valid. */
-static CFAbsoluteTime SecCertificateGetChainsLastValidity(
-    SecCertificateRef certificate) {
-    CFAbsoluteTime earliest = certificate->_notAfter;
-#if 0
-    while (certificate->_parent) {
-        certificate = certificate->_parent;
-        if (earliest > certificate->_notAfter)
-            earliest = certificate->_notAfter;
-    }
-#endif
-
-    return earliest;
-}
-
-/* Return the latest date on which all certificates in this chain will be
-   valid. */
-static CFAbsoluteTime SecCertificateGetChainsFirstValidity(
-    SecCertificateRef certificate) {
-    CFAbsoluteTime latest = certificate->_notBefore;
-#if 0
-    while (certificate->_parent) {
-        certificate = certificate->_parent;
-        if (latest < certificate->_notBefore)
-            latest = certificate->_notBefore;
-    }
-#endif
-
-    return latest;
-}
-
 bool SecCertificateIsValid(SecCertificateRef certificate,
 	CFAbsoluteTime verifyTime) {
     return certificate && certificate->_notBefore <= verifyTime &&
@@ -4214,8 +4435,8 @@ CFMutableArrayRef SecCertificateCopySummaryProperties(
         ptype = kSecPropertyTypeError;
         message = SEC_CERT_NOT_YET_VALID_KEY;
     } else {
-        CFAbsoluteTime last = SecCertificateGetChainsLastValidity(certificate);
-        CFAbsoluteTime first = SecCertificateGetChainsFirstValidity(certificate);
+        CFAbsoluteTime last = SecCertificateNotValidAfter(certificate);
+        CFAbsoluteTime first = SecCertificateNotValidBefore(certificate);
         if (verifyTime > last) {
             label = SEC_EXPIRED_KEY;
             when = last;
@@ -4322,79 +4543,74 @@ CFArrayRef SecCertificateCopyLegacyProperties(SecCertificateRef certificate) {
 }
 
 static CFArrayRef CopyProperties(SecCertificateRef certificate, Boolean localized) {
-	if (!certificate->_properties) {
-		CFAllocatorRef allocator = CFGetAllocator(certificate);
-		CFMutableArrayRef properties = CFArrayCreateMutable(allocator, 0,
-			&kCFTypeArrayCallBacks);
-        require_quiet(properties, out);
+    CFAllocatorRef allocator = CFGetAllocator(certificate);
+    CFMutableArrayRef properties = CFArrayCreateMutable(allocator, 0,
+                                                        &kCFTypeArrayCallBacks);
+    require_quiet(properties, out);
 
-        /* First we put the Subject Name in the property list. */
-        CFArrayRef subject_plist = createPropertiesForX501NameContent(allocator,
-                                                                      &certificate->_subject,
-                                                                      localized);
-        if (subject_plist) {
-            appendProperty(properties, kSecPropertyTypeSection,
-                           SEC_SUBJECT_NAME_KEY, NULL, subject_plist, localized);
-        }
-        CFReleaseNull(subject_plist);
+    /* First we put the Subject Name in the property list. */
+    CFArrayRef subject_plist = createPropertiesForX501NameContent(allocator,
+                                                                  &certificate->_subject,
+                                                                  localized);
+    if (subject_plist) {
+        appendProperty(properties, kSecPropertyTypeSection,
+                       SEC_SUBJECT_NAME_KEY, NULL, subject_plist, localized);
+    }
+    CFReleaseNull(subject_plist);
 
-        /* Next we put the Issuer Name in the property list. */
-        CFArrayRef issuer_plist = createPropertiesForX501NameContent(allocator,
-                                                                     &certificate->_issuer,
-                                                                     localized);
-        if (issuer_plist) {
-            appendProperty(properties, kSecPropertyTypeSection,
-                           SEC_ISSUER_NAME_KEY, NULL, issuer_plist, localized);
-        }
-        CFReleaseNull(issuer_plist);
+    /* Next we put the Issuer Name in the property list. */
+    CFArrayRef issuer_plist = createPropertiesForX501NameContent(allocator,
+                                                                 &certificate->_issuer,
+                                                                 localized);
+    if (issuer_plist) {
+        appendProperty(properties, kSecPropertyTypeSection,
+                       SEC_ISSUER_NAME_KEY, NULL, issuer_plist, localized);
+    }
+    CFReleaseNull(issuer_plist);
 
-        /* Version */
-        CFStringRef fmt = SecCopyCertString(SEC_CERT_VERSION_VALUE_KEY);
-        CFStringRef versionString = NULL;
-        if (fmt) {
-            versionString = CFStringCreateWithFormat(allocator, NULL, fmt,
-                                                     certificate->_version + 1);
-        }
-        CFReleaseNull(fmt);
-        if (versionString) {
-            appendProperty(properties, kSecPropertyTypeString,
-                           SEC_VERSION_KEY, NULL, versionString, localized);
-        }
-        CFReleaseNull(versionString);
+    /* Version */
+    CFStringRef fmt = SecCopyCertString(SEC_CERT_VERSION_VALUE_KEY);
+    CFStringRef versionString = NULL;
+    if (fmt) {
+        versionString = CFStringCreateWithFormat(allocator, NULL, fmt,
+                                                 certificate->_version + 1);
+    }
+    CFReleaseNull(fmt);
+    if (versionString) {
+        appendProperty(properties, kSecPropertyTypeString,
+                       SEC_VERSION_KEY, NULL, versionString, localized);
+    }
+    CFReleaseNull(versionString);
 
-		/* Serial Number */
-        appendSerialNumberProperty(properties, SEC_SERIAL_NUMBER_KEY, &certificate->_serialNum, localized);
+    /* Serial Number */
+    appendSerialNumberProperty(properties, SEC_SERIAL_NUMBER_KEY, &certificate->_serialNum, localized);
 
-        /* Validity dates. */
-        appendValidityPeriodProperty(properties, SEC_VALIDITY_PERIOD_KEY, certificate, localized);
+    /* Validity dates. */
+    appendValidityPeriodProperty(properties, SEC_VALIDITY_PERIOD_KEY, certificate, localized);
 
-        if (certificate->_subjectUniqueID.length) {
-            appendDataProperty(properties, SEC_SUBJECT_UNIQUE_ID_KEY, NULL,
-                &certificate->_subjectUniqueID, localized);
-        }
-        if (certificate->_issuerUniqueID.length) {
-            appendDataProperty(properties, SEC_ISSUER_UNIQUE_ID_KEY, NULL,
-                &certificate->_issuerUniqueID, localized);
-        }
+    if (certificate->_subjectUniqueID.length) {
+        appendDataProperty(properties, SEC_SUBJECT_UNIQUE_ID_KEY, NULL,
+                           &certificate->_subjectUniqueID, localized);
+    }
+    if (certificate->_issuerUniqueID.length) {
+        appendDataProperty(properties, SEC_ISSUER_UNIQUE_ID_KEY, NULL,
+                           &certificate->_issuerUniqueID, localized);
+    }
 
-        appendPublicKeyProperty(properties, SEC_PUBLIC_KEY_KEY, certificate, localized);
+    appendPublicKeyProperty(properties, SEC_PUBLIC_KEY_KEY, certificate, localized);
 
-        CFIndex ix;
-        for (ix = 0; ix < certificate->_extensionCount; ++ix) {
-            appendExtension(properties, &certificate->_extensions[ix], localized);
-        }
+    CFIndex ix;
+    for (ix = 0; ix < certificate->_extensionCount; ++ix) {
+        appendExtension(properties, &certificate->_extensions[ix], localized);
+    }
 
-        /* Signature */
-        appendSignatureProperty(properties, SEC_SIGNATURE_KEY, certificate, localized);
+    /* Signature */
+    appendSignatureProperty(properties, SEC_SIGNATURE_KEY, certificate, localized);
 
-        appendFingerprintsProperty(properties, SEC_FINGERPRINTS_KEY, certificate, localized);
-
-		certificate->_properties = properties;
-	}
+    appendFingerprintsProperty(properties, SEC_FINGERPRINTS_KEY, certificate, localized);
 
 out:
-    CFRetainSafe(certificate->_properties);
-	return certificate->_properties;
+    return properties;
 }
 
 CFArrayRef SecCertificateCopyProperties(SecCertificateRef certificate) {
@@ -4402,7 +4618,17 @@ CFArrayRef SecCertificateCopyProperties(SecCertificateRef certificate) {
        Wrapper function which defaults to localized string properties
        for compatibility with prior releases.
     */
-    return CopyProperties(certificate, true);
+    if (!certificate) {
+        return NULL;
+    }
+    __block CFArrayRef properties = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        if (!certificate->_localizedProperties) {
+            certificate->_localizedProperties = CopyProperties(certificate, true);
+        }
+        properties = CFRetainSafe(certificate->_localizedProperties);
+    });
+    return properties;
 }
 
 CFArrayRef SecCertificateCopyLocalizedProperties(SecCertificateRef certificate, Boolean localized) {
@@ -4410,7 +4636,22 @@ CFArrayRef SecCertificateCopyLocalizedProperties(SecCertificateRef certificate, 
        Wrapper function which permits caller to specify whether
        localized string properties are used.
     */
-    return CopyProperties(certificate, localized);
+    if (!certificate) {
+        return NULL;
+    }
+
+    if (localized) {
+        return SecCertificateCopyProperties(certificate);
+    } else {
+        __block CFArrayRef properties = NULL;
+        dispatch_sync(certificate->_certificateQueue, ^{
+            if (!certificate->_properties) {
+                certificate->_properties = CopyProperties(certificate, false);
+            }
+            properties = CFRetainSafe(certificate->_properties);
+        });
+        return properties;
+    }
 }
 
 /* Unified serial number API */
@@ -4424,10 +4665,7 @@ CFDataRef SecCertificateCopySerialNumberData(
 		}
 		return NULL;
 	}
-	if (certificate->_serialNumber) {
-		CFRetain(certificate->_serialNumber);
-	}
-	return certificate->_serialNumber;
+    return CFRetainSafe(certificate->_serialNumber);
 }
 
 #if TARGET_OS_OSX
@@ -5227,10 +5465,11 @@ CFStringRef SecCertificateCopySubjectAttributeValue(SecCertificateRef cert, DERI
 
 const SecCEBasicConstraints *
 SecCertificateGetBasicConstraints(SecCertificateRef certificate) {
-	if (certificate->_basicConstraints.present)
-		return &certificate->_basicConstraints;
-	else
-		return NULL;
+    if (certificate->_basicConstraints.present) {
+        return &certificate->_basicConstraints;
+    } else {
+        return NULL;
+    }
 }
 
 CFArrayRef SecCertificateGetPermittedSubtrees(SecCertificateRef certificate) {
@@ -5243,10 +5482,11 @@ CFArrayRef SecCertificateGetExcludedSubtrees(SecCertificateRef certificate) {
 
 const SecCEPolicyConstraints *
 SecCertificateGetPolicyConstraints(SecCertificateRef certificate) {
-	if (certificate->_policyConstraints.present)
-		return &certificate->_policyConstraints;
-	else
-		return NULL;
+    if (certificate->_policyConstraints.present) {
+        return &certificate->_policyConstraints;
+    } else {
+        return NULL;
+    }
 }
 
 const SecCEPolicyMappings *
@@ -5260,10 +5500,11 @@ SecCertificateGetPolicyMappings(SecCertificateRef certificate) {
 
 const SecCECertificatePolicies *
 SecCertificateGetCertificatePolicies(SecCertificateRef certificate) {
-	if (certificate->_certificatePolicies.present)
-		return &certificate->_certificatePolicies;
-	else
-		return NULL;
+    if (certificate->_certificatePolicies.present) {
+        return &certificate->_certificatePolicies;
+    } else {
+        return NULL;
+    }
 }
 
 const SecCEInhibitAnyPolicy *
@@ -5517,15 +5758,26 @@ SecCertificateCopyPublicKey(SecCertificateRef certificate)
 // Forward declaration;
 static CFDataRef SecCertificateCopySPKIEncoded(SecCertificateRef certificate);
 
-SecKeyRef SecCertificateCopyKey(SecCertificateRef certificate) {
-    if (certificate->_pubKey == NULL) {
+static SecKeyRef _SecCertificateCopyKey_onqueue(SecCertificateRef certificate) {
+    dispatch_assert_queue(certificate->_certificateQueue);
+
+    if (certificate->_pubKey) {
+        return CFRetainSafe(certificate->_pubKey);
+    } else {
         CFDataRef spki = SecCertificateCopySPKIEncoded(certificate);
-        if (spki) {
-            certificate->_pubKey = SecKeyCreateFromSubjectPublicKeyInfoData(NULL, spki);
-            CFReleaseNull(spki);
-        }
+        SecKeyRef pubKey = SecKeyCreateFromSubjectPublicKeyInfoData(NULL, spki);
+        CFRetainAssign(certificate->_pubKey, pubKey);
+        CFReleaseNull(spki);
+        return pubKey;
     }
-    return CFRetainSafe(certificate->_pubKey);
+}
+
+SecKeyRef SecCertificateCopyKey(SecCertificateRef certificate) {
+    __block SecKeyRef pubKey = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        pubKey = _SecCertificateCopyKey_onqueue(certificate);
+    });
+    return pubKey;
 }
 
 static CFIndex SecCertificateGetPublicKeyAlgorithmIdAndSize(SecCertificateRef certificate, size_t *keySizeInBytes) {
@@ -5643,12 +5895,24 @@ CFDataRef SecCertificateGetSHA1Digest(SecCertificateRef certificate) {
     if (!certificate || !certificate->_der.data || certificate->_der.length > LONG_MAX) {
         return NULL;
     }
-    if (!certificate->_sha1Digest) {
-        certificate->_sha1Digest =
-            SecSHA1DigestCreate(CFGetAllocator(certificate),
-                certificate->_der.data, (CFIndex)certificate->_der.length);
+    __block CFDataRef sha1Digest = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        if (!certificate->_sha1Digest) {
+            certificate->_sha1Digest =
+                SecSHA1DigestCreate(CFGetAllocator(certificate),
+                    certificate->_der.data, (CFIndex)certificate->_der.length);
+        }
+        sha1Digest = certificate->_sha1Digest;
+    });
+    return sha1Digest;
+}
+
+CFDataRef SecCertificateCopySHA1Digest(SecCertificateRef certificate) {
+    if (!certificate || !certificate->_der.data || certificate->_der.length > LONG_MAX) {
+        return NULL;
     }
-    return certificate->_sha1Digest;
+    return SecSHA1DigestCreate(CFGetAllocator(certificate),
+                                 certificate->_der.data, (CFIndex)certificate->_der.length);
 }
 
 CFDataRef SecCertificateCopySHA256Digest(SecCertificateRef certificate) {
@@ -5747,38 +6011,48 @@ CFTypeRef SecCertificateCopyKeychainItem(SecCertificateRef certificate)
 	if (!certificate) {
 		return NULL;
 	}
-	CFRetainSafe(certificate->_keychain_item);
-	return certificate->_keychain_item;
+    // Thread-safety -- there's a SetKeychainItem call so we need to guard the copy
+    __block CFTypeRef keychainItem = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        keychainItem = CFRetainSafe(certificate->_keychain_item);
+    });
+    return keychainItem;
 }
 
 CFDataRef SecCertificateGetAuthorityKeyID(SecCertificateRef certificate) {
 	if (!certificate) {
 		return NULL;
 	}
-	if (!certificate->_authorityKeyID &&
-		certificate->_authorityKeyIdentifier.length &&
-        certificate->_authorityKeyIdentifier.length < LONG_MAX) {
-		certificate->_authorityKeyID = CFDataCreate(kCFAllocatorDefault,
-			certificate->_authorityKeyIdentifier.data,
-			(CFIndex)certificate->_authorityKeyIdentifier.length);
-	}
-
-    return certificate->_authorityKeyID;
+    __block CFDataRef akid = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        if (!certificate->_authorityKeyID &&
+            certificate->_authorityKeyIdentifier.length &&
+            certificate->_authorityKeyIdentifier.length < LONG_MAX) {
+            certificate->_authorityKeyID = CFDataCreate(kCFAllocatorDefault,
+                                                        certificate->_authorityKeyIdentifier.data,
+                                                        (CFIndex)certificate->_authorityKeyIdentifier.length);
+        }
+        akid = certificate->_authorityKeyID;
+    });
+    return akid;
 }
 
 CFDataRef SecCertificateGetSubjectKeyID(SecCertificateRef certificate) {
 	if (!certificate) {
 		return NULL;
 	}
-	if (!certificate->_subjectKeyID &&
-		certificate->_subjectKeyIdentifier.length &&
-        certificate->_subjectKeyIdentifier.length < LONG_MAX) {
-		certificate->_subjectKeyID = CFDataCreate(kCFAllocatorDefault,
-			certificate->_subjectKeyIdentifier.data,
-			(CFIndex)certificate->_subjectKeyIdentifier.length);
-	}
-
-    return certificate->_subjectKeyID;
+    __block CFDataRef skid = NULL;
+    dispatch_sync(certificate->_certificateQueue, ^{
+        if (!certificate->_subjectKeyID &&
+            certificate->_subjectKeyIdentifier.length &&
+            certificate->_subjectKeyIdentifier.length < LONG_MAX) {
+            certificate->_subjectKeyID = CFDataCreate(kCFAllocatorDefault,
+                                                        certificate->_subjectKeyIdentifier.data,
+                                                        (CFIndex)certificate->_subjectKeyIdentifier.length);
+        }
+        skid = certificate->_subjectKeyID;
+    });
+    return skid;
 }
 
 CFArrayRef SecCertificateGetCRLDistributionPoints(SecCertificateRef certificate) {
@@ -5916,32 +6190,37 @@ SecCertificateRef SecCertificateCreateFromAttributeDictionary(
 #endif
 
 static bool _SecCertificateIsSelfSigned(SecCertificateRef certificate) {
-    if (certificate->_isSelfSigned == kSecSelfSignedUnknown) {
-        certificate->_isSelfSigned = kSecSelfSignedFalse;
-        SecKeyRef publicKey = NULL;
-        require(SecCertificateIsCertificate(certificate), out);
-        require(publicKey = SecCertificateCopyKey(certificate), out);
-        CFDataRef normalizedIssuer =
-        SecCertificateGetNormalizedIssuerContent(certificate);
-        CFDataRef normalizedSubject =
-        SecCertificateGetNormalizedSubjectContent(certificate);
-        require_quiet(normalizedIssuer && normalizedSubject &&
-                      CFEqual(normalizedIssuer, normalizedSubject), out);
+    if (!SecCertificateIsCertificate(certificate)) {
+        return false;
+    }
+    __block bool isSelfSigned = kSecSelfSignedUnknown;
+    CFDataRef authorityKeyID = SecCertificateGetAuthorityKeyID(certificate);
+    CFDataRef subjectKeyID = SecCertificateGetSubjectKeyID(certificate);
+    dispatch_sync(certificate->_certificateQueue, ^{
+        if (certificate->_isSelfSigned == kSecSelfSignedUnknown) {
+            certificate->_isSelfSigned = kSecSelfSignedFalse;
+            SecKeyRef publicKey = NULL;
+            require(publicKey = _SecCertificateCopyKey_onqueue(certificate), out);
+            CFDataRef normalizedIssuer =
+            SecCertificateGetNormalizedIssuerContent(certificate);
+            CFDataRef normalizedSubject =
+            SecCertificateGetNormalizedSubjectContent(certificate);
+            require_quiet(normalizedIssuer && normalizedSubject &&
+                          CFEqual(normalizedIssuer, normalizedSubject), out);
 
-        CFDataRef authorityKeyID = SecCertificateGetAuthorityKeyID(certificate);
-        CFDataRef subjectKeyID = SecCertificateGetSubjectKeyID(certificate);
-        if (authorityKeyID) {
-            require_quiet(subjectKeyID && CFEqual(subjectKeyID, authorityKeyID), out);
+            if (authorityKeyID) {
+                require_quiet(subjectKeyID && CFEqual(subjectKeyID, authorityKeyID), out);
+            }
+
+            require_noerr_quiet(SecCertificateIsSignedBy(certificate, publicKey), out);
+            certificate->_isSelfSigned = kSecSelfSignedTrue;
+        out:
+            CFReleaseSafe(publicKey);
         }
 
-        require_noerr_quiet(SecCertificateIsSignedBy(certificate, publicKey), out);
-
-        certificate->_isSelfSigned = kSecSelfSignedTrue;
-    out:
-        CFReleaseSafe(publicKey);
-    }
-
-    return (certificate->_isSelfSigned == kSecSelfSignedTrue);
+        isSelfSigned = (certificate->_isSelfSigned == kSecSelfSignedTrue);
+    });
+    return isSelfSigned;
 }
 
 bool SecCertificateIsCA(SecCertificateRef certificate) {
@@ -6520,6 +6799,8 @@ static CFStringRef SecCertificateiAPSWAuthCapabilitiesTypeToOID(SeciAPSWAuthCapa
         extensionOID = CFSTR("1.2.840.113635.100.6.59.2");
     } else if (type == kSeciAPSWAuthHomeKitCapabilities) {
         extensionOID = CFSTR("1.2.840.113635.100.6.59.3");
+    } else if (type == kSeciAPSWAuthFairPlayCapabilities) {
+        extensionOID = CFSTR("1.2.840.113635.100.6.59.4");
     }
     return extensionOID;
 }
@@ -7048,8 +7329,6 @@ SecSignatureHashAlgorithm SecSignatureHashAlgorithmForAlgorithmOid(const DERItem
             break;
         }
         /* classify the signature algorithm OID into one of our known types */
-#if LIBDER_HAS_EDDSA
-        // guard for rdar://106052612
         if (DEROidCompare(algOid, &oidEd448) ||
             DEROidCompare(algOid, &oidSHAKE256)) {
             result = kSecSignatureHashAlgorithmSHAKE256;
@@ -7058,7 +7337,6 @@ SecSignatureHashAlgorithm SecSignatureHashAlgorithmForAlgorithmOid(const DERItem
         if (DEROidCompare(algOid, &oidEd25519)) {
             result = kSecSignatureHashAlgorithmSHA512;
         }
-#endif
         if (DEROidCompare(algOid, &oidSha512Ecdsa) ||
             DEROidCompare(algOid, &oidSha512Rsa) ||
             DEROidCompare(algOid, &oidSha512)) {
@@ -7204,28 +7482,29 @@ errOut:
     return result;
 }
 
-// README: See AppleCorporateRootCertificates.h for instructions for adding new corporate roots
-CFArrayRef SecCertificateCopyAppleCorporateRoots(void) {
-    CFMutableArrayRef result = NULL;
-    SecCertificateRef corp1 = NULL, corp2 = NULL, corp3 = NULL;
+CFDictionaryRef SecCertificateCopyQualifiedCertificateStatements(SecCertificateRef certificate) {
+    if (!SecCertificateIsCertificate(certificate)) {
+        return NULL;
+    }
+    return CFRetainSafe(certificate->_qcStatements);
+}
 
-    require_quiet(corp1= SecCertificateCreateWithBytes(NULL, _AppleCorporateRootCA, sizeof(_AppleCorporateRootCA)),
-                  errOut);
-    require_quiet(corp2 = SecCertificateCreateWithBytes(NULL, _AppleCorporateRootCA2,
-                                                                          sizeof(_AppleCorporateRootCA2)),
-                  errOut);
-    require_quiet(corp3 = SecCertificateCreateWithBytes(NULL, _AppleCorporateRootCA3,
-                                                                          sizeof(_AppleCorporateRootCA3)),
-                  errOut);
+_Nullable CF_RETURNS_RETAINED CFStringRef SecCertificateCopyAnchorLookupKey(SecCertificateRef certificate) {
+    CFDataRef normalizedSubjectContent = NULL;
+    CFDataRef normalizedSubjectHash = NULL;
+    CFStringRef anchorLookupKey = NULL;
 
-    require_quiet(result = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks), errOut);
-    CFArrayAppendValue(result, corp1);
-    CFArrayAppendValue(result, corp2);
-    CFArrayAppendValue(result, corp3);
+    require_quiet(certificate, errOut);
+    normalizedSubjectContent = SecCertificateGetNormalizedSubjectContent(certificate);
+    CFRetainSafe(normalizedSubjectContent);
+    require_quiet(normalizedSubjectContent, errOut);
+    normalizedSubjectHash = CFDataCreateWithHash(kCFAllocatorDefault, ccsha1_di(), CFDataGetBytePtr(normalizedSubjectContent), CFDataGetLength(normalizedSubjectContent));
+    require_quiet(normalizedSubjectHash, errOut);
+    anchorLookupKey = CFDataCopyHexString(normalizedSubjectHash);
+    require_quiet(anchorLookupKey, errOut);
 
 errOut:
-    CFReleaseNull(corp1);
-    CFReleaseNull(corp2);
-    CFReleaseNull(corp3);
-    return result;
+    CFReleaseSafe(normalizedSubjectContent);
+    CFReleaseSafe(normalizedSubjectHash);
+    return anchorLookupKey;
 }

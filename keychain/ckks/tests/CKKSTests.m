@@ -599,6 +599,13 @@
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateWaitForTLKCreation] wait:20*NSEC_PER_SEC], @"Key state should get stuck in waitfortlkcreation");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], "CKKS state machine should enter ready");
 
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertFalse(haveTLKs, "Should not have TLKs while in WaitForTLKCreation");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs while in WaitForTLKCreation");
+    }
+
     // Now, another device comes along and creates the hierarchy; we download it; and it and sends us the TLK
     [self putFakeKeyHierarchyInCloudKit:self.keychainZoneID];
     [self putFakeDeviceStatusInCloudKit:self.keychainZoneID];
@@ -607,12 +614,33 @@
 
     self.aksLockState = false;
     [self.lockStateTracker recheck];
+
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateWaitForTLK] wait:20*NSEC_PER_SEC], @"Key state should end up in waitfortlk");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"Key state should end up in ready");
 
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertFalse(haveTLKs, "Should not have TLKs while in WaitForTLK");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs while in WaitForTLK");
+    }
+
     // After unlock, the TLK arrives
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateProcessReceivedKeys];
+
     [self expectCKKSTLKSelfShareUpload:self.keychainZoneID];
     [self saveTLKMaterialToKeychain:self.keychainZoneID];
+
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateProcessReceivedKeys] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
+
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertTrue(haveTLKs, "Should have TLK after it arrives locally, even before CKKS notices");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs after it arrives");
+    }
+
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateProcessReceivedKeys];
 
     // We expect a single class C record to be uploaded.
     [self expectCKModifyItemRecords: 1 currentKeyPointerRecords: 1 zoneID:self.keychainZoneID checkItem: [self checkClassCBlock:self.keychainZoneID message:@"Object was encrypted under class C key in hierarchy"]];
@@ -621,6 +649,13 @@
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"Key state should become 'ready'");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertTrue(haveTLKs, "Should have TLK after using the key hierarchy");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs");
+    }
 }
 
 - (void)testLoadKeyHierarchyAfterLockedStart {
@@ -636,6 +671,13 @@
     XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"Key state should become 'ready'");
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
 
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertTrue(haveTLKs, "Should have TLK while locked");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs while locked");
+    }
+
     self.aksLockState = false;
     [self.lockStateTracker recheck];
 
@@ -644,6 +686,13 @@
 
     [self addGenericPassword: @"data" account: @"account-delete-me"];
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    {
+        NSError* haveTLKsError = nil;
+        BOOL haveTLKs = [self.defaultCKKS haveTLKsLocally:self.keychainView error:&haveTLKsError];
+        XCTAssertTrue(haveTLKs, "Should have TLK while unlocked");
+        XCTAssertNil(haveTLKsError, "Should not have an error checking TLKs while locked");
+    }
 }
 
 - (void)testItemUploadFailsDueToUnprocessedKeyHierarchy {
@@ -1454,6 +1503,92 @@
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
 }
 
+- (void)testItemReencryptionWhenDeviceLocked {
+    // Force us into an item re-encryption state needed
+    // Test starts with nothing in CloudKit. CKKS uploads a key hierarchy, then it's silently replaced.
+    // CKKS should notice the replacement, and reupload the item.
+
+    [self startCKKSSubsystem];
+
+    [self performOctagonTLKUpload:self.ckksViews];
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+
+    XCTAssertEqual(0, [self.keychainView.keyHierarchyConditions[SecCKKSZoneKeyStateReady] wait:20*NSEC_PER_SEC], @"key state should enter 'ready'");
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter 'ready'");
+
+    // We expect a single record to be uploaded.
+    [self expectCKModifyItemRecords:1 currentKeyPointerRecords:1 zoneID:self.keychainZoneID checkItem: [self checkClassABlock:self.keychainZoneID message:@"Object was encrypted under class A key in hierarchy"]];
+
+    [self addGenericPassword:@"asdf"
+                     account:@"account-class-A"
+                    viewHint:nil
+                      access:(id)kSecAttrAccessibleWhenUnlocked
+                   expecting:errSecSuccess
+                     message:@"Adding class A item"];
+
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+    [self waitForCKModifications];
+
+    // A new peer arrives and resets the world! It sends us a share, though.
+    CKKSSOSSelfPeer* remotePeer1 = [[CKKSSOSSelfPeer alloc] initWithSOSPeerID:@"remote-peer1"
+                                                                encryptionKey:[[SFECKeyPair alloc] initRandomKeyPairWithSpecifier:[[SFECKeySpecifier alloc] initWithCurve:SFEllipticCurveNistp384]]
+                                                                   signingKey:[[SFECKeyPair alloc] initRandomKeyPairWithSpecifier:[[SFECKeySpecifier alloc] initWithCurve:SFEllipticCurveNistp384]]
+                                                                     viewList:self.managedViewList];
+    [self.mockSOSAdapter.trustedPeers addObject:remotePeer1];
+
+    NSString* classAUUID = self.keychainZoneKeys.classA.uuid;
+
+    self.zones[self.keychainZoneID] = [[FakeCKZone alloc] initZone:self.keychainZoneID];
+    self.keys[self.keychainZoneID] = nil;
+    [self putFakeKeyHierarchyInCloudKit:self.keychainZoneID];
+    [self putTLKSharesInCloudKit:self.keychainZoneKeys.tlk from:remotePeer1 zoneID:self.keychainZoneID];
+
+    XCTAssertNotEqual(classAUUID, self.keychainZoneKeys.classA.uuid, @"Class A UUID should have changed");
+
+    // Upon adding an item, we expect a failed OQO, then another OQO with the two items (encrypted correctly)
+    [self expectCKAtomicModifyItemRecordsUpdateFailure:self.keychainZoneID];
+    [self addGenericPassword: @"data" account: @"account-delete-me-after-reset" viewHint:nil access:(id)kSecAttrAccessibleWhenUnlocked expecting:errSecSuccess message:@"Adding another classA item"];
+    
+    // First outgoing queue operation should go, and add a flag to re-encrypt. Then the CKKS state machine should go into the becomeready state.
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateBecomeReady];
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateBecomeReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter state of becoming ready");
+    
+    // Lock the device.
+    self.aksLockState = true;
+    [self.lockStateTracker recheck];
+    
+    // Assert that we don't go into re-encryption again - CKKS should instead go into ready.
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateReady];
+    
+    // Now resume the becomeReady operation.
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateBecomeReady];
+
+    // Assert that we go into the ready state immediately afterwards.
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReady] wait:20*NSEC_PER_SEC], @"CKKS state machine should be ready");
+
+    // Now unlock the device.
+    self.aksLockState = false;
+    [self.lockStateTracker recheck];
+
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateReady];
+    
+    // Test that re-encryption and eventual upload happens after device is unlocked.
+    [self expectCKModifyItemRecords:2
+           currentKeyPointerRecords:1
+                             zoneID:self.keychainZoneID
+                          checkItem:[self checkClassABlock:self.keychainZoneID message:@"Object was encrypted under class A key in hierarchy"]];
+
+    // We also expect a self share upload, once CKKS figures out the right key hierarchy
+    [self expectCKKSTLKSelfShareUpload:self.keychainZoneID];
+    
+    // Re-encryption should now occur.
+    [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateReencryptOutgoingItems];
+    XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateReencryptOutgoingItems] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter state of re-encrypting outgoing queue items");
+    [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateReencryptOutgoingItems];
+    
+    OCMVerifyAllWithDelay(self.mockDatabase, 20);
+}
+
 - (void)testRecoverFromRequestKeyRefetchWithoutRolling {
     // Simply requesting a key state refetch shouldn't roll the key hierarchy.
 
@@ -2138,7 +2273,7 @@
     self.silentFetchesAllowed = false;
 
     CFErrorRef cferror = NULL;
-    kc_with_dbt(true, &cferror, ^bool (SecDbConnectionRef dbt) {
+    kc_with_dbt(true, NULL , &cferror, ^bool (SecDbConnectionRef dbt) {
         CFErrorRef cfcferror = NULL;
 
         bool ret = SecServerImportKeychainInPlist(dbt, SecSecurityClientGet(), KEYBAG_NONE, NULL, KEYBAG_NONE,
@@ -3261,13 +3396,18 @@
     [self.defaultCKKS.stateMachine testPauseStateMachineAfterEntering:CKKSStateInitializing];
     XCTAssertEqual(0, [self.defaultCKKS.stateConditions[CKKSStateInitializing] wait:20*NSEC_PER_SEC], @"CKKS state machine should enter state of initializing zones");
 
-    [self expectCKFetch]; // This fetch is kicked off by the initializing operation
+    WEAKIFY(self);
+    [self expectCKFetchAndRunBeforeFinished: ^{ // This fetch is kicked off by the initializing operation
+        STRONGIFY(self);
+        self.silentFetchesAllowed = true;
+    }];
     [self.defaultCKKS.stateMachine testReleaseStateMachinePause:CKKSStateInitializing];
-    
+
     [self releaseCloudKitFetchHold];
-    
+    [self.defaultCKKS waitForFetchAndIncomingQueueProcessing];
+
     OCMVerifyAllWithDelay(self.mockDatabase, 20);
-    
+
     // And check that a new upload happens just fine.
     [self expectCKModifyItemRecords: 1 currentKeyPointerRecords: 1 zoneID:self.keychainZoneID checkItem: [self checkClassABlock:self.keychainZoneID message:@"Object was encrypted under class A key in hierarchy"]];
     [self addGenericPassword:@"asdf"

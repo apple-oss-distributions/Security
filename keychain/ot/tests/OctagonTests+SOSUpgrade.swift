@@ -1433,11 +1433,11 @@ class OctagonSOSUpgradeTests: OctagonTestsBase {
             let permanentInfo = egoSelf!["permanentInfo"] as? [String: AnyObject]
             XCTAssertNotNil(permanentInfo, "should have a permanent info")
 
-            let epk = permanentInfo!["encryption_pub_key"] as? Data
+            let epk = Data(base64Encoded: permanentInfo!["encryption_pub_key"] as! String)
             XCTAssertNotNil(epk, "Should have an encryption public key")
             encryptionPubKey = epk!
 
-            let spk = permanentInfo!["signing_pub_key"] as? Data
+            let spk = Data(base64Encoded: permanentInfo!["signing_pub_key"] as! String)
             XCTAssertNotNil(spk, "Should have an signing public key")
             signingPubKey = spk!
 
@@ -1450,7 +1450,6 @@ class OctagonSOSUpgradeTests: OctagonTestsBase {
             XCTAssertNil(error, "Should be no error performing a reset and establish")
             resetAndEstablishExpectation.fulfill()
         }
-
         self.wait(for: [resetAndEstablishExpectation], timeout: 10)
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -1470,11 +1469,11 @@ class OctagonSOSUpgradeTests: OctagonTestsBase {
             let permanentInfo = egoSelf!["permanentInfo"] as? [String: AnyObject]
             XCTAssertNotNil(permanentInfo, "should have a permanent info")
 
-            let epk = permanentInfo!["encryption_pub_key"] as? Data
+            let epk = Data(base64Encoded: permanentInfo!["encryption_pub_key"] as! String)
             XCTAssertNotNil(epk, "Should have an encryption public key")
             XCTAssertEqual(encryptionPubKey, epk!, "Encryption public key should be the same across a reset")
 
-            let spk = permanentInfo!["signing_pub_key"] as? Data
+            let spk = Data(base64Encoded: permanentInfo!["signing_pub_key"] as! String)
             XCTAssertNotNil(spk, "Should have an signing public key")
             XCTAssertEqual(signingPubKey, spk!, "Signing public key should be the same across a reset")
 

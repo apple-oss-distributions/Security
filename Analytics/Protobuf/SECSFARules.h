@@ -5,7 +5,11 @@
 #import <Foundation/Foundation.h>
 #import <ProtocolBuffer/PBCodable.h>
 
-@class SECSFARule;
+#import "SECSFAGlobalEnums.h"
+
+@class SECSFAEventFilter;
+@class SECSFAEventRule;
+@class SECSFAVersionMatch;
 
 #ifdef __cplusplus
 #define SECSFARULES_FUNCTION extern "C" __attribute__((visibility("hidden")))
@@ -16,16 +20,37 @@
 __attribute__((visibility("hidden")))
 @interface SECSFARules : PBCodable <NSCopying>
 {
-    NSMutableArray<SECSFARule *> *_rules;
+    SECSFAVersionMatch *_allowedBuilds;
+    SECSFAConfigVersion _configVersion;
+    NSMutableArray<SECSFAEventFilter *> *_eventFilters;
+    NSMutableArray<SECSFAEventRule *> *_eventRules;
+    struct {
+        uint configVersion:1;
+    } _has;
 }
 
 
-@property (nonatomic, retain) NSMutableArray<SECSFARule *> *rules;
-- (void)clearRules;
-- (void)addRules:(SECSFARule *)i;
-- (NSUInteger)rulesCount;
-- (SECSFARule *)rulesAtIndex:(NSUInteger)idx;
-+ (Class)rulesType;
+@property (nonatomic, retain) NSMutableArray<SECSFAEventRule *> *eventRules;
+- (void)clearEventRules;
+- (void)addEventRules:(SECSFAEventRule *)i;
+- (NSUInteger)eventRulesCount;
+- (SECSFAEventRule *)eventRulesAtIndex:(NSUInteger)idx;
++ (Class)eventRulesType;
+
+@property (nonatomic, readonly) BOOL hasAllowedBuilds;
+@property (nonatomic, retain) SECSFAVersionMatch *allowedBuilds;
+
+@property (nonatomic, retain) NSMutableArray<SECSFAEventFilter *> *eventFilters;
+- (void)clearEventFilters;
+- (void)addEventFilter:(SECSFAEventFilter *)i;
+- (NSUInteger)eventFiltersCount;
+- (SECSFAEventFilter *)eventFilterAtIndex:(NSUInteger)idx;
++ (Class)eventFilterType;
+
+@property (nonatomic) BOOL hasConfigVersion;
+@property (nonatomic) SECSFAConfigVersion configVersion;
+- (NSString *)configVersionAsString:(SECSFAConfigVersion)value;
+- (SECSFAConfigVersion)StringAsConfigVersion:(NSString *)str;
 
 // Performs a shallow copy into other
 - (void)copyTo:(SECSFARules *)other;

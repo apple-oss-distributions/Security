@@ -32,6 +32,7 @@
 #include "trust/trustd/SecTrustLoggingServer.h"
 #include "trust/trustd/trustdFileLocations.h"
 #include "trust/trustd/trustdVariants.h"
+#include "trust/trustd/trustd_spi.h"
 #include <Security/SecCertificateInternal.h>
 #include <Security/SecCMS.h>
 #include <Security/SecFramework.h>
@@ -236,7 +237,7 @@ static CFStringRef kUpdateIntervalKey       = CFSTR("ValidUpdateInterval");
 static CFStringRef kUpdateGenerationKey     = CFSTR("ValidUpdateGeneration");
 static CFStringRef kBoolTrueKey             = CFSTR("1");
 static CFStringRef kBoolFalseKey            = CFSTR("0");
-CFIndex kValidUpdateCurrentGeneration = 6;  /* generation value which we request from network */
+CFIndex kValidUpdateCurrentGeneration = 7;  /* generation value which we request from network */
 CFIndex kValidUpdateOldGeneration = 4;      /* assumed value if no generation key found in db */
 
 /* constant length of boolean string keys */
@@ -839,9 +840,7 @@ static bool SecValidUpdateForceReplaceDatabase(void) {
     if (result) {
         // exit as gracefully as possible so we can replace the database
         secnotice("validupdate", "process exiting to replace db file");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3ull*NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            xpc_transaction_exit_clean();
-        });
+        trustd_exit_clean(NULL);
     }
     return result;
 }
@@ -1187,6 +1186,88 @@ static CFStringRef SecValidInfoCopyFormatDescription(CFTypeRef cf, CFDictionaryR
     return desc;
 }
 
+static bool SecValidInfoGetPolicyConstraints(CFDataRef data, SecValidPolicy **constraints, CFIndex *count) {
+    /* Check the input policy constraints data, returning pointer and
+     * count values in output arguments. Function result is true if successful.
+     *
+     * The first byte of the policy constraints data contains the number of entries,
+     * followed by an array of 0..n policy constraint values of type SecValidPolicy.
+     * The maximum number of defined policies is not expected to approach 127, i.e.
+     * the largest value which can be expressed in a signed byte.
+     */
+    bool result = false;
+    if (!data) {
+        return result;
+    }
+
+    CFIndex length = 0;
+    SecValidPolicy *p = NULL;
+    if (data) {
+        length = CFDataGetLength(data);
+        p = (SecValidPolicy *)CFDataGetBytePtr(data);
+    }
+    /* Verify that count is 0 or greater, and equal to remaining number of bytes */
+    CFIndex c = (length > 0) ? *p++ : -1;
+    if (c < 0 || c != (length - 1)) {
+        secerror("invalid policy constraints array");
+    } else {
+        if (constraints) {
+            *constraints = p;
+        }
+        if (count) {
+            *count = c;
+        }
+        result = true;
+    }
+    return result;
+}
+
+bool SecValidInfoPolicyConstraintsPermitPolicy(SecValidInfoRef info, CFStringRef policyId) {
+    SecValidPolicy *constraints = NULL;
+    CFIndex count = 0;
+    if (!SecValidInfoGetPolicyConstraints(info->policyConstraints, &constraints, &count)) {
+        return true;
+    }
+
+    if (!constraints || !policyId) {
+        return true; /* nothing to constrain */
+    }
+    SecValidPolicy policyType = kSecValidPolicyAny;
+    /* determine if the policy is a candidate for being constrained */
+    if (CFEqualSafe(policyId, kSecPolicyAppleSSLServer) ||
+               CFEqualSafe(policyId, kSecPolicyAppleEAPServer) ||
+               CFEqualSafe(policyId, kSecPolicyAppleIPSecServer)) {
+        policyType = kSecValidPolicyServerAuthentication;
+    } else if (CFEqualSafe(policyId, kSecPolicyAppleSSLClient) ||
+               CFEqualSafe(policyId, kSecPolicyAppleEAPClient) ||
+               CFEqualSafe(policyId, kSecPolicyAppleIPSecClient)) {
+        policyType = kSecValidPolicyClientAuthentication;
+    } else if (CFEqualSafe(policyId, kSecPolicyNameSMIME)) {
+        policyType = kSecValidPolicyEmailProtection;
+    } else if (CFEqualSafe(policyId, kSecPolicyNameCodeSigning)) {
+        policyType = kSecValidPolicyCodeSigning;
+    } else if (CFEqualSafe(policyId, kSecPolicyNameTimeStamping)) {
+        policyType = kSecValidPolicyTimeStamping;
+    }
+    if (policyType == kSecValidPolicyAny) {
+        return true; /* policy not subject to constraint */
+    }
+    /* policy is subject to constraint; do the constraints allow it? */
+    bool result = false;
+    for (CFIndex ix = 0; ix < count; ix++) {
+        SecValidPolicy allowedPolicy = constraints[ix];
+        if (allowedPolicy == kSecValidPolicyAny ||
+            allowedPolicy == policyType) {
+            result = true;
+            break;
+        }
+    }
+    if (!result) {
+        secnotice("rvc", "%@ not allowed by policy constraints on issuing CA", policyId);
+    }
+    return result;
+}
+
 
 // MARK: -
 // MARK: SecRevocationDb
@@ -1331,6 +1412,14 @@ void SecRevocationDbCheckNextUpdate(void) {
         });
     });
     sec_action_perform(action);
+}
+
+bool SecRevocationDbFullReset(CFErrorRef *error)
+{
+    if (!SecValidUpdateForceReplaceDatabase()) {
+        return SecError(errSecInternal, error, CFSTR("Unable to force reset of Valid DB"));
+    }
+    return true;
 }
 
 bool SecRevocationDbUpdate(CFErrorRef *error)
@@ -2585,7 +2674,8 @@ static bool _SecRevocationDbUpdateIssuerData(SecRevocationDbConnectionRef dbc, i
     CFArrayRef deleteArray = (CFArrayRef)CFDictionaryGetValue(dict, CFSTR("delete"));
     if (isArray(deleteArray)) {
         SecValidInfoFormat format = kSecValidInfoFormatUnknown;
-        CFIndex processed=0, identifierIX, identifierCount = CFArrayGetCount(deleteArray);
+        CFIndex processed __unused = 0;
+        CFIndex identifierIX, identifierCount = CFArrayGetCount(deleteArray);
         for (identifierIX=0; identifierIX<identifierCount; identifierIX++) {
             CFDataRef identifierData = (CFDataRef)CFArrayGetValueAtIndex(deleteArray, identifierIX);
             if (!identifierData) { continue; }
@@ -2620,16 +2710,15 @@ static bool _SecRevocationDbUpdateIssuerData(SecRevocationDbConnectionRef dbc, i
             });
             if (ok) { ++processed; }
         }
-#if VERBOSE_LOGGING
         secdebug("validupdate", "Processed %ld of %ld deletions for group %lld, result=%{bool}d",
                  processed, identifierCount, groupId, ok);
-#endif
     }
     /* process additions */
     CFArrayRef addArray = (CFArrayRef)CFDictionaryGetValue(dict, CFSTR("add"));
     if (isArray(addArray)) {
         SecValidInfoFormat format = kSecValidInfoFormatUnknown;
-        CFIndex processed=0, identifierIX, identifierCount = CFArrayGetCount(addArray);
+        CFIndex processed __unused = 0;
+        CFIndex identifierIX, identifierCount = CFArrayGetCount(addArray);
         for (identifierIX=0; identifierIX<identifierCount; identifierIX++) {
             CFDataRef identifierData = (CFDataRef)CFArrayGetValueAtIndex(addArray, identifierIX);
             if (!identifierData || CFDataGetLength(identifierData) < 0) { continue; }
@@ -2659,10 +2748,8 @@ static bool _SecRevocationDbUpdateIssuerData(SecRevocationDbConnectionRef dbc, i
             });
             if (ok) { ++processed; }
         }
-#if VERBOSE_LOGGING
         secdebug("validupdate", "Processed %ld of %ld additions for group %lld, result=%{bool}d",
                  processed, identifierCount, groupId, ok);
-#endif
     }
     if (!ok || localError) {
         secerror("_SecRevocationDbUpdatePerIssuerData failed: %@", localError);

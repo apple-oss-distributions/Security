@@ -250,11 +250,19 @@ extension OctagonTestsBase {
         let requestDelegate = KCJoiningRequestTestDelegate.requestDelegate(withSecret: secret)
         let acceptDelegate = KCJoiningAcceptTestDelegate.acceptDelegateWithSecret(secret: secret, code: code)
 
-        let requestSession = try KCJoiningRequestSecretSession(secretDelegate: requestDelegate as KCJoiningRequestSecretDelegate, dsid: dsid, rng: ccDRBGGetRngState())
+        let requestSession = try KCJoiningRequestSecretSession(secretDelegate: requestDelegate as KCJoiningRequestSecretDelegate,
+                                                               dsid: dsid,
+                                                               altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()),
+                                                               flowID: "flowID-test",
+                                                               deviceSessionID: "deviceSessionID-test",
+                                                               rng: ccDRBGGetRngState())
 
         let acceptSession = try KCJoiningAcceptSession(secretDelegate: acceptDelegate as KCJoiningAcceptSecretDelegate,
                                                        circleDelegate: acceptDelegate as KCJoiningAcceptCircleDelegate,
                                                        dsid: dsid,
+                                                       altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()),
+                                                       flowID: "flowID-test",
+                                                       deviceSessionID: "deviceSessionID-test",
                                                        rng: ccrng(nil))
         acceptSession.setControlObject(self.otControl)
 
@@ -282,6 +290,18 @@ extension OctagonTestsBase {
         let initiatorIdentityMessageOpt = OTPairingMessage(data: initialMessageProtobuf!.prepareMessage)
         XCTAssertNotNil(initiatorIdentityMessageOpt, "should have an Octagon message container")
         return initiatorIdentityMessageOpt!
+    }
+
+    func decryptAndVerifyPiggybackingVoucherMessage(voucherMessage: Data, session: KCAESGCMDuplexSession) throws -> OTPairingMessage {
+        let encryptedVoucherMessage = try KCJoiningMessage(der: voucherMessage)
+        // ensure we can't just pass the payload directly to the protobuf
+        let withoutDecryptAttempt = OTPairingMessage(data: encryptedVoucherMessage.firstData)
+        XCTAssertNil(withoutDecryptAttempt, "should be nil")
+
+        let voucherMessage = try session.decryptAndVerify(encryptedVoucherMessage.firstData)
+        let voucher = OTPairingMessage(data: voucherMessage)
+        XCTAssertNotNil(voucher, "should have an Octagon message")
+        return voucher!
     }
 
     func makePiggybackingPacket(combining currentMessage: KCJoiningMessage, octagonMessage: OTPairingMessage) throws -> Data {
@@ -380,6 +400,14 @@ class OctagonPairingTests: OctagonTestsBase {
     var fcInitiator: FCPairingFakeSOSControl!
     var fcAcceptor: FCPairingFakeSOSControl!
 
+    static func follower(model: String) -> Bool {
+        if model.hasPrefix("AppleTV") ||
+           model.hasPrefix("AudioAccessory") {
+            return true
+        }
+        return false
+    }
+
     override func setUp() {
         // We want the Passwords view to exist, so that we can check the piggybacking TLK channel
         if self.mockDeviceInfo == nil {
@@ -390,7 +418,7 @@ class OctagonPairingTests: OctagonTestsBase {
                                                           osVersion: actualDeviceAdapter.osVersion())
         }
 
-        if self.mockDeviceInfo.mockModelID.contains("AppleTV") || self.mockDeviceInfo.mockModelID.contains("AudioAccessory") {
+        if Self.follower(model: self.mockDeviceInfo.mockModelID) {
             self.intendedCKKSZones = Set([
                 CKRecordZone.ID(zoneName: "LimitedPeersAllowed"),
             ])
@@ -470,7 +498,6 @@ class OctagonPairingTests: OctagonTestsBase {
             XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
             resetAndEstablishExpectation.fulfill()
         }
-
         self.wait(for: [resetAndEstablishExpectation], timeout: 10)
         self.assertEnters(context: self.cuttlefishContextForAcceptor, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
 
@@ -478,84 +505,6 @@ class OctagonPairingTests: OctagonTestsBase {
         XCTAssertEqual(self.fakeCuttlefishServer.state.bottles.count, 1, "should be 1 bottles")
     }
 
-    func setupPairingEndpoints(withPairNumber pairNumber: String, initiatorContextID: String, acceptorContextID: String, initiatorUniqueID: String, acceptorUniqueID: String, maxCapability: KCPairingIntent_Capability = KCPairingIntent_Capability._FullPeer) -> (KCPairingChannel, KCPairingChannel) {
-        let (acceptorClique, initiatorClique) = self.setupOTCliquePair(withNumber: pairNumber)
-        XCTAssertNotNil(acceptorClique, "acceptorClique should not be nil")
-        XCTAssertNotNil(initiatorClique, "initiatorClique should not be nil")
-
-        let acceptorFlowID = "flowID-acceptor"
-        let acceptorDeviceSessionID = "deviceSessionID-acceptor"
-
-        let requestorFlowID = "flowID-requestor"
-        let requestorDeviceSessionID = "deviceSessionID-requestor"
-
-        let acceptorContext = KCPairingChannelContext()
-        acceptorContext.model = "AcceptorModel"
-        acceptorContext.osVersion = "AcceptorOsVersion"
-        acceptorContext.modelClass = "AcceptorModelClass"
-        acceptorContext.uniqueDeviceID = acceptorUniqueID
-        acceptorContext.uniqueClientID = initiatorUniqueID
-        acceptorContext.flowID = acceptorFlowID
-        acceptorContext.deviceSessionID = acceptorDeviceSessionID
-        acceptorContext.capability = maxCapability
-
-        let initiatorContext = KCPairingChannelContext()
-        initiatorContext.model = "InitiatorModel"
-        initiatorContext.osVersion = "InitiatorOsVersion"
-        initiatorContext.modelClass = "InitiatorModelClass"
-        initiatorContext.uniqueDeviceID = initiatorUniqueID
-        initiatorContext.flowID = requestorFlowID
-        initiatorContext.deviceSessionID = requestorDeviceSessionID
-        initiatorContext.capability = maxCapability
-
-        let acceptor = acceptorClique!.setupPairingChannel(asAcceptor: acceptorContext)
-        let initiator = initiatorClique!.setupPairingChannel(asInitiator: initiatorContext)
-
-        XCTAssertNotNil(acceptor, "acceptor should not be nil")
-        XCTAssertNotNil(initiator, "initiator should not be nil")
-
-        acceptor.setControlObject(self.otControl)
-        initiator.setControlObject(self.otControl)
-
-        acceptor.setSessionControlArguments(OTControlArguments(containerName: OTCKContainerName,
-                                                               contextID: acceptorContextID,
-                                                               altDSID: nil,
-                                                              flowID: acceptorFlowID,
-                                                              deviceSessionID: acceptorDeviceSessionID))
-        initiator.setSessionControlArguments(OTControlArguments(containerName: OTCKContainerName,
-                                                                contextID: initiatorContextID,
-                                                                altDSID: nil,
-                                                               flowID: requestorFlowID,
-                                                               deviceSessionID: requestorDeviceSessionID))
-
-        let acceptorPairingConfig = OTJoiningConfiguration(protocolType: OTProtocolPairing,
-                                                           uniqueDeviceID: acceptorUniqueID,
-                                                           uniqueClientID: initiatorUniqueID,
-                                                           pairingUUID: UUID().uuidString,
-                                                           epoch: 1,
-                                                           isInitiator: false)
-        let initiatorPairingConfig = OTJoiningConfiguration(protocolType: OTProtocolPairing,
-                                                            uniqueDeviceID: initiatorUniqueID,
-                                                            uniqueClientID: initiatorUniqueID,
-                                                            pairingUUID: UUID().uuidString,
-                                                            epoch: 1,
-                                                            isInitiator: true)
-
-        acceptor.setConfiguration(acceptorPairingConfig)
-        initiator.setConfiguration(initiatorPairingConfig)
-
-        self.circle = SOSCircleCreate(kCFAllocatorDefault, "TEST DOMAIN" as CFString, nil) as SOSCircleRef
-        self.fcInitiator = FCPairingFakeSOSControl(randomAccountKey: true, circle: circle)
-        self.fcAcceptor = FCPairingFakeSOSControl(randomAccountKey: true, circle: circle)
-
-        let sosConnectionInitiator = FakeNSXPCConnectionSOS(withSOSControl: self.fcInitiator)
-        let sosConnectionAcceptor = FakeNSXPCConnectionSOS(withSOSControl: self.fcAcceptor)
-
-        acceptor.setXPCConnectionObject(sosConnectionAcceptor)
-        initiator.setXPCConnectionObject(sosConnectionInitiator)
-
-        return (acceptor, initiator)
-    }
 
     func setupOTCliquePair(withNumber count: String) -> (OTClique?, OTClique?) {
         let secondAcceptorData = self.createOTConfigurationContextForTests(contextID: "secondAcceptor",

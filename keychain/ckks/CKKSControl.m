@@ -234,6 +234,14 @@
 }
 
 - (void)rpcKnownBadState:(NSString* _Nullable)viewName reply:(void (^)(CKKSKnownBadState))reply {
+    NSArray<NSString*>* views = viewName ? @[viewName] : nil;
+    [self rpcKnownBadStateForViews:views reply:^(CKKSKnownBadState state) {
+        reply(state);
+    }];
+}
+
+- (void)rpcKnownBadStateForViews:(NSArray<NSString*>* _Nullable)requestedViews reply:(void (^)(CKKSKnownBadState))reply {
+    NSString* viewName = (requestedViews.count == 1) ? requestedViews.firstObject : nil;
     [self rpcFastStatus:viewName reply:^(NSArray<NSDictionary*>* results, NSError* blockError) {
         bool tlkMissing = false;
         bool waitForUnlock = false;
@@ -248,6 +256,10 @@
 
             if([name isEqualToString:@"global"]) {
                 // this is global status; no view implicated
+                continue;
+            }
+
+            if (requestedViews && ![requestedViews containsObject:name]) {
                 continue;
             }
 
@@ -369,6 +381,20 @@
     [[self objectProxyWithErrorHandler:^(NSError * _Nonnull error) {
         reply(nil, error);
     }] pcsMirrorKeysForServices:services reply:^(NSDictionary<NSNumber*,NSArray<NSData*>*>* _Nullable result, NSError* _Nullable error){
+        reply(result, error);
+        (void)self;
+    }];
+}
+
+- (void)initialSyncStatus:(NSString *)viewName reply:(void (^)(BOOL result, NSError * _Nullable))reply {
+    [[self objectProxyWithErrorHandler:^(NSError * _Nonnull error) {
+        reply(NO, error);
+    }] initialSyncStatus:viewName reply:^(BOOL result, NSError* _Nullable error){
+        if(error) {
+            secnotice("ckkscontrol", "Couldn't fetch initial sync status for view %@: %@", viewName, error);
+        } else {
+            secnotice("ckkscontrol", "Initial sync completed for view %@: %{BOOL}d", viewName, result);
+        }
         reply(result, error);
         (void)self;
     }];

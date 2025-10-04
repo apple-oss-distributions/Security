@@ -42,11 +42,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         super.setUp()
 
         setupICUMallocZone()
-#if SEC_XR
+#if os(visionOS)
         TPSetBecomeiPadOverride(false)
 #endif
 
-#if TARGET_OS_TV
+#if os(tvOS)
         TPSetBecomeAppleTVOverride(false)
 #endif
         SecTapToRadar.disableTTRsEntirely()
@@ -86,14 +86,14 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                     try FileManager.default.copyItem(at: srcURL, to: tmpURL)
                 }
 
-                SecKeychainDbReset(nil)
+                SecServerKeychainDbReset(nil)
             } catch {
                 XCTFail("setUp failed: \(error)")
             }
         }
 
         // Actually load the database.
-        kc_with_dbt(true, nil) { _ in
+        kc_with_dbt(true, nil, nil) { _ in
             false
         }
 
@@ -115,8 +115,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                 CKKSAnalytics.logger().removeState()
 
                 SecItemDataSourceFactoryReleaseAll()
-                SecKeychainDbForceClose()
-                SecKeychainDbReset(nil)
+                SecServerKeychainDbForceClose()
+                SecServerKeychainDbReset(nil)
 
                 // Only perform the destructive step if the url matches what we expect!
                 let testName = self.name.components(separatedBy: CharacterSet(charactersIn: " ]"))[1]
@@ -135,10 +135,10 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     override static func tearDown() {
         KCSharingClearChangeTrackingEnabledOverride()
 
-#if SEC_XR
+#if os(visionOS)
         TPClearBecomeiPadOverride()
 #endif
-#if TARGET_OS_TV
+#if os(tvOS)
         TPClearBecomeAppleTVOverride()
 #endif
     }
@@ -340,7 +340,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         let cliqueChangedNotificationExpectation = XCTNSNotificationExpectation(name: NSNotification.Name(rawValue: OTCliqueChanged))
 
-        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNil(error2)
         XCTAssertNotNil(peerID2)
 
@@ -426,7 +426,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -627,7 +627,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         // Now set up a machine ID list that positively does not have our peer
         XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa"], userInitiatedRemovals: nil, evictedRemovals: nil, unknownReasonRemovals: nil, accountIsDemo: false), "should be able to set allowed machine IDs")
 
-        let (peerID3, _, _, error3) = container.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+        let (peerID3, _, _, error3) = container.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNotNil(peerID3, "Should get a peer when you establish a now allow-listed peer")
         XCTAssertNil(error3, "Should not get an error when you establish a now allow-listed peer")
     }
@@ -906,7 +906,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -1089,6 +1089,9 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let state = containerA.getStateSync(test: self)
             let a = state.peers[aPeerID!]!
             XCTAssertTrue(a.dynamicInfo!.includedPeerIDs.contains(cPeerID!))
+            XCTAssertTrue(state.egoSponsoredBeneficiaryIDs.contains(bPeerID!))
+            let bState = containerB.getStateSync(test: self)
+            XCTAssertTrue(bState.egoSponsoredBeneficiaryIDs.contains(cPeerID!))
         }
 
         _ = containerA.dumpSync(test: self)
@@ -1125,7 +1128,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -1224,6 +1227,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
             XCTAssertNotNil(bPolicy, "Should have a syncing policy")
             XCTAssertEqual(bPolicy?.syncUserControllableViews, .ENABLED, "Peer should desire to sync user controllable views (following A's lead)")
+            do {
+                let state = containerA.getStateSync(test: self)
+                XCTAssertEqual(state.egoSponsoredBeneficiaryIDs.count, 1, "A should have sponsored 1 beneficiary")
+                XCTAssertTrue(state.egoSponsoredBeneficiaryIDs.contains(bPeerID!), "A should have sponsored B")
+            }
         }
     }
 
@@ -1247,7 +1255,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         XCTAssertNil(containerA.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa"], accountIsDemo: false), "should be able to set allowed machine IDs")
 
-        let (peerID2, _, _, error2) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+        let (peerID2, _, _, error2) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNotNil(peerID2, "Should get a peer when you establish a now allow-listed peer")
         XCTAssertNil(error2, "Should not get an error when you establish a now allow-listed peer")
 
@@ -1298,6 +1306,10 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                                             canSendMetrics: false)
             XCTAssertNotNil(error, "Should have an error joining with an unapproved machine ID")
             XCTAssertNil(peerID, "Should not receive a peer ID joining with an unapproved machine ID")
+
+            let state = containerA.getStateSync(test: self)
+            XCTAssertEqual(state.egoSponsoredBeneficiaryIDs.count, 1, "A should have sponsored 1 beneficiary")
+            XCTAssertTrue(state.egoSponsoredBeneficiaryIDs.contains(bPeerID!), "A should have sponsored B")
         }
     }
 
@@ -1325,7 +1337,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         print("establishing A")
         do {
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -1442,7 +1454,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertNotNil(secret, "secret should not be nil")
         }
         print("establishing A")
-        _ = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+        _ = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
         do {
             print("A vouches for B")
@@ -1533,6 +1545,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let state = containerA.getStateSync(test: self)
             let b = state.peers[bPeerID!]!
             XCTAssertEqual(lateClock, b.dynamicInfo!.clock)
+            XCTAssertEqual(state.egoSponsoredBeneficiaryIDs.count, 1, "A should have sponsored 1 beneficiary")
+            XCTAssertTrue(state.egoSponsoredBeneficiaryIDs.contains(bPeerID!), "A should have sponsored B")
+            let bState = containerB.getStateSync(test: self)
+            XCTAssertEqual(bState.egoSponsoredBeneficiaryIDs.count, 1, "B should have sponsored 1 beneficiary")
+            XCTAssertTrue(bState.egoSponsoredBeneficiaryIDs.contains(cPeerID!), "B should have sponsored C")
         }
     }
 
@@ -1724,13 +1741,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         XCTAssertThrowsError(try EscrowKeys.retrieveEscrowKeysFromKeychain(label: "hash"), "retrieveEscrowKeysFromKeychain should throw error")
         XCTAssertThrowsError(try EscrowKeys.findEscrowKeysForLabel(label: "hash"), "findEscrowKeysForLabel should throw error")
 
-        let secretString = "i'm a secret!"
-        XCTAssertNotNil(secretString, "secretString should not be nil")
-
-        let secretData: Data? = secretString.data(using: .utf8)
-        XCTAssertNotNil(secretData, "secretData should not be nil")
-
-        let keys = try EscrowKeys(secret: secretData!, bottleSalt: "123456789")
+        let secretData = Data("i'm a secret!".utf8)
+        let keys = try EscrowKeys(secret: secretData, bottleSalt: "123456789")
         XCTAssertNotNil(keys, "keys should not be nil")
 
         XCTAssertNotNil(keys.secret, "secret should not be nil")
@@ -1755,30 +1767,27 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     }
 
     func testEscrowKeyTestVectors() {
-        let secretString = "I'm a secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret"
-
-        let secret = secretString.data(using: .utf8)
+        let secret = Data("I'm a secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret".utf8)
 
         do {
-            let testv1 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySigning, masterSecret: secret!, bottleSalt: testDSID)
+            let testv1 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySigning, escrowSecret: secret, bottleSalt: testDSID)
             XCTAssertEqual(testv1, signingKey_384, "signing keys should match")
 
-            let testv2 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeyEncryption, masterSecret: secret!, bottleSalt: testDSID)
+            let testv2 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeyEncryption, escrowSecret: secret, bottleSalt: testDSID)
             XCTAssertEqual(testv2, encryptionKey_384, "encryption keys should match")
 
-            let testv3 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySymmetric, masterSecret: secret!, bottleSalt: testDSID)
+            let testv3 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySymmetric, escrowSecret: secret, bottleSalt: testDSID)
             XCTAssertEqual(testv3, symmetricKey_384, "symmetric keys should match")
 
-            let newSecretString = "I'm f secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret"
-            let newSecret = newSecretString.data(using: .utf8)
+            let newSecret = Data("I'm f secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret".utf8)
 
-            let testv4 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySigning, masterSecret: newSecret!, bottleSalt: testDSID)
+            let testv4 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySigning, escrowSecret: newSecret, bottleSalt: testDSID)
             XCTAssertNotEqual(testv4, signingKey_384, "signing keys should not match")
 
-            let testv5 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeyEncryption, masterSecret: newSecret!, bottleSalt: testDSID)
+            let testv5 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeyEncryption, escrowSecret: newSecret, bottleSalt: testDSID)
             XCTAssertNotEqual(testv5, encryptionKey_384, "encryption keys should not match")
 
-            let testv6 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySymmetric, masterSecret: newSecret!, bottleSalt: testDSID)
+            let testv6 = try EscrowKeys.generateEscrowKey(keyType: EscrowKeyType.kOTEscrowKeySymmetric, escrowSecret: newSecret, bottleSalt: testDSID)
             XCTAssertNotEqual(testv6, symmetricKey_384, "symmetric keys should not match")
         } catch {
             XCTFail("error testing escrow key test vectors \(error)")
@@ -1786,24 +1795,21 @@ class TrustedPeersHelperUnitTests: XCTestCase {
     }
 
     func testRecoveryKeyTestVectors() {
-        let secretString = "I'm a secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret"
-
-        let secret = secretString.data(using: .utf8)
+        let secret = Data("I'm a secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret".utf8)
 
         do {
-            let testv1 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeySigning, masterSecret: secret!, recoverySalt: testDSID)
+            let testv1 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeySigning, recoverySecret: secret, recoverySalt: testDSID)
             XCTAssertEqual(testv1, recovery_signingKey_384, "signing keys should match")
 
-            let testv2 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeyEncryption, masterSecret: secret!, recoverySalt: testDSID)
+            let testv2 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeyEncryption, recoverySecret: secret, recoverySalt: testDSID)
             XCTAssertEqual(testv2, recovery_encryptionKey_384, "encryption keys should match")
 
-            let newSecretString = "I'm f secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret"
-            let newSecret = newSecretString.data(using: .utf8)
+            let newSecret = Data("I'm f secretI'm a secretI'm a secretI'm a secretI'm a secretI'm a secret".utf8)
 
-            let testv4 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeySigning, masterSecret: newSecret!, recoverySalt: testDSID)
+            let testv4 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeySigning, recoverySecret: newSecret, recoverySalt: testDSID)
             XCTAssertNotEqual(testv4, recovery_signingKey_384, "signing keys should not match")
 
-            let testv5 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeyEncryption, masterSecret: newSecret!, recoverySalt: testDSID)
+            let testv5 = try RecoveryKeySet.generateRecoveryKey(keyType: RecoveryKeyType.kOTRecoveryKeyEncryption, recoverySecret: newSecret, recoverySalt: testDSID)
             XCTAssertNotEqual(testv5, recovery_encryptionKey_384, "encryption keys should not match")
         } catch {
             XCTFail("error testing RecoveryKey test vectors \(error)")
@@ -1843,7 +1849,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let cliqueChangedNotificationExpectation = XCTNSNotificationExpectation(name: NSNotification.Name(rawValue: OTCliqueChanged))
 
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -1881,7 +1887,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -1901,6 +1907,13 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
             // But afterward, it has one!
             assertTLKShareFor(peerID: bPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
+
+            // Make sure A updates
+            _ = containerA.updateSync(test: self)
+            // And now A knows that it has vouched on behalf of B
+            let state = containerA.getStateSync(test: self)
+            XCTAssertEqual(state.egoSponsoredBeneficiaryIDs.count, 1, "A should have sponsored 1 beneficiary")
+            XCTAssertTrue(state.egoSponsoredBeneficiaryIDs.contains(bPeerID!), "A should have sponsored B")
         }
     }
 
@@ -1935,7 +1948,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         print("establishing A")
         do {
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -1971,7 +1984,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -2017,7 +2030,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2052,7 +2065,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertNil(bottlePeerID, "peerID should be nil for no bottle")
             XCTAssertNil(policy, "Should not have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: "wrong escrow record", entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: "wrong escrow record", entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNotNil(error3)
             XCTAssertNil(voucherData)
@@ -2088,7 +2101,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2122,7 +2135,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertNil(bottlePeerID, "Should have no peer for invalid bottle")
             XCTAssertNil(policy, "Should not have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleB.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleB.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNotNil(error3)
             XCTAssertNil(voucherData)
@@ -2159,7 +2172,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2194,7 +2207,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "987654321", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "987654321", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNotNil(error3)
             XCTAssertNil(voucherData)
@@ -2230,7 +2243,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2264,7 +2277,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: Data(count: Int(OTMasterSecretLength)), bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: Data(count: Int(OTMasterSecretLength)), bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNotNil(error3)
             XCTAssertNil(voucherData)
@@ -2302,7 +2315,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2338,7 +2351,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
             self.cuttlefish.fetchViableBottlesError.append(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .changeTokenExpired))
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNotNil(error3)
             XCTAssertNil(voucherData)
@@ -2432,7 +2445,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                                                  ckksKeys: [self.manateeKeySet],
                                                                  tlkShares: [],
                                                                  preapprovedKeys: [bPermanentInfoParsed!.signingPubKey.spki(),
-                                                                                   cPermanentInfoParsed!.signingPubKey.spki(), ])
+                                                                                   cPermanentInfoParsed!.signingPubKey.spki(), ], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
 
@@ -2450,7 +2463,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                                                                           ckksKeys: [self.manateeKeySet],
                                                                                           tlkShares: [],
                                                                                           preapprovedKeys: [aPermanentInfoParsed!.signingPubKey.spki(),
-                                                                                                            cPermanentInfoParsed!.signingPubKey.spki(), ])
+                                                                                                            cPermanentInfoParsed!.signingPubKey.spki(), ],
+                                                                                           altDSID: "123456",
+                                                                                           flowID: "test-flowID",
+                                                                                           deviceSessionID: "test-deviceSessionID",
+                                                                                           canSendMetrics: false)
             XCTAssertNil(bJoinedError, "Should be no error joining by preapproval")
             XCTAssertNotNil(bJoinedPeerID, "Should have a peer ID out of join")
             XCTAssertNotNil(bPolicy, "Should have a policy back from preapprovedjoin")
@@ -2467,7 +2484,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                                                                                           ckksKeys: [self.manateeKeySet],
                                                                                           tlkShares: [],
                                                                                           preapprovedKeys: [aPermanentInfoParsed!.signingPubKey.spki(),
-                                                                                                            bPermanentInfoParsed!.signingPubKey.spki(), ])
+                                                                                                            bPermanentInfoParsed!.signingPubKey.spki(), ],
+                                                                                           altDSID: "123456",
+                                                                                           flowID: "test-flowID",
+                                                                                           deviceSessionID: "test-deviceSessionID",
+                                                                                           canSendMetrics: false)
             XCTAssertNil(cJoinedError, "Should be no error joining by preapproval")
             XCTAssertNotNil(cJoinedPeerID, "Should have a peer ID out of join")
             XCTAssertEqual(cPeerID, cJoinedPeerID, "PeerID after joining should match")
@@ -2695,7 +2716,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         print("establishing A")
         do {
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -2743,7 +2764,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -2867,7 +2888,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil)
+            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil, altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2912,7 +2933,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: ckksKeys, tlkShares: [], preapprovedKeys: nil)
+            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: ckksKeys, tlkShares: [], preapprovedKeys: nil, altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -2929,6 +2950,53 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         XCTAssertNotNil(records, "records should not be nil")
         XCTAssertEqual(1, records!.count, "expect one record")
         XCTAssertEqual("LimitedPeersAllowed", records![0].recordID.zoneID.zoneName, "expect LimitedPeersAllowed ckks keys")
+
+        // Now add duplicates of the CRK
+        c.moc.performAndWait {
+            // create a new container from the old
+            guard let crkMOs = c.containerMO.custodianRecoveryKeys as? Set<CustodianRecoveryKeyMO> else {
+                XCTFail("should have gotten CrkMOs")
+                return
+            }
+            XCTAssertEqual(crkMOs.count, 1, "Should have exactly one CRK")
+            guard let theCrk = crkMOs.first else {
+                XCTFail("Should have at least one CRK by now")
+                return
+            }
+            for _ in 0..<50 {
+                let dup = CustodianRecoveryKeyMO(context: c.moc)
+                dup.crkInfo = theCrk.crkInfo
+                dup.crkInfoSig = theCrk.crkInfoSig
+                c.containerMO.addToCustodianRecoveryKeys(dup)
+            }
+
+            let invalidCrk = CustodianRecoveryKeyMO(context: c.moc)
+            invalidCrk.crkInfo = Data([1, 2, 3])
+            invalidCrk.crkInfoSig = Data([3, 2, 1])
+            c.containerMO.addToCustodianRecoveryKeys(invalidCrk)
+
+            let invalidCrk2 = CustodianRecoveryKeyMO(context: c.moc)
+            invalidCrk2.crkInfo = theCrk.crkInfo
+            guard var badSig = theCrk.crkInfoSig else {
+                XCTFail("CRK should have sig data")
+                return
+            }
+            badSig[0] = badSig[0] ^ 0xff
+            invalidCrk2.crkInfoSig = badSig
+            c.containerMO.addToCustodianRecoveryKeys(invalidCrk2)
+
+            XCTAssertNoThrow(try! c.moc.save())
+        }
+        do {
+            let container = try Container(name: c.name, persistentStoreDescription: store, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+            // Now test that the DB only has the one valid, de-dup'd CRK
+            container.moc.performAndWait {
+                XCTAssertEqual(container.containerMO.custodianRecoveryKeys?.count, 1, "CRK count should be 1")
+                XCTAssertEqual(container.model.allCustodianRecoveryKeys().count, 1, "voucher count should be 2")
+            }
+        } catch {
+            throw error
+        }
     }
 
     func roundTripThroughSetValueTransformer(set: Set<String>) {
@@ -2978,11 +3046,15 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil)
+            let (peerID, _, _, error) = c.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil, altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
-        let (response, healthError) = c.requestHealthCheckSync(requiresEscrowCheck: true, repair: false, test: self)
+        let (response, healthError) = c.requestHealthCheckSync(requiresEscrowCheck: true,
+                                                               repair: false,
+                                                               danglingPeerCleanup: false,
+                                                               updateIdMS: false,
+                                                               test: self)
         XCTAssertFalse(response!.postRepairCFU, "expected postRepairCFU")
         XCTAssertFalse(response!.postEscrowCFU, "expected postEscrowCFU")
         XCTAssertFalse(response!.resetOctagon, "expected resetOctagon")
@@ -3021,7 +3093,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         print("establishing A")
         do {
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -3057,7 +3129,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -3103,7 +3175,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil)
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: nil, altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -3413,7 +3485,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         XCTAssertNil(updateError, "Should not be an error updating the container without first establishing")
         try self.assert(container: container, allowedMachineIDs: Set(["xxx", "mmm", "aaa"]), disallowedMachineIDs: Set(["zzz", "kkk", "bbb", "ccc"]), persistentStore: description, cuttlefish: self.cuttlefish)
 
-        let (_, _, _, establishError) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+        let (_, _, _, establishError) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNil(establishError, "Should be able to establish() with no error")
         try self.assert(container: container, allowedMachineIDs: Set(["xxx", "mmm", "aaa"]), disallowedMachineIDs: Set(["zzz", "kkk", "bbb", "ccc"]), persistentStore: description, cuttlefish: self.cuttlefish)
         XCTAssertFalse(container.fullIDMSListWouldBeHelpful(), "Container shouldn't think it could use an IDMS list set")
@@ -3594,7 +3666,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
 
         XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], accountIsDemo: false), "should be able to set allowed machine IDs")
-        let (_, _, _, establishError) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+        let (_, _, _, establishError) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNil(establishError, "Should be able to establish() with no error")
         try self.assert(container: container, allowedMachineIDs: Set(["aaa", "bbb", "ccc"]), disallowedMachineIDs: Set([]), persistentStore: description, cuttlefish: self.cuttlefish)
         XCTAssertFalse(container.fullIDMSListWouldBeHelpful(), "Container shouldn't think it could use an IDMS list set")
@@ -3757,6 +3829,44 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         container.moc.performAndWait {
             XCTAssertEqual(container.containerMO.allowedMachineIDs, Set<String>() as NSSet, "Set of allowed machine IDs should now be empty")
+        }
+    }
+
+    func testEgoSponsoredBeneficiaryIDsListUpgrade() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let description2 = tmpStoreDescription(name: "container.db")
+        let (c, _) = try establish(reload: false, store: description)
+        let (_, peerID2) = try joinByVoucher(sponsor: c,
+                                              containerID: "second",
+                                              machineID: "bbb",
+                                              machineIDs: ["aaa", "bbb", "ccc"], accountIsDemo: false,
+                                              store: description)
+        do {
+            let state = c.getStateSync(test: self)
+            XCTAssertEqual(state.egoSponsoredBeneficiaryIDs, Set([peerID2]), "should have sponsored peer 2")
+        }
+
+        _ = c.updateSync(test: self)
+
+        do {
+            let state = c.getStateSync(test: self)
+            let peers = state.peers
+            XCTAssertEqual(peers.count, 2, "should know of two peers")
+            XCTAssertNotNil(peers[peerID2], "peer 2 should be known")
+        }
+
+        // Now muck with the MOC, delete egoSponsoredBeneficiaryIDs
+        c.moc.performAndWait {
+            c.containerMO.egoSponsoredBeneficiaryIDs = NSSet()
+            try! c.moc.saveIfChanged()
+        }
+
+        // Reload the first container
+        let container = try Container(name: c.name, persistentStoreDescription: description2, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+        container.moc.performAndWait {
+            let egoSponsoredBeneficiaryIDs = container.containerMO.egoSponsoredBeneficiaryIDs as? Set<String> ?? Set()
+            XCTAssertTrue(egoSponsoredBeneficiaryIDs.contains(peerID2), "Should be able to re-learn that ego has sponsored peer2")
+            XCTAssertEqual(egoSponsoredBeneficiaryIDs.count, 1, "Should have sponsored one peer")
         }
     }
 
@@ -3976,6 +4086,10 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                 } else {
                     XCTFail("Couldn't get container.containerMO.peers as Set<PeerMO>")
                 }
+            }
+            do {
+                let state = container.getStateSync(test: self)
+                XCTAssertEqual(state.egoSponsoredBeneficiaryIDs.count, 7, "Should have sponsored c1, c2, and the five orphan peers")
             }
         }
     }
@@ -4300,7 +4414,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTFail("Creating container errored: \(error)")
         }
 
-        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNil(error2)
         XCTAssertNotNil(peerID2)
 
@@ -4346,7 +4460,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -4574,7 +4688,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         print("establishing A")
         do {
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [bPermanentInfoParsed!.signingPubKey.spki()])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [bPermanentInfoParsed!.signingPubKey.spki()], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
         }
@@ -4583,7 +4697,11 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             assertNoTLKShareFor(peerID: bPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
 
             print("B joins by preapproval, and uploads all TLKShares that it has")
-            let (bJoinedPeerID, _, policy, bJoinedError) = containerB.preapprovedJoinSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [])
+            let (bJoinedPeerID, _, policy, bJoinedError) = containerB.preapprovedJoinSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [],
+                                                                                          altDSID: "123456",
+                                                                                          flowID: "test-flowID",
+                                                                                          deviceSessionID: "test-deviceSessionID",
+                                                                                          canSendMetrics: false)
             XCTAssertNil(bJoinedError, "Should be no error joining by preapproval")
             XCTAssertNotNil(bJoinedPeerID, "Should have a peer ID out of join")
             XCTAssertNotNil(policy, "Should have a policy back from preapprovedjoin")
@@ -4635,7 +4753,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTFail("Creating container errored: \(error)")
         }
 
-        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+        let (peerID2, _, _, error2) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
         XCTAssertNil(error2)
         XCTAssertNotNil(peerID2)
 
@@ -4679,10 +4797,10 @@ class TrustedPeersHelperUnitTests: XCTestCase {
                 let data: Data = (NSData(contentsOf: fileURL))! as Data
                 let tempData: NSMutableData = NSMutableData(data: data)
 
-                let badData = "bad".data(using: String.Encoding.utf8)! as Data
+                let badData = Data("bad".utf8)
 
                 do {
-                    try badData.withUnsafeBytes { (badDataBytes: UnsafeRawBufferPointer) throws -> Void in
+                    try badData.withUnsafeBytes { (badDataBytes: UnsafeRawBufferPointer) throws in
                         tempData.replaceBytes(in: NSRange(location: 100, length: badData.count), withBytes: badDataBytes.baseAddress!)
                     }
                 } catch {
@@ -4879,8 +4997,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         options.iterationCount = 1
         options.invocationOptions = .manuallyStop // so we can measure memory before our container goes out of scope
         self.measure(metrics: [XCTCPUMetric(), XCTMemoryMetric()], options: options) {
-            startTrackingCheckSigCount()
-            defer { stopTrackingCheckSigCount() }
+            TPStartTrackingCheckSigCount()
+            defer { TPStopTrackingCheckSigCount() }
             let (_, _, updateError) = c.updateSync(test: self)
             XCTAssertNil(updateError, "Should be able to update first container")
 
@@ -4896,7 +5014,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             } catch {
                 XCTFail("Expected no failures: \(error)")
             }
-            XCTAssertEqual(checkSigCount(), 0, "should have had zero checkTypesafeSignature calls")
+            XCTAssertEqual(TPCheckSigCount(), 0, "should have had zero checkTypesafeSignature calls")
         }
 
         if let copyDatabasesTo {
@@ -4908,8 +5026,8 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
     // This test has prepopulated TPH & Keychain DBs, see setUp()
     func testLoadManyPeersFromDB() throws {
-        startTrackingCheckSigCount()
-        defer { stopTrackingCheckSigCount() }
+        TPStartTrackingCheckSigCount()
+        defer { TPStopTrackingCheckSigCount() }
         let store = tmpStoreDescription(name: "tph.db")
         self.cuttlefish = FakeCuttlefishServer(nil, ckZones: [:], ckksZoneKeys: [:])
 
@@ -4930,7 +5048,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             }
             XCTAssertEqual(peerMOs.count, 120, "should know about 120 peers")
         }
-        XCTAssertEqual(checkSigCount(), 0, "should have had zero checkTypesafeSignature calls")
+        XCTAssertEqual(TPCheckSigCount(), 0, "should have had zero checkTypesafeSignature calls")
     }
 
     func fetchCurrentPolicyWithOverride(overrideFunc: ((Bool) -> Void)) throws {
@@ -4960,13 +5078,13 @@ class TrustedPeersHelperUnitTests: XCTestCase {
         overrideFunc(false)
     }
 
-    #if SEC_XR
+    #if os(visionOS)
     func testFetchCurrentPolicyWithModelIDOverride() throws {
         try fetchCurrentPolicyWithOverride(overrideFunc: TPSetBecomeiPadOverride)
     }
-    #endif // SEC_XR
+    #endif // os(visionOS)
 
-    #if TARGET_OS_TV
+    #if os(tvOS)
     func testFetchCurrentPolicyWithModelIDOverrideTV() throws {
         try fetchCurrentPolicyWithOverride(overrideFunc: TPSetBecomeAppleTVOverride)
     }
@@ -5187,7 +5305,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let cliqueChangedNotificationExpectation = XCTNSNotificationExpectation(name: NSNotification.Name(rawValue: OTCliqueChanged))
 
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -5225,7 +5343,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -5377,7 +5495,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let cliqueChangedNotificationExpectation = XCTNSNotificationExpectation(name: NSNotification.Name(rawValue: OTCliqueChanged))
 
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -5415,7 +5533,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -5720,7 +5838,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             let cliqueChangedNotificationExpectation = XCTNSNotificationExpectation(name: NSNotification.Name(rawValue: OTCliqueChanged))
 
             assertNoTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
-            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [])
+            let (peerID, _, _, error) = containerA.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
             XCTAssertNil(error)
             XCTAssertNotNil(peerID)
             assertTLKShareFor(peerID: aPeerID!, keyUUID: self.manateeKeySet.tlk.uuid, zoneID: CKRecordZone.ID(zoneName: "Manatee"))
@@ -5758,7 +5876,7 @@ class TrustedPeersHelperUnitTests: XCTestCase {
             XCTAssertEqual(bottlePeerID, aPeerID, "Bottle should be for peer A")
             XCTAssertNotNil(policy, "Should have a policy")
 
-            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [])
+            let (voucherData, voucherSig, _, _, error3) = containerB.vouchWithBottleSync(test: self, b: bottleA.bottleID!, entropy: entropy, bottleSalt: "123456789", tlkShares: [], altDSID: "123456789", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
 
             XCTAssertNil(error3)
             XCTAssertNotNil(voucherData)
@@ -6085,5 +6203,198 @@ class TrustedPeersHelperUnitTests: XCTestCase {
 
         XCTAssertFalse(container.egoMachineIDVanished, "egoMachineIDVanished should be false")
         XCTAssertFalse(container.midVanishedFromTDL, "should not have sent a vanished metric")
+    }
+
+    func testEgoPeerEviction() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        container.moc.performAndWait {
+            let knownMachineMOs = container.containerMO.machines as? Set<MachineMO> ?? Set()
+            knownMachineMOs.forEach {
+                if $0.machineID == "aaa" {
+                    $0.modified = Date(timeIntervalSinceNow: TimeInterval(elevenDaysInThePast))
+                    $0.status = Int64(TPMachineIDStatus.evicted.rawValue)
+                }
+            }
+            try! container.moc.save()
+        }
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: ["aaa"], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDEvicted, "egoMachineIDEvicted should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerUserInitiatedKO() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        container.moc.performAndWait {
+            let knownMachineMOs = container.containerMO.machines as? Set<MachineMO> ?? Set()
+            knownMachineMOs.forEach {
+                if $0.machineID == "aaa" {
+                    $0.modified = Date(timeIntervalSinceNow: TimeInterval(elevenDaysInThePast))
+                    $0.status = Int64(TPMachineIDStatus.disallowed.rawValue)
+                }
+            }
+            try! container.moc.save()
+        }
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["bbb", "ccc"], userInitiatedRemovals: ["aaa"], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false, listDifference: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDUserInitiated, "egoMachineIDUserInitiated should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerUnknownRemovalReason() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        container.moc.performAndWait {
+            let knownMachineMOs = container.containerMO.machines as? Set<MachineMO> ?? Set()
+            knownMachineMOs.forEach {
+                if $0.machineID == "aaa" {
+                    $0.modified = Date(timeIntervalSinceNow: TimeInterval(elevenDaysInThePast))
+                    $0.status = Int64(TPMachineIDStatus.unknownReason.rawValue)
+                }
+            }
+            try! container.moc.save()
+        }
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: ["aaa"], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDUnknownReason, "egoMachineIDUnknownReason should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerUnknown() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        container.moc.performAndWait {
+            let knownMachineMOs = container.containerMO.machines as? Set<MachineMO> ?? Set()
+            knownMachineMOs.forEach {
+                if $0.machineID == "aaa" {
+                    $0.modified = Date(timeIntervalSinceNow: TimeInterval(elevenDaysInThePast))
+                    $0.status = Int64(TPMachineIDStatus.unknown.rawValue)
+                }
+            }
+            try! container.moc.save()
+        }
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDUnknown, "egoMachineIDUnknown should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerGhosted() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaa", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaa", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        container.moc.performAndWait {
+            let knownMachineMOs = container.containerMO.machines as? Set<MachineMO> ?? Set()
+            knownMachineMOs.forEach {
+                if $0.machineID == "aaa" {
+                    $0.modified = Date(timeIntervalSinceNow: TimeInterval(elevenDaysInThePast))
+                    $0.status = Int64(TPMachineIDStatus.ghostedFromTDL.rawValue)
+                }
+            }
+            try! container.moc.save()
+        }
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDGhosted, "egoMachineIDGhosted should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerMIDRoll() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaaaaaaaaaaaaaaaaaaaaaaaaab", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaaaaaaaaaaaaaaaaaaaaaaaaac", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: ["aaaaaaaaaaaaaaaaaaaaaaaaaab"], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDRolled, "egoMachineIDRolled should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerMIDRolledAndVanished() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaaaaaaaaaaaaaaaaaaaaaaaaab", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaaaaaaaaaaaaaaaaaaaaaaaaac", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: [], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertTrue(container.egoMachineIDRolled, "egoMachineIDRolled should be true")
+        XCTAssertTrue(container.sentMetric, "should have sent a vanished metric")
+    }
+
+    func testEgoPeerMIDDidNotRoll() throws {
+        let description = tmpStoreDescription(name: "container.db")
+        let container = try Container(name: ContainerName(container: "test", context: OTDefaultContext), persistentStoreDescription: description, darwinNotifier: FakeCKKSNotifier.self, managedConfigurationAdapter: mcAdapterPlaceholder, cuttlefish: cuttlefish)
+
+        let (_, _, _, _, _, _, _) = container.prepareSync(test: self, epoch: 1, machineID: "aaaaaaaaaaaaaaaaaaaaaaaaaab", bottleSalt: "123456789", bottleID: UUID().uuidString, modelID: "iPhone1,1")
+
+        let (_, _, _, _) = container.establishSync(test: self, ckksKeys: [self.manateeKeySet], tlkShares: [], preapprovedKeys: [], altDSID: "123456", flowID: "test-flowID", deviceSessionID: "test-deviceSessionID", canSendMetrics: false)
+
+        try self.assert(container: container, allowedMachineIDs: [], disallowedMachineIDs: [], persistentStore: description, cuttlefish: self.cuttlefish)
+
+        XCTAssertNil(container.setAllowedMachineIDsSync(test: self, allowedMachineIDs: ["aaaaaaaaaaaaaaaaaaaaaaaaac", "bbb", "ccc"], userInitiatedRemovals: [], evictedRemovals: ["aaaaaaaaaaaaaaaaaaaaaaaaaab"], unknownReasonRemovals: [], accountIsDemo: false), "should be able to set allowed machine IDs")
+
+        XCTAssertFalse(container.egoMachineIDRolled, "egoMachineIDRolled should be false")
+        XCTAssertFalse(container.sentMetric, "should not have sent a vanished metric")
     }
 }

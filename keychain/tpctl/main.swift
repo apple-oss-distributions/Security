@@ -1,5 +1,7 @@
 import Foundation
+import InternalSwiftProtobuf
 import os
+import System
 
 let logger = Logger(subsystem: "com.apple.security.trustedpeers", category: "tpctl")
 
@@ -134,21 +136,28 @@ var commands: [Command] = []
 var argIterator = args.makeIterator()
 var configurationData: [String: Any]?
 
-var accountIsDemo: Bool = false
+func getPrimaryAccount() -> ACAccount {
+    let store = ACAccountStore()
 
-let store = ACAccountStore()
-
-guard let account = store.aa_primaryAppleAccount() else {
-    print("Unable to fetch primary Apple account!")
-    abort()
+    guard let account = store.aa_primaryAppleAccount() else {
+        print("Unable to fetch primary Apple account!")
+        abort()
+    }
+    return account
 }
 
-let akManager = AKAccountManager.sharedInstance
-let authKitAccount = akManager.authKitAccount(withAltDSID: account.aa_altDSID)
+func isDemoAccount(account: ACAccount) -> Bool {
+    let akManager = AKAccountManager.sharedInstance
+    let authKitAccount = try? akManager.authKitAccount(withAltDSID: account.aa_altDSID, error: ())
 
-if let account = authKitAccount {
-    accountIsDemo = akManager.demoAccount(for: account)
+    guard let authKitAccount else {
+        return false
+    }
+    return akManager.demoAccount(for: authKitAccount)
 }
+
+let account = getPrimaryAccount()
+let accountIsDemo = isDemoAccount(account: account)
 
 while let arg = argIterator.next() {
     switch arg {
@@ -391,10 +400,8 @@ while let arg = argIterator.next() {
 
     case "prepare":
         commands.append(.prepare)
-
     case "reset":
         commands.append(.reset)
-
     case "update":
         commands.append(.update)
 
@@ -603,27 +610,63 @@ let connection = NSXPCConnection(serviceName: "com.apple.TrustedPeersHelper")
 connection.remoteObjectInterface = TrustedPeersHelperSetupProtocol(NSXPCInterface(with: TrustedPeersHelperProtocol.self))
 connection.resume()
 
-let tpHelper = connection.synchronousRemoteObjectProxyWithErrorHandler { error in print("Unable to connect to TPHelper:", error) } as! TrustedPeersHelperProtocol
+guard let tpHelper = connection.synchronousRemoteObjectProxyWithErrorHandler({ error in print("Unable to connect to TPHelper:", error) }) as? TrustedPeersHelperProtocol else {
+    fatalError("Unable to cast ROP to TPH protocol")
+}
+
+class NullRemoverPiperToStdOut {
+    var readEnd: FileHandle
+    var writeFd: xpc_object_t
+    let group: DispatchGroup
+
+    init() {
+        do {
+            let (readEnd, writeEnd) = try FileDescriptor.pipe()
+            self.readEnd = FileHandle(fileDescriptor: readEnd.rawValue, closeOnDealloc: true)
+            guard let xpcFd = xpc_fd_create(writeEnd.rawValue) else {
+                fatalError("Piper couldn't wrap write end of pipe: \(errno)")
+            }
+            writeFd = xpcFd
+            try writeEnd.close()
+            group = DispatchGroup()
+        } catch {
+            fatalError("Could not create Piper: \(String(describing: error))")
+        }
+    }
+
+    func writeXpcFd() -> xpc_object_t {
+        DispatchQueue.global(qos: .userInteractive).async(group: group) {
+            var done = false
+            while !done {
+                var readData = self.readEnd.availableData
+                if readData[readData.count - 1] == 0 {
+                    readData.removeLast()
+                    done = true
+                }
+                FileHandle.standardOutput.write(readData)
+            }
+        }
+        return writeFd
+    }
+
+    func wait() {
+        if group.wait(timeout: .now().advanced(by: DispatchTimeInterval.seconds(5)) ) == .timedOut {
+            fatalError("Waited too long for piper to finish")
+        }
+    }
+}
 
 for command in commands {
     switch command {
     case .dump:
         logger.log("dumping (\(container), \(context))")
-        tpHelper.dump(with: specificUser) { reply, error in
+        let piper = NullRemoverPiperToStdOut()
+        tpHelper.dump(with: specificUser, fileDescriptor: piper.writeXpcFd()) { error in
             guard error == nil else {
                 print("Error dumping:", error!)
                 return
             }
-
-            if let reply = reply {
-                do {
-                    print(try TPCTLObjectiveC.jsonSerialize(cleanDictionaryForJSON(reply)))
-                } catch {
-                    print("Error encoding JSON: \(error)")
-                }
-            } else {
-                print("Error: no results, but no error either?")
-            }
+            piper.wait()
         }
 
     case .depart:
@@ -680,7 +723,11 @@ for command in commands {
         tpHelper.establish(with: specificUser,
                            ckksKeys: [],
                            tlkShares: [],
-                           preapprovedKeys: preapprovedKeys ?? []) { peerID, _, _, error in
+                           preapprovedKeys: preapprovedKeys ?? [],
+                           altDSID: account.aa_altDSID,
+                           flowID: "tpctl-flowID",
+                           deviceSessionID: "tpctl-deviceSessionID",
+                           canSendMetrics: false) { peerID, _, _, error in
                             guard error == nil else {
                                 print("Error establishing:", error!)
                                 return
@@ -697,13 +744,13 @@ for command in commands {
                 return
             }
 
-            let synckeysAsList: [String] = synckeys?.map { $0.recordID.recordName } ?? []
+            let synckeysAsList = synckeys?.map { $0.recordID.recordName } ?? []
             let currentItemsAsList: [[String: String?]] =
                 currentItems?.map { currentItem in
-                    return ["item_id": currentItem.item.recordID.recordName,
-                            "item_pointer_name": currentItem.itemPtr.itemPtrName,
-                            "zone": currentItem.itemPtr.zoneID, ]
-                } ?? [:] as! [[String: String?]]
+                    ["item_id": currentItem.item.recordID.recordName,
+                     "item_pointer_name": currentItem.itemPtr.itemPtrName,
+                     "zone": currentItem.itemPtr.zoneID, ]
+                } ?? []
             do {
                 print(try TPCTLObjectiveC.jsonSerialize(cleanDictionaryForJSON([
                     "synckeys": synckeysAsList,
@@ -723,14 +770,14 @@ for command in commands {
                 return
             }
 
-            let synckeysAsList: [String] = synckeys?.map { $0.recordID.recordName } ?? []
+            let synckeysAsList = synckeys?.map { $0.recordID.recordName } ?? []
             let pcsIdentitiesAsList: [[String: String?]] =
                 pcsIdentities?.map { pcsIdentity in
-                    return ["pcs_identity": pcsIdentity.item.recordID.recordName,
-                            "pcs_service": pcsIdentity.service.pcsServiceID?.stringValue,
-                            "pcs_public_key": pcsIdentity.service.pcsPublicKey?.base64EncodedString(),
-                            "zone": pcsIdentity.service.zoneID, ]
-                } ?? [:] as! [[String: String?]]
+                    ["pcs_identity": pcsIdentity.item.recordID.recordName,
+                     "pcs_service": pcsIdentity.service.pcsServiceID?.stringValue,
+                     "pcs_public_key": pcsIdentity.service.pcsPublicKey?.base64EncodedString(),
+                     "zone": pcsIdentity.service.zoneID, ]
+                } ?? []
             do {
                 print(try TPCTLObjectiveC.jsonSerialize(cleanDictionaryForJSON([
                     "synckeys": synckeysAsList,
@@ -764,7 +811,7 @@ for command in commands {
 
             if let data = data {
                 do {
-                    let string = try GetSupportAppInfoResponse(serializedData: data).jsonString()
+                    let string = try GetSupportAppInfoResponse(serializedBytes: data).jsonString()
                     print("\(string)")
                 } catch {
                     print("Error decoding protobuf: \(error)")
@@ -922,7 +969,11 @@ for command in commands {
                                  bottleID: bottleID,
                                  entropy: entropy,
                                  bottleSalt: salt,
-                                 tlkShares: []) { voucher, voucherSig, _, _, error in
+                                 tlkShares: [],
+                                 altDSID: account.aa_altDSID,
+                                 flowID: "tpctl-flowID-" + NSUUID().uuidString,
+                                 deviceSessionID: "tpctl-deviceSessionID-" + NSUUID().uuidString,
+                                 canSendMetrics: false) { voucher, voucherSig, _, _, error in
                                     guard error == nil else {
                                         print("Error during vouchWithBottle", error!)
                                         return
@@ -938,7 +989,11 @@ for command in commands {
     case let .fetchRecoverableTLKShares(peerID):
         logger.log("fetching recoverable TLKShares for (\(container), \(context))")
         tpHelper.fetchRecoverableTLKShares(with: specificUser,
-                                           peerID: peerID) { records, error in
+                                           peerID: peerID,
+                                           altDSID: account.aa_altDSID,
+                                           flowID: "tpctl-flowID-" + NSUUID().uuidString,
+                                           deviceSessionID: "tpctl-deviceSessionID-" + NSUUID().uuidString,
+                                           canSendMetrics: false) { records, error in
             guard error == nil else {
                 print("Error during fetchRecoverableTLKShares", error!)
                 return

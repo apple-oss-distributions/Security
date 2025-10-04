@@ -27,7 +27,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface AAFAnalyticsEventSecurity : NSObject
 
-@property dispatch_queue_t queue;
+@property (retain) dispatch_queue_t queue;
 
 - (instancetype)initWithKeychainCircleMetrics:(NSDictionary * _Nullable)metrics
                                       altDSID:(NSString * _Nullable)altDSID
@@ -49,10 +49,9 @@ NS_ASSUME_NONNULL_BEGIN
                                       altDSID:(NSString * _Nullable)altDSID
                                     eventName:(NSString *)eventName
                                      category:(NSNumber *)category;
-- (id)getEvent;
 - (void)addMetrics:(NSDictionary*)metrics;
 - (void)populateUnderlyingErrorsStartingWithRootError:(NSError* _Nullable)error;
-- (BOOL)permittedToSendMetrics;
+- (void)sendMetricWithResult:(BOOL)success error:(NSError* _Nullable)error;
 
 #if __has_include(<AAAFoundation/AAAFoundation.h>)
 + (NSString* _Nullable)fetchDeviceSessionIDFromAuthKit:(NSString*)altDSID;

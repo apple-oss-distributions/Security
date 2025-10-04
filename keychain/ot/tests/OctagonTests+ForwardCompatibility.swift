@@ -155,8 +155,10 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         XCTAssertEqual(try XCTUnwrap(self.defaultCKKS.syncingPolicy).version.versionNumber, newPolicy.version.versionNumber, "After refetch, CKKS policy should be new policy version")
 
         let dumpCallback = self.expectation(description: "dumpCallback callback occurs")
-        self.cuttlefishContext.cuttlefishXPCWrapper.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, error in
+        let piper = AsyncPiper()
+        self.cuttlefishContext.cuttlefishXPCWrapper.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount), fileDescriptor: piper.writeXpcFd()) { error in
             XCTAssertNil(error, "Should be no error getting dump")
+            let dump = try? piper.dict()
             XCTAssertNotNil(dump, "dump should not be nil")
             let policies = dump!["registeredPolicyVersions"] as? [String]
             XCTAssertNotNil(policies, "policies should not be nil")
@@ -168,9 +170,12 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         self.wait(for: [dumpCallback], timeout: 10)
 
         let statusExpectation = self.expectation(description: "status callback occurs")
-        self.cuttlefishContext.rpcStatus { result, error in
+        guard let xpcFd = xpc_fd_create(STDOUT_FILENO) else {
+            fatalError("couldn't wrap STDOUT_FILENO for XPC")
+        }
+        self.cuttlefishContext.rpcStatus(xpcFd) { result, error in
             XCTAssertNil(error, "Should have no error getting status")
-            XCTAssertNotNil(result, "Should have some staatus")
+            XCTAssertNotNil(result, "Should have some status")
             statusExpectation.fulfill()
         }
         self.wait(for: [statusExpectation], timeout: 10)
@@ -608,6 +613,95 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         XCTAssertTrue(self.tlkShareInCloudKit(receiverPeerID: peerID, senderPeerID: peerID, zoneID: futureViewZoneID))
     }
 
+    func testVouchBottledPeerUsingFuturePolicy() throws {
+        let (newPolicyDocument, futureViewZoneID) = try self.createOctagonAndCKKSUsingFuturePolicy()
+
+        let futurePeerContext = self.makeInitiatorContext(contextID: "futurePeer")
+        futurePeerContext.policyOverride = newPolicyDocument.version
+
+        self.startCKAccountStatusMock()
+        let futurePeerID = self.assertResetAndBecomeTrusted(context: futurePeerContext)
+
+        self.putFakeKeyHierarchiesInCloudKit()
+        try self.putSelfTLKSharesInCloudKit(context: futurePeerContext)
+        XCTAssertTrue(self.tlkShareInCloudKit(receiverPeerID: futurePeerID, senderPeerID: futurePeerID, zoneID: futureViewZoneID))
+
+        // Now, our peer (with no inbuilt knowledge of newPolicyDocument) joins via escrow recovery.
+
+        let peerID = self.assertJoinViaEscrowRecovery(joiningContext: self.cuttlefishContext, sponsor: futurePeerContext)
+        self.assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
+        XCTAssertEqual(self.defaultCKKS.syncingPolicy?.version, newPolicyDocument.version, "CKKS should be configured with new policy")
+        self.assertTLKSharesInCloudKit(receiver: self.cuttlefishContext, sender: self.cuttlefishContext)
+        self.verifyDatabaseMocks()
+
+        // And the joined peer should have recovered the TLK, and uploaded itself a share
+        XCTAssertTrue(self.tlkShareInCloudKit(receiverPeerID: peerID, senderPeerID: peerID, zoneID: futureViewZoneID))
+
+        // a new peer attempts to join but fails to fetch the latest policies
+        let olderPeer = self.makeInitiatorContext(contextID: "olderPeer")
+
+        let fetchPolicyDocumentsExpectation = self.expectation(description: "older peer can't fetch policy docs")
+        self.fakeCuttlefishServer.fetchPolicyDocumentsListener = { _ in
+            self.fakeCuttlefishServer.fetchPolicyDocumentsReturnEmptyResponse = true
+            fetchPolicyDocumentsExpectation.fulfill()
+            return nil
+        }
+
+        olderPeer.startOctagonStateMachine()
+
+        self.assertEnters(context: olderPeer, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+        let container = try self.tphClient.getContainer(with: try XCTUnwrap(olderPeer.activeAccount))
+
+        try container.moc.performAndWait {
+            let knownPolicies = try container.model.allRegisteredPolicyVersions()
+            XCTAssertNotNil(knownPolicies, "knownPolicies should not be nil")
+        }
+
+        olderPeer.startOctagonStateMachine()
+
+        let sponsorPeerID = try self.cuttlefishContext.accountMetadataStore.loadOrCreateAccountMetadata().peerID
+        XCTAssertNotNil(sponsorPeerID, "sponsorPeerID should not be nil")
+        let entropy = try self.loadSecret(label: sponsorPeerID!)
+        XCTAssertNotNil(entropy, "entropy should not be nil")
+
+        let mockAuthKit = try XCTUnwrap(olderPeer.authKitAdapter as? CKKSTestsMockAccountsAuthKitAdapter)
+        let altDSID = try XCTUnwrap(mockAuthKit.primaryAltDSID())
+        XCTAssertNotNil(altDSID, "Should have an altDSID")
+
+        let bottles = self.fakeCuttlefishServer.state.bottles.filter { $0.peerID == sponsorPeerID }
+        XCTAssertEqual(bottles.count, 1, "Should have a single bottle for the approving peer")
+        let bottle = bottles[0]
+
+        let joinWithBottleExpectation = self.expectation(description: "joinWithBottle callback occurs")
+        olderPeer.join(withBottle: bottle.bottleID, entropy: entropy!, bottleSalt: altDSID) { error in
+            XCTAssertNotNil(error, "error should not be nil")
+            if let error = error as? NSError {
+                XCTAssertEqual(error.domain, TrustedPeersHelperErrorDomain, "error domain should be TrustedPeersHelperErrorDomain")
+                XCTAssertEqual(error.code, Int(TrustedPeersHelperErrorCode.unknownPolicyVersion.rawValue), "error code should be unknownPolicyVersion")
+            } else {
+                XCTFail("Error is unexpectedly not an NSError")
+            }
+            joinWithBottleExpectation.fulfill()
+        }
+        self.wait(for: [joinWithBottleExpectation], timeout: 10)
+
+        self.assertEnters(context: olderPeer, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
+
+        self.wait(for: [fetchPolicyDocumentsExpectation], timeout: 10)
+
+        self.fakeCuttlefishServer.fetchPolicyDocumentsListener = nil
+        self.fakeCuttlefishServer.fetchPolicyDocumentsReturnEmptyResponse = false
+
+        let secondAttemptJoinWithBottleExpectation = self.expectation(description: "second attempt joinWithBottle callback occurs")
+        olderPeer.join(withBottle: bottle.bottleID, entropy: entropy!, bottleSalt: altDSID) { error in
+            XCTAssertNil(error, "error should be nil")
+            secondAttemptJoinWithBottleExpectation.fulfill()
+        }
+        self.wait(for: [secondAttemptJoinWithBottleExpectation], timeout: 10)
+
+        self.assertEnters(context: olderPeer, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
+    }
+
     func testPairingJoinUsingFuturePolicy() throws {
         let (newPolicyDocument, futureViewZoneID) = try self.createOctagonAndCKKSUsingFuturePolicy()
 
@@ -917,7 +1011,7 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         let pastPeerContext = self.makeInitiatorContext(contextID: "pastPeer")
-        let policyV1Document = builtInPolicyDocuments.first { $0.version.versionNumber == 1 }!
+        let policyV1Document = builtInPolicyDocumentsFilteredByVersion { $0 == 1 }.first!()
         pastPeerContext.policyOverride = policyV1Document.version
 
         let serverEstablishExpectation = self.expectation(description: "futurePeer establishes successfully")
@@ -999,7 +1093,7 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         let pastPeerContext = self.makeInitiatorContext(contextID: "pastPeer")
-        let policyV18Document = builtInPolicyDocuments.first { $0.version.versionNumber == 18 }!
+        let policyV18Document = builtInPolicyDocumentsFilteredByVersion { $0 == 18 }.first!()
         pastPeerContext.policyOverride = policyV18Document.version
 
         let serverEstablishExpectation = self.expectation(description: "futurePeer establishes successfully")
@@ -1076,7 +1170,7 @@ class OctagonForwardCompatibilityTests: OctagonTestsBase {
         self.startCKAccountStatusMock()
 
         let pastPeerContext = self.makeInitiatorContext(contextID: "pastPeer")
-        let policyV18Document = builtInPolicyDocuments.first { $0.version.versionNumber == 18 }!
+        let policyV18Document = builtInPolicyDocumentsFilteredByVersion { $0 == 18 }.first!()
         pastPeerContext.policyOverride = policyV18Document.version
 
         let serverEstablishExpectation = self.expectation(description: "futurePeer establishes successfully")

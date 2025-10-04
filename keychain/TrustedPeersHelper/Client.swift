@@ -22,6 +22,7 @@
  */
 
 import Foundation
+import System
 
 private let logger = Logger(subsystem: "com.apple.security.trustedpeers", category: "client")
 
@@ -83,17 +84,64 @@ class Client: TrustedPeersHelperProtocol {
         return try self.containerMap.findOrCreate(user: user)
     }
 
-    func dump(with user: TPSpecificUser?,
-              reply: @escaping ([AnyHashable: Any]?, Error?) -> Void) {
+    func dump(with user: TPSpecificUser?, fileDescriptor: xpc_object_t,
+              reply: @escaping (Error?) -> Void) {
         do {
             logger.info("Dumping for \(String(describing: user), privacy: .public)")
-            let container = try self.containerMap.findOrCreate(user: user)
-            container.dump { result, error in
-                self.logComplete(function: "Dumping", container: container.name, error: error)
-                reply(result, error?.sanitizeForClientXPC())
+            try autoreleasepool {
+                let container = try self.containerMap.findOrCreate(user: user)
+                container.dump(fileDescriptor) { error in
+                    self.logComplete(function: "Dumping", container: container.name, error: error)
+                    reply(error?.sanitizeForClientXPC())
+                }
             }
         } catch {
             logger.error("Dumping failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(error.sanitizeForClientXPC())
+        }
+    }
+
+    func honorIDMSListChanges(for user: TPSpecificUser?, reply: @escaping (String?, Error?) -> Void) {
+        do {
+            logger.info("honorIDMSListChanges for \(String(describing: user), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: user)
+            container.honorIDMSListChanges { result, error in
+                self.logComplete(function: "honorIDMSListChanges", container: container.name, error: error)
+                reply(result, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("honorIDMSListChanges failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func octagonPeerIDGivenBottleID(with specificUser: TPSpecificUser?,
+                                    bottleID: String,
+                                    reply: @escaping (String?, (any Error)?) -> Void) {
+        do {
+            logger.info("Finding bottleID for \(String(describing: specificUser), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: specificUser)
+            container.octagonPeerID(for: bottleID) { result, error in
+                self.logComplete(function: "octagonPeerIDGivenBottleID", container: container.name, error: error)
+                reply(result, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("Finding bottleID failed for \(String(describing: specificUser), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func trustedDeviceNamesByPeerID(with specificUser: TPSpecificUser?,
+                                    reply: @escaping ([String: String]?, (any Error)?) -> Void) {
+        do {
+            logger.info("Finding deviceNames for \(String(describing: specificUser), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: specificUser)
+            container.trustedDeviceNamesByPeerID { result, error in
+                self.logComplete(function: "trustedDeviceNamesByPeerID", container: container.name, error: error)
+                reply(result, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("Finding deviceNames failed for \(String(describing: specificUser), privacy: .public): \(String(describing: error), privacy: .public)")
             reply(nil, error.sanitizeForClientXPC())
         }
     }
@@ -162,6 +210,21 @@ class Client: TrustedPeersHelperProtocol {
                 reply(error?.sanitizeForClientXPC()) }
         } catch {
             logger.error("Resetting failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(error.sanitizeForClientXPC())
+        }
+    }
+
+    func performCKServerUnreadableDataRemoval(with user: TPSpecificUser?,
+                                              reply: @escaping (Error?) -> Void) {
+        do {
+            logger.info("performCKServerUnreadableDataRemoval for \(String(describing: user), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: user)
+            container.performCKServerUnreadableDataRemoval { error in
+                self.logComplete(function: "performCKServerUnreadableDataRemoval", container: container.name, error: error)
+                reply(error?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("performCKServerUnreadableDataRemoval failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
             reply(error.sanitizeForClientXPC())
         }
     }
@@ -354,13 +417,21 @@ class Client: TrustedPeersHelperProtocol {
                    ckksKeys: [CKKSKeychainBackedKeySet],
                    tlkShares: [CKKSTLKShare],
                    preapprovedKeys: [Data]?,
+                   altDSID: String?,
+                   flowID: String?,
+                   deviceSessionID: String?,
+                   canSendMetrics: Bool,
                    reply: @escaping (String?, [CKRecord]?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             logger.info("Establishing \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
             container.establish(ckksKeys: ckksKeys,
                                 tlkShares: tlkShares,
-                                preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, policy, error in
+                                preapprovedKeys: preapprovedKeys,
+                                altDSID: altDSID,
+                                flowID: flowID,
+                                deviceSessionID: deviceSessionID,
+                                canSendMetrics: canSendMetrics) { peerID, keyHierarchyRecords, policy, error in
                 self.logComplete(function: "Establishing", container: container.name, error: error)
                 reply(peerID, keyHierarchyRecords, policy, error?.sanitizeForClientXPC()) }
         } catch {
@@ -403,11 +474,19 @@ class Client: TrustedPeersHelperProtocol {
 
     func preflightVouchWithBottle(with user: TPSpecificUser?,
                                   bottleID: String,
+                                  altDSID: String?,
+                                  flowID: String?,
+                                  deviceSessionID: String?,
+                                  canSendMetrics: Bool,
                                   reply: @escaping (String?, TPSyncingPolicy?, Bool, Error?) -> Void) {
         do {
             logger.info("Preflight Vouch With Bottle \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
-            container.preflightVouchWithBottle(bottleID: bottleID) { peerID, policy, refetched, error in
+            container.preflightVouchWithBottle(bottleID: bottleID,
+                                               altDSID: altDSID,
+                                               flowID: flowID,
+                                               deviceSessionID: deviceSessionID,
+                                               canSendMetrics: canSendMetrics) { peerID, policy, refetched, error in
                 self.logComplete(function: "Preflight Vouch With Bottle", container: container.name, error: error)
                 reply(peerID, policy, refetched, error?.sanitizeForClientXPC()) }
         } catch {
@@ -421,11 +500,22 @@ class Client: TrustedPeersHelperProtocol {
                          entropy: Data,
                          bottleSalt: String,
                          tlkShares: [CKKSTLKShare],
+                         altDSID: String?,
+                         flowID: String?,
+                         deviceSessionID: String?,
+                         canSendMetrics: Bool,
                          reply: @escaping (Data?, Data?, [CKKSTLKShare]?, TrustedPeersHelperTLKRecoveryResult?, Error?) -> Void) {
         do {
             logger.info("Vouching With Bottle \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
-            container.vouchWithBottle(bottleID: bottleID, entropy: entropy, bottleSalt: bottleSalt, tlkShares: tlkShares) { voucher, voucherSig, newTLKShares, recoveryResult, error in
+            container.vouchWithBottle(bottleID: bottleID,
+                                      entropy: entropy,
+                                      bottleSalt: bottleSalt,
+                                      tlkShares: tlkShares,
+                                      altDSID: altDSID,
+                                      flowID: flowID,
+                                      deviceSessionID: deviceSessionID,
+                                      canSendMetrics: canSendMetrics) { voucher, voucherSig, newTLKShares, recoveryResult, error in
                 self.logComplete(function: "Vouching With Bottle", container: container.name, error: error)
                 reply(voucher, voucherSig, newTLKShares, recoveryResult, error?.sanitizeForClientXPC()) }
         } catch {
@@ -577,13 +667,21 @@ class Client: TrustedPeersHelperProtocol {
                                 ckksKeys: [CKKSKeychainBackedKeySet],
                                 tlkShares: [CKKSTLKShare],
                                 preapprovedKeys: [Data]?,
+                                altDSID: String?,
+                                flowID: String?,
+                                deviceSessionID: String?,
+                                canSendMetrics: Bool,
                                 reply: @escaping (String?, [CKRecord]?, TPSyncingPolicy?, Error?) -> Void) {
         do {
             logger.info("Attempting a preapproved join for \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
             container.preapprovedJoin(ckksKeys: ckksKeys,
                                       tlkShares: tlkShares,
-                                      preapprovedKeys: preapprovedKeys) { peerID, keyHierarchyRecords, policy, error in
+                                      preapprovedKeys: preapprovedKeys,
+                                      altDSID: altDSID,
+                                      flowID: flowID,
+                                      deviceSessionID: deviceSessionID,
+                                      canSendMetrics: canSendMetrics) { peerID, keyHierarchyRecords, policy, error in
                 reply(peerID, keyHierarchyRecords, policy, error?.sanitizeForClientXPC()) }
         } catch {
             logger.error("attemptPreapprovedJoin failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
@@ -783,12 +881,16 @@ class Client: TrustedPeersHelperProtocol {
 
     func fetchRecoverableTLKShares(with user: TPSpecificUser?,
                                    peerID: String?,
+                                   altDSID: String?,
+                                   flowID: String?,
+                                   deviceSessionID: String?,
+                                   canSendMetrics: Bool,
                                    reply: @escaping ([CKRecord]?, Error?) -> Void) {
         do {
             logger.info("Fetching recoverable TLKShares \(String(describing: user), privacy: .public) with peerID filter: \(String(describing: peerID), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
 
-            container.fetchRecoverableTLKShares(peerID: peerID) { records, error in
+            container.fetchRecoverableTLKShares(peerID: peerID, altDSID: altDSID, flowID: flowID, deviceSessionID: deviceSessionID, canSendMetrics: canSendMetrics) { records, error in
                 reply(records, error?.sanitizeForClientXPC())
             }
         } catch {
@@ -867,12 +969,47 @@ class Client: TrustedPeersHelperProtocol {
         }
     }
 
-    func requestHealthCheck(with user: TPSpecificUser?, requiresEscrowCheck: Bool, repair: Bool, knownFederations: [String], flowID: String?, deviceSessionID: String?, reply: @escaping (TrustedPeersHelperHealthCheckResult?, Error?) -> Void) {
+    func requestEscrowCheck(with user: TPSpecificUser,
+                            requiresEscrowCheck: Bool,
+                            passcodeGeneration: UInt64,
+                            knownFederations: [String],
+                            isBackgroundCheck: Bool,
+                            flowID: String?,
+                            deviceSessionID: String?,
+                            reply: @escaping (OTEscrowCheckCallResult?, (any Error)?) -> Void) {
         do {
-            logger.info("Health Check! requiring escrow check? \(requiresEscrowCheck), \(repair) for \(String(describing: user), privacy: .public)")
+            logger.info("Escrow Check for \(String(describing: user), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: user)
+            container.escrowCheck(passcodeGeneration: passcodeGeneration,
+                                  requiresEscrowCheck: requiresEscrowCheck,
+                                  knownFederations: knownFederations,
+                                  isBackgroundCheck: isBackgroundCheck,
+                                  flowID: flowID,
+                                  deviceSessionID: deviceSessionID) {result, error  in
+                reply(result, error?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("Escrow Check failed for \(String(describing: user), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func requestHealthCheck(with user: TPSpecificUser?,
+                            requiresEscrowCheck: Bool,
+                            repair: Bool,
+                            danglingPeerCleanup: Bool,
+                            updateIdMS: Bool,
+                            knownFederations: [String],
+                            flowID: String?,
+                            deviceSessionID: String?,
+                            reply: @escaping (TrustedPeersHelperHealthCheckResult?, Error?) -> Void) {
+        do {
+            logger.info("Health Check! requiring escrow check? \(requiresEscrowCheck), \(repair), \(danglingPeerCleanup), \(updateIdMS) for \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
             container.requestHealthCheck(requiresEscrowCheck: requiresEscrowCheck,
                                          repair: repair,
+                                         danglingPeerCleanup: danglingPeerCleanup,
+                                         updateIdMS: updateIdMS,
                                          knownFederations: knownFederations,
                                          flowID: flowID,
                                          deviceSessionID: deviceSessionID) { result, error in
@@ -920,11 +1057,21 @@ class Client: TrustedPeersHelperProtocol {
             reply(error.sanitizeForClientXPC())
         }
     }
-    func fetchAccountSettings(with user: TPSpecificUser?, forceFetch: Bool, reply: @escaping ([String: TPPBPeerStableInfoSetting]?, Error?) -> Void) {
+    func fetchAccountSettings(with user: TPSpecificUser?,
+                              forceFetch: Bool,
+                              altDSID: String? = nil,
+                              flowID: String? = nil,
+                              deviceSessionID: String? = nil,
+                              canSendMetrics: Bool = false,
+                              reply: @escaping ([String: TPPBPeerStableInfoSetting]?, Error?) -> Void) {
         do {
             logger.info("fetchAccountSettings for \(String(describing: user), privacy: .public)")
             let container = try self.containerMap.findOrCreate(user: user)
-            container.fetchAccountSettings(forceFetch: forceFetch) { settings, error in
+            container.fetchAccountSettings(forceFetch: forceFetch,
+                                           altDSID: altDSID,
+                                           flowID: flowID,
+                                           deviceSessionID: deviceSessionID,
+                                           canSendMetrics: canSendMetrics) { settings, error in
                 reply(settings, error?.sanitizeForClientXPC())
             }
         } catch {
@@ -1005,6 +1152,19 @@ class Client: TrustedPeersHelperProtocol {
             }
         } catch {
             logger.error("fetchTrustedPeerCount failed for \(String(describing: specificUser), privacy: .public): \(String(describing: error), privacy: .public)")
+            reply(nil, error.sanitizeForClientXPC())
+        }
+    }
+
+    func fetchTrustedFullPeerCount(with specificUser: TPSpecificUser?, reply: @escaping (NSNumber?, Error?) -> Void) {
+        do {
+            logger.info("fetchTrustedFullPeerCount for \(String(describing: specificUser), privacy: .public)")
+            let container = try self.containerMap.findOrCreate(user: specificUser)
+            container.fetchTrustedFullPeersCount { count, countError in
+                reply(count, countError?.sanitizeForClientXPC())
+            }
+        } catch {
+            logger.error("fetchTrustedFullPeerCount failed for \(String(describing: specificUser), privacy: .public): \(String(describing: error), privacy: .public)")
             reply(nil, error.sanitizeForClientXPC())
         }
     }

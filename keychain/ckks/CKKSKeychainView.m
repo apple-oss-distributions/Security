@@ -97,9 +97,8 @@
 #import <Security/SecItemInternal.h>
 #import <Security/CKKSExternalTLKClient.h>
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 #import "keychain/ot/OTControl.h"
 #import "keychain/ot/OTManager.h"
@@ -268,7 +267,7 @@
                                                                                   testsAreEnabled:SecCKKSTestsEnabled()
                                                                                          category:kSecurityRTCEventCategoryAccountDataAccessRecovery
                                                                                        sendMetric:YES];
-        [SecurityAnalyticsReporterRTC sendMetricWithEvent:event success:YES error:nil];
+        [event sendMetricWithResult:YES error:nil];
 
         _cuttlefishAdapter = cuttlefishAdapter;
         
@@ -326,6 +325,14 @@
 
                 if(ckse.changeToken == nil) {
                     needInitialFetch = true;
+
+                    // If, for any reason, we are performing an initial fetch on this view, make sure to fetch in reverse.
+                    ckse.fetchNewestChangesFirst = YES;
+                    NSError* saveError = nil;
+                    [ckse saveToDatabase:&saveError];
+                    if(saveError) {
+                        ckkserror_global("ckksfetch", "Couldn't save new server change token: %@", saveError);
+                    }
                 }
 
                 if(ckse.moreRecordsInCloudKit) {
@@ -1249,7 +1256,7 @@
                                        errorState:CKKSStateError
                               withBlockTakingSelf:^(OctagonStateTransitionOperation * _Nonnull op) {
         STRONGIFY(self);
-
+        __block BOOL contentSyncFinished = NO;
         [self dispatchSyncWithReadOnlySQLTransaction:^{
             NSSet<CKKSKeychainViewState*>* viewsOfInterest = [self.operationDependencies readyAndSyncingViews];
 
@@ -1329,15 +1336,16 @@
                                                                                                      testsAreEnabled:SecCKKSTestsEnabled()
                                                                                                             category:kSecurityRTCEventCategoryAccountDataAccessRecovery
                                                                                                           sendMetric:self.operationDependencies.sendMetric];
-            [SecurityAnalyticsReporterRTC sendMetricWithEvent:localSyncFinishEvent success:YES error:nil];
+            [localSyncFinishEvent sendMetricWithResult:YES error:nil];
 
             for(CKKSKeychainViewState* viewState in viewsOfInterest) {
                 // Are there any entries waiting for reencryption? If so, set the flag.
                 NSError* reencryptOQEError = nil;
-                NSInteger reencryptOQEcount = [CKKSOutgoingQueueEntry countByState:SecCKKSStateReencrypt
-                                                                         contextID:self.operationDependencies.contextID
-                                                                            zoneID:viewState.zoneID
-                                                                             error:&reencryptOQEError];
+                NSArray<CKKSOutgoingQueueEntry*>* oqesToBeReencrypted = [CKKSOutgoingQueueEntry allInState:SecCKKSStateReencrypt
+                                                                                                 contextID:self.operationDependencies.contextID
+                                                                                                    zoneID:viewState.zoneID
+                                                                                                     error:&reencryptOQEError];
+
                 if(reencryptOQEError) {
                     ckkserror("ckks", viewState.zoneID, "Couldn't count reencrypt OQEs, bad behavior ahead: %@", reencryptOQEError);
                 }
@@ -1352,9 +1360,29 @@
                     continue;
                 }
 
-                if(reencryptOQEcount > 0) {
-                    op.nextState = CKKSStateReencryptOutgoingItems;
-                    return;
+                if (oqesToBeReencrypted.count > 0) {
+                    for (CKKSOutgoingQueueEntry* oqe in oqesToBeReencrypted) {
+                        NSError* keyError = nil;
+                        CKKSKey* key = [CKKSKey fromDatabase:oqe.item.parentKeyUUID
+                                                   contextID:viewState.contextID
+                                                      zoneID:viewState.zoneID
+                                                       error:&keyError];
+
+                        if (!key || keyError) {
+                            ckkserror("ckksoutgoing", viewState.zoneID, "Unable to load key for %@: %@", oqe.item.parentKeyUUID, keyError);
+                            continue;
+                        }
+
+                        if ([key.keyclass isEqualToString:SecCKKSKeyClassA] && self.lockStateTracker.isLocked) {
+                            ckksnotice("ckksoutgoing", viewState.zoneID, "Have items needing re-encryption, but device is locked");
+                            OctagonPendingFlag* pending = [[OctagonPendingFlag alloc] initWithFlag:CKKSFlagItemReencryptionNeeded
+                                                                                        conditions:OctagonPendingConditionsDeviceUnlocked];
+                            [self.stateMachine _onqueueHandlePendingFlagLater:pending];
+                        } else {
+                            op.nextState = CKKSStateReencryptOutgoingItems;
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -1470,19 +1498,20 @@
                 [self.operationDependencies.overallLaunch addAttribute:@"totalsize" value:@(SecBucket1Significant(totalZoneSizeCount))];
             }
 
-            // We believe keychain is fully in sync with CloudKit.
+            // If we've gotten here, we believe keychain is fully in sync with CloudKit.
+            contentSyncFinished = YES;
             AAFAnalyticsEventSecurity *contentSyncFinishEvent = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{}
                                                                                                                altDSID:self.operationDependencies.activeAccount.altDSID
                                                                                                              eventName:kSecurityRTCEventNameContentSyncFinish
                                                                                                        testsAreEnabled:SecCKKSTestsEnabled()
                                                                                                               category:kSecurityRTCEventCategoryAccountDataAccessRecovery
                                                                                                             sendMetric:self.operationDependencies.sendMetric];
-            [SecurityAnalyticsReporterRTC sendMetricWithEvent:contentSyncFinishEvent success:YES error:nil];
+            [contentSyncFinishEvent sendMetricWithResult:YES error:nil];
             op.nextState = newState;
         }];
 
         // Turn off Sending Events
-        if (self.operationDependencies.sendMetric && !SecCKKSTestsEnabled()) {
+        if (contentSyncFinished && self.operationDependencies.sendMetric && !SecCKKSTestsEnabled()) {
             NSError* localError = nil;
             BOOL result = [[OTManager manager] persistSendingMetricsPermitted:[[OTControlArguments alloc] initWithAltDSID:self.operationDependencies.activeAccount.altDSID] sendingMetricsPermitted:NO error:&localError];
             if (result == NO || localError) {
@@ -1574,39 +1603,41 @@
 - (BOOL)allowOutOfBandFetch:(NSError* __autoreleasing*)error
 {
     // Allow Out of Band Fetch if we haven't finished a full fetch cycle.
-    BOOL fetchAllowed = NO;
-    for (CKKSKeychainViewState* viewState in self.operationDependencies.allCKKSManagedViews) {
+    __block BOOL fetchAllowed = NO;
+    [self dispatchSyncWithReadOnlySQLTransaction:^{
+        for (CKKSKeychainViewState* viewState in self.operationDependencies.allCKKSManagedViews) {
 
-        // Has there been a fetch for this zone? If so, have we fully fetched, or are more items coming?
-        CKKSZoneStateEntry* zse = [CKKSZoneStateEntry contextID:self.operationDependencies.contextID zoneName:viewState.zoneName];
-        if ((zse.lastFetchTime == nil) || (zse.moreRecordsInCloudKit)) {
-            fetchAllowed = YES;
-            break;
-        }
-
-        // Do we have any incoming items to process?
-        NSError* localError = nil;
-        NSArray<CKKSIncomingQueueEntry*>* queueEntries = [CKKSIncomingQueueEntry fetch:SecCKKSIncomingQueueItemsAtOnce
-                                      startingAtUUID:nil
-                                               state:SecCKKSStateNew
-                                              action:nil
-                                           contextID:self.operationDependencies.contextID
-                                              zoneID:viewState.zoneID
-                                               error:&localError];
-        if (localError) {
-            ckkserror("ckks", viewState.zoneID, "Error fetching IQEs for zone %@: %@", viewState.zoneName, localError);
-            if (error) {
-                *error = localError;
-                fetchAllowed = NO;
-                break;
-            }
-        } else {
-            if (queueEntries.count != 0) {
+            // Has there been a fetch for this zone? If so, have we fully fetched, or are more items coming?
+            CKKSZoneStateEntry* zse = [CKKSZoneStateEntry contextID:self.operationDependencies.contextID zoneName:viewState.zoneName];
+            if ((zse.lastFetchTime == nil) || (zse.moreRecordsInCloudKit)) {
                 fetchAllowed = YES;
                 break;
             }
+
+            // Do we have any incoming items to process?
+            NSError* localError = nil;
+            NSArray<CKKSIncomingQueueEntry*>* queueEntries = [CKKSIncomingQueueEntry fetch:SecCKKSIncomingQueueItemsAtOnce
+                                                                            startingAtUUID:nil
+                                                                                     state:SecCKKSStateNew
+                                                                                    action:nil
+                                                                                 contextID:self.operationDependencies.contextID
+                                                                                    zoneID:viewState.zoneID
+                                                                                     error:&localError];
+            if (localError) {
+                ckkserror("ckks", viewState.zoneID, "Error fetching IQEs for zone %@: %@", viewState.zoneName, localError);
+                if (error) {
+                    *error = localError;
+                    fetchAllowed = NO;
+                    break;
+                }
+            } else {
+                if (queueEntries.count != 0) {
+                    fetchAllowed = YES;
+                    break;
+                }
+            }
         }
-    }
+    }];
 
     return fetchAllowed;
 }
@@ -2471,7 +2502,7 @@
                        complete:(void(^)(NSArray<CKKSCurrentItemQueryResult*>* currentItems, NSError* error))complete
 {
     
-    [self.accountStateKnown wait:(SecCKKSTestsEnabled() ? 1*NSEC_PER_SEC : 30*NSEC_PER_SEC)];
+    [self.accountStateKnown wait:1*NSEC_PER_SEC];
     
     CKKSAccountStatus accountStatus = self.accountStatus;
     if(accountStatus != CKKSAccountStatusAvailable || !self.cuttlefishAdapter) {
@@ -2485,7 +2516,7 @@
                                              code:CKKSNotLoggedIn
                                       description:@"User is not signed into iCloud."];
         }
-        ckksnotice("ckkscurrent", self, "Rejecting current item requests since we don't have an iCloud account: %@", localError);
+        ckksnotice("ckks-oob", self, "Rejecting current item requests since we don't have an iCloud account: %@", localError);
         complete(nil, localError);
         return;
     }
@@ -2493,7 +2524,7 @@
     NSError* allowOOBFetchError = nil;
     BOOL OOBFetchAllowed = [self allowOutOfBandFetch:&allowOOBFetchError] || forceFetch;
     if (allowOOBFetchError) {
-        ckksnotice_global("ckkscurrent", "Error fetching out of band fetch permission, relying on forceFetch enablement (%@) : %@", forceFetch ? @"ENABLED" : @"DISABLED", allowOOBFetchError);
+        ckksnotice_global("ckks-oob", "Error fetching out of band fetch permission, relying on forceFetch enablement (%@) : %@", forceFetch ? @"ENABLED" : @"DISABLED", allowOOBFetchError);
     }
 
     if (!OOBFetchAllowed) {
@@ -2507,7 +2538,7 @@
     NSMutableArray<CuttlefishCurrentItemSpecifier*>* cfishCurrentItemSpecifiers = [[NSMutableArray alloc] init];
     for (CKKSCurrentItemQuery* request in currentItemRequests) {
         if (request.zoneID == nil || request.accessGroup == nil) {
-            ckksnotice("ckkscurrent", self, "Rejecting current item pointer for identifier(%@) get since no access group(%@) or zoneID(%@) given", request.identifier, request.accessGroup, request.zoneID);
+            ckksnotice("ckks-oob", self, "Rejecting current item pointer for identifier(%@) get since no access group(%@) or zoneID(%@) given", request.identifier, request.accessGroup, request.zoneID);
             complete(NULL, [NSError errorWithDomain:CKKSErrorDomain
                                                code:errSecParam
                                         description:[NSString stringWithFormat:@"No access group or view given for identifier(%@)", request.identifier]]);
@@ -2532,73 +2563,96 @@
             return;
         }
     }
+
+    WEAKIFY(self);
     [self.cuttlefishAdapter fetchCurrentItem:account
                                        items:cfishCurrentItemSpecifiers
                                        reply:^(NSArray<CuttlefishCurrentItem *> * _Nullable currentItemRecords, NSArray<CKRecord *> * _Nullable syncKeys, NSError * _Nullable operror) {
+        STRONGIFY(self);
         if (operror) {
-            ckkserror_global("ckks", "error getting current items: %@", operror);
+            ckkserror_global("ckks-oob", "error getting current items: %@", operror);
             complete(nil, operror);
             return;
         }
         
-        // Create key cache for use in decrypting
+        // Fill in our keycache.
         CKKSMemoryKeyCache* cache = [[CKKSMemoryKeyCache alloc] init];
-        [syncKeys enumerateObjectsUsingBlock:^(CKRecord * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        [cache populateWithRecords:syncKeys contextID:self.operationDependencies.contextID];
+
+        NSMutableSet<CKKSKey*>* syncKeysNeedingUnwrapping = [NSMutableSet set];
+        NSMutableSet<CKKSKey*>* tlksNeedingUnwrapping = [NSMutableSet set];
+        for (CKRecord* obj in syncKeys) {
+            NSError* loadError = nil;
             CKKSKey* key = [[CKKSKey alloc] initWithCKRecord:obj contextID:self.operationDependencies.contextID];
-            [cache addKeyToCache:key.uuid key:key];
-        }];
-
-        __block NSError* error = nil;
-        __block NSMutableArray<CKKSCurrentItemQueryResult*>* currentItemsDecrypted = [[NSMutableArray alloc] init];
-
-        [currentItemRecords enumerateObjectsUsingBlock:^(CuttlefishCurrentItem * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-            @autoreleasepool {
-                NSError* decryptError = nil;
-                CKKSItem* currentItem = [[CKKSItem alloc] initWithCKRecord:obj.item contextID:self.operationDependencies.contextID];
-                NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:currentItem
-                                                                                          keyCache:cache
-                                                                       ckksOperationalDependencies:self.operationDependencies
-                                                                                             error:&decryptError];
-                if (decryptError) {
-                    ckkserror_global("ckks", "error decrypting item record(%@): %@", currentItem, decryptError);
-                    currentItemsDecrypted = nil;
-                    error = decryptError;
-                    *stop = YES;
-                    return;
+            if (![key ensureKeyLoadedForContextID:self.operationDependencies.contextID cache:cache error:&loadError]) {
+                if (loadError) {
+                    ckksinfo_global("ckks-oob", "Could not find key material in keychain: %@", loadError);
                 }
-                
-                // Current item pointer name is "<accessGroup>-<identifier>" --> split it up into its components for ease of caller
-                NSArray *items = [obj.itemPtr.itemPtrName componentsSeparatedByString:@"-"];
-                if (items.count != 2) {
-                    ckkserror_global("ckks", "unexpected item pointer name format: %@", obj.itemPtr.itemPtrName);
-                    currentItemsDecrypted = nil;
-                    error = [NSError errorWithDomain:CKKSErrorDomain code:CKKSDataMismatch description:[NSString stringWithFormat:@"Item pointer name %@ does not match expected format", obj.itemPtr.itemPtrName]];
-                    *stop = YES;
-                    return;
-                }
-                NSString* accessGroup = items[0];
-                NSString* identifier = items[1];
-                
-                [currentItemsDecrypted addObject:[[CKKSCurrentItemQueryResult alloc] initWithIdentifier:identifier accessGroup:accessGroup zoneID:obj.itemPtr.zoneID decryptedRecord:attributes]];
-
-                if ([obj.itemPtr.zoneID isEqualToString:(id)kSecAttrViewHintManatee] && !self.firstManateeKeyFetched) {
-                    self.firstManateeKeyFetched = true;
-                    [self sendMetricForFirstManateeAccess];
+                if ([key.keyclass isEqual: SecCKKSKeyClassTLK] && [key.parentKeyUUID isEqualToString: key.uuid]) {
+                    [tlksNeedingUnwrapping addObject:key];
+                } else {
+                    [syncKeysNeedingUnwrapping addObject:key];
                 }
             }
-        }];
+        }
 
-        complete(currentItemsDecrypted, error);
+        if (tlksNeedingUnwrapping.count > 0) {
+
+            [self.cuttlefishAdapter fetchRecoverableTLKShares:account
+                                                       peerID:self.accountTracker.octagonPeerID
+                                                    contextID:self.operationDependencies.contextID
+                                                      altDSID:self.operationDependencies.activeAccount.altDSID
+                                                       flowID:nil
+                                              deviceSessionID:nil
+                                               canSendMetrics:SecCKKSTestsEnabled()
+                                                        reply:^(NSArray<CKKSTLKShareRecord *> * _Nullable tlkShares, NSError * _Nullable fetchTLKSharesError) {
+                if (fetchTLKSharesError || !tlkShares) {
+                    ckkserror_global("ckks-oob", "Errored fetching TLK shares, unable to decrypt identities: %@", fetchTLKSharesError);
+                    complete(nil, fetchTLKSharesError);
+                    return;
+                }
+                
+                // Unwrap each wrapped TLK. Then save it to the cache.
+                NSError* unwrapError = nil;
+                [self unwrapTLKAndSaveToCache:cache
+                                         tlks:tlksNeedingUnwrapping
+                                    tlkShares:tlkShares
+                                        error:&unwrapError];
+                if (unwrapError) {
+                    ckkserror_global("ckks-oob", "Errored unwrapping TLK Shares, quitting: %@", unwrapError);
+                    complete(nil, unwrapError);
+                    return;
+                }
+
+                // Then unwrap the synckeys.
+                unwrapError = nil;
+                [self unwrapKeysAndSaveToCache:cache
+                                      syncKeys:syncKeysNeedingUnwrapping
+                                         error:&unwrapError];
+                if (unwrapError) {
+                    ckkserror_global("ckks-oob", "Errored unwrapping sync keys, quitting: %@", unwrapError);
+                    complete(nil, unwrapError);
+                    return;
+                }
+
+                // Then decrypt the identities.
+                [self decryptCurrentItems:currentItemRecords cache:cache complete:complete];
+            }];
+
+        } else {
+            // Keys are already loaded into the keychain.
+            [self decryptCurrentItems:currentItemRecords cache:cache complete:complete];
+        }
 
     }];
-    
+
 }
 
 - (void)fetchPCSIdentityOutOfBand:(NSArray<CKKSPCSIdentityQuery*>*) pcsServices
                        forceFetch:(bool)forceFetch
                          complete:(void(^)(NSArray<CKKSPCSIdentityQueryResult*>* pcsIdentities, NSError* error))complete {
     
-    [self.accountStateKnown wait:(SecCKKSTestsEnabled() ? 1*NSEC_PER_SEC : 30*NSEC_PER_SEC)];
+    [self.accountStateKnown wait:1*NSEC_PER_SEC];
     
     CKKSAccountStatus accountStatus = self.accountStatus;
     if (accountStatus != CKKSAccountStatusAvailable || !self.cuttlefishAdapter) {
@@ -2613,7 +2667,7 @@
                                       description:@"User is not signed into iCloud."];
         }
         
-        ckksnotice("ckkscurrent", self, "Rejecting PCS Identity requests since we don't have an iCloud account: %@", localError);
+        ckksnotice("ckks-oob", self, "Rejecting PCS Identity requests since we don't have an iCloud account: %@", localError);
         complete(nil, localError);
         return;
     }
@@ -2621,11 +2675,11 @@
     NSError* allowOOBFetchError = nil;
     BOOL OOBFetchAllowed = [self allowOutOfBandFetch:&allowOOBFetchError] || forceFetch;
     if (allowOOBFetchError) {
-        ckksnotice_global("ckkscurrent", "Error fetching out of band fetch permission, relying on forceFetch enablement (%@) : %@", forceFetch ? @"ENABLED" : @"DISABLED", allowOOBFetchError);
+        ckksnotice_global("ckks-oob", "Error fetching out of band fetch permission, relying on forceFetch enablement (%@) : %@", forceFetch ? @"ENABLED" : @"DISABLED", allowOOBFetchError);
     }
 
     if (!OOBFetchAllowed) {
-        ckkserror_global("ckks", "Out of band fetch disabled due to CKKS readiness");
+        ckkserror_global("ckks-oob", "Out of band fetch disabled due to CKKS readiness");
         NSError* error = [NSError errorWithDomain:CKKSErrorDomain code:CKKSErrorOutOfBandFetchingDisallowed description:@"Out of band fetch disabled due to CKKS readiness"];
         complete(nil, error);
         return;
@@ -2635,7 +2689,7 @@
     NSMutableArray<CuttlefishPCSServiceIdentifier*>* pcsServiceIdentifiers = [[NSMutableArray alloc] init];
     for (CKKSPCSIdentityQuery* pcsService in pcsServices) {
         if (pcsService.accessGroup == nil || pcsService.zoneID == nil) {
-            ckksnotice("ckkscurrent", self, "Rejecting pcs service (%@) get since no access group(%@) or zoneID(%@) given", pcsService, pcsService.accessGroup, pcsService.zoneID);
+            ckksnotice("ckks-oob", self, "Rejecting pcs service (%@) get since no access group(%@) or zoneID(%@) given", pcsService, pcsService.accessGroup, pcsService.zoneID);
             complete(nil, [NSError errorWithDomain:CKKSErrorDomain
                                                code:errSecParam
                                         description:[NSString stringWithFormat:@"No access group or view given for PCS Service(%@)", pcsService]]);
@@ -2655,58 +2709,248 @@
                                                               cloudkitContainerName:OTCKContainerName
                                                                    octagonContextID:self.operationDependencies.contextID
                                                                               error:&accountError];
-        
         if (account == nil || accountError != nil) {
             ckkserror_global("ckks-cuttlefish", "unable to determine active account for context(%@). Issues ahead: %@", OTDefaultContext, accountError);
             complete(nil, accountError);
             return;
         }
     }
+    WEAKIFY(self);
     [self.cuttlefishAdapter fetchPCSIdentityByKey:account pcsservices:pcsServiceIdentifiers reply:^(NSArray<CuttlefishPCSIdentity *> * _Nullable pcsItemRecords, NSArray<CKRecord *> * _Nullable syncKeys, NSError * _Nullable operror) {
-        
+        STRONGIFY(self);
         if (operror) {
-            ckkserror_global("ckks", "error getting pcs identities: %@", operror);
+            ckkserror_global("ckks-oob", "error getting pcs identities: %@", operror);
             complete(nil, operror);
             return;
         }
 
-        // Create key cache for use in decrypting
+        // Fill in our keycache.
         CKKSMemoryKeyCache* cache = [[CKKSMemoryKeyCache alloc] init];
-        [syncKeys enumerateObjectsUsingBlock:^(CKRecord * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        [cache populateWithRecords:syncKeys contextID:self.operationDependencies.contextID];
+
+        NSMutableSet<CKKSKey*>* syncKeysNeedingUnwrapping = [NSMutableSet set];
+        NSMutableSet<CKKSKey*>* tlksNeedingUnwrapping = [NSMutableSet set];
+        for (CKRecord* obj in syncKeys) {
+            NSError* loadError = nil;
             CKKSKey* key = [[CKKSKey alloc] initWithCKRecord:obj contextID:self.operationDependencies.contextID];
-            [cache addKeyToCache:key.uuid key:key];
-        }];
+            if (![key ensureKeyLoadedForContextID:self.operationDependencies.contextID cache:cache error:&loadError]) {
+                if (loadError) {
+                    ckksinfo_global("ckks-oob", "Could not find key material in keychain: %@", loadError);
+                }
+                if ([key.keyclass isEqual: SecCKKSKeyClassTLK] && [key.parentKeyUUID isEqualToString: key.uuid]) {
+                    [tlksNeedingUnwrapping addObject:key];
+                } else {
+                    [syncKeysNeedingUnwrapping addObject:key];
+                }
+            }
+        }
 
-        __block NSError* error = nil;
-        __block NSMutableArray<CKKSPCSIdentityQueryResult*>* pcsItemsDecrypted = [[NSMutableArray alloc] init];
+        // If there are any keys that can't be unwrapped, we will need to reach out to Cuttlefish to fetch the TLK Shares.
+        if (tlksNeedingUnwrapping.count > 0) {
 
-        [pcsItemRecords enumerateObjectsUsingBlock:^(CuttlefishPCSIdentity * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-            @autoreleasepool {
-                NSError* decryptError = nil;
-                CKKSItem* pcsItem = [[CKKSItem alloc] initWithCKRecord:obj.item contextID:self.operationDependencies.contextID];
-                NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:pcsItem
-                                                                                          keyCache:cache
-                                                                       ckksOperationalDependencies:self.operationDependencies
-                                                                                             error:&decryptError];
-                if (decryptError) {
-                    ckkserror_global("ckks", "error decrypting pcs item record(%@): %@", pcsItem, decryptError);
-                    pcsItemsDecrypted = nil;
-                    error = decryptError;
-                    *stop = YES;
+            [self.cuttlefishAdapter fetchRecoverableTLKShares:account
+                                                       peerID:self.accountTracker.octagonPeerID
+                                                    contextID:self.operationDependencies.contextID
+                                                      altDSID:self.operationDependencies.activeAccount.altDSID
+                                                       flowID:nil
+                                              deviceSessionID:nil
+                                               canSendMetrics:SecCKKSTestsEnabled()
+                                                        reply:^(NSArray<CKKSTLKShareRecord *> * _Nullable tlkShares, NSError * _Nullable fetchTLKSharesError) {
+                if (fetchTLKSharesError || !tlkShares) {
+                    ckkserror_global("ckks-oob", "Errored fetching TLK shares: %@", fetchTLKSharesError);
+                    complete(nil, fetchTLKSharesError);
                     return;
                 }
                 
-                [pcsItemsDecrypted addObject:[[CKKSPCSIdentityQueryResult alloc] initWithServiceNumber:obj.service.PCSServiceID publicKey:[obj.service.PCSPublicKey base64EncodedStringWithOptions:0] zoneID:obj.service.zoneID decryptedRecord:attributes]];
-            }
-        }];
+                // Unwrap each wrapped TLK. Then save it to the cache.
+                NSError* unwrapError = nil;
+                BOOL success = [self unwrapTLKAndSaveToCache:cache
+                                                        tlks:tlksNeedingUnwrapping
+                                                   tlkShares:tlkShares
+                                                       error:&unwrapError];
+                if (!success || unwrapError) {
+                    ckkserror_global("ckks-oob", "Errored unwrapping TLK Shares, quitting: %@", unwrapError);
+                    complete(nil, unwrapError);
+                    return;
+                }
 
-        complete(pcsItemsDecrypted, error);
+                // Then unwrap the synckeys.
+                unwrapError = nil;
+                success = [self unwrapKeysAndSaveToCache:cache
+                                                syncKeys:syncKeysNeedingUnwrapping
+                                                   error:&unwrapError];
+                if (!success || unwrapError) {
+                    ckkserror_global("ckks-oob", "Errored unwrapping sync keys, quitting: %@", unwrapError);
+                    complete(nil, unwrapError);
+                    return;
+                }
+
+                // Then decrypt the identities.
+                [self decryptPCSIdentities:pcsItemRecords cache:cache complete:complete];
+            }];
+
+        } else {
+            // Keys are already loaded into the keychain.
+            [self decryptPCSIdentities:pcsItemRecords cache:cache complete:complete];
+        }
 
     }];
 }
 
+- (BOOL)unwrapTLKAndSaveToCache:(CKKSMemoryKeyCache*)cache
+                           tlks:(NSSet<CKKSKey*>*)tlks
+                      tlkShares:(NSArray<CKKSTLKShareRecord*>*)tlkShares
+                          error:(NSError* __autoreleasing*)error {
+    for (CKKSKey* tlk in tlks) {
+        BOOL unwrapped = NO;
+        NSError* unwrapError = nil;
+        for (id<CKKSPeerProvider> provider in self.operationDependencies.peerProviders) {
+            if ([provider.currentState unwrapKey:tlk fromShares:tlkShares error:&unwrapError]) {
+                [cache addKeyToCache:tlk.uuid key:tlk];
+                NSError* saveError = nil;
 
--(void)sendMetricForFirstManateeAccess {
+                [tlk saveKeyMaterialToKeychain:&saveError];
+                if (saveError) {
+                    ckkserror_global("ckks-oob", "Errored saving TLK to keychain: %@", saveError);
+                }
+
+                unwrapped = YES;
+                break;
+            }
+            
+            // Report error, but continue with other peer providers.
+            if (unwrapError) {
+                ckkserror_global("ckks-oob", "Errored unwrapping TLK %@: %@", tlk, unwrapError);
+            }
+        }
+
+        // If none of our peer providers could unwrap this TLK, early-exit.
+        if (!unwrapped) {
+            if (error) {
+                *error = [NSError errorWithDomain:CKKSErrorDomain
+                                             code:CKKSNoTrustedTLKShares
+                                      description:[NSString stringWithFormat:@"No trusted TLKShares for %@", tlk]
+                                       underlying:unwrapError];
+            }
+            return NO;
+        }
+    }
+    return YES;
+}
+
+- (BOOL)unwrapKeysAndSaveToCache:(CKKSMemoryKeyCache*)cache
+                        syncKeys:(NSSet<CKKSKey*>*)syncKeys
+                           error:(NSError* __autoreleasing*)error {
+
+    for (CKKSKey* syncKey in syncKeys) {
+        NSError* decryptError = nil;
+        [syncKey unwrapViaKeyHierarchy:cache error:&decryptError];
+        if (!decryptError) {
+            [cache addKeyToCache:syncKey.uuid key:syncKey];
+
+            NSError* saveError = nil;
+            [syncKey saveKeyMaterialToKeychain:&saveError];
+            if (saveError) {
+                ckkserror_global("ckks-oob", "Errored saving synckey to keychain: %@", saveError);
+            }
+
+        } else {
+            ckkserror_global("ckks-oob", "Unable to decrypt synckey %@: %@", syncKey, decryptError);
+            if (error) {
+                *error = decryptError;
+            }
+            return NO;
+        }
+    }
+
+    return YES;
+}
+
+- (void)decryptPCSIdentities:(NSArray<CuttlefishPCSIdentity*>*)identities
+                       cache:(CKKSMemoryKeyCache*)cache
+                    complete:(void(^)(NSArray<CKKSPCSIdentityQueryResult*>* pcsIdentities, NSError* error))complete {
+
+    NSError* error = nil;
+    NSMutableArray<CKKSPCSIdentityQueryResult*>* pcsItemsDecrypted = [[NSMutableArray alloc] init];
+    
+    for (CuttlefishPCSIdentity* identity in identities) {
+        @autoreleasepool {
+            NSError* decryptError = nil;
+            CKKSItem* pcsItem = [[CKKSItem alloc] initWithCKRecord:identity.item contextID:self.operationDependencies.contextID];
+            NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:pcsItem
+                                                                                      keyCache:cache
+                                                                   ckksOperationalDependencies:self.operationDependencies
+                                                                                         error:&decryptError];
+            if (decryptError) {
+                ckkserror_global("ckks-oob", "error decrypting pcs item record(%@): %@", pcsItem, decryptError);
+                pcsItemsDecrypted = nil;
+                error = decryptError;
+                break;
+            }
+            
+            [pcsItemsDecrypted addObject:[[CKKSPCSIdentityQueryResult alloc] initWithServiceNumber:identity.service.PCSServiceID publicKey:[identity.service.PCSPublicKey base64EncodedStringWithOptions:0] zoneID:identity.service.zoneID decryptedRecord:attributes]];
+            
+            if (!self.firstManateeKeyFetched && [identity.service.zoneID isEqualToString:(__bridge NSString*)kSecAttrViewHintManatee]) {
+                self.firstManateeKeyFetched = true;
+                [self sendMetricForFirstManateeAccess];
+            }
+        }
+    }
+
+    if (pcsItemsDecrypted) {
+        ckksnotice_global("ckks-oob", "Successfully retrieved identities: %@", pcsItemsDecrypted);
+    }
+    complete(pcsItemsDecrypted, error);
+}
+
+- (void)decryptCurrentItems:(NSArray<CuttlefishCurrentItem*>*)currentItems
+                      cache:(CKKSMemoryKeyCache*)cache
+                   complete:(void(^)(NSArray<CKKSCurrentItemQueryResult*>* currentItems, NSError* error))complete {
+    NSError* error = nil;
+    NSMutableArray<CKKSCurrentItemQueryResult*>* currentItemsDecrypted = [[NSMutableArray alloc] init];
+
+    for (CuttlefishCurrentItem* currentIdentity in currentItems) {
+        @autoreleasepool {
+            NSError* decryptError = nil;
+            CKKSItem* currentItem = [[CKKSItem alloc] initWithCKRecord:currentIdentity.item contextID:self.operationDependencies.contextID];
+            NSDictionary* attributes = [CKKSIncomingQueueOperation decryptCKKSItemToAttributes:currentItem
+                                                                                      keyCache:cache
+                                                                   ckksOperationalDependencies:self.operationDependencies
+                                                                                         error:&decryptError];
+            if (decryptError) {
+                ckkserror_global("ckks-oob", "error decrypting item record(%@): %@", currentItem, decryptError);
+                currentItemsDecrypted = nil;
+                error = decryptError;
+                break;
+            }
+            
+            // Current item pointer name is "<accessGroup>-<identifier>" --> split it up into its components for ease of caller
+            NSArray *items = [currentIdentity.itemPtr.itemPtrName componentsSeparatedByString:@"-"];
+            if (items.count != 2) {
+                ckkserror_global("ckks-oob", "unexpected item pointer name format: %@", currentIdentity.itemPtr.itemPtrName);
+                currentItemsDecrypted = nil;
+                error = [NSError errorWithDomain:CKKSErrorDomain code:CKKSDataMismatch description:[NSString stringWithFormat:@"Item pointer name %@ does not match expected format", currentIdentity.itemPtr.itemPtrName]];
+                break;
+            }
+            NSString* accessGroup = items[0];
+            NSString* identifier = items[1];
+            
+            [currentItemsDecrypted addObject:[[CKKSCurrentItemQueryResult alloc] initWithIdentifier:identifier accessGroup:accessGroup zoneID:currentIdentity.itemPtr.zoneID decryptedRecord:attributes]];
+
+            if (!self.firstManateeKeyFetched && [currentIdentity.itemPtr.zoneID isEqualToString:(__bridge NSString*)kSecAttrViewHintManatee]) {
+                self.firstManateeKeyFetched = true;
+                [self sendMetricForFirstManateeAccess];
+            }
+        }
+    }
+
+    if (currentItemsDecrypted) {
+        ckksnotice_global("ckks-oob", "Successfully retrieved current items: %@", currentItemsDecrypted);
+    }
+    complete(currentItemsDecrypted, error);
+}
+
+- (void)sendMetricForFirstManateeAccess {
 
     if (self.operationDependencies.sendMetric) {
         AAFAnalyticsEventSecurity* eventS = [[AAFAnalyticsEventSecurity alloc] initWithCKKSMetrics:@{}
@@ -2715,7 +2959,7 @@
                                                                                    testsAreEnabled:SecCKKSTestsEnabled()
                                                                                           category:kSecurityRTCEventCategoryAccountDataAccessRecovery
                                                                                         sendMetric:self.operationDependencies.sendMetric];
-        [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+        [eventS sendMetricWithResult:YES error:nil];
     }
 }
 
@@ -3264,6 +3508,18 @@
     [self scheduleOperation:pcsMirrorKeysOp];
 }
 
+- (void)initialSyncStatus:(NSString *)viewName reply:(void (^)(BOOL result, NSError * _Nullable))reply {
+    [self dispatchSyncWithReadOnlySQLTransaction:^{
+        NSError* error = nil;
+        CKKSZoneStateEntry* ckse = [CKKSZoneStateEntry fromDatabase:self.operationDependencies.contextID zoneName:viewName error:&error];
+        if (!ckse || error) {
+            reply(NO, error);
+        } else {
+            reply(ckse.initialSyncFinished, nil);
+        }
+    }];
+}
+
 - (void)xpc24HrNotification
 {
     // Called roughly once every 24hrs
@@ -3383,7 +3639,7 @@
     CKKSAccountStatus currentStatus = [self accountStatusFromCKAccountInfo:currentAccountInfo];
 
     if(oldStatus == currentStatus) {
-        ckksnotice("ckkszone", self, "Computed status of new CK account info is same as old status: %@", [CKKSAccountStateTracker stringFromAccountStatus:currentStatus]);
+        ckksnotice("ckkszone", self, "Computed status of new CK account info is same as old status: %@", CKKSAccountStatusToString(currentStatus));
         return;
     }
 
@@ -3424,6 +3680,25 @@
     }
 }
 
+- (void)updateAccount:(TPSpecificUser*)activeAccount
+            container:(CKContainer* _Nullable)container
+{
+    if (!activeAccount.isPrimaryAccount && (container != nil)) {
+        ckksnotice_global("ckks-account", "Switching CloudKit container for CKKS & CKKSAccountStateTracker for account(%@) associated with (%@) container", activeAccount, container.options.accountOverrideInfo.accountID);
+        self.container = container;
+        self.zoneChangeFetcher.container = container;
+        self.accountTracker.container = container;
+        self.operationDependencies.ckdatabase = container.privateCloudDatabase;
+    }
+
+    if(self.operationDependencies.activeAccount != nil && ![self.operationDependencies.activeAccount isEqual:activeAccount]) {
+        // After a signout and then a sign-in of the same account, we might have a different accountID and personaID matching our altDSID.
+        // Tell CKKS about the new world.
+        ckksnotice_global("ckks-account", "Updating CKKS's idea of account to %@; old: %@", activeAccount, self.operationDependencies.activeAccount);
+        self.operationDependencies.activeAccount = activeAccount;
+    }
+}
+
 - (void)handleCKLogin
 {
     ckksnotice("ckks", self, "received a notification of CK login");
@@ -3449,7 +3724,7 @@
                                                                                testsAreEnabled:SecCKKSTestsEnabled()
                                                                                       category:kSecurityRTCEventCategoryAccountDataAccessRecovery
                                                                                     sendMetric:self.operationDependencies.sendMetric];
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+    [eventS sendMetricWithResult:YES error:nil];
 
     [self.stateMachine handleFlag:CKKSFlagCloudKitLoggedIn];
 
@@ -3523,7 +3798,7 @@
         }
     });
     
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+    [eventS sendMetricWithResult:YES error:nil];
 }
 
 - (void)endTrustedOperation
@@ -3548,7 +3823,7 @@
 
         [self.operationDependencies.overallLaunch addEvent:@"trust-loss"];
     });
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+    [eventS sendMetricWithResult:YES error:nil];
 }
 
 - (TPSyncingPolicy* _Nullable)syncingPolicy
@@ -3721,7 +3996,7 @@
     // The policy is considered loaded once the views have been created
     [self.policyLoaded fulfill];
     
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+    [eventS sendMetricWithResult:YES error:nil];
 
     return newViews || disappearedViews;
 }
@@ -3819,6 +4094,58 @@
     self.policyLoaded = [[CKKSCondition alloc] init];
 }
 
+- (BOOL)haveTLKsLocally:(CKKSKeychainViewState*)viewState error:(NSError**)error {
+    __block NSError* localError = nil;
+    __block BOOL ret = NO;
+    [self dispatchSyncWithReadOnlySQLTransaction:^{
+        CKKSCurrentKeySet* keyset = [CKKSCurrentKeySet loadForZone:viewState.zoneID
+                                                         contextID:viewState.contextID];
+
+        if (keyset.currentTLKPointer.currentKeyUUID == nil) {
+            ckksnotice("ckks", self, "No current TLK in keyset: %@", keyset);
+            return;
+        }
+
+        NSError* tlkKeyLoadError = nil;
+        CKKSKey* tlk = [CKKSKey fromDatabaseAnyState:keyset.currentTLKPointer.currentKeyUUID
+                                           contextID:viewState.contextID
+                                              zoneID:viewState.zoneID
+                                               error:&tlkKeyLoadError];
+
+        if(tlkKeyLoadError != nil && [tlkKeyLoadError.domain isEqualToString:@"securityd"] && tlkKeyLoadError.code == errSecItemNotFound) {
+            // drop tlkKeyLoadError; this is an "expected" state
+            ckksnotice("ckks", self, "Do not have CKKSKey(%@) locally", keyset.currentTLKPointer.currentKeyUUID);
+            return;
+        } else if(tlkKeyLoadError != nil) {
+            ckkserror("ckks", self, "Unable to load CKKSKey TLK: %@", tlkKeyLoadError);
+            localError = tlkKeyLoadError;
+            return;
+        }
+
+        NSError* tlkKeychainLoadError = nil;
+        if([tlk loadKeyMaterialFromKeychain:&tlkKeychainLoadError]) {
+            ckksnotice("ckks", self, "Have TLK(%@) locally", tlk);
+            ret = YES;
+        } else if([tlkKeychainLoadError.domain isEqualToString:@"securityd"] && tlkKeychainLoadError.code == errSecInteractionNotAllowed) {
+            // We have the TLK, but were unable to load it due to lock state
+            ckksnotice("ckks", self, "Have TLK(%@) locally, but device is locked", tlk);
+            ret = YES;
+        } else if([tlkKeychainLoadError.domain isEqualToString:@"securityd"] && tlkKeychainLoadError.code == errSecItemNotFound) {
+            // drop tlkKeychainLoadError; this is an "expected" state
+            ckksnotice("ckks", self, "Do not have TLK(%@) locally", tlk);
+        } else {
+            ckksnotice("ckks", self, "Do not have TLK(%@) locally with unexpected error: %@", tlk, tlkKeychainLoadError);
+            localError = tlkKeychainLoadError;
+        }
+    }];
+
+    if(error && localError) {
+        *error = localError;
+    }
+
+    return ret;
+}
+
 - (CKKSKeychainViewState* _Nullable)viewStateForName:(NSString*)viewName
 {
     return [self.operationDependencies viewStateForName:viewName];
@@ -3906,6 +4233,7 @@
             return;
         }
         request.changeToken = ckse.changeToken;
+        request.fetchNewestChangesFirst = ckse.fetchNewestChangesFirst;
     }];
 
     return request;
@@ -3917,7 +4245,10 @@
         newChangeToken:(CKServerChangeToken*)newChangeToken
             moreComing:(BOOL)moreComing
                 resync:(BOOL)resync
+fetchNewestChangesFirst:(BOOL)fetchNewestChangesFirst
 {
+
+    __block unsigned long deletedRecordsCount = deletedRecords.count;
     [self dispatchSyncWithSQLTransaction:^CKKSDatabaseTransactionResult{
 
         if (![self _onQueueZoneIsReadyForFetching:zoneID]) {
@@ -3934,6 +4265,10 @@
             [self.operationDependencies intransactionCKRecordChanged:record resync:resync];
         }
 
+        // NOTE: CloudKit won't tell us about the deleted records when fetching newest changes first.
+        // We fetch newest changes first during initial sync or when we've lost the change token. In these cases,
+        // the CKMirror table should be empty, so we won't have to compare what we've received in CloudKit
+        // to the mirror table to figure out what's been deleted.
         for (CKKSCloudKitDeletion* deletion in deletedRecords) {
             [self.operationDependencies intransactionCKRecordDeleted:deletion.recordID recordType:deletion.recordType resync:resync];
         }
@@ -3950,6 +4285,7 @@
             if(self.resyncRecordsSeen == nil) {
                 self.resyncRecordsSeen = [NSMutableSet set];
             }
+
             for(CKRecord* r in changedRecords) {
                 [self.resyncRecordsSeen addObject:r.recordID.recordName];
             }
@@ -3982,6 +4318,7 @@
 
                         ckkserror("ckksresync", zoneID, "BUG: Local item %@ not found in CloudKit, deleting", uuid);
                         [self.operationDependencies intransactionCKRecordDeleted:ckme.item.storedCKRecord.recordID recordType:ckme.item.storedCKRecord.recordType resync:resync];
+                        deletedRecordsCount++;
                     }
                 }
 
@@ -3994,6 +4331,12 @@
         state.lastFetchTime = [NSDate date]; // The last fetch happened right now!
         state.changeToken = newChangeToken;
         state.moreRecordsInCloudKit = moreComing;
+        state.fetchNewestChangesFirst = fetchNewestChangesFirst;
+        // Now that we don't have any more items incoming, flip from reverse syncing to forward syncing.
+        if (!moreComing && fetchNewestChangesFirst) {
+            state.fetchNewestChangesFirst = NO;
+            ckksnotice("ckksfetch", zoneID, "Finished syncing all changes from zone. Switching from reverse syncing to forward syncing");
+        }
         [state saveToDatabase:&error];
         if(error) {
             ckkserror("ckksfetch", zoneID, "Couldn't save new server change token: %@", error);
@@ -4003,17 +4346,55 @@
             ckksinfo("ckksfetch", zoneID, "No record changes in this fetch");
         } else {
             if(!moreComing) {
-                ckksnotice("ckksfetch", self, "Beginning incoming processing for %@", zoneID);
-                [self.stateMachine _onqueueHandleFlag:CKKSFlagProcessIncomingQueue];
+                ckksnotice("ckksfetch", self, "Requesting incoming processing for %@", zoneID);
+                BOOL pendingClassCItems = NO;
+                for(CKKSKeychainViewState* viewState in self.operationDependencies.readyAndSyncingViews) {
+                    NSDictionary<NSString*, NSNumber*>* iqeCounts = [CKKSIncomingQueueEntry countNewEntriesByKeyWithContextID:self.operationDependencies.contextID
+                                                                                                                       zoneID:viewState.zoneID
+                                                                                                                        error:NULL];
+                    for(NSString* keyUUID in iqeCounts) {
+                        NSError* keyError = nil;
+                        CKKSKey* key = [CKKSKey fromDatabase:keyUUID
+                                                   contextID:viewState.contextID
+                                                      zoneID:viewState.zoneID
+                                                       error:&keyError];
+
+                        if(!key || keyError) {
+                            ckkserror("ckksfetch", viewState.zoneID, "Unable to load key for %@: %@", keyUUID, keyError);
+                            continue;
+                        }
+
+                        if ([key.keyclass isEqualToString:SecCKKSKeyClassC]) {
+                            pendingClassCItems = YES;
+                            break;
+                        }
+                    }
+                }
+
+                // If the device is locked but we have pending classC items, process them immediately.
+                if (self.lockStateTracker.isLocked) {
+                    if (pendingClassCItems) {
+                        [self.stateMachine _onqueueHandleFlag:CKKSFlagProcessIncomingQueue];
+                    } else {
+                        // Otherwise, if we only have pending classA items, we should wait for unlock.
+                        ckksnotice_global("ckksfetch", "Have incoming classA items needing processing, but device is locked");
+                        OctagonPendingFlag* pending = [[OctagonPendingFlag alloc] initWithFlag:CKKSFlagProcessIncomingQueue
+                                                                                    conditions:OctagonPendingConditionsDeviceUnlocked];
+                        [self.stateMachine _onqueueHandlePendingFlagLater:pending];
+                    }
+                } else {
+                    [self.stateMachine _onqueueHandleFlag:CKKSFlagProcessIncomingQueue];
+                }
                 // TODO: likely can be removed, once fetching no longer is a complicated upcall dance
             }
         }
 
-        ckksnotice("ckksfetch", zoneID, "Finished processing changes: changed=%lu deleted=%lu moreComing=%lu resync=%u changeToken=%@",
+        ckksnotice("ckksfetch", zoneID, "Finished processing changes: changed=%lu deleted=%lu moreComing=%lu resync=%u fetchNewestChangesFirst=%u changeToken=%@",
                    (unsigned long)changedRecords.count,
-                   (unsigned long)deletedRecords.count,
+                   (unsigned long)deletedRecordsCount,
                    (unsigned long)moreComing,
                    resync,
+                   fetchNewestChangesFirst,
                    newChangeToken);
 
         return CKKSDatabaseTransactionCommit;
@@ -4022,7 +4403,7 @@
     // Now that we've committed the transaction, should we send any notifications?
     CKKSKeychainViewState* viewState = [self.operationDependencies viewStateForName:zoneID.zoneName];
 
-    if(deletedRecords.count > 0) {
+    if(deletedRecordsCount > 0) {
         // Not strictly true, but will properly send notifications for deleted CIPs
         [viewState.notifyViewChangedScheduler trigger];
     }
@@ -4367,6 +4748,10 @@
                                                                                  keyUUID:keyset.currentTLKPointer.currentKeyUUID
                                                                                   zoneID:viewState.zoneID
                                                                                    error:&localError];
+                    // rdar://133977921 (Revisit tlkRecoverabilityForEscrowRecord view selection)
+                    // This check incorrectly passes for an empty tlkShares array.
+                    // Fixing that will introduce a race condition, where if this function is called before the CKKS download is started/complete,
+                    // we will incorrectly report that a peer does not have TLKShares that it actually does.
                     if (tlkShares && localError == nil) {
                         [viewsForPeer addObject:viewState.zoneName];
                     }
@@ -4443,11 +4828,7 @@
                 @"lastCKKSPush":        CKKSNilToNSNull(lastCKKSPush),
                 @"policy":              stringify(self.syncingPolicy),
                 @"viewsFromPolicy":     @"yes",
-                @"ckaccountstatus":     self.accountStatus == CKAccountStatusCouldNotDetermine ? @"could not determine" :
-                    self.accountStatus == CKAccountStatusAvailable         ? @"logged in" :
-                    self.accountStatus == CKAccountStatusRestricted        ? @"restricted" :
-                    self.accountStatus == CKAccountStatusNoAccount         ? @"logged out" : @"unknown",
-
+                @"ckaccountstatus":     CKKSAccountStatusToString(self.accountStatus) ?: @"unknown",
                 @"accounttracker":      stringify(self.accountTracker),
                 @"fetcher":             stringify(self.zoneChangeFetcher),
                 @"ckksstate":           CKKSNilToNSNull(self.stateMachine.currentState),
@@ -4578,6 +4959,7 @@
             @"ckksManaged":         boolstr(viewState.ckksManagedView),
             @"statusError":         [NSNull null],
             @"launchSequence":      CKKSNilToNSNull([viewState.launch eventsByTime]),
+            @"initialSyncFinished": boolstr(ckse.initialSyncFinished),
         };
 }
 

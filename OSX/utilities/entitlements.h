@@ -25,6 +25,7 @@
 #define _utilities_entitlements_h
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreEntitlements/CoreEntitlements.h>
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
@@ -35,6 +36,33 @@ bool needsCatalystEntitlementFixup(CFDictionaryRef entitlements);
 /// Modifies an entitlements dictionary to add the necessary Catalyst-related entitlements based on pre-existing entitlements.
 /// Returns whether the entitlements were modified.
 bool updateCatalystEntitlements(CFMutableDictionaryRef entitlements);
+
+/// Hack to address security vulnerability with osinstallersetupd (rdar://137056540).
+/// If osinstallersetupd contains the kTCCServiceSystemPolicyAllFiles entitlement, it should be removed.
+///
+/// Note: Because this function is called in SecCodeCopySigningInformation, which doesn't do
+/// validation, it cannot determine with full confidence whether a given app is actually platform or
+/// not. This is why the parameter is called `isLikelyPlatform`.
+bool needsOSInstallerSetupdEntitlementsFixup(CFStringRef identifier, bool isLikelyPlatform, CFDictionaryRef entitlements);
+
+/// This function removes the kTCCServiceSystemPolicyAllFiles entitlement if it exists.
+/// This should only be called if needsOSInstallerSetupdEntitlementsFixup returns true.
+bool updateOSInstallerSetupdEntitlements(CFMutableDictionaryRef entitlement);
+
+// MARK: CoreEntitlements wrappers
+
+/// This CERuntime does not implement CERuntime.alloc or CERuntime.free. This is important because
+/// the Secure Userspace Allocator doesn't work with malloc/free wrappers.
+extern CERuntime_t CESecRuntime;
+
+/// Custom implementation of CEManagedContextFromCFData
+CEError_t SecCEContextFromCFData(CFDataRef data, CEQueryContext_t* ctx);
+
+/// Custom implementation of CEManagedContextFromCFDataWithOptions
+CEError_t SecCEContextFromCFDataWithOptions(CEValidationOptions* options, CFDataRef data, CEQueryContext_t* ctx);
+
+/// Custom implementation of CEReleaseManagedContext
+CEError_t SecCEReleaseContext(CEQueryContext_t* ctx);
 
 __END_DECLS
 

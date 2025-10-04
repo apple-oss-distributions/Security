@@ -4,12 +4,19 @@
 
 #import <XCTest/XCTest.h>
 #import <Foundation/Foundation.h>
+#import <Security/SecCertificatePriv.h>
+#import <Security/SecCertificateInternal.h>
+#import <Security/SecPolicyPriv.h>
 #import <Security/SecTrustPriv.h>
+#import <utilities/SecCFRelease.h>
+#import <sqlite3.h>
 #import "trust/trustd/trustdFileLocations.h"
 #import "trust/trustd/OTAAutoAssetClient.h"
 #import "trust/trustd/OTATrustUtilities.h"
+#import "trust/trustd/trustd_spi.h"
 
 #import "TrustDaemonTestCase.h"
+#import "PKITrustStoreAssetTests_data.h"
 
 @interface PKITrustStoreAssetInitializationTests : TrustDaemonInitializationTestCase
 @end
@@ -111,6 +118,72 @@
     NSUInteger contentDigestLength = [(__bridge NSString*)contentDigest length];
     XCTAssert(contentDigestLength == SHA256_DIGEST_STR_LENGTH);
     if (contentDigest) { CFRelease(contentDigest); }
+}
+
+- (void)testConstrainedTestAnchors {
+#if TARGET_OS_BRIDGE
+    /* bridgeOS doesn't use trust store */
+    XCTSkip();
+#endif
+    /* Set up test by writing the constrained anchors file */
+    NSData *anchorData = [NSData dataWithBytes:_constrained_test_anchor length:sizeof(_constrained_test_anchor)];
+    NSString *anchorB64 = [anchorData base64EncodedStringWithOptions:0];
+    NSDictionary *testAnchors = @{
+        @"1.2.840.113635.100.1.122" : @[
+            anchorB64
+        ]
+    };
+    NSURL *testAnchorsUrl = CFBridgingRelease(SecCopyURLForFileInPrivateTrustdDirectory(CFSTR("ConstrainedTestAnchors.plist")));
+    XCTAssert([testAnchors writeToURL:testAnchorsUrl error:nil]);
+
+    /* Intialize the Trust Store */
+    SecOTAPKIRef store = SecOTAPKICopyCurrentOTAPKIRef();
+    XCTAssertNotEqual(NULL, store);
+
+    /* Verify that the test anchors are in the constrained anchors */
+    NSDictionary *anchorLookupTable = CFBridgingRelease(SecOTAPKICopyConstrainedAnchorLookupTable());
+    XCTAssertNotNil(anchorLookupTable);
+
+    SecCertificateRef anchor = SecCertificateCreateWithBytes(NULL, _constrained_test_anchor, sizeof(_constrained_test_anchor));
+    NSString *anchorLookupKey = CFBridgingRelease(SecCertificateCopyAnchorLookupKey(anchor));
+    XCTAssertNotNil(anchorLookupKey);
+    XCTAssertNotNil(anchorLookupTable[anchorLookupKey]);
+    NSArray *anchorRecords = anchorLookupTable[anchorLookupKey];
+    NSDictionary *anchorRecord = anchorRecords[0];
+    NSArray *oids = anchorRecord[@"oids"];
+    XCTAssertNotNil(oids);
+    XCTAssert([oids containsObject:@"1.2.840.113635.100.1.122"]);
+
+    NSString *sha2 = anchorRecord[@"sha2"];
+    NSData *storeData = CFBridgingRelease(SecOTAPKICopyConstrainedAnchorData(store, (__bridge CFStringRef)sha2));
+    XCTAssertNotNil(storeData);
+    SecCertificateRef storeCert = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)storeData);
+    XCTAssertNotEqual(NULL, storeCert);
+    XCTAssert(CFEqual(anchor, storeCert));
+
+    CFReleaseNull(anchor);
+    CFReleaseNull(storeCert);
+
+    /* Now that we know the store with the test anchor is ok,
+     * let's finish initializing trustd and do an eval with that anchor */
+    trustd_init_server();
+
+    NSArray *orgs = @[ @"Apple Inc.", @"Test Org", @"SEAR" ];
+    SecCertificateRef leaf = SecCertificateCreateWithBytes(NULL, _constrained_test_leaf, sizeof(_constrained_test_leaf));
+    XCTAssertNotEqual(NULL, leaf);
+    SecPolicyRef policy = SecPolicyCreate3PMobileAsset((__bridge CFArrayRef)orgs);
+    XCTAssertNotEqual(NULL, policy);
+    SecTrustRef trust = NULL;
+    SecTrustCreateWithCertificates(leaf, policy, &trust);
+    XCTAssertNotEqual(NULL, trust);
+    SecTrustSetVerifyDate(trust, (__bridge CFDateRef)[NSDate dateWithTimeIntervalSince1970:1737772686]);
+
+    XCTAssert(SecTrustEvaluateWithError(trust, NULL));
+
+    CFReleaseNull(leaf);
+    CFReleaseNull(policy);
+    CFReleaseNull(trust);
+    CFReleaseNull(store);
 }
 
 @end

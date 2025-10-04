@@ -16,7 +16,6 @@ class OctagonResetTests: OctagonTestsBase {
         self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             XCTAssertNil(resetError, "should be no error resetting and establishing")
         }
-
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
         self.verifyDatabaseMocks()
     }
@@ -31,7 +30,6 @@ class OctagonResetTests: OctagonTestsBase {
         self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             XCTAssertNil(resetError, "should be no error resetting and establishing")
         }
-
         _ = try self.cuttlefishContext.accountAvailable(try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -48,7 +46,6 @@ class OctagonResetTests: OctagonTestsBase {
         self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             XCTAssertNil(resetError, "should be no error resetting and establishing")
         }
-
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateResetAndEstablish, within: 1 * NSEC_PER_SEC)
 
         _ = try self.cuttlefishContext.accountAvailable(try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))
@@ -75,7 +72,6 @@ class OctagonResetTests: OctagonTestsBase {
                                         XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
                                         resetAndEstablishExpectation.fulfill()
         }
-
         self.wait(for: [resetAndEstablishExpectation], timeout: 10)
         self.wait(for: [escrowRequestNotification], timeout: 5)
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -131,10 +127,9 @@ class OctagonResetTests: OctagonTestsBase {
                                                     handler: nil)
         self.manager.resetAndEstablish(OTControlArguments(configuration: self.otcliqueContext),
                                        resetReason: .testGenerated) { resetError in
-                                        XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
-                                        resetAndEstablishExpectation.fulfill()
+            XCTAssertNil(resetError, "Should be no error calling resetAndEstablish")
+            resetAndEstablishExpectation.fulfill()
         }
-
         self.wait(for: [resetAndEstablishExpectation], timeout: 10)
         self.wait(for: [escrowRequestNotification], timeout: 5)
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -198,9 +193,11 @@ class OctagonResetTests: OctagonTestsBase {
 
         let resetExpectation = self.expectation(description: "resetExpectation")
 
-        self.fakeCuttlefishServer.resetListener = { [unowned self] _ in
+        self.fakeCuttlefishServer.resetListener = { [unowned self] request in
             let laterZoneKeys = self.keys![self.limitedPeersAllowedZoneID!] as? ZoneKeys
             XCTAssertNil(laterZoneKeys, "Should not have any zone keys")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
 
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
@@ -396,7 +393,6 @@ class OctagonResetTests: OctagonTestsBase {
 
             return FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .establishFailed)
         }
-
         self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             resetExpectation.fulfill()
             XCTAssertNotNil(resetError, "should error resetting and establishing")
@@ -435,6 +431,8 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.unknown.rawValue, "reset reason should be unknown")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
 
@@ -465,6 +463,8 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.userInitiatedReset.rawValue, "reset reason should be user initiated reset")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
 
@@ -520,6 +520,8 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.recoveryKey.rawValue, "reset reason should be recovery key")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
         #else
@@ -571,6 +573,8 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.noBottleDuringEscrowRecovery.rawValue, "reset reason should be no bottle during escrow recovery")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
 
@@ -623,6 +627,8 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.healthCheck.rawValue, "reset reason should be health check")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
         self.fakeCuttlefishServer.returnResetOctagonResponse = true
@@ -630,7 +636,11 @@ class OctagonResetTests: OctagonTestsBase {
         self.lockStateTracker.recheck()
 
         let healthCheckCallback = self.expectation(description: "healthCheckCallback callback occurs")
-        self.manager.healthCheck(OTControlArguments(configuration: self.otcliqueContext), skipRateLimitingCheck: false, repair: false) { response, error in
+        self.manager.healthCheck(OTControlArguments(configuration: self.otcliqueContext),
+                                 skipRateLimitingCheck: false,
+                                 repair: false,
+                                 danglingPeerCleanup: false,
+                                 updateIdMS: false) { response, error in
             XCTAssertNotNil(response, "results should not be nil")
             XCTAssertNil(error, "error should be nil")
             healthCheckCallback.fulfill()
@@ -666,10 +676,13 @@ class OctagonResetTests: OctagonTestsBase {
             self.fakeCuttlefishServer.resetListener = nil
             resetExpectation.fulfill()
             XCTAssertEqual(request.resetReason.rawValue, CuttlefishResetReason.testGenerated.rawValue, "reset reason should be test generated")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.cdp.rawValue), 0, "should be equal to cdp")
+            XCTAssertNotEqual(request.accountInfo.flags & UInt32(AccountFlags.internal.rawValue), 0, "should be equal to internal")
             return nil
         }
 
         let establishAndResetExpectation = self.expectation(description: "resetExpectation")
+
         self.cuttlefishContext.rpcResetAndEstablish(.testGenerated) { resetError in
             establishAndResetExpectation.fulfill()
             XCTAssertNil(resetError, "should not error resetting and establishing")
@@ -877,7 +890,6 @@ class OctagonResetTests: OctagonTestsBase {
             XCTAssertTrue(self.cuttlefishContext.checkAllStateCleared(), "all cuttlefish state should be cleared")
             resetExpectation.fulfill()
         }
-
         self.wait(for: [resetExpectation], timeout: 10)
 
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
@@ -930,69 +942,6 @@ class OctagonResetTests: OctagonTestsBase {
         self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
     }
 
-    func testResetCuttlefish() throws {
-        self.startCKAccountStatusMock()
-
-        self.cuttlefishContext.startOctagonStateMachine()
-        XCTAssertNoThrow(try self.cuttlefishContext.setCDPEnabled())
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-        _ = try self.cuttlefishContext.accountAvailable(try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))
-
-        let establishExpectation = self.expectation(description: "establishExpectation")
-
-        self.fakeCuttlefishServer.establishListener = {  _ in
-            self.fakeCuttlefishServer.resetListener = nil
-            establishExpectation.fulfill()
-            return nil
-        }
-
-        let establishAndResetExpectation = self.expectation(description: "resetExpectation")
-        let clique: OTClique
-        let recoverykeyotcliqueContext = self.createOTConfigurationContextForTests(contextID: OTDefaultContext,
-                                                                                   otControl: self.otControl,
-                                                                                   altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))
-
-        do {
-            clique = try OTClique.newFriends(withContextData: recoverykeyotcliqueContext, resetReason: .userInitiatedReset)
-            XCTAssertNotNil(clique, "Clique should not be nil")
-            XCTAssertNotNil(clique.cliqueMemberIdentifier, "Should have a member identifier after a clique newFriends call")
-            establishAndResetExpectation.fulfill()
-        } catch {
-            XCTFail("Shouldn't have errored making new friends: \(error)")
-            throw error
-        }
-        self.wait(for: [establishAndResetExpectation, establishExpectation], timeout: 10)
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateReady, within: 10 * NSEC_PER_SEC)
-
-        // now call reset
-        let resetExpectation = self.expectation(description: "resetExpectation")
-
-        let args = OTControlArguments(configuration: recoverykeyotcliqueContext)
-        self.injectedOTManager?.resetAcountData(args, resetReason: CuttlefishResetReason.userInitiatedReset) { resetError in
-            XCTAssertNil(resetError, "resetError should be nil")
-            resetExpectation.fulfill()
-        }
-        self.wait(for: [resetExpectation], timeout: 10)
-
-        self.assertEnters(context: self.cuttlefishContext, state: OctagonStateUntrusted, within: 10 * NSEC_PER_SEC)
-
-        let container = try self.tphClient.getContainer(with: self.cuttlefishContext.activeAccount)
-        container.getState { state in
-            XCTAssertTrue(state.peers.isEmpty, "peers should be empty")
-            XCTAssertNil(state.peerError, "peerError should be nil")
-            XCTAssertNil(state.egoPeerID, "egoPeerID should be nil")
-            XCTAssertTrue(state.vouchers.isEmpty, "vouchers should be empty")
-            XCTAssertNil(state.voucherError, "voucherError should be nil")
-            XCTAssertTrue(state.bottles.isEmpty, "bottles should be empty")
-            XCTAssertTrue(state.escrowRecords.isEmpty, "escrowRecords should be empty")
-            XCTAssertNil(state.recoverySigningKey, "recoverySigningKey should be nil")
-            XCTAssertNil(state.recoveryEncryptionKey, "recoveryEncryptionKey should be nil")
-        }
-
-        self.verifyDatabaseMocks()
-    }
 }
 
 #endif // OCTAGON

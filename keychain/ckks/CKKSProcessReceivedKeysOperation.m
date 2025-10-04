@@ -34,9 +34,8 @@
 #import "keychain/ckks/CloudKitCategories.h"
 #import "keychain/categories/NSError+UsefulConstructors.h"
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 @interface CKKSProcessReceivedKeysOperation ()
 @property BOOL allowFullRefetchResult;
@@ -168,8 +167,8 @@
     int averageRemoteKeysPerView = (self.deps.activeManagedViews.count == 0) ? 0 : (numTotalRemoteKeys / self.deps.activeManagedViews.count);
     [eventS addMetrics:@{kSecurityRTCFieldAvgRemoteKeys:@(averageRemoteKeysPerView), kSecurityRTCFieldTotalRemoteKeys:@(numTotalRemoteKeys)}];
     // passing a nil to error will not impact any previously set errors.
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:didSucceed error:nil];
-    
+    [eventS sendMetricWithResult:didSucceed error:nil];
+
     self.nextState = self.intendedState;
 }
 

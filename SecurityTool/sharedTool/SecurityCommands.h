@@ -137,25 +137,35 @@ SECURITY_COMMAND("delete-generic-password", keychain_delete_generic_password,
                  "If no keychains are specified the default search list is used.",
                  "Delete one or more generic password items.")
 
-SECURITY_COMMAND_IOS("keychain-export", keychain_export,
-                 "[ -k <keybag> [-p password ] ] <plist>\n"
+#if !TARGET_OS_SIMULATOR && !TARGET_OS_BRIDGE
+SECURITY_COMMAND("keychain-export", keychain_export,
+                 "[ -k <keybag> [-p password ] ] [-f] <plist>\n"
                  "    <keybag>   keybag file name (optional, can be created with keystorectl)\n"
                  "               if unspecified, use default backup behavior\n"
                  "    <password> backup password (optional)\n"
+                 "    -f         force using the fileDescriptor SPI\n"
                  "    <plist>    backup plist file\n",
                  "Export keychain to a plist file.")
 
-SECURITY_COMMAND_IOS("keychain-import", keychain_import,
+SECURITY_COMMAND("keychain-import", keychain_import,
                  "-k <keybag> [-p <password> ] <plist>\n"
                  "    <keybag>   keybag file name. (Can be created with keystorectl)\n"
                  "    <password> backup password (optional)\n"
                  "    <plist>    backup plist file\n",
                  "Import keychain from a plist file.")
 
-SECURITY_COMMAND_IOS("keychain-backup-get-uuid", keychain_backup_get_uuid,
+SECURITY_COMMAND("keychain-backup-get-uuid", keychain_backup_get_uuid,
                  "<plist>\n"
                  "    <plist>    backup plist file\n",
                  "Get the keybag UUID from a keychain backup plist file.")
+
+SECURITY_COMMAND("keychain-backup-generate-keybag", keychain_backup_generate_keybag,
+                 "[-a] -p <password> <keybag>\n"
+                 "    -a         generate asymmetric backup keybag (default symmetric)\n"
+                 "    <password> keybag password\n"
+                 "    <keybag>   keybag file name",
+                 "Generate a keybag for backup purposes.")
+#endif // !TARGET_OS_SIMULATOR && !TARGET_OS_BRIDGE
 
 SECURITY_COMMAND_IOS("pkcs12", pkcs12_util,
                  "[options] -p <password> file\n"
@@ -195,8 +205,8 @@ SECURITY_COMMAND("log", log_control,
                  "   -c scope_list   set log scopes to scope_list for all devices in circle.\n",
                  "control logging settings")
 
-SECURITY_COMMAND_IOS("verify-cert", verify_cert,
-                 "[options]\n"
+SECURITY_COMMAND("verify-cert", verify_cert,
+                 "[options] [url]\n"
                  "   -c certFile     Certificate to verify. Can be specified multiple times.\n"
                  "   -r rootCertFile Root Certificate. Can be specified multiple times.\n"
                  "   -p policy       Verify policy (basic, ssl, smime, eap, IPSec, appleID,\n"
@@ -213,7 +223,10 @@ SECURITY_COMMAND_IOS("verify-cert", verify_cert,
                  "                       require  Require a positive response for successful verification.\n"
                  "                       offline  Consult cached responses only (no network requests).\n"
                  "                   Can be specified multiple times; e.g. to check revocation via OCSP\n"
-                 "                   and require a positive response, use \"-R ocsp -R require\".\n",
+                 "                   and require a positive response, use \"-R ocsp -R require\".\n"
+                 "   -v              Specify verbose output, including per-certificate trust results.\n"
+                 "Note: if a direct URL argument is provided, standard SSL server evaluation policy is used\n"
+                 "and other certificates or policy options will be ignored.",
                  "Verify certificate(s).")
 
 SECURITY_COMMAND("trust-store", trust_store_show_certificates,
@@ -227,14 +240,17 @@ SECURITY_COMMAND("trust-store", trust_store_show_certificates,
                  "Display user trust store certificates and trust settings.")
 
 SECURITY_COMMAND("system-trust-store", trust_store_show_pki_certificates,
-                 "[-p][-f][-s][-v][-t][-k][-j]\n"
-                 "    -p Output cert in PEM format.\n"
+                 "[-P][-f][-s][-v][-t][-k][-j][-p][-C]\n"
+                 "    -P Output cert in PEM format.\n"
                  "    -f Show fingerprint (SHA256 digest of certificate.)\n"
                  "    -s Show subject.\n"
                  "    -v Show entire certificate in text form.\n"
                  "    -t Show trust settings for certificates.\n"
                  "    -k Show keyid (SHA256 digest of public key.)\n"
-                 "    -j Output results in json format.",
+                 "    -j Output results in json format\n"
+                 "    -p Policy OID or policy name (basic, ssl, smime, eap, IPSec, appleID,\n"
+                 "         codeSign, timestamp, revocation)\n"
+                 "    -C Set client policy to true. Default is server policy. (ssl, IPSec, eap)\n",
                  "Display system trust store certificates and trust settings.")
 
 SECURITY_COMMAND("check-trust-update", check_trust_update,
@@ -352,3 +368,13 @@ SECURITY_COMMAND("tickle", tickle,
 SECURITY_COMMAND("test-application-identifier", test_application_identifier,
                  "",
                  "Test application-identifier behavior.")
+
+SECURITY_COMMAND_MAC("lookup-indirect-unlock-key", lookup_indirect_unlock_key,
+                 "identifier\n"
+                 "   identifier    What to look up",
+                 "Lookup an indirect key by identifier, returning a temporary reference id.")
+
+SECURITY_COMMAND_MAC("release-indirect-unlock-key-handle", release_indirect_unlock_key_handle,
+                 "handle\n"
+                 "   handle    The temporary reference ID to tell the daaemon to release",
+                 "Release the handle for an indirect key, by bemporary reference id.")

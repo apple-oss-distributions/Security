@@ -308,6 +308,9 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
     var injectLegacyEscrowRecords: Bool = false
     var includeEscrowRecords: Bool = true
 
+    // Checking validity can be expensive. Turn this off if you're trying to diagnose non-Cuttlefish operations.
+    var checkValidityofGraphOnUpdateTrust: Bool = true
+
     var nextFetchErrors: [Error] = []
     var fetchViableBottlesError: [Error] = []
     var nextJoinErrors: [Error] = []
@@ -316,6 +319,12 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
     var returnRepairAccountResponse: Bool = false
     var returnRepairEscrowResponse: Bool = false
     var returnResetOctagonResponse: Bool = false
+    var returnEscrowCheckError: Error?
+    var returnEscrowCheckNeedsRepair: Bool = false
+    var returnEscrowCheckNa: Bool = false
+    var returnEscrowCheckMoveRequest: Bool = false
+    var returnEscrowCheckRepairDisabled: Bool = false
+    var returnEscrowCheckRepairReason: EscrowRepairReason = .recordRepairReasonUnknown
     var returnLeaveTrustResponse: Bool = false
     var returnRepairErrorResponse: Error?
     var fetchChangesCalledCount: Int = 0
@@ -336,6 +345,9 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
     var resetListener: ((ResetRequest) -> NSError?)?
     var setRecoveryKeyListener: ((SetRecoveryKeyRequest) -> NSError?)?
     var removeRecoveryKeyListener: ((RemoveRecoveryKeyRequest) -> NSError?)?
+    var performCKServerDataRemovalListener: ((RemoveUnreadableCKServerDataRequest) -> NSError?)?
+    var fetchPolicyDocumentsListener: ((FetchPolicyDocumentsRequest) -> NSError?)?
+    var fetchPolicyDocumentsReturnEmptyResponse: Bool = false
 
     static let mapper = { (doc: TPPolicyDocument) in (doc.version.versionNumber, (doc.version.policyHash, doc.protobuf)) }
 
@@ -804,7 +816,7 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
         }
 
         // copy Peer so that we can update it safely
-        var peer = try! Peer(serializedData: try! existingPeer.serializedData())
+        var peer = try! Peer(serializedBytes: try! existingPeer.serializedData())
 
         // Before performing write, check if we should error
         if let updateListener = self.updateListener {
@@ -823,27 +835,44 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
         }
 
         // Will Cuttlefish reject this due to peer graph issues?
-        do {
-            let model = try self.state.model(updating: peer)
-
+        if self.checkValidityofGraphOnUpdateTrust {
             do {
-                guard try model.hasPotentiallyTrustedPeerTestingOnly() else {
-                    completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeers)))
+                let model = try self.state.model(updating: peer)
+
+                do {
+                    guard try model.hasPotentiallyTrustedPeerTestingOnly() else {
+                        completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeers)))
+                        return
+                    }
+                } catch {
+                    print("FakeCuttlefish: updateTrust model error determining whether there is a potentially trusted peer: \(error)")
+                    completion(.failure(error))
                     return
                 }
-            } catch {
-                print("FakeCuttlefish: updateTrust model error determining whether there is a potentially trusted peer: \(error)")
-                completion(.failure(error))
-                return
-            }
 
-            if self.state.recoverySigningPubKey != nil && self.state.recoveryEncryptionPubKey != nil {
-                if let recoverySigningPubKey = self.state.recoverySigningPubKey {
+                if self.state.recoverySigningPubKey != nil && self.state.recoveryEncryptionPubKey != nil {
+                    if let recoverySigningPubKey = self.state.recoverySigningPubKey {
+                        do {
+                            if try !model.isRecoveryKeyExcluded(recoverySigningPubKey) {
+                                // if the RK hasn't been explicitly excluded, ensure the resulting model has one trusted peer left
+                                guard try model.allTrustedPeersWithCurrentRecoveryKey().isEmpty == false else {
+                                    completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeersWithRecoveryKey)))
+                                    return
+                                }
+                            }
+                        } catch {
+                            completion(.failure(error))
+                            return
+                        }
+                    }
+                }
+
+                if self.state.custodianRecoveryKeys.isEmpty == false && peer.hasCustodianRecoveryKeyAndSig {
                     do {
-                        if try !model.isRecoveryKeyExcluded(recoverySigningPubKey) {
-                            // if the RK hasn't been explicitly excluded, ensure the resulting model has one trusted peer left
-                            guard try model.allTrustedPeersWithCurrentRecoveryKey().isEmpty == false else {
-                                completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphHasNoPotentiallyTrustedPeersWithRecoveryKey)))
+                        let untrustedPeerIDs = try model.untrustedPeerIDs()
+                        for crk in (try self.state.custodianRecoveryKeys.values.filter { try !model.isCustodianRecoveryKeyTrusted($0.toCustodianRecoveryKey()!) }) {
+                            guard untrustedPeerIDs.contains(crk.toCustodianRecoveryKey()!.peerID) else {
+                                completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphNotFullyReachable)))
                                 return
                             }
                         }
@@ -852,24 +881,9 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
                         return
                     }
                 }
+            } catch {
+                print("FakeCuttlefish: updateTrust failed to make model: ", String(describing: error))
             }
-
-            if self.state.custodianRecoveryKeys.isEmpty == false && peer.hasCustodianRecoveryKeyAndSig {
-                do {
-                    let untrustedPeerIDs = try model.untrustedPeerIDs()
-                    for crk in (try self.state.custodianRecoveryKeys.values.filter { try !model.isCustodianRecoveryKeyTrusted($0.toCustodianRecoveryKey()!) }) {
-                        guard untrustedPeerIDs.contains(crk.toCustodianRecoveryKey()!.peerID) else {
-                            completion(.failure(FakeCuttlefishServer.makeCloudKitCuttlefishError(code: .resultGraphNotFullyReachable)))
-                            return
-                        }
-                    }
-                } catch {
-                    completion(.failure(error))
-                    return
-                }
-            }
-        } catch {
-            print("FakeCuttlefish: updateTrust failed to make model: ", String(describing: error))
         }
 
         // Cuttlefish has accepted the write.
@@ -1087,7 +1101,9 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
         }
 
         let views: [FetchRecoverableTLKSharesResponse.View] = self.fakeCKZones.keyEnumerator().compactMap {
-            let zoneID: CKRecordZone.ID = $0 as! CKRecordZone.ID
+            guard let zoneID: CKRecordZone.ID = $0 as? CKRecordZone.ID else {
+                fatalError("zoneID not coercible")
+            }
 
             guard let zk = self.getKeys(zoneID: zoneID) else {
                 return nil
@@ -1098,7 +1114,9 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
             }
 
             let tlkShares: [CloudKitCode.Ckcode_RecordTransport] = currentZoneContents.compactMap { _, arecord in
-                let record = arecord as! CKRecord
+                guard let record = arecord as? CKRecord else {
+                    fatalError("record not coercible")
+                }
 
                 guard record.recordType == SecCKRecordTLKShareType else {
                     return nil
@@ -1128,7 +1146,19 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
         print("FakeCuttlefish: fetchPolicyDocuments called")
         var response = FetchPolicyDocumentsResponse()
 
-        let overlayPolicies = Dictionary(uniqueKeysWithValues: policyOverlay.map({ $0 }).map(FakeCuttlefishServer.mapper))
+        if let fetchPolicyDocumentsListener = self.fetchPolicyDocumentsListener {
+            let possibleError = fetchPolicyDocumentsListener(request)
+            guard possibleError == nil else {
+                completion(.failure(possibleError!))
+                return
+            }
+            if fetchPolicyDocumentsReturnEmptyResponse {
+                completion(.success(FetchPolicyDocumentsResponse()))
+                return
+            }
+        }
+
+        let overlayPolicies = Dictionary(uniqueKeysWithValues: policyOverlay.map(FakeCuttlefishServer.mapper))
 
         for key in request.keys {
             if let (hash, data) = overlayPolicies[key.version], hash == key.hash {
@@ -1148,6 +1178,40 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
 
     func assertCuttlefishState(_ assertion: FakeCuttlefishAssertion) -> Bool {
         return assertion.check(peer: self.state.peersByID[assertion.peer], target: self.state.peersByID[assertion.target])
+    }
+
+    func getEscrowCheck(_ request: GetEscrowCheckRequest, completion: @escaping (Result<GetEscrowCheckResponse, Error>) -> Void) {
+        print("FakeCuttlefish: getEscrowCheck called")
+        if let error = self.returnEscrowCheckError {
+            completion(.failure(error))
+        } else if self.returnEscrowCheckNa {
+            completion(.success(GetEscrowCheckResponse.with {
+                $0.escrowCheckResult = .escrowCheckNa
+                if self.returnEscrowCheckRepairDisabled {
+                    $0.repairDisabled = true
+                }
+            }))
+        } else if self.returnEscrowCheckNeedsRepair {
+            completion(.success(GetEscrowCheckResponse.with {
+                $0.escrowCheckResult = .escrowCheckRepairNeeded
+                $0.escrowRepairReason = self.returnEscrowCheckRepairReason
+                if self.returnEscrowCheckMoveRequest {
+                    $0.escrowRecordMoveRequest = EscrowProxyFederationMoveRecordRequest.with {
+                        $0.intendedFederation = "310"
+                    }
+                }
+                if self.returnEscrowCheckRepairDisabled {
+                    $0.repairDisabled = true
+                }
+            }))
+        } else {
+            completion(.success(GetEscrowCheckResponse.with {
+                $0.escrowCheckResult = .escrowCheckOk
+                if self.returnEscrowCheckRepairDisabled {
+                    $0.repairDisabled = true
+                }
+            }))
+        }
     }
 
     func getRepairAction(_ request: GetRepairActionRequest, completion: @escaping (Result<GetRepairActionResponse, Error>) -> Void) {
@@ -1348,5 +1412,17 @@ class FakeCuttlefishServer: NSObject, ConfiguredCuttlefishAPIAsync {
             $0.items = pcsIdentities
             $0.synckeys = Array(synckeys)
         }))
+    }
+
+    func performCkserverUnreadableDataRemoval(_ request: RemoveUnreadableCKServerDataRequest, completion: @escaping (Result<RemoveUnreadableCKServerDataResponse, any Error>) -> Void) {
+        print("FakeCuttlefish: performCkserverUnreadableDataRemoval called")
+        if let performCKServerDataRemovalListener = self.performCKServerDataRemovalListener {
+            let possibleError = performCKServerDataRemovalListener(request)
+            guard possibleError == nil else {
+                completion(.failure(possibleError!))
+                return
+            }
+        }
+        completion(.success(RemoveUnreadableCKServerDataResponse()))
     }
 }

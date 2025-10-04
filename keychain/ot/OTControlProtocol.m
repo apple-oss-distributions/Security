@@ -42,8 +42,9 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(rpcPrepareIdentityAsApplicantWithArguments:configuration:reply:) argumentIndex:5 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(rpcVoucherWithArguments:configuration:peerID:permanentInfo:permanentInfoSig:stableInfo:stableInfoSig:maxCapability:reply:) argumentIndex:2 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(rpcJoinWithArguments:configuration:vouchData:vouchSig:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(status:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(status:reply:) argumentIndex:0 ofReply:YES];
+        [interface setXPCType:XPC_TYPE_FD forSelector:@selector(status:xpcFd:reply:) argumentIndex:1 ofReply:NO];
+        [interface setClasses:errorClasses forSelector:@selector(status:xpcFd:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(status:xpcFd:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(fetchEgoPeerID:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(fetchCliqueStatus:configuration:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(fetchTrustStatus:configuration:reply:) argumentIndex:4 ofReply:YES];
@@ -58,8 +59,9 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(fetchEscrowContents:reply:) argumentIndex:3 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(createRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(joinWithRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(healthCheck:skipRateLimitingCheck:repair:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(healthCheck:skipRateLimitingCheck:repair:danglingPeerCleanup:updateIdMS:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(simulateReceivePush:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(simulateReceiveTDLChangePush:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(waitForOctagonUpgrade:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(postCDPFollowupResult:success:type:error:reply:) argumentIndex:3 ofReply:NO];
         [interface setClasses:errorClasses forSelector:@selector(postCDPFollowupResult:success:type:error:reply:) argumentIndex:0 ofReply:YES];
@@ -94,8 +96,10 @@ NSXPCInterface* OTSetupControlProtocol(NSXPCInterface* interface) {
         [interface setClasses:errorClasses forSelector:@selector(recoverWithRecoveryKey:recoveryKey:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(removeRecoveryKey:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(preflightRecoverOctagonUsingRecoveryKey:recoveryKey:reply:) argumentIndex:1 ofReply:YES];
-        [interface setClasses:errorClasses forSelector:@selector(resetAcountData:resetReason:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(clearCliqueFromAccount:resetReason:reply:) argumentIndex:0 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(performCKServerUnreadableDataRemoval:accountIsW:altDSID:reply:) argumentIndex:0 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(totalTrustedPeers:reply:) argumentIndex:1 ofReply:YES];
+        [interface setClasses:errorClasses forSelector:@selector(trustedFullPeers:reply:) argumentIndex:1 ofReply:YES];
         [interface setClasses:errorClasses forSelector:@selector(areRecoveryKeysDistrusted:reply:) argumentIndex:1 ofReply:YES];
     }
     @catch(NSException* e) {

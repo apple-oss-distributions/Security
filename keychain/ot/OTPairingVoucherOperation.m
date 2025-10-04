@@ -32,9 +32,8 @@
 #import "keychain/TrustedPeersHelper/TrustedPeersHelperProtocol.h"
 #import "keychain/ot/ObjCImprovements.h"
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 @interface OTPairingVoucherOperation ()
 @property OTOperationDependencies* operationDependencies;
@@ -95,11 +94,11 @@
 
     CKKSResultOperation* proceedWithKeys = [CKKSResultOperation named:@"vouch-with-keys"
                                                             withBlock:^{
-                                                                STRONGIFY(self);
-                                                                BOOL success = fetchKeysOp.error == nil ? YES : NO;
-                                                                [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:success error:fetchKeysOp.error];
-                                                                [self proceedWithKeys:fetchKeysOp.viewKeySets];
-                                                            }];
+        STRONGIFY(self);
+        BOOL success = fetchKeysOp.error == nil ? YES : NO;
+        [eventS sendMetricWithResult:success error:fetchKeysOp.error];
+        [self proceedWithKeys:fetchKeysOp.viewKeySets];
+    }];
 
     [proceedWithKeys addDependency:fetchKeysOp];
     [self runBeforeGroupFinished:proceedWithKeys];

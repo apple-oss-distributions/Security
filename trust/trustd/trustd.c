@@ -32,6 +32,7 @@
 #include <xpc/xpc.h>
 #include <CoreFoundation/CFStream.h>
 #include <os/assumes.h>
+#include <os/transaction_private.h>
 
 #include <Security/SecuritydXPC.h>
 #include <Security/SecTrustStore.h>
@@ -223,10 +224,12 @@ static bool SecXPCTrustStoreRemoveCertificate(SecurityClient * __unused client, 
 static bool SecXPCTrustStoreCopyAll(SecurityClient * __unused client, xpc_object_t event,
                                     xpc_object_t reply, CFErrorRef *error) {
     bool result = false;
+    CFStringRef policyId = NULL;
     SecTrustStoreRef ts = SecXPCDictionaryGetTrustStore(event, kSecXPCKeyDomain, error);
+    SecXPCDictionaryCopyStringOptional(event, kSecTrustPoliciesKey, &policyId, error);
     if (ts) {
         CFArrayRef trustStoreContents = NULL;
-        if(_SecTrustStoreCopyAll(ts, &trustStoreContents, error) && trustStoreContents) {
+        if(_SecTrustStoreCopyAll(ts, policyId, &trustStoreContents, error) && trustStoreContents) {
             SecXPCDictionarySetPList(reply, kSecXPCKeyResult, trustStoreContents, error);
             CFReleaseNull(trustStoreContents);
             result = true;
@@ -341,13 +344,13 @@ static bool SecXPC_OTAPKI_GetCurrentTrustStoreVersion(SecurityClient * __unused 
 
 static bool SecXPC_OTAPKI_GetCurrentAssetVersion(SecurityClient * __unused client, xpc_object_t __unused event,
                                                  xpc_object_t reply, CFErrorRef *error) {
-    xpc_dictionary_set_uint64(reply, kSecXPCKeyResult, SecOTAPKIGetCurrentAssetVersion(error));
+    xpc_dictionary_set_uint64(reply, kSecXPCKeyResult, SecOTATrustSupplementalsGetCurrentAssetVersion(error));
     return true;
 }
 
 static bool SecXPC_OTAPKI_GetNewAsset(SecurityClient * __unused client, xpc_object_t __unused event,
                                       xpc_object_t reply, CFErrorRef *error) {
-    xpc_dictionary_set_uint64(reply, kSecXPCKeyResult, SecOTAPKISignalNewAsset(error));
+    xpc_dictionary_set_uint64(reply, kSecXPCKeyResult, SecOTAPKISignalNewSupplementalsAsset(error));
     return true;
 }
 
@@ -1039,6 +1042,8 @@ static void listen_for_sigterm(dispatch_queue_t queue)
 
 int main(int argc, char *argv[])
 {
+    /* Hold ourselves active during launch initialization */
+    os_transaction_t transaction = os_transaction_create("com.apple.trustd.initialization");
     DisableLocalization();
 
     char *wait4debugger = getenv("WAIT4DEBUGGER");
@@ -1061,8 +1066,13 @@ int main(int argc, char *argv[])
 
     /* migrate files and initialize static content */
     trustd_init_server();
-    /* We're ready now. Go. */
+
+    /* Start listening */
     listen_for_sigterm(SecTrustServerGetWorkloop());
     trustd_xpc_init(serviceName);
-    dispatch_main();
+
+    /* Sevice is active so let's go */
+    os_release(transaction);
+    CFRunLoopRun();
+
 }

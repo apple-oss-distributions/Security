@@ -117,6 +117,26 @@ class OctagonDeviceListTests: OctagonTestsBase {
         } else {
             XCTAssertEqual(self.mockTapToRadar.timesHomePodTTRSent, 0, "Should not have posted a HomePod TTR")
         }
+        let acceptorDumpCallback = self.expectation(description: "acceptorDumpCallback callback occurs")
+        self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
+            XCTAssertNotNil(dump, "dump should not be nil")
+            let egoSelf = dump!["self"] as? [String: AnyObject]
+            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
+            let dynamicInfo = egoSelf!["dynamicInfo"] as? [String: AnyObject]
+            XCTAssertNotNil(dynamicInfo, "dynamicInfo should not be nil")
+
+            let stableInfo = egoSelf!["stableInfo"] as? [String: AnyObject]
+            XCTAssertNotNil(stableInfo, "stableInfo should not be nil")
+
+            let excluded = dynamicInfo!["excluded"] as? [String]
+            XCTAssertNotNil(excluded, "excluded should not be nil")
+
+            let distrustedBeneficiaries = dump!["distrustedEgoSponsoredBeneficiaryIDs"] as? [String]
+            XCTAssertNotNil(distrustedBeneficiaries, "distrusted beneficiary ids should not be nil")
+            XCTAssertTrue(distrustedBeneficiaries!.contains(peer2ID))
+            acceptorDumpCallback.fulfill()
+        }
+        self.wait(for: [acceptorDumpCallback], timeout: 10)
     }
 
     func testNumberOfPeersInModel() throws {
@@ -186,6 +206,22 @@ class OctagonDeviceListTests: OctagonTestsBase {
 
         XCTAssertTrue(self.fakeCuttlefishServer.assertCuttlefishState(FakeCuttlefishAssertion(peer: peer1ID, opinion: .excludes, target: peer2ID)),
                       "peer 1 should distrust peer 2 after update")
+        let acceptorDumpCallback = self.expectation(description: "acceptorDumpCallback callback occurs")
+        self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
+            XCTAssertNotNil(dump, "dump should not be nil")
+            let egoSelf = dump!["self"] as? [String: AnyObject]
+            XCTAssertNotNil(egoSelf, "egoSelf should not be nil")
+            let dynamicInfo = egoSelf!["dynamicInfo"] as? [String: AnyObject]
+            XCTAssertNotNil(dynamicInfo, "dynamicInfo should not be nil")
+            let excluded = dynamicInfo!["excluded"] as? [String]
+            XCTAssertNotNil(excluded, "excluded should not be nil")
+
+            let distrustedBeneficiaries = dump!["distrustedEgoSponsoredBeneficiaryIDs"] as? [String]
+            XCTAssertNotNil(distrustedBeneficiaries, "distrusted beneficiary ids should not be nil")
+            XCTAssertTrue(distrustedBeneficiaries!.contains(peer2ID))
+            acceptorDumpCallback.fulfill()
+        }
+        self.wait(for: [acceptorDumpCallback], timeout: 10)
     }
 
     func testTrustPeerWhenMissingFromDeviceList() throws {
@@ -691,7 +727,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
         }
 
         do {
-            let enforcing = try joiningContext.currentlyEnforcingIDMSTDL()
+            let enforcing = try joiningContext.currentlyEnforcingIDMSTDL_testOnly()
             XCTAssertEqual(enforcing, 1, "Should report that the local MID list will be enforced")
         }
 
@@ -713,7 +749,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
         }
 
         do {
-            let enforcing = try joiningContext.currentlyEnforcingIDMSTDL()
+            let enforcing = try joiningContext.currentlyEnforcingIDMSTDL_testOnly()
             XCTAssertEqual(enforcing, 0, "Should not report that the local MID list will be enforced")
         }
 
@@ -819,7 +855,14 @@ class OctagonDeviceListTests: OctagonTestsBase {
         do {
             let peersByID = try clique.peerDeviceNamesByPeerID()
             XCTAssertNotNil(peersByID, "Should have received information on peers")
-            XCTAssertTrue(peersByID.isEmpty, "peer1 should report no trusted peers")
+            XCTAssertEqual(peersByID.count, 1, "peer1 should report knowledge of one peer (itself)")
+
+            let peer1ID = self.fetchEgoPeerID(context: self.cuttlefishContext)
+            if let deviceName = peersByID[peer1ID] {
+                XCTAssertEqual(deviceName, self.cuttlefishContext.deviceAdapter.deviceName(), "reported device name should match the local device")
+            } else {
+                XCTFail("peer1 ID should be in peers dictionary")
+            }
         } catch {
             XCTFail("Error thrown: \(error)")
         }
@@ -848,7 +891,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
 
         self.sendContainerChangeWaitForFetch(context: appleTV)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(appleTV.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -881,7 +924,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: appleTV)
 
         // appleTV should now be the only device in the account
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(appleTV.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -906,12 +949,12 @@ class OctagonDeviceListTests: OctagonTestsBase {
 
             XCTAssertNotEqual(egoSelf!["peerID"] as! String, excluded![0] as String, "peer should be excluded")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
 
         // cuttlefish context should have a dynamic info
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback3 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -934,9 +977,9 @@ class OctagonDeviceListTests: OctagonTestsBase {
             XCTAssertNotNil(excluded, "excluded should not be nil")
 
             XCTAssertEqual(egoSelf!["peerID"] as! String, excluded![0] as String, "peer should be excluded")
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback3.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback3], timeout: 10)
     }
 
     func testHomePodCannotDistrustDevicesUponTDLDistrust() throws {
@@ -965,7 +1008,14 @@ class OctagonDeviceListTests: OctagonTestsBase {
         do {
             let peersByID = try clique.peerDeviceNamesByPeerID()
             XCTAssertNotNil(peersByID, "Should have received information on peers")
-            XCTAssertTrue(peersByID.isEmpty, "peer1 should report no trusted peers")
+            XCTAssertEqual(peersByID.count, 1, "peer1 should report knowledge of one peer (itself)")
+
+            let peer1ID = self.fetchEgoPeerID(context: self.cuttlefishContext)
+            if let deviceName = peersByID[peer1ID] {
+                XCTAssertEqual(deviceName, self.cuttlefishContext.deviceAdapter.deviceName(), "reported device name should match the local device")
+            } else {
+                XCTFail("peer1 ID should be in peers dictionary")
+            }
         } catch {
             XCTFail("Error thrown: \(error)")
         }
@@ -994,7 +1044,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
 
         self.sendContainerChangeWaitForFetch(context: homepod)
 
-        var stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(homepod.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -1027,7 +1077,7 @@ class OctagonDeviceListTests: OctagonTestsBase {
         self.sendContainerChangeWaitForFetch(context: homepod)
 
         // appleTV should now be the only device in the account
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback2 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(homepod.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -1052,12 +1102,12 @@ class OctagonDeviceListTests: OctagonTestsBase {
 
             XCTAssertNotEqual(egoSelf!["peerID"] as! String, excluded![0] as String, "peer should be excluded")
 
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback2.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback2], timeout: 10)
 
         // cuttlefish context should have a dynamic info
-        stableInfoCheckDumpCallback = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
+        let stableInfoCheckDumpCallback3 = self.expectation(description: "stableInfoCheckDumpCallback callback occurs")
         self.tphClient.dump(with: try XCTUnwrap(self.cuttlefishContext.activeAccount)) { dump, _ in
             XCTAssertNotNil(dump, "dump should not be nil")
             let egoSelf = dump!["self"] as? [String: AnyObject]
@@ -1080,9 +1130,9 @@ class OctagonDeviceListTests: OctagonTestsBase {
             XCTAssertNotNil(excluded, "excluded should not be nil")
 
             XCTAssertEqual(egoSelf!["peerID"] as! String, excluded![0] as String, "peer should be excluded")
-            stableInfoCheckDumpCallback.fulfill()
+            stableInfoCheckDumpCallback3.fulfill()
         }
-        self.wait(for: [stableInfoCheckDumpCallback], timeout: 10)
+        self.wait(for: [stableInfoCheckDumpCallback3], timeout: 10)
     }
 }
 

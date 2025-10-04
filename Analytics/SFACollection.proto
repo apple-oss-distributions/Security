@@ -1,4 +1,4 @@
-// protocompiler --outputDir Protobuf --arc < ./SFACollection.proto
+// protocompiler --arc --outputDir Protobuf --proto SFACollection.proto
 
 syntax = "proto2";
 
@@ -8,6 +8,11 @@ option objc_class_visibility = "hidden";
 package SecSFA;
 
 option (objc_class_default_visibility) = "hidden";
+
+enum ConfigVersion {
+    version1 = 1;
+    version2 = 2;
+}
 
 message ActionTapToRadar {
     optional string alert = 1;
@@ -37,14 +42,75 @@ message Action {
     }
 }
 
-message Rule {
+message EventRule {
     optional string eventType = 1;
     optional bytes match = 2;
     optional Action action = 3;
     optional int64 repeatAfterSeconds = 4;
-    optional string process = 5;
+    optional string processName = 5;
+    optional EventClass eventClass = 6;
+    optional VersionMatch versions = 7;
+    optional bool matchOnFirstFailure = 8;
 }
 
+message VersionMatch {
+    repeated Version versions = 1;
+}
+
+enum ProductName {
+    macOS = 1;
+    iphoneOS = 2;
+    xrOS = 3;
+    watchOS = 4;
+    tvOS = 5;
+}
+
+message Version {
+    optional ProductName productName = 1;
+    optional int64 major = 2;
+    optional int64 minor = 3; // A = 1, B = 2, etc
+    optional int64 build = 4;
+}
+
+message EventFilter {
+    optional string event = 1;
+    // 0 to 100 percent propbablistic of dropping event, 0 always reporting
+    // this is expressed as drop percentage, because the default is expected to be 0, and thus save space.
+    optional int64 dropRate = 2;
+}
+
+
+// Structured minimal encoding is do for newer clients we do matching for errors only since
+// this is the most common option clients want, so if you have older clients for this event type,
+// your match better match only errors
+// but that would be true regardless of the value of eventclass.
+//
+// 0 - new: only errors, older clients: all events
+// 1 - all events
+// 10 -> offset by SFAnalyticsEventClass: 10 == SFAnalyticsEventClassSuccess
+enum EventClass {
+    Errors = 0;
+    All = 1;
+    Success = 10;
+    HardFailure = 11;
+    SoftFailure = 12;
+    Note = 13;
+    Rockwell = 14;
+}
+
+
 message Rules {
-    repeated Rule rules = 1;
+    // field one used to be eventRules, but it was unversioned, so let not use it any more
+    // older clients not get rules and that is ok
+    reserved 1;
+    
+    // Events that will trigger actions
+    repeated EventRule eventRules = 2;
+    // If builds are older this this version events are suppressed and
+    // only newer then these versions are reportd. HealthSummarys are never supressed.
+    optional VersionMatch allowedBuilds = 3;
+    // Allowed events, all events are counted, not only allowed events are reported
+    repeated EventFilter eventFilter = 4;
+    // tell what version of tool was used to generate this file, diagnostic tool
+    optional ConfigVersion configVersion = 5;
 }

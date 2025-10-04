@@ -55,8 +55,8 @@
 
 #endif // USE_KEYSTORE
 
-#if __has_include(<libaks.h>)
-#include <libaks.h>
+#if __has_include(<AppleKeyStore/libaks.h>)
+#include <AppleKeyStore/libaks.h>
 #else
 #undef INCLUDE_MOCK_AKS
 #define INCLUDE_MOCK_AKS 1
@@ -72,7 +72,6 @@
 #if INCLUDE_MOCK_AKS
 #include "tests/secdmockaks/mockaks.h"
 #endif
-
 
 bool hwaes_key_available(void);
 

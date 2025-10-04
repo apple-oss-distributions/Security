@@ -88,7 +88,8 @@ NS_ASSUME_NONNULL_BEGIN
                                            CKKSCloudKitAccountStateListener,
                                            CKKSPeerUpdateListener,
                                            OTDeviceInformationNameUpdateListener,
-                                           OTAccountSettingsContainer>
+                                           OTAccountSettingsContainer,
+                                           EscrowChecker>
 
 @property (readonly) CuttlefishXPCWrapper* cuttlefishXPCWrapper;
 @property (readonly) OTFollowup *followupHandler;
@@ -114,6 +115,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Dependencies (for injection)
 @property (readonly) id<CKKSCloudKitAccountStateTrackingProvider, CKKSOctagonStatusMemoizer> accountStateTracker;
 @property (readonly) id<OTDeviceInformationAdapter> deviceAdapter;
+@property (readonly) id<OTSecureBackupAdapter> secureBackupAdapter;
 @property (readonly) id<OTAccountsAdapter> accountsAdapter;
 @property (readonly) id<OTAuthKitAdapter> authKitAdapter;
 @property (readonly) id<OTPersonaAdapter> personaAdapter;
@@ -141,6 +143,7 @@ NS_ASSUME_NONNULL_BEGIN
                   reachabilityTracker:(CKKSReachabilityTracker*)reachabilityTracker
                   accountStateTracker:(id<CKKSCloudKitAccountStateTrackingProvider, CKKSOctagonStatusMemoizer>)accountStateTracker
              deviceInformationAdapter:(id<OTDeviceInformationAdapter>)deviceInformationAdapter
+                  secureBackupAdapter:(id<OTSecureBackupAdapter>)secureBackupAdapter
                    apsConnectionClass:(Class<OctagonAPSConnection>)apsConnectionClass
                    escrowRequestClass:(Class<SecEscrowRequestable>)escrowRequestClass
                         notifierClass:(Class<CKKSNotifier>)notifierClass
@@ -192,10 +195,14 @@ NS_ASSUME_NONNULL_BEGIN
       idmsCuttlefishPassword:(NSString *_Nullable)idmsCuttlefishPassword
                   notifyIdMS:(bool)notifyIdMS
              accountSettings:(OTAccountSettings *_Nullable)accountSettings
+                  accountIsW:(BOOL)accountIsW
                        reply:(nonnull void (^)(NSError * _Nullable))reply;
 
 - (void)rpcResetAndEstablish:(CuttlefishResetReason)resetReason
                        reply:(nonnull void (^)(NSError * _Nullable))reply;
+
+- (void)performCKServerUnreadableDataRemoval:(NSString*)altDSID
+                                       reply:(void (^)(NSError* _Nullable error))reply;
 
 - (void)localReset:(nonnull void (^)(NSError * _Nullable))reply;
 
@@ -236,7 +243,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)notifyContainerChange:(APSIncomingMessage* _Nullable)notification;
 - (void)notifyContainerChangeWithUserInfo:(NSDictionary* _Nullable)userInfo;
 
-- (void)rpcStatus:(void (^)(NSDictionary* _Nullable result, NSError* _Nullable error))reply;
+- (void)rpcStatus:(xpc_object_t)xpcFd reply:(void (^)(NSDictionary* _Nullable result, NSError* _Nullable error))reply;
 - (void)rpcFetchEgoPeerID:(void (^)(NSString* _Nullable peerID, NSError* _Nullable error))reply;
 - (void)rpcTrustStatus:(OTOperationConfiguration *)configuration
                  reply:(void (^)(CliqueStatus status,
@@ -245,7 +252,7 @@ NS_ASSUME_NONNULL_BEGIN
                                  BOOL isExcluded,
                                  BOOL isLocked,
                                  NSError * _Nullable))reply;
-- (void)rpcFetchDeviceNamesByPeerID:(void (^)(NSDictionary<NSString*, NSString*>* _Nullable peers, NSError* _Nullable error))reply;
+- (void)fetchTrustedDeviceNamesByPeerID:(void (^)(NSDictionary<NSString*, NSString*>* _Nullable peers, NSError* _Nullable error))reply;
 - (void)rpcFetchAllViableBottlesFromSource:(OTEscrowRecordFetchSource)source
                                      reply:(void (^)(NSArray<NSString*>* _Nullable sortedBottleIDs,
                                                      NSArray<NSString*>* _Nullable sortedPartialEscrowRecordIDs,
@@ -315,6 +322,9 @@ NS_ASSUME_NONNULL_BEGIN
 // called when circle changed notification fires
 - (void)moveToCheckTrustedState;
 
+// called when passcode stash is available via cache flow
+- (void)passcodeStashAvailable;
+
 - (OTOperationDependencies*)operationDependencies;
 
 - (void)waitForOctagonUpgrade:(void (^)(NSError* _Nullable error))reply NS_SWIFT_NAME(waitForOctagonUpgrade(reply:));
@@ -327,7 +337,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)rpcFetchTotalCountOfTrustedPeers:(void (^)(NSNumber* count, NSError* replyError))reply;
 
+- (void)rpcFetchCountOfTrustedFullPeers:(void (^)(NSNumber* count, NSError* replyError))reply;
+
 - (void)rerollWithReply:(void (^)(NSError *_Nullable error))reply;
+
+- (void)icscRepairResetWithReply:(void (^)(NSError *_Nullable error))reply;
 
 // Used to reset CKKS's trust status if CKKS mistakenly thinks it's not trusted.
 - (BOOL)recheckCKKSTrustStatus:(NSError**)error;
@@ -335,7 +349,6 @@ NS_ASSUME_NONNULL_BEGIN
 // For testing.
 - (OTAccountMetadataClassC_AccountState)currentMemoizedAccountState;
 - (OTAccountMetadataClassC_TrustState)currentMemoizedTrustState;
-- (NSDate* _Nullable) currentMemoizedLastHealthCheck;
 - (void)checkTrustStatusAndPostRepairCFUIfNecessary:(void (^ _Nullable)(CliqueStatus status, BOOL posted, BOOL hasIdentity, BOOL isLocked, NSError * _Nullable error))reply;
 - (void)rpcResetAccountCDPContentsWithIdmsTargetContext:(NSString *_Nullable)idmsTargetContext
                                  idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
@@ -348,12 +361,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable) TPPolicyVersion* policyOverride;
 
 // Octagon Health Check Helpers
-- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck repair:(BOOL)repair reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError * _Nullable error))reply;
+- (void)checkOctagonHealth:(BOOL)skipRateLimitingCheck
+                    repair:(BOOL)repair
+       danglingPeerCleanup:(BOOL)danglingPeerCleanup
+                updateIdMS:(BOOL)updateIdMS
+                     reply:(void (^)(TrustedPeersHelperHealthCheckResult *_Nullable results, NSError * _Nullable error))reply;
+- (void)checkEscrowCheck:(BOOL)isBackgroundCheck reply:(void (^)(OTEscrowCheckCallResult *_Nullable results, NSError * _Nullable error))reply;
 
 // For reporting
 - (BOOL)machineIDOnMemoizedList:(NSString*)machineID error:(NSError**)error NS_SWIFT_NOTHROW;
 - (TrustedPeersHelperEgoPeerStatus* _Nullable)egoPeerStatus:(NSError**)error;
-- (NSNumber* _Nullable)currentlyEnforcingIDMSTDL:(NSError**)error;
+- (NSNumber* _Nullable)currentlyEnforcingIDMSTDL_testOnly:(NSError**)error;
 
 - (BOOL)fetchSendingMetricsPermitted:(NSError**)error;
 - (BOOL)persistSendingMetricsPermitted:(BOOL)sendingMetricsPermitted error:(NSError**)error;

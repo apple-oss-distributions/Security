@@ -40,8 +40,8 @@
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadata.h"
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadataClientMetadata.h"
 #import "keychain/ot/proto/generated_source/OTEscrowRecordMetadataPasscodeGeneration.h"
-#import "keychain/ot/proto/generated_source/OTEscrowMoveRequestContext.h"
 #import "keychain/OctagonTrust/OTNotifications.h"
+#import "keychain/OctagonTrust/OTEscrowCheckCallResult.h"
 
 #import "keychain/TrustedPeersHelper/TPHObjcTranslation.h"
 #import "keychain/TrustedPeersHelper/proto/generated_source/OTBottleContents.h"
@@ -74,12 +74,11 @@
 #import <Security/SecABC.h>
 #import "OSX/utilities/SecInternalReleasePriv.h"
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 #import <SoftLinking/SoftLinking.h>
-#import "KeychainCircle/MetricsOverrideForTests.h"
+#import <KeychainCircle/MetricsOverrideForTests.h>
 
 #import <dirhelper_priv.h>
 #import <unistd.h>

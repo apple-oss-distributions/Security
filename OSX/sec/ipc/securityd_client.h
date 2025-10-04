@@ -312,6 +312,7 @@ enum SecXPCOperation {
     sec_trust_store_migrate_plist_id,
     sec_ota_pki_trust_store_content_digest_id,
     sec_ota_pki_trust_store_asset_version_id,
+    sec_item_update_token_items_for_system_keychain_id,
 };
 
 #define KEYCHAIN_SUPPORTS_PERSONA_MULTIUSER (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_OSX)
@@ -371,6 +372,7 @@ struct securityd {
     bool (*sec_keychain_restore)(CFDataRef backup, SecurityClient *client, CFDataRef keybag, CFDataRef passcode, CFErrorRef* error);
     bool (*sec_roll_keys)(bool force, CFErrorRef* error);
     bool (*sec_item_update_token_items_for_access_groups)(CFStringRef tokenID, CFArrayRef accessGroups, CFArrayRef tokenItems, SecurityClient *client, CFErrorRef* error);
+    bool (*sec_item_update_token_items_for_system_keychain)(CFStringRef tokenID, CFArrayRef accessGroups, CFArrayRef tokenItems, SecurityClient *client, CFErrorRef* error);
     bool (*sec_delete_items_with_access_groups)(CFArrayRef bundleIDs, SecurityClient *client, CFErrorRef *error);
     CFTypeRef (*sec_item_share_with_group)(CFDictionaryRef query, CFStringRef sharingGroup, SecurityClient *client, CFErrorRef *error);
     bool (*sec_delete_items_on_sign_out)(SecurityClient *client, CFErrorRef *error);
@@ -472,7 +474,7 @@ struct trustd {
     CFDictionaryRef (*sec_ota_secexperiment_get_asset)(CFErrorRef* error);
     CFDictionaryRef (*sec_ota_pki_copy_trusted_ct_logs)(CFErrorRef *error);
     CFDictionaryRef (*sec_ota_pki_copy_ct_log_for_keyid)(CFDataRef keyID, CFErrorRef *error);
-    bool (*sec_trust_store_copy_all)(SecTrustStoreRef ts, CFArrayRef *trustStoreContents, CFErrorRef *error);
+    bool (*sec_trust_store_copy_all)(SecTrustStoreRef ts, CFStringRef policy, CFArrayRef *trustStoreContents, CFErrorRef *error);
     bool (*sec_trust_store_copy_usage_constraints)(SecTrustStoreRef ts, SecCertificateRef certificate, CFArrayRef *usageConstraints, CFErrorRef *error);
     bool (*sec_ocsp_cache_flush)(CFErrorRef *error);
     bool (*sec_networking_analytics_report)(CFStringRef event_name, xpc_object_t tls_analytics_attributes, CFErrorRef *error);
@@ -515,6 +517,9 @@ void securityd_send_async_and_do(enum SecXPCOperation op, dispatch_queue_t reply
 
 // For testing only, never call this in a threaded program!
 void SecServerSetTrustdMachServiceName(const char *name);
+
+bool cftype_client_to_bool_cftype_error_request(enum SecXPCOperation op, CFTypeRef attributes, __unused SecurityClient *client, CFTypeRef *result, CFErrorRef *error);
+
 
 XPC_RETURNS_RETAINED xpc_endpoint_t _SecSecuritydCopyEndpoint(enum SecXPCOperation op, CFErrorRef *error);
 
@@ -602,6 +607,15 @@ typedef void (^SecBoolNSErrorCallback) (bool, NSError*);
 // Force an upgrade if needed.
 - (void)secKeychainForceUpgradeIfNeeded:(void (^)(OSStatus status))completion;
 
+// Indirect keychain unlocking
+- (void)secLookupIndirectUnlockKey:(NSString*)identifier
+                        completion:(void (^)(OSStatus,uint32_t))completion;
+- (void)secAssociateIndirectUnlockKey:(NSString*)identifier
+                               handle:(uint32_t)handle
+                           completion:(void (^)(OSStatus))completion;
+
+// Keychain db path
+- (void)secKeychainCopyDatabasePath:(void(^)(NSError *error, NSString* path))completion;
 @end
 
 // Call this to receive a proxy object conforming to SecuritydXPCProtocol that you can call methods on.

@@ -39,6 +39,18 @@ bool _SecSystemKeychainAlwaysIsEnabled(void);
 void _SecSystemKeychainAlwaysOverride(bool value);
 void _SecSystemKeychainAlwaysClearOverride(void);
 
+// Helpers for trust-related feature flags
+bool _SecTrustQWACValidationEnabled(void);
+bool _SecTrustStoreRootConstraintsEnabled(void);
+bool _SecTrustEarlyAnchorExpirationEnabled(void);
+
+// Helper for protecting login keychain with DP
+bool _SecProtectLoginKeychainWithDP(void);
+
+// Helper for verbose SecDb logging
+bool _SecDebVerboseDatabaseLoggingIsEnabled(void);
+void _SecDebVerboseDatabaseLoggingSetOverride(bool value);
+void _SecDebVerboseDatabaseLoggingClearOverride(void);
 
 #ifdef    __cplusplus
 }

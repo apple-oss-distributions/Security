@@ -73,9 +73,8 @@
 #import <SecurityFoundation/SFKey_Private.h>
 
 #import "CKKSAnalytics.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 #endif
 
@@ -281,7 +280,6 @@
                 values[[NSString stringWithFormat:@"%@-%@", viewName, CKKSAnalyticsNumberOfSyncKeys]] = syncKeyCount;
             }
 
-            BOOL hasTLKs = [view.viewKeyHierarchyState isEqualToString:SecCKKSZoneKeyStateReady];
             BOOL syncedClassARecently = fuzzyDaysSinceClassASync >= 0 && fuzzyDaysSinceClassASync < 7;
             BOOL syncedClassCRecently = fuzzyDaysSinceClassCSync >= 0 && fuzzyDaysSinceClassCSync < 7;
             BOOL incomingQueueIsErrorFree = ckks.lastIncomingQueueOperation.error == nil;
@@ -293,7 +291,15 @@
             NSString* incomingQueueIsErrorFreeKey = [NSString stringWithFormat:@"%@-%@", viewName, CKKSAnalyticsIncomingQueueIsErrorFree];
             NSString* outgoingQueueIsErrorFreeKey = [NSString stringWithFormat:@"%@-%@", viewName, CKKSAnalyticsOutgoingQueueIsErrorFree];
 
-            values[hasTLKsKey] = @(hasTLKs);
+            NSError* haveTLKsError = nil;
+            BOOL hasTLKs = [ckks haveTLKsLocally:view error:&haveTLKsError];
+            if(haveTLKsError != nil) {
+                ckksnotice("metrics", view, "Unable to check haveTLKs: %@", haveTLKsError);
+                NSString* errorKey = [NSString stringWithFormat:@"%@-%@-fetchFailed", viewName, CKKSAnalyticsHasTLKs];
+                values[errorKey] = @(haveTLKsError.code);
+            } else {
+                values[hasTLKsKey] = @(hasTLKs);
+            }
             values[syncedClassARecentlyKey] = @(syncedClassARecently);
             values[syncedClassCRecentlyKey] = @(syncedClassCRecently);
             values[incomingQueueIsErrorFreeKey] = @(incomingQueueIsErrorFree);
@@ -770,7 +776,7 @@ dispatch_once_t globalZoneStateQueueOnce;
             // Keys provided by this function must have the key material loaded
             NSError* loadError = nil;
 
-            CKKSKeychainBackedKey* keycore = [keyset.tlk ensureKeyLoadedForContextID:CKKSDefaultContextID  error:&loadError];
+            CKKSKeychainBackedKey* keycore = [keyset.tlk ensureKeyLoadedForContextID:CKKSDefaultContextID cache:nil error:&loadError];
             if(keycore == nil || loadError) {
                 ckkserror_global("ckks", "Error loading key: %@", loadError);
                 if(error) {
@@ -1357,6 +1363,26 @@ dispatch_once_t globalZoneStateQueueOnce;
     }
 
     [view pcsMirrorKeysForServices:services reply:reply];
+}
+
+- (void)initialSyncStatus:(NSString *)viewName reply:(void (^)(BOOL result, NSError * _Nullable))reply {
+    NSError* findViewError = nil;
+    CKKSKeychainView* view = [[OTManager manager] ckksForClientRPC:[[OTControlArguments alloc] init]
+                                                   createIfMissing:YES
+                                           allowNonPrimaryAccounts:YES
+                                                             error:&findViewError];
+
+    if (!view || findViewError) {
+        ckksnotice_global("ckks", "No CKKS view for %@, %@, error: %@", SecCKKSContainerName, OTDefaultContext, findViewError);
+        if (findViewError) {
+            reply(NO, findViewError);
+        } else {
+            reply(NO, [self defaultViewError]);
+        }
+        return;
+    }
+
+    [view initialSyncStatus:viewName reply:reply];
 }
 
 -(void)xpc24HrNotification {

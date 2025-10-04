@@ -34,9 +34,8 @@
 
 #import "utilities/SecCFWrappers.h"
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 #import "keychain/SecureObjectSync/SOSCloudCircle.h"
 #import "KeychainCircle/PairingChannel.h"
@@ -44,6 +43,8 @@
 #import "keychain/SecureObjectSync/SOSViews.h"
 #import "keychain/SecureObjectSync/SOSInternal.h"
 #import "utilities/SecTapToRadar.h"
+
+#import "keychain/categories/NSError+UsefulConstructors.h"
 
 const NSString* kSecEntitlementPrivateOctagonEscrow = @"com.apple.private.octagon.escrow-content";
 const NSString* kSecEntitlementPrivateOctagonSecureElement = @"com.apple.private.octagon.secureelement";
@@ -53,6 +54,7 @@ const NSString* kSecEntitlementPrivateOctagonWalrus = @"com.apple.private.octago
 #import <AuthKit/AuthKit.h>
 #import <AuthKit/AuthKit_Private.h>
 #import <SoftLinking/SoftLinking.h>
+#import <SoftLinking/WeakLinking.h>
 #import <CloudServices/SecureBackup.h>
 #import <CloudServices/SecureBackupConstants.h>
 #import "keychain/ot/OTControl.h"
@@ -61,26 +63,39 @@ const NSString* kSecEntitlementPrivateOctagonWalrus = @"com.apple.private.octago
 
 #import <Foundation/NSDistributedNotificationCenter.h>
 
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
+
+#import <KeychainCircle/MetricsOverrideForTests.h>
+
 SOFT_LINK_FRAMEWORK(PrivateFrameworks, KeychainCircle);
-SOFT_LINK_OPTIONAL_FRAMEWORK(PrivateFrameworks, CloudServices);
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wstrict-prototypes"
 SOFT_LINK_CLASS(KeychainCircle, KCPairingChannel);
 SOFT_LINK_CLASS(KeychainCircle, OTPairingChannel);
-SOFT_LINK_CLASS(KeychainCircle, SecurityAnalyticsReporterRTC);
 SOFT_LINK_CLASS(KeychainCircle, AAFAnalyticsEventSecurity);
 SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameCliqueMemberIdentifier, NSString*);
 SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventCategoryAccountDataAccessRecovery, NSNumber*);
 SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameRPDDeleteAllRecords, NSString*);
-SOFT_LINK_CLASS(CloudServices, SecureBackup);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupErrorDomain, NSErrorDomain);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupAuthenticationAppleID, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupAuthenticationPassword, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupiCloudDataProtectionDeleteAllRecordsKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupContainsiCDPDataKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupRecoveryKeyKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupUsesRecoveryKeyKey, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameResetProtectedData, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameEstablish, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNamePerformCKServerUnreadableDataRemoval, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameClearCliqueFromAccount, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameOctagonTrustLost, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCErrorDomain, NSString*);
+
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCFieldAccountIsW, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCEventNameResetSOS, NSString*);
+SOFT_LINK_CONSTANT(KeychainCircle, kSecurityRTCFieldAccountIsG, NSString*);
+WEAK_IMPORT_OBJC_CLASS(SecureBackup);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupErrorDomain);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupAuthenticationAppleID);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupAuthenticationPassword);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupiCloudDataProtectionDeleteAllRecordsKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupContainsiCDPDataKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupRecoveryKeyKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupUsesRecoveryKeyKey);
 
 #pragma clang diagnostic pop
 #endif
@@ -260,6 +275,8 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         _ctx.escrowFetchSource = ctx.escrowFetchSource;
         _ctx.overrideForSetupAccountScript = ctx.overrideForSetupAccountScript;
         _ctx.sbd = ctx.sbd;
+        _ctx.flowID = [ctx.flowID copy];
+        _ctx.deviceSessionID = [ctx.deviceSessionID copy];
     }
     return self;
 #else
@@ -303,7 +320,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
     if(!control) {
         secerror("octagon: Failed to create OTControl: %@", localError);
         OctagonSignpostEnd(fetchEgoPeerSignPost, OctagonSignpostNameFetchEgoPeer, OctagonSignpostNumber1(OctagonSignpostNameFetchEgoPeer), (int)subTaskSuccess);
-        [getSecurityAnalyticsReporterRTCClass() sendMetricWithEvent:eventS success:NO error:localError];
+        [eventS sendMetricWithResult:NO error:localError];
         return nil;
     }
 
@@ -312,10 +329,10 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if (fetchError) {
             secerror("octagon: Failed to fetch octagon peer ID: %@", fetchError);
             localError = fetchError;
-            [getSecurityAnalyticsReporterRTCClass() sendMetricWithEvent:eventS success:NO error:fetchError];
+            [eventS sendMetricWithResult:NO error:fetchError];
         } else {
             retPeerID = peerID;
-            [getSecurityAnalyticsReporterRTCClass() sendMetricWithEvent:eventS success:(peerID ? YES : NO) error:nil];
+            [eventS sendMetricWithResult:(peerID ? YES : NO) error:nil];
         }
     }];
 
@@ -343,16 +360,35 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
 }
 #endif
 
+
 - (BOOL)establish:(NSError**)error
+{
+    return [self establish:[[OTConfigurationContext alloc] init] error:error];
+}
+
+- (BOOL)establish:(OTConfigurationContext*)data error:(NSError**)error
 {
     __block BOOL success = NO;
 #if OCTAGON
     secnotice("clique-establish", "establish started");
+
+    AAFAnalyticsEventSecurity *establishEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:nil
+                                                                                                 altDSID:data.altDSID
+                                                                                                  flowID:data.flowID
+                                                                                         deviceSessionID:data.deviceSessionID
+                                                                                               eventName:getkSecurityRTCEventNameEstablish()
+                                                                                         testsAreEnabled:self.ctx.testsEnabled
+                                                                                          canSendMetrics:YES
+                                                                                                category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
     OctagonSignpost establishSignPost = OctagonSignpostBegin(OctagonSignpostNameEstablish);
+
     bool subTaskSuccess = false;
-    OTControl* control = [self makeOTControl:error];
-    if(!control) {
+    __block NSError* localError = nil;
+
+    OTControl* control = [self makeOTControl:&localError];
+    if (!control || localError) {
         OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), (int)subTaskSuccess);
+        [establishEvent sendMetricWithResult:NO error:localError];
         return false;
     }
     
@@ -360,23 +396,23 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
     NSError* fetchError = nil;
     CliqueStatus status = [self fetchCliqueStatus: &fetchError];
 
-    if(fetchError) {
+    if (fetchError) {
         secnotice("clique-establish", "fetching clique status failed: %@", fetchError);
-        if(error) {
+        if (error) {
             *error = fetchError;
         }
         OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), (int)subTaskSuccess);
+        [establishEvent sendMetricWithResult:NO error:fetchError];
         return NO;
     }
 
-    if(status != CliqueStatusAbsent) {
+    if (status != CliqueStatusAbsent) {
         secnotice("clique-establish", "clique status is %@; performing no Octagon actions", OTCliqueStatusToString(status));
 
         OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), (int)subTaskSuccess);
+        [establishEvent sendMetricWithResult:YES error:nil];
         return YES;
     }
-    
-    __block NSError* localError = nil;
 
     //only establish
     [control establish:[[OTControlArguments alloc] initWithConfiguration:self.ctx] reply:^(NSError * _Nullable operationError) {
@@ -386,13 +422,20 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         success = operationError == nil;
         localError = operationError;
     }];
-    
-    if(localError && error) {
-        *error = localError;
-    }
+
     secnotice("clique-establish", "establish complete: %{BOOL}d", success);
-    subTaskSuccess = success ? true : false;
-    OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), (int)subTaskSuccess);
+
+    if (localError) {
+        if (error) {
+            *error = localError;
+        }
+        [establishEvent sendMetricWithResult:NO error:localError];
+        OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), false);
+        return NO;
+    }
+
+    OctagonSignpostEnd(establishSignPost, OctagonSignpostNameEstablish, OctagonSignpostNumber1(OctagonSignpostNameEstablish), true);
+    [establishEvent sendMetricWithResult:YES error:nil];
 
 #endif /* OCTAGON */
     return success;
@@ -404,6 +447,11 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
    idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
                notifyIdMS:(bool)notifyIdMS
           accountSettings:(OTAccountSettings*_Nullable)accountSettings
+               accountIsW:(BOOL)accountIsW
+                  altDSID:(NSString* _Nullable)altDSID
+                   flowID:(NSString* _Nullable)flowID
+          deviceSessionID:(NSString* _Nullable)deviceSessionID
+           canSendMetrics:(BOOL)canSendMetrics
                     error:(NSError**)error
 {
     secnotice("clique-resetandestablish", "resetAndEstablish started");
@@ -425,6 +473,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         idmsCuttlefishPassword:idmsCuttlefishPassword
                     notifyIdMS:notifyIdMS
                accountSettings:accountSettings
+                    accountIsW:accountIsW
                          reply:^(NSError * _Nullable operationError) {
         if(operationError) {
             secnotice("clique-resetandestablish", "resetAndEstablish returned an error: %@", operationError);
@@ -457,10 +506,39 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
     bool subTaskSuccess = false;
     OctagonSignpost newFriendsSignpost = OctagonSignpostBegin(OctagonSignpostNameMakeNewFriends);
 
-    OTClique* clique = [[OTClique alloc] initWithContextData:data];
+    NSError* controlError = nil;
+    OTControl* control = [data makeOTControl:&controlError];
 
+    if (!control) {
+        secnotice("clique-inheritancekey", "failed to fetch OTControl object: %@", controlError);
+        OctagonSignpostEnd(newFriendsSignpost, OctagonSignpostNameMakeNewFriends, OctagonSignpostNumber1(OctagonSignpostNameMakeNewFriends), (int)subTaskSuccess);
+        return nil;
+    }
+
+    __block OTAccountSettings* accountSettings = nil;
+    __block NSError* fetchError = nil;
+    [control fetchAccountWideSettingsWithForceFetch:true arguments:[[OTControlArguments alloc]initWithConfiguration:data] reply:^(OTAccountSettings * _Nullable retAccountSetting, NSError * _Nullable retError) {
+        accountSettings = retAccountSetting;
+        fetchError = retError;
+    }];
+    BOOL accountIsW = NO;
+    if (accountSettings.hasWalrus) {
+        accountIsW = accountSettings.walrus.enabled ? YES : NO;
+    }
+
+    OTClique* clique = [[OTClique alloc] initWithContextData:data];
     NSError* localError = nil;
-    [clique resetAndEstablish:resetReason idmsTargetContext:nil idmsCuttlefishPassword:nil notifyIdMS:false accountSettings:nil error:&localError];
+    [clique resetAndEstablish:resetReason
+            idmsTargetContext:nil
+       idmsCuttlefishPassword:nil
+                   notifyIdMS:false
+              accountSettings:nil
+                   accountIsW:accountIsW
+                      altDSID:data.altDSID
+                       flowID:data.flowID
+              deviceSessionID:data.deviceSessionID
+               canSendMetrics:YES
+                        error:&localError];
 
     if(localError) {
         secnotice("clique-newfriends", "account reset failed: %@", localError);
@@ -490,7 +568,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
 + (BOOL)isCloudServicesAvailable
 {
 #if OCTAGON
-    if (isCloudServicesAvailable()) {
+    if([SecureBackup class] != nil) {
         return YES;
     }
 
@@ -524,7 +602,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
 
     // Attempt the recovery from sbd
     secnotice("clique-recovery", "attempting an escrow recovery for context:%@, altdsid:%@", data.context, data.altDSID);
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"clique-recovery"];
     NSDictionary* recoveredInformation = nil;
 
     OctagonSignpost recoverFromSBDSignPost = OctagonSignpostBegin(OctagonSignpostNamePerformRecoveryFromSBD);
@@ -542,8 +620,8 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         return nil;
     }
 
-    NSString* recoveryKey = sbdRecoveryArguments[getkSecureBackupRecoveryKeyKey()];
-    NSNumber* usesRecoveryKey = sbdRecoveryArguments[getkSecureBackupUsesRecoveryKeyKey()];
+    NSString* recoveryKey = sbdRecoveryArguments[kSecureBackupRecoveryKeyKey];
+    NSNumber* usesRecoveryKey = sbdRecoveryArguments[kSecureBackupUsesRecoveryKeyKey];
 
     if((recoveryKey != nil || [usesRecoveryKey boolValue] == YES)
        && [clique fetchCliqueStatus:&localError] == CliqueStatusIn) {
@@ -610,8 +688,30 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         secnotice("clique-recovery", "bottle %@ is not valid, resetting octagon", bottleID);
         NSError* resetError = nil;
 
+        OTControlArguments* arguments = [[OTControlArguments alloc] initWithConfiguration:data];
+        __block OTAccountSettings* accountSettings = nil;
+        __block NSError* fetchError = nil;
+        [control fetchAccountWideSettingsWithForceFetch:true arguments:arguments reply:^(OTAccountSettings * _Nullable retAccountSetting, NSError * _Nullable retError) {
+            accountSettings = retAccountSetting;
+            fetchError = retError;
+        }];
+        BOOL accountIsW = NO;
+        if (accountSettings.hasWalrus) {
+            accountIsW = accountSettings.walrus.enabled ? YES : NO;
+        }
+
         OctagonSignpost resetSignPost = OctagonSignpostBegin(OctagonSignpostNamePerformResetAndEstablishAfterFailedBottle);
-        [clique resetAndEstablish:CuttlefishResetReasonNoBottleDuringEscrowRecovery idmsTargetContext:nil idmsCuttlefishPassword:nil notifyIdMS:false accountSettings:nil error:&resetError];
+        [clique resetAndEstablish:CuttlefishResetReasonNoBottleDuringEscrowRecovery
+                idmsTargetContext:nil
+           idmsCuttlefishPassword:nil
+                       notifyIdMS:false
+                  accountSettings:accountSettings
+                       accountIsW:accountIsW
+                          altDSID:data.altDSID
+                           flowID:data.flowID
+                  deviceSessionID:data.deviceSessionID
+                   canSendMetrics:YES
+                            error:&resetError];
         subTaskSuccess = (resetError == nil) ? true : false;
         OctagonSignpostEnd(resetSignPost, OctagonSignpostNamePerformResetAndEstablishAfterFailedBottle, OctagonSignpostNumber1(OctagonSignpostNamePerformResetAndEstablishAfterFailedBottle), (int)subTaskSuccess);
 
@@ -919,6 +1019,17 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         *error = localError;
     }
     result = !localError;
+
+    AAFAnalyticsEventSecurity* trustLossEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                   altDSID:self.ctx.altDSID
+                                                                                                                    flowID:self.ctx.flowID
+                                                                                                           deviceSessionID:self.ctx.deviceSessionID
+                                                                                                                 eventName:getkSecurityRTCEventNameOctagonTrustLost()
+                                                                                                           testsAreEnabled:self.ctx.testsEnabled
+                                                                                                            canSendMetrics:YES
+                                                                                                                  category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+    [trustLossEvent sendMetricWithResult:YES
+                                   error:[NSError errorWithDomain:getkSecurityRTCErrorDomain() code:OctagonTrustDepartureReasonErrorCodeLeaveClique description:@"API invoked departure"]];
 
     secnotice("clique-leaveClique", "leaveClique complete: %d", result);
 
@@ -1613,7 +1724,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if ([OTClique isCloudServicesAvailable] == NO) {
             retError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:userInfo];
         } else {
-            retError = [NSError errorWithDomain:getkSecureBackupErrorDomain() code:kSecureBackupInternalError userInfo:userInfo];
+            retError = [NSError errorWithDomain:kSecureBackupErrorDomain code:kSecureBackupInternalError userInfo:userInfo];
         }
         OctagonSignpostEnd(signPost, OctagonSignpostNameSetNewRecoveryKeyWithData, OctagonSignpostNumber1(OctagonSignpostNameSetNewRecoveryKeyWithData), (int)subTaskSuccess);
         reply(nil, retError);
@@ -2371,12 +2482,17 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
                                     error:(NSError**)error
 {
 #if OCTAGON
-    if ([OTClique isCloudServicesAvailable] == NO) {
-        if (error) {
-            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
-        }
-        return nil;
-    }
+
+    NSNumber* accountIsG = @(NO);
+    AAFAnalyticsEventSecurity *resetProtectedDataEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics: @{getkSecurityRTCFieldAccountIsG() : accountIsG}
+                                                                                                                            altDSID:data.altDSID
+                                                                                                                             flowID:data.flowID
+                                                                                                                    deviceSessionID:data.deviceSessionID
+                                                                                                                          eventName:getkSecurityRTCEventNameResetProtectedData()
+                                                                                                                    testsAreEnabled:data.testsEnabled
+                                                                                                                     canSendMetrics:YES
+                                                                                                                           category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+
     NSError *controlError = nil;
     OTControl *control = [data makeOTControl:&controlError];
     if (!control) {
@@ -2384,14 +2500,18 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if (error) {
             *error = controlError;
         }
+        [resetProtectedDataEvent addMetrics:@{getkSecurityRTCFieldAccountIsW() : @(NO)}];
+        [resetProtectedDataEvent sendMetricWithResult:NO error:controlError];
         return nil;
     }
 
     __block NSError* localError = nil;
     __block OTAccountSettings* accountSettings = nil;
-    
+
+    OTControlArguments* arguments = [[OTControlArguments alloc] initWithConfiguration:data];
+
     [control fetchAccountWideSettingsWithForceFetch:true
-                                          arguments:[[OTControlArguments alloc] initWithConfiguration:data]
+                                          arguments:arguments
                                               reply:^(OTAccountSettings* retSettings, NSError *replyError) {
         if (replyError) {
             secerror("clique-reset-protected-data: failed to fetch account settings: %@", replyError);
@@ -2400,57 +2520,92 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
             accountSettings = retSettings;
         }
     }];
+
+    NSNumber* accountIsW = @(NO);
+    if (accountSettings.hasWalrus) {
+        [resetProtectedDataEvent addMetrics:@{getkSecurityRTCFieldAccountIsW() : accountSettings.walrus.enabled ? @(YES) : @(NO)}];
+        accountIsW = accountSettings.walrus.enabled ? @(YES) : @(NO);
+    } else {
+        [resetProtectedDataEvent addMetrics:@{getkSecurityRTCFieldAccountIsW() : @(NO)}];
+    }
+
+    if ([OTClique isCloudServicesAvailable] == NO) {
+        NSError* availabilityError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+        if (error) {
+            *error = availabilityError;
+        }
+        [resetProtectedDataEvent sendMetricWithResult:NO error:availabilityError];
+        return nil;
+    }
+
     //delete all records
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"clique-reset-protected-data"];
 
     if (!data.authenticationAppleID) {
         secerror("clique-reset-protected-data: authenticationAppleID not set on configuration context");
+        localError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorMissingAuthenticationAppleID description:@"authenticationAppleID missing from configuration context"];
+        [resetProtectedDataEvent sendMetricWithResult:NO error:localError];
         return nil;
     }
     if (!data.passwordEquivalentToken) {
         secerror("clique-reset-protected-data: passwordEquivalentToken not set on configuration context");
+        localError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorMissingPasswordEquivalentToken description:@"passwordEquivalentToken missing from configuration context"];
+        [resetProtectedDataEvent sendMetricWithResult:NO error:localError];
         return nil;
     }
     
-    AAFAnalyticsEventSecurity *eventS = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:nil
-                                                                                                           altDSID:data.altDSID
-                                                                                                            flowID:data.flowID
-                                                                                                   deviceSessionID:data.deviceSessionID
-                                                                                                         eventName:getkSecurityRTCEventNameRPDDeleteAllRecords()
-                                                                                                   testsAreEnabled:data.testsEnabled
-                                                                                                    canSendMetrics:YES
-                                                                                                          category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+    AAFAnalyticsEventSecurity* deleteAllRecordsEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:@{getkSecurityRTCFieldAccountIsG() : accountIsG,
+                                                                                                                                    getkSecurityRTCFieldAccountIsW() : accountIsW}
+                                                                                                                          altDSID:data.altDSID
+                                                                                                                           flowID:data.flowID
+                                                                                                                  deviceSessionID:data.deviceSessionID
+                                                                                                                        eventName:getkSecurityRTCEventNameRPDDeleteAllRecords()
+                                                                                                                  testsAreEnabled:data.testsEnabled
+                                                                                                                   canSendMetrics:YES
+                                                                                                                         category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
 
-    NSDictionary* deletionInformation = @{ getkSecureBackupAuthenticationAppleID() : data.authenticationAppleID,
-                                           getkSecureBackupAuthenticationPassword() : data.passwordEquivalentToken,
-                                           getkSecureBackupiCloudDataProtectionDeleteAllRecordsKey() : @YES,
-                                           getkSecureBackupContainsiCDPDataKey() : @YES};
+    NSDictionary* deletionInformation = @{ kSecureBackupAuthenticationAppleID : data.authenticationAppleID,
+                                           kSecureBackupAuthenticationPassword : data.passwordEquivalentToken,
+                                           kSecureBackupiCloudDataProtectionDeleteAllRecordsKey : @YES,
+                                           kSecureBackupContainsiCDPDataKey : @YES};
 
     NSError* sbError = [sb disableWithInfo:deletionInformation];
-    if(sbError) {
+    if (sbError) {
         secerror("clique-reset-protected-data: secure backup escrow record deletion failed: %@", sbError);
         if(error) {
             *error = sbError;
         }
-        [getSecurityAnalyticsReporterRTCClass() sendMetricWithEvent:eventS success:NO error:sbError];
-
+        [deleteAllRecordsEvent sendMetricWithResult:NO error:sbError];
+        [resetProtectedDataEvent sendMetricWithResult:NO error:sbError];
         return nil;
     } else {
         secnotice("clique-reset-protected-data", "sbd disableWithInfo succeeded");
-        [getSecurityAnalyticsReporterRTCClass() sendMetricWithEvent:eventS success:YES error:nil];
+        [deleteAllRecordsEvent sendMetricWithResult:YES error:nil];
     }
     
     // best effort to reset sos
     if (SOSCCIsSOSTrustAndSyncingEnabledCachedValue()) {
         //reset SOS
+        AAFAnalyticsEventSecurity* resetSOSEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:@{getkSecurityRTCFieldAccountIsG() : accountIsG,
+                                                                                                                                getkSecurityRTCFieldAccountIsW() : accountIsW}
+                                                                                                                      altDSID:data.altDSID
+                                                                                                                       flowID:data.flowID
+                                                                                                              deviceSessionID:data.deviceSessionID
+                                                                                                                    eventName:getkSecurityRTCEventNameResetSOS()
+                                                                                                              testsAreEnabled:data.testsEnabled
+                                                                                                               canSendMetrics:YES
+                                                                                                                     category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+
         CFErrorRef sosError = NULL;
         bool resetSuccess = SOSCCResetToOffering(&sosError);
         
         if(sosError || !resetSuccess) {
             secerror("clique-reset-protected-data: sos reset failed: %@, ignoring error and continuing with reset", sosError);
+            [resetSOSEvent sendMetricWithResult:NO error:(__bridge NSError*)sosError];
             CFReleaseNull(sosError);
         } else {
             secnotice("clique-reset-protected-data", "sos reset succeeded");
+            [resetSOSEvent sendMetricWithResult:YES error:nil];
         }
     } else {
         secnotice("clique-reset-protected-data", "platform does not support sos");
@@ -2463,13 +2618,19 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
        idmsCuttlefishPassword:idmsCuttlefishPassword
                    notifyIdMS:notifyIdMS
               accountSettings:accountSettings
+                   accountIsW: [accountIsW isEqualToNumber: @(YES)]
+                      altDSID:data.altDSID
+                       flowID:data.flowID
+              deviceSessionID:data.deviceSessionID
+               canSendMetrics:YES
                         error:&localError];
 
-    if(localError) {
+    if (localError) {
         secerror("clique-reset-protected-data: account reset failed: %@", localError);
-        if(error) {
+        if (error) {
             *error = localError;
         }
+        [resetProtectedDataEvent sendMetricWithResult:NO error:localError];
         return nil;
     } else {
         secnotice("clique-reset-protected-data", "Octagon account reset succeeded");
@@ -2480,7 +2641,20 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
                                                            deliverImmediately:YES];
     }
     
-    
+    [resetProtectedDataEvent sendMetricWithResult:YES error:nil];
+
+    AAFAnalyticsEventSecurity* trustLossEvent = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:@{getkSecurityRTCFieldAccountIsG() : accountIsG,
+                                                                                                                             getkSecurityRTCFieldAccountIsW() : accountIsW}
+                                                                                                                   altDSID:data.altDSID
+                                                                                                                    flowID:data.flowID
+                                                                                                           deviceSessionID:data.deviceSessionID
+                                                                                                                 eventName:getkSecurityRTCEventNameOctagonTrustLost()
+                                                                                                           testsAreEnabled:data.testsEnabled
+                                                                                                            canSendMetrics:YES
+                                                                                                                  category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+    [trustLossEvent sendMetricWithResult:YES
+                                   error:[NSError errorWithDomain:getkSecurityRTCErrorDomain() code:OctagonTrustDepartureReasonErrorCodeRPD description:@"User initiated an RPD flow"]];
+
     return clique;
 #else // !OCTAGON
     if(error) {
@@ -2491,14 +2665,27 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
 
 }
 
-+ (BOOL)resetAcountData:(OTConfigurationContext*)data
-                  error:(NSError**)error
++ (BOOL)clearCliqueFromAccount:(OTConfigurationContext*)data
+                         error:(NSError**)error
 {
 #if OCTAGON
+
+    NSNumber* accountIsG = @(NO);
+    AAFAnalyticsEventSecurity *event = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:@{getkSecurityRTCFieldAccountIsG() : accountIsG}
+                                                                                                          altDSID:data.altDSID
+                                                                                                           flowID:data.flowID
+                                                                                                  deviceSessionID:data.deviceSessionID
+                                                                                                        eventName:getkSecurityRTCEventNameClearCliqueFromAccount()
+                                                                                                  testsAreEnabled:data.testsEnabled
+                                                                                                   canSendMetrics:YES
+                                                                                                         category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+
     if ([OTClique isCloudServicesAvailable] == NO) {
+        NSError* localError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
         if (error) {
-            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+            *error = localError;
         }
+        [event sendMetricWithResult:NO error:localError];
         return NO;
     }
     NSError *controlError = nil;
@@ -2508,25 +2695,30 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if (error) {
             *error = controlError;
         }
+        [event sendMetricWithResult:NO error:controlError];
         return NO;
     }
 
     //delete all records
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"clique-clear-from-account"];
 
     if (!data.authenticationAppleID) {
         secerror("clique-reset-account-data: authenticationAppleID not set on configuration context");
+        NSError* localError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorMissingAuthenticationAppleID description:@"authenticationAppleID missing from configuration context"];
+        [event sendMetricWithResult:NO error:localError];
         return NO;
     }
     if (!data.passwordEquivalentToken) {
         secerror("clique-reset-account-data: passwordEquivalentToken not set on configuration context");
+        NSError* localError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorMissingPasswordEquivalentToken description:@"passwordEquivalentToken missing from configuration context"];
+        [event sendMetricWithResult:NO error:localError];
         return NO;
     }
     
-    NSDictionary* deletionInformation = @{ getkSecureBackupAuthenticationAppleID() : data.authenticationAppleID,
-                                           getkSecureBackupAuthenticationPassword() : data.passwordEquivalentToken,
-                                           getkSecureBackupiCloudDataProtectionDeleteAllRecordsKey() : @YES,
-                                           getkSecureBackupContainsiCDPDataKey() : @YES};
+    NSDictionary* deletionInformation = @{ kSecureBackupAuthenticationAppleID : data.authenticationAppleID,
+                                           kSecureBackupAuthenticationPassword : data.passwordEquivalentToken,
+                                           kSecureBackupiCloudDataProtectionDeleteAllRecordsKey : @YES,
+                                           kSecureBackupContainsiCDPDataKey : @YES};
 
     NSError* sbError = [sb disableWithInfo:deletionInformation];
     if(sbError) {
@@ -2534,6 +2726,7 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if(error) {
             *error = sbError;
         }
+        [event sendMetricWithResult:NO error:sbError];
         return NO;
     } else {
         secnotice("clique-reset-account-data", "sbd disableWithInfo succeeded");
@@ -2541,9 +2734,9 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
 
     __block NSError* localError = nil;
     
-    [control resetAcountData:[[OTControlArguments alloc] initWithConfiguration:data]
-                resetReason:CuttlefishResetReasonUserInitiatedReset
-                      reply:^(NSError * _Nullable wipeError) {
+    [control clearCliqueFromAccount:[[OTControlArguments alloc] initWithConfiguration:data]
+                        resetReason:CuttlefishResetReasonUserInitiatedReset
+                              reply:^(NSError * _Nullable wipeError) {
         if (wipeError) {
             secerror("clique-reset-account-data: failed to reset: %@", wipeError);
             localError = wipeError;
@@ -2557,17 +2750,97 @@ NSString* OTCDPStatusToString(OTCDPStatus status) {
         if(error) {
             *error = localError;
         }
+        [event sendMetricWithResult:NO error:localError];
         return NO;
     }
-    
+    [event sendMetricWithResult:YES error:nil];
     return YES;
 #else // !OCTAGON
     if(error) {
         *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
     }
-    return nil;
+    return NO;
 #endif
 
+}
++ (BOOL)performCKServerUnreadableDataRemoval:(OTConfigurationContext*)data
+                                       error:(NSError**)error
+{
+#if OCTAGON
+
+    NSNumber* accountIsG = @(NO);
+
+    AAFAnalyticsEventSecurity* event = [[getAAFAnalyticsEventSecurityClass() alloc] initWithKeychainCircleMetrics:@{getkSecurityRTCFieldAccountIsG() : accountIsG}
+                                                                                                          altDSID:data.altDSID
+                                                                                                           flowID:data.flowID
+                                                                                                  deviceSessionID:data.deviceSessionID
+                                                                                                        eventName:getkSecurityRTCEventNamePerformCKServerUnreadableDataRemoval()
+                                                                                                  testsAreEnabled:data.testsEnabled
+                                                                                                   canSendMetrics:YES
+                                                                                                         category:getkSecurityRTCEventCategoryAccountDataAccessRecovery()];
+
+
+    NSError *controlError = nil;
+    OTControl *control = [data makeOTControl:&controlError];
+    if (!control) {
+        secerror("clique-perform-ckserver-unreadable-data-removal: unable to create otcontrol: %@", controlError);
+        if (error) {
+            *error = controlError;
+        }
+        [event sendMetricWithResult:NO error:controlError];
+        return NO;
+    }
+
+    __block NSError* localError = nil;
+    __block OTAccountSettings* accountSettings = nil;
+    OTControlArguments* arguments = [[OTControlArguments alloc] initWithConfiguration:data];
+
+    [control fetchAccountWideSettingsWithForceFetch:true
+                                          arguments:arguments
+                                              reply:^(OTAccountSettings* retSettings, NSError *replyError) {
+        if (replyError) {
+            secerror("clique-reset-protected-data: failed to fetch account settings: %@", replyError);
+        } else {
+            secnotice("clique-reset-protected-data", "fetched account settings: %@", retSettings);
+            accountSettings = retSettings;
+        }
+    }];
+
+    NSNumber* accountIsW = @(NO);
+    if (accountSettings.hasWalrus) {
+        accountIsW = accountSettings.walrus.enabled ? @(YES) : @(NO);
+    }
+    
+    [event addMetrics:@{getkSecurityRTCFieldAccountIsW() : accountIsW}];
+
+    [control performCKServerUnreadableDataRemoval:arguments
+                                       accountIsW:[accountIsW isEqualToNumber:@(YES)]
+                                          altDSID:data.altDSID
+                                            reply:^(NSError * _Nullable deleteError) {
+        if (deleteError) {
+            secerror("clique-perform-ckserver-unreadable-data-removal: failed to remove data from ckserver: %@", deleteError);
+            localError = deleteError;
+        } else {
+            secnotice("clique-perform-ckserver-unreadable-data-removal", "removed unreadable data from ckserver");
+        }
+    }];
+    
+    if (localError) {
+        if (error) {
+            *error = localError;
+        }
+        [event sendMetricWithResult:NO error:localError];
+        return NO;
+    }
+
+    [event sendMetricWithResult:YES error:nil];
+    return YES;
+#else // !OCTAGON
+    if(error) {
+        *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+    }
+    return NO;
+#endif
 }
 
 @end

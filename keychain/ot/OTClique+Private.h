@@ -17,10 +17,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (BOOL)isCloudServicesAvailable;
 
-- (BOOL)resetAndEstablish:(CuttlefishResetReason)resetReason idmsTargetContext:(NSString*_Nullable)idmsTargetContext idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword notifyIdMS:(bool)notifyIdMS accountSettings:(OTAccountSettings*_Nullable)accountSettings error:(NSError**)error;
-
-+ (BOOL)resetAcountData:(OTConfigurationContext*)data
-                  error:(NSError**)error;
+- (BOOL)resetAndEstablish:(CuttlefishResetReason)resetReason
+        idmsTargetContext:(NSString*_Nullable)idmsTargetContext
+   idmsCuttlefishPassword:(NSString*_Nullable)idmsCuttlefishPassword
+               notifyIdMS:(bool)notifyIdMS
+          accountSettings:(OTAccountSettings*_Nullable)accountSettings
+               accountIsW:(BOOL)accountIsW
+                  altDSID:(NSString* _Nullable)altDSID
+                   flowID:(NSString* _Nullable)flowID
+          deviceSessionID:(NSString* _Nullable)deviceSessionID
+           canSendMetrics:(BOOL)canSendMetrics
+                    error:(NSError**)error;
 
 @end
 

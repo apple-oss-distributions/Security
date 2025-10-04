@@ -11,9 +11,8 @@
 #import "keychain/ot/ObjCImprovements.h"
 #import "keychain/ot/OTDefines.h"
 
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
 @interface CKKSCreateCKZoneOperation ()
 @property bool allZoneCreationsSucceeded;
@@ -289,9 +288,9 @@
             self.nextState = CKKSStateZoneCreationFailed;
             self.error = self.zoneModificationError ?: self.zoneSubscriptionError;
 
-            [SecurityAnalyticsReporterRTC sendMetricWithEvent:zoneCreationEventS success:NO error:self.error];
+            [zoneCreationEventS sendMetricWithResult:NO error:self.error];
         } else {
-            [SecurityAnalyticsReporterRTC sendMetricWithEvent:zoneCreationEventS success:YES error:nil];
+            [zoneCreationEventS sendMetricWithResult:YES error:nil];
             self.nextState = self.intendedState;
         }
     }];

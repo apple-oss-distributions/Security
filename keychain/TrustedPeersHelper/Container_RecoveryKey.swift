@@ -4,6 +4,47 @@ import Foundation
 private let logger = Logger(subsystem: "com.apple.security.trustedpeers", category: "recoverykey")
 
 extension Container {
+    internal static func onqueueRemoveDuplicateOrInvalidCRKs(containerMO: ContainerMO, moc: NSManagedObjectContext) throws {
+        logger.debug("onqueueRemoveDuplicateOrInvalidCRKs start")
+
+        let keyFactory = TPECPublicKeyFactory()
+        var uniqueSet: Set<TPCustodianRecoveryKey> = Set()
+        var CRKsToDelete = [CustodianRecoveryKeyMO]()
+
+        try autoreleasepool {
+            let fetch = CustodianRecoveryKeyMO.fetchRequest()
+            fetch.predicate = NSPredicate(format: "container == %@", containerMO)
+            // limit to 10 MOs, to reduce memory footprint
+            fetch.fetchBatchSize = 10
+
+            try moc.executeBatchedFetchAndEnumerateChunkwise(
+                fetchRequest: fetch,
+                itemBlock: { crkMO, _ in
+                    defer { moc.refaultUnchanged(crkMO) }
+
+                    if let tpcrk = TPCustodianRecoveryKey(data: crkMO.crkInfo ?? Data(), sig: crkMO.crkInfoSig ?? Data(), keyFactory: keyFactory) {
+                        let (added, _) = uniqueSet.insert(tpcrk)
+                        if !added {
+                            CRKsToDelete.append(crkMO)
+                        }
+                    } else {
+                        CRKsToDelete.append(crkMO)
+                    }
+                },
+                chunkBlock: moc.refaultUnchanged
+            )
+
+            CRKsToDelete.forEach(moc.delete)
+
+            do {
+                try moc.save()
+            } catch {
+                logger.error("CRK cleanup unable to save \(error, privacy: .public)")
+                throw error
+            }
+        }
+    }
+
     func preflightVouchWithRecoveryKey(recoveryKey: String,
                                        salt: String,
                                        reply: @escaping (String?, TPSyncingPolicy?, Error?) -> Void) {
@@ -128,10 +169,22 @@ extension Container {
                         let bestPolicy = try self.model.policy(forPeerIDs: sponsor.dynamicInfo?.includedPeerIDs ?? [sponsor.peerID],
                                                                candidatePeerID: egoPeerID,
                                                                candidateStableInfo: sponsor.stableInfo)
+#if os(visionOS)
+                        let syncingPolicy: TPSyncingPolicy
 
+                        do {
+                            syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
+                                                                         syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
+                        } catch let error as NSError where error.domain == TPErrorDomain && error.code == TPError.modelNotFound.rawValue {
+                            // On XROS, old policies didn't mention RealityDevices. In this case, claim to be an iPad for purposes of recovery.
+                            // This value is only temporarily used, so we don't need to update it via policy.
+                            syncingPolicy = try bestPolicy.syncingPolicy(forModel: "iPad14,1",
+                                                                         syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
+                        }
+#else
                         let syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
                                                                          syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
-
+#endif
                         reply(recoveryKeys.peerKeys.peerID, syncingPolicy, nil)
                     } catch {
                         logger.error("preflightRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")
@@ -277,8 +330,22 @@ extension Container {
                                                                candidatePeerID: egoPeerID,
                                                                candidateStableInfo: sponsor.stableInfo)
 
+#if os(visionOS)
+                        let syncingPolicy: TPSyncingPolicy
+
+                        do {
+                            syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
+                                                                         syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
+                        } catch let error as NSError where error.domain == TPErrorDomain && error.code == TPError.modelNotFound.rawValue {
+                            // On XROS, old policies didn't mention RealityDevices. In this case, claim to be an iPad for purposes of recovery.
+                            // This value is only temporarily used, so we don't need to update it via policy.
+                            syncingPolicy = try bestPolicy.syncingPolicy(forModel: "iPad14,1",
+                                                                         syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
+                        }
+#else
                         let syncingPolicy = try bestPolicy.syncingPolicy(forModel: selfPermanentInfo.modelID,
                                                                          syncUserControllableViews: sponsor.stableInfo?.syncUserControllableViews ?? .UNKNOWN, isInheritedAccount: selfStableInfo.isInheritedAccount)
+#endif
                         reply(crkRecoveryKey.peerKeys.peerID, syncingPolicy, nil)
                     } catch {
                         logger.error("preflightCustodianRecoveryKey: error fetching policy: \(String(describing: error), privacy: .public)")

@@ -32,15 +32,17 @@
 #import "SFAnalyticsCollection.h"
 #import "keychain/analytics/SecLaunchSequence.h"
 #import "NSDate+SFAnalytics.h"
-#import "utilities/debugging.h"
-#import <utilities/SecFileLocations.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
 #import <CoreFoundation/CFPriv.h>
 #include <os/transaction_private.h>
 #include <os/variant_private.h>
 
-#import <utilities/SecCoreAnalytics.h>
+#import "utilities/SecCoreAnalytics.h"
+#import "utilities/SecFileLocations.h"
+#import "utilities/debugging.h"
+
+#include "Analytics/Clients/LocalKeychainAnalytics.h"
 
 #if TARGET_OS_OSX
 #include <sys/sysctl.h>
@@ -139,6 +141,11 @@ NSString* const SFAnalyticsTableSchema =    @"CREATE TABLE IF NOT EXISTS hard_fa
                                                 @"timestamp REAL,"
                                                 @"data BLOB\n"
                                             @");\n"
+                                            @"CREATE TABLE IF NOT EXISTS upload_file (\n"
+                                                @"file STRING PRIMARY KEY,\n"
+                                                @"store STRING,\n"
+                                                @"timestamp REAL\n"
+                                            @");\n"
                                             @"DROP TABLE IF EXISTS all_events;\n";
 
 NSUInteger const SFAnalyticsMaxEventsToReport = 1000; // Max failures to report (not including health summaries)
@@ -148,9 +155,15 @@ NSString* const SFAnalyticsErrorDomain = @"com.apple.security.sfanalytics";
 // Local constants
 NSString* const SFAnalyticsEventBuild = @"build";
 NSString* const SFAnalyticsEventProduct = @"product";
+NSString* const SFAnalyticsEventProductVersion = @"version";
 NSString* const SFAnalyticsEventModelID = @"modelid";
 NSString* const SFAnalyticsEventInternal = @"internal";
 const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
+
+static NSString *const SFAnalyticsUnderlyingErrorDomain = @"d";
+static NSString *const SFAnalyticsUnderlyingErrorCode= @"c";
+static NSString *const SFAnalyticsUnderlyingErrorUnderlyingError= @"u";
+static NSString *const SFAnalyticsUnderlyingErrorMultipleUnderlyingError= @"m";
 
 @interface SFAnalytics ()
 @property (readwrite) NSMutableSet<SFAnalyticsMetricsHook>* metricsHooks;
@@ -192,6 +205,7 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 
 + (NSString *)defaultAnalyticsDatabasePath:(NSString *)basename
 {
+    [self logConsumerProcessInfo];
     WithPathInKeychainDirectory(CFSTR("Analytics"), ^(const char *path) {
 #if TARGET_OS_IPHONE
         /* We need _securityd, _trustd, and root all to be able to write. They share no groups. */
@@ -238,6 +252,7 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename uuid:(NSUUID * __nullable)userUuid
 {
+    [self logConsumerProcessInfo];
     // Create the top-level directory with full access
     NSMutableString *directory = [NSMutableString stringWithString:@"sfanalytics"];
     WithPathInProtectedDirectory((__bridge  CFStringRef)directory, ^(const char *path) {
@@ -275,10 +290,32 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
     return [(__bridge_transfer NSURL*)SecCopyURLForFileInProtectedDirectory((__bridge CFStringRef)path) path];
 }
 
++ (void)logConsumerProcessInfo
+{
+    // Make sure we log once on every process lifecycle on internal builds
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (os_variant_has_internal_diagnostics("com.apple.security")) {
+            NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+            NSString *processName = [processInfo processName];
+            NSString* xpcServiceName = [[processInfo environment] objectForKey:@"XPC_SERVICE_NAME"];
+            NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+            attributes[@"process"] = processName;
+            attributes[@"xpcService"] = xpcServiceName;
+            NSString *eventName = [NSString stringWithFormat:@"SFAnalyticsConsumer-%@", processName];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+                [[LocalKeychainAnalytics logger] logRockwellFailureForEventNamed:eventName withAttributes:attributes];
+            });
+        }
+    });
+}
+
 + (NSString *)defaultProtectedAnalyticsDatabasePath:(NSString *)basename
 {
     static dispatch_once_t onceToken;
     [self removeLegacyDefaultAnalyticsDatabasePath:basename usingDispatchToken:&onceToken];
+    
+    [self logConsumerProcessInfo];
 #if TARGET_OS_OSX
     uid_t euid = geteuid();
     uuid_t currentUserUuid;
@@ -495,32 +532,20 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 
 - (void)setDataProperty:(NSData* _Nullable)data forKey:(NSString*)key
 {
-    __weak __typeof(self) weakSelf = self;
+
     dispatch_sync(_queue, ^{
-        __strong __typeof(self) strongSelf = weakSelf;
-        if (strongSelf) {
-            [strongSelf.database setProperty:[data base64EncodedStringWithOptions:0] forKey:key];
-        }
+        [self.database setDataProperty:data forKey:key];
     });
 }
 
 - (NSData*)dataPropertyForKey:(NSString*)key
 {
-    NSData* result = nil;
-    __block NSString *string = nil;
-    __weak __typeof(self) weakSelf = self;
+    __block NSData* result = nil;
     dispatch_sync(_queue, ^{
-        __strong __typeof(self) strongSelf = weakSelf;
-        if (strongSelf) {
-            string = [strongSelf.database propertyForKey:key];
-        }
+        result = [self.database dataPropertyForKey:key];
     });
-    if (string) {
-        result = [[NSData alloc] initWithBase64EncodedString:string options:0];
-    }
     return result;
 }
-
 
 - (NSString* _Nullable)metricsAccountID
 {
@@ -576,7 +601,8 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 + (void)addOSVersionToEvent:(NSMutableDictionary*)eventDict {
     static dispatch_once_t onceToken;
     static NSString *build = NULL;
-    static NSString *product = NULL;
+    static NSString *productName = NULL;
+    static NSString *productVersion = NULL;
     static NSString *modelID = nil;
     static BOOL internal = NO;
     dispatch_once(&onceToken, ^{
@@ -584,16 +610,19 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
         if (version == NULL)
             return;
         build = version[(__bridge NSString *)_kCFSystemVersionBuildVersionKey];
-        product = version[(__bridge NSString *)_kCFSystemVersionProductNameKey];
+        productName = version[(__bridge NSString *)_kCFSystemVersionProductNameKey];
+        productVersion = version[(__bridge NSString *)_kCFSystemVersionProductVersionKey];
         internal = os_variant_has_internal_diagnostics("com.apple.security");
-
         modelID = [self hwModelID];
     });
     if (build) {
         eventDict[SFAnalyticsEventBuild] = build;
     }
-    if (product) {
-        eventDict[SFAnalyticsEventProduct] = product;
+    if (productName) {
+        eventDict[SFAnalyticsEventProduct] = productName;
+    }
+    if (productVersion) {
+        eventDict[SFAnalyticsEventProductVersion] = productVersion;
     }
     if (modelID) {
         eventDict[SFAnalyticsEventModelID] = modelID;
@@ -698,6 +727,11 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
     [self logSoftFailureForEventNamed:eventName withAttributes:attributes timestampBucket:SFAnalyticsTimestampBucketSecond];
 }
 
+- (void)logRockwellFailureForEventNamed:(NSString*)eventName withAttributes:(NSDictionary*)attributes
+{
+    [self logEventNamed:eventName class:SFAnalyticsEventClassRockwell attributes:attributes timestampBucket:SFAnalyticsTimestampBucketSecond];
+}
+
 - (void)logResultForEvent:(NSString*)eventName hardFailure:(bool)hardFailure result:(NSError*)eventResultError timestampBucket:(SFAnalyticsTimestampBucket)timestampBucket
 {
     [self logResultForEvent:eventName hardFailure:hardFailure result:eventResultError withAttributes:nil timestampBucket:SFAnalyticsTimestampBucketSecond];
@@ -706,6 +740,73 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
 - (void)logResultForEvent:(NSString*)eventName hardFailure:(bool)hardFailure result:(NSError*)eventResultError
 {
     [self logResultForEvent:eventName hardFailure:hardFailure result:eventResultError timestampBucket:SFAnalyticsTimestampBucketSecond];
+}
+
+// Turn an NSError into a json link tree, skip domain/code for the first level, since
+// it's reported by the upper layer
++ (id _Nullable)treeOfUnderlyingErrors:(id _Nullable)object depth:(NSInteger)depth {
+    if (depth > 5) {
+        return nil;
+    }
+    NSInteger newDepth = depth + 1;
+    if ([object isKindOfClass:[NSError class]]) {
+        NSError* e = object;
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        if (depth != 0) {
+            result[SFAnalyticsUnderlyingErrorDomain] = e.domain;
+            result[SFAnalyticsUnderlyingErrorCode] = @(e.code);
+        }
+
+        id one = [self treeOfUnderlyingErrors:e.userInfo[NSUnderlyingErrorKey] depth:newDepth];
+        result[SFAnalyticsUnderlyingErrorUnderlyingError] = one;
+        
+        id multiple = [self treeOfUnderlyingErrors:e.userInfo[NSMultipleUnderlyingErrorsKey] depth:newDepth];
+        result[SFAnalyticsUnderlyingErrorMultipleUnderlyingError] = multiple;
+
+        if (result.count == 0) {
+            return nil;
+        }
+        return result;
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        NSArray *array = object;
+        NSMutableArray *result = [NSMutableArray array];
+        for (id item in array) {
+            if (![item isKindOfClass:[NSError class]]) {
+                continue;
+            }
+            id o = [self treeOfUnderlyingErrors:item depth:newDepth];
+            if (o == nil) {
+                continue;
+            }
+            [result addObject:o];
+        }
+        if (result.count == 0) {
+            return nil;
+        }
+        return result;
+    }
+    
+    return nil;
+}
+
++ (NSString * _Nullable)underlyingErrors:(NSError *_Nullable)error {
+    id object = [[self class] treeOfUnderlyingErrors:error depth:0];
+    if (object == nil) {
+        return nil;
+    }
+    if ([NSJSONSerialization isValidJSONObject:object] == NO) {
+        secerror("SFA: underlyingErrors encoded to not json %{public}@", error);
+        return nil;
+    }
+    NSError *localError = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:object
+                                                   options:NSJSONWritingSortedKeys
+                                                     error:&localError];
+    if (json == nil) {
+        secerror("SFA: underlyingErrors failed to encode %{public}@ with failure: %{public}@", error, localError);
+        return nil;
+    }
+    return [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
 }
 
 - (void)logResultForEvent:(NSString*)eventName hardFailure:(bool)hardFailure result:(NSError*)eventResultError withAttributes:(NSDictionary*)attributes timestampBucket:(SFAnalyticsTimestampBucket)timestampBucket
@@ -721,17 +822,12 @@ const NSTimeInterval SFAnalyticsSamplerIntervalOncePerReport = -1.0;
             eventAttributes = [NSMutableDictionary dictionary];
         }
 
-        /* if we have underlying errors, capture the chain below the top-most error */
-        NSError *underlyingError = eventResultError.userInfo[NSUnderlyingErrorKey];
-        if ([underlyingError isKindOfClass:[NSError class]]) {
-            NSMutableString *chain = [NSMutableString string];
-            int count = 0;
-            do {
-                [chain appendFormat:@"%@-%ld:", underlyingError.domain, (long)underlyingError.code];
-                underlyingError = underlyingError.userInfo[NSUnderlyingErrorKey];
-            } while (count++ < 5 && [underlyingError isKindOfClass:[NSError class]]);
-
-            eventAttributes[SFAnalyticsAttributeErrorUnderlyingChain] = chain;
+        /* 
+         * if we have underlying errors, topic implementation have captured it already, do
+         * capture the chain below the top-most error
+         */
+        if (eventAttributes[SFAnalyticsAttributeErrorUnderlyingChain] == nil) {
+            eventAttributes[SFAnalyticsAttributeErrorUnderlyingChain] = [[self class] underlyingErrors:eventResultError];
         }
 
         eventAttributes[SFAnalyticsAttributeErrorDomain] = eventResultError.domain;

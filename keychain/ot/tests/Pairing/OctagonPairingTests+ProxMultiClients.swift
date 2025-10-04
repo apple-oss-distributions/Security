@@ -34,7 +34,7 @@ extension OctagonPairingTests {
         XCTAssertNotNil(acceptor2, "acceptor should not be nil")
         XCTAssertNotNil(initiator2, "initiator should not be nil")
 
-        var signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
             signInCallback.fulfill()
@@ -136,6 +136,7 @@ extension OctagonPairingTests {
         }
 
         self.wait(for: [fourthInitiatorCallback], timeout: 10)
+
         assertAllCKKSViews(enter: SecCKKSZoneKeyStateReady, within: 10 * NSEC_PER_SEC)
 
         try self.forceFetch(context: self.cuttlefishContextForAcceptor)
@@ -173,12 +174,12 @@ extension OctagonPairingTests {
         /*
          SECOND PAIRING
          */
-        signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback2 = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(containerName: OTCKContainerName, contextID: initiator2ContextID, altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
-            signInCallback.fulfill()
+            signInCallback2.fulfill()
         }
-        self.wait(for: [signInCallback], timeout: 10)
+        self.wait(for: [signInCallback2], timeout: 10)
 
         /* PAIR-2 INITIATOR FIRST RTT JOINING MESSAGE*/
         var pair2InitiatorFirstPacket = Data()
@@ -252,16 +253,16 @@ extension OctagonPairingTests {
         XCTAssertNotNil(pair2InitiatorThirdPacket, "acceptor second packet should not be nil")
 
         var pair2AcceptorThirdPacket = Data()
-        let pair2FourthAcceptorCallback = self.expectation(description: "pair2FourthAcceptorCallback callback occurs")
+        let pair2ThirdAcceptorCallback = self.expectation(description: "pair2ThirdAcceptorCallback callback occurs")
 
         acceptor2.exchangePacket(pair2InitiatorThirdPacket) { complete, packet, error in
             XCTAssertTrue(complete, "should be true")
             XCTAssertNotNil(packet, "packet should not be nil")
             XCTAssertNil(error, "error should be nil")
             pair2AcceptorThirdPacket = packet!
-            pair2FourthAcceptorCallback.fulfill()
+            pair2ThirdAcceptorCallback.fulfill()
         }
-        self.wait(for: [pair2FourthAcceptorCallback], timeout: 10)
+        self.wait(for: [pair2ThirdAcceptorCallback], timeout: 10)
         XCTAssertNotNil(pair2AcceptorThirdPacket, "acceptor third packet should not be nil")
 
         /* PAIR-2 INITIATOR FOURTH STEP*/
@@ -275,7 +276,6 @@ extension OctagonPairingTests {
         }
 
         self.wait(for: [pair2FourthInitiatorCallback], timeout: 10)
-
         try self.forceFetch(context: self.cuttlefishContextForAcceptor)
 
         XCTAssertNil(initiator2Context.pairingUUID, "pairingUUID should be nil")
@@ -349,7 +349,7 @@ extension OctagonPairingTests {
         XCTAssertNotNil(acceptor2, "acceptor should not be nil")
         XCTAssertNotNil(initiator2, "initiator should not be nil")
 
-        var signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
             signInCallback.fulfill()
@@ -461,12 +461,12 @@ extension OctagonPairingTests {
         /*
          SECOND PAIRING
          */
-        signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback2 = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(containerName: OTCKContainerName, contextID: initiator2ContextID, altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
-            signInCallback.fulfill()
+            signInCallback2.fulfill()
         }
-        self.wait(for: [signInCallback], timeout: 10)
+        self.wait(for: [signInCallback2], timeout: 10)
 
         /* PAIR-2 INITIATOR FIRST RTT JOINING MESSAGE*/
         var pair2InitiatorFirstPacket = Data()
@@ -609,7 +609,7 @@ extension OctagonPairingTests {
         XCTAssertNotNil(acceptor2, "acceptor should not be nil")
         XCTAssertNotNil(initiator2, "initiator should not be nil")
 
-        var signInCallback = self.expectation(description: "trigger sign in for initiator one")
+        let signInCallback = self.expectation(description: "trigger sign in for initiator one")
         self.otControl.appleAccountSigned(in: OTControlArguments(altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
             signInCallback.fulfill()
@@ -644,12 +644,12 @@ extension OctagonPairingTests {
         self.wait(for: [firstAcceptorCallback], timeout: 10)
         XCTAssertNotNil(acceptorFirstPacket, "first packet should not be nil")
 
-        signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback2 = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(containerName: OTCKContainerName, contextID: initiator2ContextID, altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
-            signInCallback.fulfill()
+            signInCallback2.fulfill()
         }
-        self.wait(for: [signInCallback], timeout: 10)
+        self.wait(for: [signInCallback2], timeout: 10)
 
         /* PAIR-2 INITIATOR FIRST RTT JOINING MESSAGE*/
         var pair2InitiatorFirstPacket = Data()
@@ -898,7 +898,7 @@ extension OctagonPairingTests {
         XCTAssertNotNil(acceptor2, "acceptor should not be nil")
         XCTAssertNotNil(initiator2, "initiator should not be nil")
 
-        var signInCallback = self.expectation(description: "trigger sign in for initiator one")
+        let signInCallback = self.expectation(description: "trigger sign in for initiator one")
         self.otControl.appleAccountSigned(in: OTControlArguments(altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
             signInCallback.fulfill()
@@ -933,12 +933,12 @@ extension OctagonPairingTests {
         self.wait(for: [firstAcceptorCallback], timeout: 10)
         XCTAssertNotNil(acceptorFirstPacket, "first packet should not be nil")
 
-        signInCallback = self.expectation(description: "trigger sign in")
+        let signInCallback2 = self.expectation(description: "trigger sign in")
         self.otControl.appleAccountSigned(in: OTControlArguments(containerName: OTCKContainerName, contextID: initiator2ContextID, altDSID: try XCTUnwrap(self.mockAuthKit.primaryAltDSID()))) { error in
             XCTAssertNil(error, "error should be nil")
-            signInCallback.fulfill()
+            signInCallback2.fulfill()
         }
-        self.wait(for: [signInCallback], timeout: 10)
+        self.wait(for: [signInCallback2], timeout: 10)
 
         /* PAIR-2 INITIATOR FIRST RTT JOINING MESSAGE*/
         var pair2InitiatorFirstPacket = Data()
@@ -998,18 +998,15 @@ extension OctagonPairingTests {
         XCTAssertNotNil(pair2AcceptorFirstPacket, "first packet should not be nil")
 
         /* PAIR-1 INITIATOR THIRD STEP*/
-        var initiatorThirdPacket: Data?
         let thirdInitiatorCallback = self.expectation(description: "thirdInitiatorCallback callback occurs")
 
         initiator.exchangePacket(acceptorSecondPacket) { complete, packet, error in
             XCTAssertTrue(complete, "should be true")
             XCTAssertNil(packet, "packet should be nil")
             XCTAssertNil(error, "error should be nil")
-            initiatorThirdPacket = (packet)
             thirdInitiatorCallback.fulfill()
         }
         self.wait(for: [thirdInitiatorCallback], timeout: 10)
-        XCTAssertNil(initiatorThirdPacket, "acceptor second packet should be nil")
 
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContextForAcceptor)
         self.sendContainerChangeWaitForUntrustedFetch(context: initiator2Context)
@@ -1064,32 +1061,29 @@ extension OctagonPairingTests {
         XCTAssertEqual(self.fakeCuttlefishServer.state.bottles.count, 2, "should be 2 bottles")
 
         /* PAIR-2 ACCEPTOR SECOND RTT */
-        var pair2AcceptorSecondPacket = Data()
-        let pair2SecondAcceptorCallback = self.expectation(description: "pair2SecondAcceptorCallback callback occurs")
+        var pair2AcceptorThirdPacket = Data()
+        let pair2ThirdAcceptorCallback = self.expectation(description: "pair2ThirdAcceptorCallback callback occurs")
 
         acceptor2.exchangePacket(pair2InitiatorSecondPacket) { complete, packet, error in
             XCTAssertTrue(complete, "should be true")
             XCTAssertNotNil(packet, "packet should not be nil")
             XCTAssertNil(error, "error should be nil")
-            pair2AcceptorSecondPacket = packet!
-            pair2SecondAcceptorCallback.fulfill()
+            pair2AcceptorThirdPacket = packet!
+            pair2ThirdAcceptorCallback.fulfill()
         }
-        self.wait(for: [pair2SecondAcceptorCallback], timeout: 10)
-        XCTAssertNotNil(pair2AcceptorSecondPacket, "acceptor second packet should not be nil")
+        self.wait(for: [pair2ThirdAcceptorCallback], timeout: 10)
+        XCTAssertNotNil(pair2AcceptorThirdPacket, "acceptor third packet should not be nil")
 
         /* PAIR-2 INITIATOR THIRD STEP*/
-        var pair2InitiatorThirdPacket: Data?
         let pair2ThirdInitiatorCallback = self.expectation(description: "thirdInitiatorCallback callback occurs")
 
-        initiator2.exchangePacket(pair2AcceptorSecondPacket) { complete, packet, error in
+        initiator2.exchangePacket(pair2AcceptorThirdPacket) { complete, packet, error in
             XCTAssertTrue(complete, "should be true")
             XCTAssertNil(packet, "packet should be nil")
             XCTAssertNil(error, "error should be nil")
-            pair2InitiatorThirdPacket = (packet)
             pair2ThirdInitiatorCallback.fulfill()
         }
         self.wait(for: [pair2ThirdInitiatorCallback], timeout: 10)
-        XCTAssertNil(pair2InitiatorThirdPacket, "acceptor second packet should be nil")
 
         self.sendContainerChangeWaitForFetch(context: self.cuttlefishContextForAcceptor)
         self.sendContainerChangeWaitForFetch(context: initiator2Context)

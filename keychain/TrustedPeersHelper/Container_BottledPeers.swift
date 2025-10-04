@@ -19,6 +19,10 @@ extension Container {
     }
 
     func preflightVouchWithBottle(bottleID: String,
+                                  altDSID: String?,
+                                  flowID: String?,
+                                  deviceSessionID: String?,
+                                  canSendMetrics: Bool,
                                   reply: @escaping (String?, TPSyncingPolicy?, Bool, Error?) -> Void) {
         let sem = self.grabSemaphore()
         let reply: (String?, TPSyncingPolicy?, Bool, Error?) -> Void = {
@@ -28,8 +32,18 @@ extension Container {
         }
 
         self.moc.performAndWait {
+            let eventS = AAFAnalyticsEventSecurity(keychainCircleMetrics: nil,
+                                                   altDSID: altDSID,
+                                                   flowID: flowID,
+                                                   deviceSessionID: deviceSessionID,
+                                                   eventName: kSecurityRTCEventNamePreflightVouchWithBottle,
+                                                   testsAreEnabled: soft_MetricsOverrideTestsAreEnabled(),
+                                                   canSendMetrics: canSendMetrics,
+                                                   category: kSecurityRTCEventCategoryAccountDataAccessRecovery)
+
             do {
                 let (_, peerID, syncingPolicy) = try self.onMOCQueuePerformPreflight(bottleID: bottleID)
+                eventS.sendMetric(withResult: true, error: nil)
                 reply(peerID, syncingPolicy, false, nil)
             } catch {
                 logger.info("preflightVouchWithBottle failed; forcing refetch and retrying: \(String(describing: error), privacy: .public)")
@@ -37,6 +51,7 @@ extension Container {
                 self.fetchAndPersistChanges { fetchError in
                     guard fetchError == nil else {
                         logger.info("preflightVouchWithBottle unable to fetch current peers: \(String(describing: fetchError), privacy: .public)")
+                        eventS.sendMetric(withResult: false, error: fetchError)
                         reply(nil, nil, true, fetchError)
                         return
                     }
@@ -47,6 +62,7 @@ extension Container {
                             return try self.model.allPolicyVersions()
                         } catch {
                             logger.error("Error fetching all policy versions: \(error, privacy: .public)")
+                            eventS.sendMetric(withResult: false, error: error)
                             reply(nil, nil, true, error)
                             return nil
                         }
@@ -57,6 +73,7 @@ extension Container {
                     self.fetchPolicyDocumentsWithSemaphore(versions: allPolicyVersions) { _, fetchPolicyDocumentsError in
                         guard fetchPolicyDocumentsError == nil else {
                             logger.info("preflightVouchWithBottle unable to fetch policy documents: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
+                            eventS.sendMetric(withResult: false, error: fetchPolicyDocumentsError)
                             reply(nil, nil, true, fetchPolicyDocumentsError)
                             return
                         }
@@ -64,6 +81,7 @@ extension Container {
                         self.fetchViableBottlesWithSemaphore(from: .default, flowID: nil, deviceSessionID: nil) { _, _, fetchBottlesError in
                             guard fetchBottlesError == nil else {
                                 logger.info("preflightVouchWithBottle unable to fetch viable bottles: \(String(describing: fetchPolicyDocumentsError), privacy: .public)")
+                                eventS.sendMetric(withResult: false, error: fetchBottlesError)
                                 reply(nil, nil, true, fetchBottlesError)
                                 return
                             }
@@ -72,9 +90,11 @@ extension Container {
                             self.moc.performAndWait {
                                 do {
                                     let (_, peerID, syncingPolicy) = try self.onMOCQueuePerformPreflight(bottleID: bottleID)
+                                    eventS.sendMetric(withResult: true, error: nil)
                                     reply(peerID, syncingPolicy, true, nil)
                                 } catch {
                                     logger.error("preflightVouchWithBottle failed after refetches: \(String(describing: error), privacy: .public)")
+                                    eventS.sendMetric(withResult: false, error: error)
                                     reply(nil, nil, true, error)
                                 }
                             }
@@ -119,7 +139,45 @@ extension Container {
             throw ContainerError.sponsorNotRegistered(bottleMO.peerID ?? "no peer ID given")
         }
 
+        // We need to extract the syncing policy that the remote peer would have used (if they were the type of device that we are)
+#if os(visionOS)
+        do {
+            let policy = try self.syncingPolicyFor(modelID: egoPermanentInfo.modelID, stableInfo: sponsorPeerStableInfo)
+            return (bottleMO, sponsorPeer.peerID, policy)
+        } catch let error as NSError where error.domain == TPErrorDomain && error.code == TPError.modelNotFound.rawValue {
+            // On XROS, old policies didn't mention RealityDevices. In this case, claim to be an iPad for purposes of recovery.
+            // This value is only temporarily used, so we don't need to update it via policy.
+            let policy = try self.syncingPolicyFor(modelID: "iPad14,1", stableInfo: sponsorPeerStableInfo)
+            return (bottleMO, sponsorPeer.peerID, policy)
+        }
+#else
         let policy = try self.syncingPolicyFor(modelID: egoPermanentInfo.modelID, stableInfo: sponsorPeerStableInfo)
         return (bottleMO, sponsorPeer.peerID, policy)
+#endif
+    }
+
+    func octagonPeerID(for bottleID: String, reply: @escaping (String?, Error?) -> Void) {
+        let reply: (String?, Error?) -> Void = {
+            let logType: OSLogType = $1 == nil ? .info : .error
+            logger.log(level: logType, "octagonPeerID complete: \(traceError($1), privacy: .public)")
+            reply($0, $1)
+        }
+
+        self.moc.performAndWait {
+            do {
+                let bottleMO = try self.onMOCQueueFindBottle(bottleID: bottleID)
+
+                guard let peer = try self.model.peer(withID: bottleMO.peerID ?? "") else {
+                    logger.warning("octagonPeerID Unable to finding peer with peerID \(bottleMO.peerID ?? "no peer ID given", privacy: .public)")
+                    reply(nil, ContainerError.bottleCreatingPeerNotFound)
+                    return
+                }
+
+                reply(peer.peerID, nil)
+            } catch {
+                logger.warning("octagonPeerID Error finding peer with bottleID \(bottleID), privacy: .public): \(String(describing: error), privacy: .public)")
+                reply(nil, error)
+            }
+        }
     }
 }

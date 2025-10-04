@@ -20,9 +20,8 @@
 #include "utilities/SecABC.h"
 
 #import <AppleAccount/ACAccount+AppleAccount.h>
-#import "keychain/analytics/AAFAnalyticsEvent+Security.h"
-#import "keychain/analytics/SecurityAnalyticsReporterRTC.h"
-#import "keychain/analytics/SecurityAnalyticsConstants.h"
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 #import "keychain/ckks/CKKS.h"
 
 @interface OTAuthKitActualAdapter ()
@@ -47,8 +46,14 @@
     BOOL isCdpCapable = NO;
 
     AKAccountManager *manager = [AKAccountManager sharedInstance];
-    ACAccount *authKitAccount = [manager authKitAccountWithAltDSID:altDSID];
-    AKAppleIDSecurityLevel securityLevel = [manager securityLevelForAccount:authKitAccount];
+    NSError *error = nil;
+    ACAccount *authKitAccount = [manager authKitAccountWithAltDSID:altDSID error:&error];
+    AKAppleIDSecurityLevel securityLevel = AKAppleIDSecurityLevelUnknown;
+    if (authKitAccount != nil) {
+        securityLevel = [manager securityLevelForAccount:authKitAccount];
+    } else {
+        secnotice("authkit", "failed to get AK account: %@", error);
+    }
     if(securityLevel == AKAppleIDSecurityLevelHSA2 || securityLevel == AKAppleIDSecurityLevelManaged) {
         isCdpCapable = YES;
     }
@@ -79,7 +84,7 @@
             break;
     }
 
-    secnotice("authkit", "Security level for altDSID %@ is %lu.  Account type: %@", [manager altDSIDForAccount:authKitAccount], (unsigned long)securityLevel, accountType);
+    secnotice("authkit", "Security level for altDSID %@ is %lu.  Account type: %@", altDSID, (unsigned long)securityLevel, accountType);
     return isCdpCapable;
 }
 
@@ -91,6 +96,22 @@
 
     secnotice("authkit", "Account with altDSID %@ is a demo account: %{bool}d", altDSID, isDemo);
     return isDemo;
+}
+
+- (NSString* _Nullable)passwordResetTokenByAltDSID:(NSString*)altDSID error:(NSError**)error
+{
+    NSString* token = nil;
+
+    AKAccountManager* akManager = [AKAccountManager sharedInstance];
+    ACAccount* akAccount = [akManager authKitAccountWithAltDSID:altDSID error:error];
+    if (akAccount) {
+        ACAccountCredential* credential = [[ACAccountStore defaultStore] credentialForAccount:akAccount error:error];
+        if (credential) {
+            token = [credential credentialItemForKey:ACPasswordResetTokenBackupKey];
+        }
+    }
+
+    return token;
 }
 
 - (NSString* _Nullable)machineID:(NSString* _Nullable)altDSID
@@ -117,7 +138,7 @@
             *error = localError;
         }
 
-        [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:localError];
+        [eventS sendMetricWithResult:NO error:localError];
         return nil;
     }
 
@@ -131,7 +152,7 @@
             *error = localError;
         }
 
-        [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:localError];
+        [eventS sendMetricWithResult:NO error:localError];
         return nil;
     }
 
@@ -147,13 +168,13 @@
             *error = localError;
         }
 
-        [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:NO error:localError];
+        [eventS sendMetricWithResult:NO error:localError];
         return nil;
     }
 
     secnotice("authkit", "fetched current machine ID as: %@", machineID);
 
-    [SecurityAnalyticsReporterRTC sendMetricWithEvent:eventS success:YES error:nil];
+    [eventS sendMetricWithResult:YES error:nil];
     return machineID;
 }
 
@@ -215,7 +236,7 @@
                                                                                                  canSendMetrics:YES
                                                                                                        category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
 
-            [SecurityAnalyticsReporterRTC sendMetricWithEvent:event success:NO error: error];
+            [event sendMetricWithResult:NO error: error];
 
             secnotice("authkit", "received no device list(%@): %@", altDSID, error);
             complete(nil, nil, nil, nil, nil, nil, nil, nil, error);

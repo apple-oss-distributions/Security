@@ -37,6 +37,7 @@
 #include "trust/trustd/SecTrustLoggingServer.h"
 #include "trust/trustd/SecRevocationDb.h"
 #include "trust/trustd/SecPinningDb.h"
+#include "trust/trustd/SecAnchorCache.h"
 #include "trust/trustd/SecTrustExceptionResetCount.h"
 #include "trust/trustd/trustdVariants.h"
 #include "trustd_spi.h"
@@ -58,10 +59,10 @@ struct trustd trustd_spi = {
     .sec_ota_pki_trust_store_asset_version  = SecOTAPKICopyCurrentTrustStoreAssetVersion,
     .sec_ota_pki_trust_store_content_digest = SecOTAPKICopyCurrentTrustStoreContentDigest,
     .sec_ota_pki_trust_store_version        = SecOTAPKIGetCurrentTrustStoreVersion,
-    .sec_ota_pki_asset_version              = SecOTAPKIGetCurrentAssetVersion,
+    .sec_ota_pki_asset_version              = SecOTATrustSupplementalsGetCurrentAssetVersion,
     .sec_ota_pki_copy_trusted_ct_logs       = SecOTAPKICopyCurrentTrustedCTLogs,
     .sec_ota_pki_copy_ct_log_for_keyid      = SecOTAPKICopyCTLogForKeyID,
-    .sec_ota_pki_get_new_asset              = SecOTAPKISignalNewAsset,
+    .sec_ota_pki_get_new_asset              = SecOTAPKISignalNewSupplementalsAsset,
     .sec_ota_secexperiment_get_new_asset    = SecOTASecExperimentGetNewAsset,
     .sec_ota_secexperiment_get_asset        = SecOTASecExperimentCopyAsset,
     .sec_trust_store_copy_all               = _SecTrustStoreCopyAll,
@@ -115,8 +116,20 @@ void trustd_init_server(void) {
     SecPolicyServerInitialize();    // set up callbacks for policy checks
     SecRevocationDbInitialize();    // set up revocation database if it doesn't already exist, or needs to be replaced
     SecPinningDbInitialize();       // set up the pinning database
+    SecAnchorCacheInitialize();     // set up the anchor cache
 #if TARGET_OS_OSX
     SecTrustLegacySourcesListenForKeychainEvents(); // set up the legacy keychain event listeners (for cache invalidation)
 #endif
 #endif  // LIBTRUSTD
+}
+
+void trustd_exit_clean(const char *reason) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 11ULL*NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        const char *default_reason = "Will exit trustd when all transactions are complete.";
+        secnotice("OTATrust", "%s uptime: %llu, system: %llus",
+                  (reason) ? reason : default_reason,
+                  (unsigned long long)TimeSinceProcessLaunch(),
+                  (unsigned long long)TimeSinceSystemStartup());
+        xpc_transaction_exit_clean();
+    });
 }

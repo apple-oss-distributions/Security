@@ -11,7 +11,6 @@
 #define SECSFAACTIONTAPTORADAR_FUNCTION extern __attribute__((visibility("hidden")))
 #endif
 
-/** protocompiler --outputDir Protobuf --arc < ./SFACollection.proto */
 __attribute__((visibility("hidden")))
 @interface SECSFAActionTapToRadar : PBCodable <NSCopying>
 {

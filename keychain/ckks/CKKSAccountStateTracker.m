@@ -60,7 +60,6 @@ NSString* CKKSAccountStatusToString(CKKSAccountStatus status)
 
 @property NSMapTable<dispatch_queue_t, id<CKKSCloudKitAccountStateListener>>* ckChangeListeners;
 
-@property CKContainer* container; // used only for fetching the CKAccountStatus
 @property bool firstCKAccountFetch;
 
 // make writable
@@ -74,6 +73,7 @@ NSString* CKKSAccountStatusToString(CKKSAccountStatus status)
 
 @implementation CKKSAccountStateTracker
 @synthesize octagonPeerID = _octagonPeerID;
+@synthesize container = _container;
 
 -(instancetype)init: (CKContainer*) container nsnotificationCenterClass: (Class<CKKSNSNotificationCenter>) nsnotificationCenterClass {
     if((self = [super init])) {
@@ -497,14 +497,6 @@ NSString* CKKSAccountStatusToString(CKKSAccountStatus status)
     }
 
     return [[SOSAccountStatus alloc] init:status error:nil];
-}
-
-+ (NSString*)stringFromAccountStatus: (CKKSAccountStatus) status {
-    switch(status) {
-        case CKKSAccountStatusUnknown: return @"account state unknown";
-        case CKKSAccountStatusAvailable: return @"logged in";
-        case CKKSAccountStatusNoAccount: return @"no account";
-    }
 }
 
 - (void)triggerOctagonStatusFetch

@@ -85,6 +85,10 @@
 
     [self.deps.cuttlefishXPCWrapper fetchRecoverableTLKSharesWithSpecificUser:self.deps.activeAccount
                                                                        peerID:self.peerID
+                                                                      altDSID:self.deps.activeAccount.altDSID
+                                                                       flowID:self.deps.flowID
+                                                              deviceSessionID:self.deps.deviceSessionID
+                                                               canSendMetrics:self.deps.permittedToSendMetrics
                                                                         reply:^(NSArray<CKRecord *> * _Nullable keyHierarchyRecords,
                                                                                 NSError * _Nullable error) {
         STRONGIFY(self);
@@ -157,6 +161,10 @@
         }
 
         secnotice("octagon", "Successfully vouched with a reroll: %@, %@", voucher, voucherSig);
+
+        [self.deps.escrowChecker checkEscrowCheck:YES reply:^(OTEscrowCheckCallResult *_Nullable results, NSError * _Nullable error) {
+            }];
+
         self.nextState = self.intendedState;
         [self runBeforeGroupFinished:self.finishOp];
     }];

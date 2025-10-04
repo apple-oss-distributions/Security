@@ -31,7 +31,7 @@
 #import "keychain/categories/NSError+UsefulConstructors.h"
 #import "OTEscrowTranslation.h"
 
-#import <SoftLinking/SoftLinking.h>
+#import <SoftLinking/WeakLinking.h>
 #import <CloudServices/SecureBackup.h>
 #import <CloudServices/SecureBackupConstants.h>
 #import "keychain/OctagonTrust/categories/OctagonTrustEscrowRecoverer.h"
@@ -42,17 +42,22 @@
 #include "utilities/SecCFRelease.h"
 #import <Security/SecPasswordGenerate.h>
 
-SOFT_LINK_OPTIONAL_FRAMEWORK(PrivateFrameworks, CloudServices);
+#import <OctagonTrust/OTEscrowCheckCallResult.h>
 
-SOFT_LINK_CLASS(CloudServices, SecureBackup);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupErrorDomain, NSErrorDomain);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupMetadataKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupRecordIDKey, NSString*);
+#import <KeychainCircle/SecurityAnalyticsConstants.h>
+#import <KeychainCircle/AAFAnalyticsEvent+Security.h>
 
-SOFT_LINK_CONSTANT(CloudServices, kEscrowServiceRecordDataKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupKeybagDigestKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupBagPasswordKey, NSString*);
-SOFT_LINK_CONSTANT(CloudServices, kSecureBackupRecordLabelKey, NSString*);
+#import <KeychainCircle/MetricsOverrideForTests.h>
+
+WEAK_IMPORT_OBJC_CLASS(SecureBackup);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupErrorDomain);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupMetadataKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupRecordIDKey);
+
+WEAK_LINK_FORCE_IMPORT(kEscrowServiceRecordDataKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupKeybagDigestKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupBagPasswordKey);
+WEAK_LINK_FORCE_IMPORT(kSecureBackupRecordLabelKey);
 
 static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 
@@ -281,24 +286,29 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 #endif
 }
 
-+ (OTClique* _Nullable)handleRecoveryResults:(OTConfigurationContext*)data recoveredInformation:(NSDictionary*)recoveredInformation record:(OTEscrowRecord*)record performedSilentBurn:(BOOL)performedSilentBurn recoverError:(NSError*)recoverError error:(NSError**)error
++ (OTClique* _Nullable)handleRecoveryResults:(OTConfigurationContext*)data recoveredInformation:(NSDictionary*)recoveredInformation record:(OTEscrowRecord*)record performedSilentBurn:(BOOL)performedSilentBurn error:(NSError**)error
 {
+
+    AAFAnalyticsEventSecurity *handleRecoveryResultsEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                     altDSID:data.altDSID
+                                                                                                                      flowID:data.flowID
+                                                                                                             deviceSessionID:data.deviceSessionID
+                                                                                                                   eventName:kSecurityRTCEventNameHandleRecoveryResults
+                                                                                                             testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                              canSendMetrics:YES
+                                                                                                                    category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
     if ([self isCloudServicesAvailable] == NO) {
+        NSError* localError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
         if (error) {
-            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+            *error = localError;
         }
+        [handleRecoveryResultsEvent sendMetricWithResult:NO error:localError];
+
         return nil;
     }
 
     OTClique* clique = [[OTClique alloc] initWithContextData:data];
-    
-    if (recoverError) {
-        secerror("octagontrust-handleRecoveryResults: sbd escrow recovery failed: %@", recoverError);
-        if (error) {
-            *error = recoverError;
-        }
-        return nil;
-    }
 
     NSError* localError = nil;
     OTControl* control = nil;
@@ -313,6 +323,7 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
         if (error) {
             *error = localError;
         }
+        [handleRecoveryResultsEvent sendMetricWithResult:NO error:localError];
         return nil;
     }
 
@@ -327,6 +338,15 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
         __block NSError* restoreBottleError = nil;
         OctagonSignpost bottleRestoreSignPost = performedSilentBurn ? OctagonSignpostBegin(OctagonSignpostNamePerformOctagonJoinForSilent) : OctagonSignpostBegin(OctagonSignpostNamePerformOctagonJoinForNonSilent);
 
+        AAFAnalyticsEventSecurity *restoreFromBottleEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                     altDSID:data.altDSID
+                                                                                                                      flowID:data.flowID
+                                                                                                             deviceSessionID:data.deviceSessionID
+                                                                                                                   eventName:kSecurityRTCEventNameRestoreFromBottleEvent
+                                                                                                             testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                              canSendMetrics:YES
+                                                                                                                    category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
         //restore bottle!
         [control restoreFromBottle:[[OTControlArguments alloc] initWithConfiguration:data]
                            entropy:bottledPeerEntropy
@@ -334,8 +354,10 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
                              reply:^(NSError * _Nullable restoreError) {
             if(restoreError) {
                 secnotice("octagontrust-handleRecoveryResults", "restore bottle errored: %@", restoreError);
+                [restoreFromBottleEvent sendMetricWithResult:NO error:restoreError];
             } else {
                 secnotice("octagontrust-handleRecoveryResults", "restoring bottle succeeded");
+                [restoreFromBottleEvent sendMetricWithResult:YES error:nil];
             }
             restoreBottleError = restoreError;
             if (performedSilentBurn) {
@@ -345,38 +367,68 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
             }
         }];
 
-        if(restoreBottleError) {
-            if(error){
+        if (restoreBottleError) {
+            if (error) {
                 *error = restoreBottleError;
             }
+            [handleRecoveryResultsEvent sendMetricWithResult:NO error:restoreBottleError];
             return nil;
         }
     } else {
         shouldResetOctagon = true;
     }
 
-    if(shouldResetOctagon) {
+    if (shouldResetOctagon) {
         secnotice("octagontrust-handleRecoveryResults", "bottle %@ is not valid, resetting octagon", bottleID);
+        AAFAnalyticsEventSecurity *resetEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                         altDSID:data.altDSID
+                                                                                                          flowID:data.flowID
+                                                                                                 deviceSessionID:data.deviceSessionID
+                                                                                                       eventName:kSecurityRTCEventNameHandleRecoveryResultsResetAndEstablish
+                                                                                                 testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                  canSendMetrics:YES
+                                                                                                        category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+        OTControlArguments* arguments = [[OTControlArguments alloc] initWithConfiguration:data];
+        __block OTAccountSettings* accountSettings = nil;
+        __block NSError* fetchError = nil;
+        [control fetchAccountWideSettingsWithForceFetch:true arguments:arguments reply:^(OTAccountSettings * _Nullable retAccountSetting, NSError * _Nullable retError) {
+            accountSettings = retAccountSetting;
+            fetchError = retError;
+        }];
+        BOOL accountIsW = NO;
+        if (accountSettings.hasWalrus) {
+            accountIsW = accountSettings.walrus.enabled ? YES : NO;
+        }
+
         NSError* resetError = nil;
         [clique resetAndEstablish:CuttlefishResetReasonNoBottleDuringEscrowRecovery
                 idmsTargetContext:nil
            idmsCuttlefishPassword:nil
                        notifyIdMS:false
                   accountSettings:nil
+                       accountIsW:accountIsW
+                          altDSID:data.altDSID
+                           flowID:data.flowID
+                  deviceSessionID:data.deviceSessionID
+                   canSendMetrics:YES
                             error:&resetError];
-        if(resetError) {
+        if (resetError) {
             secerror("octagontrust-handleRecoveryResults: failed to reset octagon: %@", resetError);
-            if(error){
+            if (error) {
                 *error = resetError;
             }
+            [resetEvent sendMetricWithResult:NO error:resetError];
+            [handleRecoveryResultsEvent sendMetricWithResult:NO error:resetError];
             return nil;
-        } else{
+        } else {
             secnotice("octagontrust-handleRecoveryResults", "reset octagon succeeded");
+            [resetEvent sendMetricWithResult:YES error:nil];
         }
     }
 
     // call SBD to kick off keychain data restore
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-restore"];
     NSError* restoreError = nil;
 
     NSMutableSet <NSString *> *viewsNotToBeRestored = [NSMutableSet set];
@@ -384,21 +436,40 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
     [viewsNotToBeRestored addObject:@"PCS-MasterKey"];
     [viewsNotToBeRestored addObject:@"KeychainV0"];
 
-    NSDictionary *escrowRecords = recoveredInformation[getkEscrowServiceRecordDataKey()];
+    NSDictionary *escrowRecords = recoveredInformation[kEscrowServiceRecordDataKey];
     if (escrowRecords == nil) {
         secnotice("octagontrust-handleRecoveryResults", "unable to request keychain restore, record data missing");
+        [handleRecoveryResultsEvent addMetrics:@{ kSecurityRTCFieldRecordDataMissing : @(YES)}];
+        [handleRecoveryResultsEvent sendMetricWithResult:YES error:nil];
         return clique;
     }
 
 
-    NSData *keybagDigest = escrowRecords[getkSecureBackupKeybagDigestKey()];
-    NSData *password = escrowRecords[getkSecureBackupBagPasswordKey()];
+    NSData *keybagDigest = escrowRecords[kSecureBackupKeybagDigestKey];
+    NSData *password = escrowRecords[kSecureBackupBagPasswordKey];
     if (keybagDigest == nil || password == nil) {
         secnotice("octagontrust-handleRecoveryResults", "unable to request keychain restore, digest or password missing");
+        if (keybagDigest == nil) {
+            [handleRecoveryResultsEvent addMetrics:@{ kSecurityRTCFieldMissingDigest : @(YES)}];
+        } else {
+            [handleRecoveryResultsEvent addMetrics:@{ kSecurityRTCFieldMissingPassword : @(YES)}];
+        }
+        [handleRecoveryResultsEvent sendMetricWithResult:YES error:nil];
         return clique;
     }
 
     BOOL haveBottledPeer = (bottledPeerEntropy && bottleID && [isValid isEqualToString:@"valid"]) || shouldResetOctagon;
+
+    AAFAnalyticsEventSecurity *restoreKeychainEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                               altDSID:data.altDSID
+                                                                                                                flowID:data.flowID
+                                                                                                       deviceSessionID:data.deviceSessionID
+                                                                                                             eventName:kSecurityRTCEventNameRestoreKeychainAsyncWithPassword
+                                                                                                       testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                        canSendMetrics:YES
+                                                                                                              category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+
     [sb restoreKeychainAsyncWithPassword:password
                             keybagDigest:keybagDigest
                          haveBottledPeer:haveBottledPeer
@@ -407,7 +478,12 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 
     if (restoreError) {
         secerror("octagontrust-handleRecoveryResults: error restoring keychain items: %@", restoreError);
+        [restoreKeychainEvent sendMetricWithResult:NO error:restoreError];
+    } else {
+        [restoreKeychainEvent sendMetricWithResult:YES error:nil];
     }
+
+    [handleRecoveryResultsEvent sendMetricWithResult:YES error:nil];
 
     return clique;
 }
@@ -420,17 +496,28 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 #if OCTAGON
     secnotice("octagontrust-performEscrowRecovery", "performEscrowRecovery invoked for context:%@, altdsid:%@", data.context, data.altDSID);
 
+    AAFAnalyticsEventSecurity *performRecoveryEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                               altDSID:data.altDSID
+                                                                                                                flowID:data.flowID
+                                                                                                       deviceSessionID:data.deviceSessionID
+                                                                                                             eventName:kSecurityRTCEventNamePerformEscrowRecovery
+                                                                                                       testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                        canSendMetrics:YES
+                                                                                                              category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+
     if ([self isCloudServicesAvailable] == NO) {
+        NSError* localError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
         if (error) {
-            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+            *error = localError;
         }
+        [performRecoveryEvent sendMetricWithResult:NO error:localError];
         return nil;
     }
 
     OctagonSignpost performEscrowRecoverySignpost = OctagonSignpostBegin(OctagonSignpostNamePerformEscrowRecovery);
-    bool subTaskSuccess = true;
 
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-perform-recovery"];
     NSDictionary* recoveredInformation = nil;
     NSError* recoverError = nil;
 
@@ -439,30 +526,86 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 
     if (supportedRestorePath) {
         OctagonSignpost recoverFromSBDSignPost = OctagonSignpostBegin(OctagonSignpostNameRecoverWithCDPContext);
-        recoveredInformation = [sb recoverWithCDPContext:cdpContext escrowRecord:escrowRecord error:&recoverError];
-        subTaskSuccess = (recoverError == nil) ? true : false;
-        OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNameRecoverWithCDPContext, OctagonSignpostNumber1(OctagonSignpostNameRecoverWithCDPContext), (int)subTaskSuccess);
+        AAFAnalyticsEventSecurity *recoverWithCDPEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                   altDSID:data.altDSID
+                                                                                                                    flowID:data.flowID
+                                                                                                           deviceSessionID:data.deviceSessionID
+                                                                                                                 eventName:kSecurityRTCEventNameRecoverWithCDPContext
+                                                                                                           testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                            canSendMetrics:YES
+                                                                                                                  category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+        recoveredInformation = [sb recoverWithCDPContext:cdpContext escrowRecord:escrowRecord altDSID:data.altDSID flowID:data.flowID deviceSessionID:data.deviceSessionID error:&recoverError];
+        if (recoveredInformation == nil || recoverError) {
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNameRecoverWithCDPContext, OctagonSignpostNumber1(OctagonSignpostNameRecoverWithCDPContext), false);
+            if (recoverError == nil) {
+                recoverError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorFailedToRecoverWithCDPContext description:@"Failed to recover using CDP context"];
+            }
+            if (error) {
+                *error = recoverError;
+            }
+            [recoverWithCDPEvent sendMetricWithResult:NO error:recoverError];
+            [performRecoveryEvent sendMetricWithResult:NO error:recoverError];
+            OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), false);
+            return nil;
+        } else {
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNameRecoverWithCDPContext, OctagonSignpostNumber1(OctagonSignpostNameRecoverWithCDPContext), true);
+            [recoverWithCDPEvent sendMetricWithResult:YES error:nil];
+        }
     } else {
         NSMutableDictionary* sbdRecoveryArguments = [[OTEscrowTranslation CDPRecordContextToDictionary:cdpContext] mutableCopy];
         NSDictionary* metadata = [OTEscrowTranslation metadataToDictionary:escrowRecord.escrowInformationMetadata];
-        sbdRecoveryArguments[getkSecureBackupMetadataKey()] = metadata;
-        sbdRecoveryArguments[getkSecureBackupRecordIDKey()] = escrowRecord.recordId;
+        sbdRecoveryArguments[kSecureBackupMetadataKey] = metadata;
+        sbdRecoveryArguments[kSecureBackupRecordIDKey] = escrowRecord.recordId;
         secnotice("octagontrust-performEscrowRecovery", "using sbdRecoveryArguments: %@", sbdRecoveryArguments);
+
+        AAFAnalyticsEventSecurity *recoverWithInfoEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                   altDSID:data.altDSID
+                                                                                                                    flowID:data.flowID
+                                                                                                           deviceSessionID:data.deviceSessionID
+                                                                                                                 eventName:kSecurityRTCEventNameRecoverWithInfo
+                                                                                                           testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                            canSendMetrics:YES
+                                                                                                                  category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
 
         OctagonSignpost recoverFromSBDSignPost = OctagonSignpostBegin(OctagonSignpostNamePerformRecoveryFromSBD);
         recoverError = [sb recoverWithInfo:sbdRecoveryArguments results:&recoveredInformation];
-        subTaskSuccess = (recoverError == nil) ? true : false;
-        OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNamePerformRecoveryFromSBD, OctagonSignpostNumber1(OctagonSignpostNamePerformRecoveryFromSBD), (int)subTaskSuccess);
+        if (recoveredInformation == nil || recoverError) {
+            if (recoverError == nil) {
+                recoverError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorFailedToRecoverWithInfo description:@"Failed to recover with info"];
+            }
+            if (error) {
+                *error = recoverError;
+            }
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNamePerformRecoveryFromSBD, OctagonSignpostNumber1(OctagonSignpostNamePerformRecoveryFromSBD), false);
+            OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), false);
+            [recoverWithInfoEvent sendMetricWithResult:NO error:recoverError];
+            [performRecoveryEvent sendMetricWithResult:NO error:recoverError];
+            return nil;
+        } else {
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNamePerformRecoveryFromSBD, OctagonSignpostNumber1(OctagonSignpostNamePerformRecoveryFromSBD), true);
+            [recoverWithInfoEvent sendMetricWithResult:YES error:nil];
+        }
     }
 
-    OTClique* clique = [OTClique handleRecoveryResults:data recoveredInformation:recoveredInformation record:escrowRecord performedSilentBurn:NO recoverError:recoverError error:error];
+    NSError* handleRecoveryResultsError = nil;
+    OTClique* clique = [OTClique handleRecoveryResults:data recoveredInformation:recoveredInformation record:escrowRecord performedSilentBurn:NO error:&handleRecoveryResultsError];
 
-    if(recoverError) {
-        subTaskSuccess = false;
-        OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), (int)subTaskSuccess);
-    } else {
-        OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), (int)subTaskSuccess);
+    if (clique == nil || handleRecoveryResultsError) {
+        if (handleRecoveryResultsError == nil) {
+            handleRecoveryResultsError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorFailedToHandleRecoveryResults description:@"Failed to handle recovery results"];
+        }
+        OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), false);
+        [performRecoveryEvent sendMetricWithResult:NO error:handleRecoveryResultsError];
+        if (error) {
+            *error = handleRecoveryResultsError;
+        }
+        return nil;
     }
+
+    OctagonSignpostEnd(performEscrowRecoverySignpost, OctagonSignpostNamePerformEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformEscrowRecovery), true);
+    [performRecoveryEvent sendMetricWithResult:YES error:nil];
+
     return clique;
 
 #else
@@ -491,9 +634,22 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 #if OCTAGON
     secnotice("octagontrust-performSilentEscrowRecovery", "performSilentEscrowRecovery invoked for context:%@, altdsid:%@", data.context, data.altDSID);
 
+    AAFAnalyticsEventSecurity *performSilentEscrowRecoveryEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                                           altDSID:data.altDSID
+                                                                                                                            flowID:data.flowID
+                                                                                                                   deviceSessionID:data.deviceSessionID
+                                                                                                                         eventName:kSecurityRTCEventNamePerformSilentEscrowRecovery
+                                                                                                                   testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                                                    canSendMetrics:YES
+                                                                                                                          category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+
     if ([self isCloudServicesAvailable] == NO) {
+        NSError* localError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+        [performSilentEscrowRecoveryEvent sendMetricWithResult:NO error:localError];
+
         if (error) {
-            *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:nil];
+            *error = localError;
         }
         return nil;
     }
@@ -501,7 +657,7 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
     OctagonSignpost performSilentEscrowRecoverySignpost = OctagonSignpostBegin(OctagonSignpostNamePerformSilentEscrowRecovery);
     bool subTaskSuccess = true;
 
-    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = data.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-perform-silent-recovery"];
     NSDictionary* recoveredInformation = nil;
     NSError* recoverError = nil;
 
@@ -510,29 +666,82 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
 
     if (supportedRestorePath) {
         OctagonSignpost recoverFromSBDSignPost = OctagonSignpostBegin(OctagonSignpostNameRecoverSilentWithCDPContext);
-        recoveredInformation = [sb recoverSilentWithCDPContext:cdpContext allRecords:allRecords error:&recoverError];
-        subTaskSuccess = (recoverError == nil) ? true : false;
+        AAFAnalyticsEventSecurity *recoverEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                    altDSID:data.altDSID
+                                                                                                     flowID:data.flowID
+                                                                                            deviceSessionID:data.deviceSessionID
+                                                                                                  eventName:kSecurityRTCEventNameRecoverSilentWithCDPContext
+                                                                                            testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                             canSendMetrics:YES
+                                                                                                   category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
+        recoveredInformation = [sb recoverSilentWithCDPContext:cdpContext allRecords:allRecords altDSID:data.altDSID flowID:data.flowID deviceSessionID:data.deviceSessionID error:&recoverError];
+        if (recoverError) {
+            [recoverEvent sendMetricWithResult:NO error:recoverError];
+            [performSilentEscrowRecoveryEvent sendMetricWithResult:NO error:recoverError];
+            subTaskSuccess = false;
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNameRecoverSilentWithCDPContext, OctagonSignpostNumber1(OctagonSignpostNameRecoverSilentWithCDPContext), (int)subTaskSuccess);
+            OctagonSignpostEnd(performSilentEscrowRecoverySignpost, OctagonSignpostNamePerformSilentEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformSilentEscrowRecovery), (int)subTaskSuccess);
+            if (error) {
+                *error = recoverError;
+            }
+            return nil;
+        }
         OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNameRecoverSilentWithCDPContext, OctagonSignpostNumber1(OctagonSignpostNameRecoverSilentWithCDPContext), (int)subTaskSuccess);
+        [recoverEvent sendMetricWithResult:YES error:nil];
+
     } else {
         NSDictionary* sbdRecoveryArguments = [OTEscrowTranslation CDPRecordContextToDictionary:cdpContext];
 
         OctagonSignpost recoverFromSBDSignPost = OctagonSignpostBegin(OctagonSignpostNamePerformRecoveryFromSBD);
+        AAFAnalyticsEventSecurity *recoverEvent = [[AAFAnalyticsEventSecurity alloc] initWithKeychainCircleMetrics:nil
+                                                                                                    altDSID:data.altDSID
+                                                                                                     flowID:data.flowID
+                                                                                            deviceSessionID:data.deviceSessionID
+                                                                                                  eventName:kSecurityRTCEventNameRecoverWithInfo
+                                                                                            testsAreEnabled:MetricsOverrideTestsAreEnabled()
+                                                                                             canSendMetrics:YES
+                                                                                                   category:kSecurityRTCEventCategoryAccountDataAccessRecovery];
+
         recoverError = [sb recoverWithInfo:sbdRecoveryArguments results:&recoveredInformation];
-        subTaskSuccess = (recoverError == nil) ? true : false;
+        if (recoverError) {
+            [recoverEvent sendMetricWithResult:NO error:recoverError];
+            [performSilentEscrowRecoveryEvent sendMetricWithResult:NO error:recoverError];
+            subTaskSuccess = false;
+            OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNamePerformRecoveryFromSBD, OctagonSignpostNumber1(OctagonSignpostNamePerformRecoveryFromSBD), (int)subTaskSuccess);
+            OctagonSignpostEnd(performSilentEscrowRecoverySignpost, OctagonSignpostNamePerformSilentEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformSilentEscrowRecovery), (int)subTaskSuccess);
+            if (error) {
+                *error = recoverError;
+            }
+            return nil;
+
+        }
+
         OctagonSignpostEnd(recoverFromSBDSignPost, OctagonSignpostNamePerformRecoveryFromSBD, OctagonSignpostNumber1(OctagonSignpostNamePerformRecoveryFromSBD), (int)subTaskSuccess);
+        [recoverEvent sendMetricWithResult:YES error:nil];
     }
 
-    NSString* label = recoveredInformation[getkSecureBackupRecordLabelKey()];
+    NSString* label = recoveredInformation[kSecureBackupRecordLabelKey];
     OTEscrowRecord* chosenRecord = [OTClique recordMatchingLabel:label allRecords:allRecords];
 
-    OTClique *clique = [OTClique handleRecoveryResults:data recoveredInformation:recoveredInformation record:chosenRecord performedSilentBurn:YES recoverError:recoverError error:error];
+    NSError* handleRecoveryResultsError = nil;
+    OTClique *clique = [OTClique handleRecoveryResults:data recoveredInformation:recoveredInformation record:chosenRecord performedSilentBurn:YES error:&handleRecoveryResultsError];
 
-    if(recoverError) {
+    if (clique == nil || handleRecoveryResultsError) {
+        if (handleRecoveryResultsError == nil) {
+            handleRecoveryResultsError = [NSError errorWithDomain:OctagonErrorDomain code:OctagonErrorFailedToHandleRecoveryResults description:@"Failed to handle recovery results"];
+        }
+        [performSilentEscrowRecoveryEvent sendMetricWithResult:NO error:handleRecoveryResultsError];
         subTaskSuccess = false;
         OctagonSignpostEnd(performSilentEscrowRecoverySignpost, OctagonSignpostNamePerformSilentEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformSilentEscrowRecovery), (int)subTaskSuccess);
-    } else {
-        OctagonSignpostEnd(performSilentEscrowRecoverySignpost, OctagonSignpostNamePerformSilentEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformSilentEscrowRecovery), (int)subTaskSuccess);
+        if (error) {
+            *error = handleRecoveryResultsError;
+        }
+        return nil;
     }
+
+    [performSilentEscrowRecoveryEvent sendMetricWithResult:YES error:nil];
+    OctagonSignpostEnd(performSilentEscrowRecoverySignpost, OctagonSignpostNamePerformSilentEscrowRecovery, OctagonSignpostNumber1(OctagonSignpostNamePerformSilentEscrowRecovery), (int)subTaskSuccess);
 
     return clique;
 
@@ -1060,7 +1269,7 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
             if ([OTClique isCloudServicesAvailable] == NO) {
                 retError = [NSError errorWithDomain:NSOSStatusErrorDomain code:errSecUnimplemented userInfo:userInfo];
             } else {
-                retError = [NSError errorWithDomain:getkSecureBackupErrorDomain() code:kSecureBackupInternalError userInfo:userInfo];
+                retError = [NSError errorWithDomain:kSecureBackupErrorDomain code:kSecureBackupInternalError userInfo:userInfo];
             }
             if (error) {
                 *error = retError;
@@ -1084,7 +1293,7 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
         } else {
             secnotice("octagon-register-recovery-key", "successfully registered recovery key for SOS");
             
-            id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+            id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-register-recovery-key"];
             NSError* enableError = [sb backupForRecoveryKeyWithInfo:nil];
             if (enableError) {
                 secerror("octagon-register-recovery-key: failed to perform backup: %@", enableError);
@@ -1290,7 +1499,7 @@ static NSString * const kOTEscrowAuthKey = @"kOTEscrowAuthKey";
     secnotice("octagon-is-recovery-key-set-in-sos", "Checking SOS recovery key status for context:%@", ctx);
  
     bool isSetInSOS = false;
-    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-is-recovery-key-in-sos"];
     
     NSError* setInSOSError = nil;
     isSetInSOS = [sb isRecoveryKeySet:&setInSOSError];
@@ -1369,7 +1578,7 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInSOSState) {
     }
 
     secnotice("octagon-recover-with-rk", "recovery key is registered in SOS");
-    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-verify-recovery-key"];
 
     BOOL isRKCorrectInSOS = [sb verifyRecoveryKey:recoveryKey error:&sosError] ? YES : NO;
     if (isRKCorrectInSOS == NO || sosError) {
@@ -1477,7 +1686,7 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
 
     if (octagonError &&
         [octagonError.domain isEqualToString:TrustedPeersHelperErrorDomain]
-        && octagonError.code == TrustedPeersHelperErrorFailedToCreateRecoveryKey) {
+        && octagonError.code == TrustedPeersHelperErrorCodeFailedToCreateRecoveryKey) {
         NSError* underlyingError = octagonError.userInfo[NSUnderlyingErrorKey];
         if (underlyingError && [underlyingError.domain isEqualToString:TrustedPeersHelperRecoveryKeySetErrorDomain] && underlyingError.code == TrustedPeersHelperRecoveryKeySetErrorFailedToSaveToKeychain) {
             NSError* secondUnderlyingError = underlyingError.userInfo[NSUnderlyingErrorKey];
@@ -1520,7 +1729,7 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
             return NO;
         }
 
-        id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+        id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-recover-with-recovery-key"];
         NSError* restoreError = nil;
         if ([sb restoreKeychainWithBackupPassword:keydata error:&restoreError]) {
             secnotice("octagon-recover-with-rk","restoreKeychainWithBackupPassword succeeded");
@@ -1564,12 +1773,25 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
     // if Recovery Key is not set in Octagon but is set in SOS, reset octagon and set the recovery key
     if (octagonState == RecoveryKeyInOctagonStateDoesNotExist && sosState == RecoveryKeyInSOSStateExistsAndIsCorrect) {
 
-        [control resetAndEstablish:[[OTControlArguments alloc] initWithConfiguration:ctx]
+        OTControlArguments* arguments = [[OTControlArguments alloc] initWithConfiguration:ctx];
+        __block OTAccountSettings* accountSettings = nil;
+        __block NSError* fetchError = nil;
+        [control fetchAccountWideSettingsWithForceFetch:true arguments:arguments reply:^(OTAccountSettings * _Nullable retAccountSetting, NSError * _Nullable retError) {
+            accountSettings = retAccountSetting;
+            fetchError = retError;
+        }];
+        BOOL accountIsW = NO;
+        if (accountSettings.hasWalrus) {
+            accountIsW = accountSettings.walrus.enabled ? YES : NO;
+        }
+
+        [control resetAndEstablish:arguments
                        resetReason:CuttlefishResetReasonRecoveryKey
                  idmsTargetContext:nil
             idmsCuttlefishPassword:nil
                         notifyIdMS:false
                    accountSettings:nil
+                        accountIsW:accountIsW
                              reply:^(NSError * _Nullable resetError) {
             if(resetError) {
                 secnotice("octagon-recover-with-rk", "reset and establish returned an error: %@", resetError);
@@ -1666,7 +1888,7 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
         }
         return NO;
     } else {
-        id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+        id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-remove-recovery-key"];
         NSError* enableError = [sb backupForRecoveryKeyWithInfo:nil];
         if (enableError) {
             secerror("octagon-remove-recovery-key: failed to perform backup: %@", enableError);
@@ -1699,7 +1921,7 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
         secnotice("octagon-remove-recovery-key", "successfully pushed a reset circle");
     }
 
-    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[getSecureBackupClass() alloc] init];
+    id<OctagonEscrowRecovererPrococol> sb = ctx.sbd ?: [[SecureBackup alloc] initWithUserActivityLabel:@"octagon-trust-remove-recovery-key-not-in-circle"];
     NSError* removeError = nil;
     bool removeResult = [sb removeRecoveryKeyFromBackup:&removeError];
     if (removeResult == false || removeError) {
@@ -1873,6 +2095,49 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
 }
 
 
++ (NSNumber * _Nullable)trustedFullPeers:(OTConfigurationContext*)ctx error:(NSError * __autoreleasing *)error
+{
+#if OCTAGON
+    secnotice("octagon-count-trusted-full-peers", "trustedFullPeers invoked for context: %@", ctx.context);
+
+    NSError* controlError = nil;
+    OTControl* control = [ctx makeOTControl:&controlError];
+    if(!control) {
+        secnotice("octagon-count-trusted-full-peers", "failed to fetch OTControl object: %@", controlError);
+        if (error) {
+            *error = controlError;
+        }
+        return nil;
+    }
+
+    __block NSError* localError = nil;
+    __block NSNumber* trustedFullPeers = nil;
+
+    [control trustedFullPeers:[[OTControlArguments alloc] initWithConfiguration:ctx] reply:^(NSNumber * _Nullable count, NSError * _Nullable countError) {
+        if(countError) {
+            secnotice("octagon-count-trusted-full-peers", "trustedFullPeers errored: %@", countError);
+            localError = countError;
+        } else {
+            secnotice("octagon-count-trusted-full-peers", "trustedFullPeers succeeded, total count: %@", count);
+            trustedFullPeers = count;
+        }
+    }];
+
+    if (localError) {
+        if (error) {
+            *error = localError;
+        }
+        return nil;
+    }
+
+    secnotice("octagon-count-trusted-full-peers", "Number of trusted Octagon full peers: %@", trustedFullPeers);
+
+    return trustedFullPeers;
+#else // !OCTAGON
+    return NULL;
+#endif
+}
+
 + (BOOL)areRecoveryKeysDistrusted:(OTConfigurationContext*)ctx error:(NSError * __autoreleasing *)error
 {
 #if OCTAGON
@@ -1913,6 +2178,47 @@ typedef NS_ENUM(NSInteger, RecoveryKeyInOctagonState) {
     return octagonContainsDistrustedRecoveryKeys;
 #else // !OCTAGON
     return NO;
+#endif
+}
+
++ (OTEscrowCheckCallResult * __nullable)escrowCheck:(OTConfigurationContext*)ctx isBackgroundCheck:(BOOL)isBackgroundCheck error:(NSError * __autoreleasing *)error
+{
+#if OCTAGON
+    secnotice("octagon-escrow-check", "escrowCheck invoked for context: %@", ctx.context);
+
+    NSError* controlError = nil;
+    OTControl* control = [ctx makeOTControl:&controlError];
+    if(!control) {
+        secnotice("octagon-escrow-check", "failed to fetch OTControl object: %@", controlError);
+        if (error) {
+            *error = controlError;
+        }
+        return nil;
+    }
+
+    __block NSError* localError = nil;
+    __block OTEscrowCheckCallResult* retResult = nil;
+    
+    [control escrowCheck:[[OTControlArguments alloc] initWithConfiguration:ctx] isBackgroundCheck:isBackgroundCheck reply:^(OTEscrowCheckCallResult* result, NSError * _Nullable ecError) {
+        if(ecError) {
+            secnotice("octagon-escrow-check", "escrowCheck errored: %@", ecError);
+            localError = ecError;
+        } else {
+            secnotice("octagon-escrow-check", "escrowCheck succeeded %@", [result dictionaryRepresentation]);
+            retResult = result;
+        }
+    }];
+
+    if (localError) {
+        if (error) {
+            *error = localError;
+        }
+        return nil;
+    }
+
+    return retResult;
+#else // !OCTAGON
+    return nil;
 #endif
 }
 

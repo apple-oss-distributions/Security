@@ -157,6 +157,12 @@ void rule_log_manipulation(authdb_connection_t dbconn, rule_t rule, RuleOperatio
 AUTH_NONNULL_ALL
 bool rule_get_securetokenuser(rule_t rule);
 
+rule_t
+rule_create_trust_admin(void);
+
+rule_t
+rule_create_trust_user(void);
+
 #if defined(__cplusplus)
 }
 #endif

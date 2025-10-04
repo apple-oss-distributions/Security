@@ -88,6 +88,19 @@ CFDictionaryRef SecOTAPKICopyEVPolicyToAnchorMapping(SecOTAPKIRef otapkiRef);
 CF_EXPORT
 CFDictionaryRef SecOTAPKICopyAnchorLookupTable(SecOTAPKIRef otapkiRef);
 
+// Accessor to retrieve the dictionary of normalized subject hash to
+// certs and constraint info.
+// Caller is responsible for releasing the returned CFDictionaryRef
+CF_EXPORT
+CFDictionaryRef SecOTAPKICopyConstrainedAnchorLookupTable(void);
+
+// Accessor to retrieve the data of an anchor certificate specified by
+// its SHA256 hash as a hex string. This retrieves the contents of a file
+// in the Anchors directory whose name is <anchorHash>.cer.
+// Caller is responsible for releasing the returned CFDataRef
+CF_EXPORT
+CFDataRef SecOTAPKICopyConstrainedAnchorData(SecOTAPKIRef otapkiRef, CFStringRef anchorHash);
+
 // Accessor to retrieve the pointer to the top of the anchor certs file.
 // Caller should NOT free the returned pointer.  The caller should hold
 // a reference to the SecOTAPKIRef object until finished with
@@ -193,7 +206,7 @@ uint64_t SecOTAPKIGetCurrentTrustStoreVersion(CFErrorRef* CF_RETURNS_RETAINED er
 
 // SPI to return the current OTA PKI (PKITrustSupplementals) asset version
 CF_EXPORT
-uint64_t SecOTAPKIGetCurrentAssetVersion(CFErrorRef* error);
+uint64_t SecOTATrustSupplementalsGetCurrentAssetVersion(CFErrorRef* error);
 
 // SPI to return the current OTA SecExperiment asset version
 CF_EXPORT
@@ -202,13 +215,13 @@ uint64_t SecOTASecExperimentGetCurrentAssetVersion(CFErrorRef* error);
 // SPI to reset the current OTA PKI asset version to the version shipped
 // with the system
 CF_EXPORT
-uint64_t SecOTAPKIResetCurrentAssetVersion(CFErrorRef* CF_RETURNS_RETAINED error);
+uint64_t SecOTAPKIResetCurrentSupplementalsAssetVersion(CFErrorRef* CF_RETURNS_RETAINED error);
 
 // SPI to signal trustd to get a new set of trust data
 // Always returns the current asset version. Returns an error with
 // a reason if the update was not successful.
 CF_EXPORT
-uint64_t SecOTAPKISignalNewAsset(CFErrorRef* CF_RETURNS_RETAINED error);
+uint64_t SecOTAPKISignalNewSupplementalsAsset(CFErrorRef* CF_RETURNS_RETAINED error);
 
 // SPI to signal trustd to get a new set of SecExperiment data
 // Always returns the current asset version. Returns an error with
@@ -225,6 +238,7 @@ CFDictionaryRef SecOTASecExperimentCopyAsset(CFErrorRef* error);
 BOOL UpdateOTACheckInDate(void);
 void UpdateKillSwitch(NSString *key, bool value);
 #endif
+bool SecOTAPKISetConstrainedAnchorLookupTable(CFDictionaryRef table);
 
 __END_DECLS
 

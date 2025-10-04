@@ -23,6 +23,7 @@
 
 #import "keychain/ot/CuttlefishXPCWrapper.h"
 #import <AppleFeatures/AppleFeatures.h>
+#import <OctagonTrust/OTEscrowCheckCallResult.h>
 
 // Too complex for the static analyzer: rdar://119671856 (Infinite loop when building with "-Wcompletion-handler")
 #pragma clang diagnostic push
@@ -63,7 +64,27 @@ enum {NUM_RETRIES = 5};
 }
 
 - (void)dumpWithSpecificUser:(TPSpecificUser*)specificUser
-                       reply:(void (^)(NSDictionary * _Nullable, NSError * _Nullable))reply
+              fileDescriptor:(xpc_object_t)xpcFd
+                       reply:(void (^)(NSError * _Nullable))reply
+{
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+                retry = true;
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(error);
+            }
+            ++i;
+        }] dumpWithSpecificUser:specificUser fileDescriptor:xpcFd reply:reply];
+    } while (retry);
+}
+
+- (void)honorIDMSListChangesForSpecificUser:(TPSpecificUser*)specificUser reply:(void (^)(NSString * _Nullable, NSError * _Nullable))reply
 {
     __block int i = 0;
     __block bool retry;
@@ -78,7 +99,48 @@ enum {NUM_RETRIES = 5};
                 reply(nil, error);
             }
             ++i;
-        }] dumpWithSpecificUser:specificUser reply:reply];
+        }] honorIDMSListChangesForSpecificUser:specificUser reply:reply];
+    } while (retry);
+}
+
+- (void)octagonPeerIDGivenBottleIDWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                          bottleID:(NSString*)bottleID
+                                             reply:(void (^)(NSString * _Nullable, NSError * _Nullable))reply
+{
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+                retry = true;
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(nil, error);
+            }
+            ++i;
+        }] octagonPeerIDGivenBottleIDWithSpecificUser:specificUser bottleID:bottleID reply:reply];
+    } while (retry);
+}
+
+- (void)trustedDeviceNamesByPeerIDWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                      reply:(void (^)(NSDictionary<NSString*, NSString*> * _Nullable, NSError * _Nullable))reply
+{
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+                retry = true;
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(nil, error);
+            }
+            ++i;
+        }] trustedDeviceNamesByPeerIDWithSpecificUser:specificUser reply:reply];
     } while (retry);
 }
 
@@ -416,6 +478,10 @@ enum {NUM_RETRIES = 5};
                          ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)viewKeySets
                         tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
                   preapprovedKeys:(nullable NSArray<NSData*> *)preapprovedKeys
+                          altDSID:(NSString * _Nullable)altDSID
+                           flowID:(NSString * _Nullable)flowID
+                  deviceSessionID:(NSString * _Nullable)deviceSessionID
+                   canSendMetrics:(BOOL)canSendMetrics
                             reply:(void (^)(NSString * _Nullable peerID,
                                             NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                             TPSyncingPolicy* _Nullable syncingPolicy,
@@ -434,7 +500,7 @@ enum {NUM_RETRIES = 5};
                 reply(nil, nil, nil, error);
             }
             ++i;
-        }] establishWithSpecificUser:specificUser ckksKeys:viewKeySets tlkShares:tlkShares preapprovedKeys:preapprovedKeys reply:reply];
+        }] establishWithSpecificUser:specificUser ckksKeys:viewKeySets tlkShares:tlkShares preapprovedKeys:preapprovedKeys altDSID:altDSID flowID:flowID deviceSessionID:deviceSessionID canSendMetrics:canSendMetrics reply:reply];
     } while (retry);
 }
 
@@ -472,6 +538,10 @@ enum {NUM_RETRIES = 5};
 
 - (void)preflightVouchWithBottleWithSpecificUser:(TPSpecificUser*)specificUser
                                         bottleID:(nonnull NSString *)bottleID
+                                         altDSID:(NSString* _Nullable)altDSID
+                                          flowID:(NSString* _Nullable)flowID
+                                 deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                  canSendMetrics:(BOOL)canSendMetrics
                                            reply:(nonnull void (^)(NSString * _Nullable,
                                                                    TPSyncingPolicy* _Nullable peerSyncingPolicy,
                                                                    BOOL refetchWasNeeded,
@@ -491,6 +561,10 @@ enum {NUM_RETRIES = 5};
             ++i;
         }] preflightVouchWithBottleWithSpecificUser:specificUser
          bottleID:bottleID
+         altDSID:altDSID
+         flowID:flowID
+         deviceSessionID:deviceSessionID
+         canSendMetrics:canSendMetrics
          reply:reply];
     } while (retry);
 }
@@ -500,6 +574,10 @@ enum {NUM_RETRIES = 5};
                                 entropy:(NSData*)entropy
                              bottleSalt:(NSString*)bottleSalt
                               tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
+                                altDSID:(NSString* _Nullable)altDSID
+                                 flowID:(NSString* _Nullable)flowID
+                        deviceSessionID:(NSString* _Nullable)deviceSessionID
+                         canSendMetrics:(BOOL)canSendMetrics
                                   reply:(void (^)(NSData * _Nullable voucher,
                                                   NSData * _Nullable voucherSig,
                                                   NSArray<CKKSTLKShare*>* _Nullable newTLKShares,
@@ -519,7 +597,16 @@ enum {NUM_RETRIES = 5};
                 reply(nil, nil, nil, nil, error);
             }
             ++i;
-        }] vouchWithBottleWithSpecificUser:specificUser bottleID:bottleID entropy:entropy bottleSalt:bottleSalt tlkShares:tlkShares reply:reply];
+        }] vouchWithBottleWithSpecificUser:specificUser
+         bottleID:bottleID
+         entropy:entropy
+         bottleSalt:bottleSalt
+         tlkShares:tlkShares
+         altDSID:altDSID
+         flowID:flowID
+         deviceSessionID:deviceSessionID
+         canSendMetrics:canSendMetrics
+         reply:reply];
     } while (retry);
 }
 
@@ -710,6 +797,10 @@ enum {NUM_RETRIES = 5};
                                       ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)ckksKeys
                                      tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
                                preapprovedKeys:(nullable NSArray<NSData*> *)preapprovedKeys
+                                       altDSID:(NSString * _Nullable)altDSID
+                                        flowID:(NSString * _Nullable)flowID
+                               deviceSessionID:(NSString * _Nullable)deviceSessionID
+                                canSendMetrics:(BOOL)canSendMetrics
                                          reply:(void (^)(NSString * _Nullable peerID,
                                                          NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                                          TPSyncingPolicy* _Nullable syncingPolicy,
@@ -732,6 +823,10 @@ enum {NUM_RETRIES = 5};
          ckksKeys:ckksKeys
          tlkShares:tlkShares
          preapprovedKeys:preapprovedKeys
+         altDSID:altDSID
+         flowID:flowID
+         deviceSessionID:deviceSessionID
+         canSendMetrics:canSendMetrics
          reply:reply];
     } while (retry);
 }
@@ -1032,6 +1127,8 @@ enum {NUM_RETRIES = 5};
 - (void)requestHealthCheckWithSpecificUser:(TPSpecificUser*)specificUser
                        requiresEscrowCheck:(BOOL)requiresEscrowCheck
                                     repair:(BOOL)repair
+                       danglingPeerCleanup:(BOOL)danglingPeerCleanup
+                                updateIdMS:(BOOL)updateIdMS
                           knownFederations:(NSArray<NSString *> *)knownFederations
                                     flowID:(NSString* _Nullable)flowID
                            deviceSessionID:(NSString* _Nullable)deviceSessionID
@@ -1050,7 +1147,40 @@ enum {NUM_RETRIES = 5};
                 reply(nil, error);
             }
             ++i;
-        }] requestHealthCheckWithSpecificUser:specificUser requiresEscrowCheck:requiresEscrowCheck repair:repair knownFederations:knownFederations flowID:flowID deviceSessionID:deviceSessionID reply:reply];
+        }] requestHealthCheckWithSpecificUser:specificUser
+                          requiresEscrowCheck:requiresEscrowCheck
+                                       repair:repair
+                          danglingPeerCleanup:danglingPeerCleanup
+                                   updateIdMS:updateIdMS
+                             knownFederations:knownFederations
+                                       flowID:flowID
+                              deviceSessionID:deviceSessionID
+                                        reply:reply];
+    } while (retry);
+}
+
+- (void)requestEscrowCheckWithSpecificUser:(TPSpecificUser*)specificUser
+                       requiresEscrowCheck:(BOOL)requiresEscrowCheck
+                        passcodeGeneration:(UInt64)passcodeGeneration
+                          knownFederations:(nonnull NSArray<NSString *> *)knownFederations
+                         isBackgroundCheck:(BOOL)isBackgroundCheck
+                                    flowID:(NSString* _Nullable)flowID
+                           deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                     reply:(void (^)(OTEscrowCheckCallResult* _Nullable result, NSError* _Nullable))reply
+{
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(nil, error);
+            }
+            ++i;
+        }] requestEscrowCheckWithSpecificUser:specificUser requiresEscrowCheck:requiresEscrowCheck passcodeGeneration:passcodeGeneration knownFederations:knownFederations isBackgroundCheck:isBackgroundCheck flowID:flowID deviceSessionID:deviceSessionID reply:reply];
     } while (retry);
 }
 
@@ -1150,6 +1280,10 @@ enum {NUM_RETRIES = 5};
 
 - (void)fetchRecoverableTLKSharesWithSpecificUser:(TPSpecificUser*)specificUser
                                            peerID:(NSString * _Nullable)peerID
+                                          altDSID:(NSString * _Nullable)altDSID
+                                           flowID:(NSString * _Nullable)flowID
+                                  deviceSessionID:(NSString * _Nullable)deviceSessionID
+                                   canSendMetrics:(BOOL)canSendMetrics
                                             reply:(nonnull void (^)(NSArray<CKRecord *> * _Nullable,
                                                                     NSError * _Nullable))reply
 {
@@ -1166,12 +1300,16 @@ enum {NUM_RETRIES = 5};
                 reply(nil, error);
             }
             ++i;
-        }] fetchRecoverableTLKSharesWithSpecificUser:specificUser peerID:peerID reply:reply];
+        }] fetchRecoverableTLKSharesWithSpecificUser:specificUser peerID:peerID altDSID:altDSID flowID:flowID deviceSessionID:deviceSessionID canSendMetrics:canSendMetrics reply:reply];
     } while (retry);
 }
 
 - (void)fetchAccountSettingsWithSpecificUser:(TPSpecificUser*)specificUser
                                   forceFetch:(bool)forceFetch
+                                     altDSID:(NSString* _Nullable)altDSID
+                                      flowID:(NSString* _Nullable)flowID
+                             deviceSessionID:(NSString* _Nullable)deviceSessionID
+                              canSendMetrics:(BOOL)canSendMetrics
                                        reply:(nonnull void (^)(NSDictionary<NSString*, TPPBPeerStableInfoSetting *> * _Nullable,
                                                                NSError * _Nullable))reply
 {
@@ -1188,7 +1326,13 @@ enum {NUM_RETRIES = 5};
                 reply(nil, error);
             }
             ++i;
-        }] fetchAccountSettingsWithSpecificUser:specificUser forceFetch:forceFetch reply:reply];
+        }] fetchAccountSettingsWithSpecificUser:specificUser
+         forceFetch:forceFetch
+         altDSID:altDSID
+         flowID:flowID
+         deviceSessionID:deviceSessionID
+         canSendMetrics:canSendMetrics
+         reply:reply];
     } while (retry);
 }
 
@@ -1372,6 +1516,24 @@ enum {NUM_RETRIES = 5};
     } while (retry);
 }
 
+- (void)fetchTrustedFullPeerCountWithSpecificUser:(TPSpecificUser * _Nullable)specificUser reply:(nonnull void (^)(NSNumber * _Nullable, NSError * _Nullable))reply {
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+                retry = true;
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(nil, error);
+            }
+            ++i;
+        }] fetchTrustedFullPeerCountWithSpecificUser:specificUser reply:reply];
+    } while (retry);
+}
+
 - (void)octagonContainsDistrustedRecoveryKeysWithSpecificUser:(TPSpecificUser * _Nullable)specificUser reply:(nonnull void (^)(BOOL, NSError * _Nullable))reply {
     __block int i = 0;
     __block bool retry;
@@ -1430,6 +1592,27 @@ enum {NUM_RETRIES = 5};
         }] fetchPCSIdentityByPublicKeyWithSpecificUser:specificUser pcsservices:pcsservices reply:reply];
     } while (retry);
 }
+
+- (void)performCKServerUnreadableDataRemovalWithSpecificUser:(TPSpecificUser * _Nullable)specificUser 
+                                                       reply:(nonnull void (^)(NSError * _Nullable))reply {
+    __block int i = 0;
+    __block bool retry;
+    do {
+        retry = false;
+        [[self.cuttlefishXPCConnection synchronousRemoteObjectProxyWithErrorHandler:^(NSError *_Nonnull error) {
+            if (i < NUM_RETRIES && [self.class retryable:error]) {
+                secnotice("octagon", "retrying cuttlefish XPC %s, (%d, %@)", __func__, i, error);
+                retry = true;
+            } else {
+                secerror("octagon: Can't talk with TrustedPeersHelper %s: %@", __func__, error);
+                reply(error);
+            }
+            ++i;
+        }] performCKServerUnreadableDataRemovalWithSpecificUser:specificUser
+         reply:reply];
+    } while (retry);
+}
+
 
 @end
 

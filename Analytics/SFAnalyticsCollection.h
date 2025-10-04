@@ -23,16 +23,19 @@
 
 #import <Foundation/Foundation.h>
 
-@class SECSFARule;
+@class SECSFAEventRule;
+@class SECSFAVersion;
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SFAnalyticsMatchingRule: NSObject
 @property NSString *eventName;
-@property (readonly) SECSFARule *rule;
+@property (readonly) SECSFAEventRule *rule;
++ (NSString *)armKeyForEventName:(NSString *)eventName;
 @end
 
 @protocol SFAnalyticsCollectionAction <NSObject>
+- (BOOL)shouldRatelimit:(SFAnalytics*)logger rule:(SFAnalyticsMatchingRule*)rule;
 - (void)autoBugCaptureWithType:(NSString *)type  subType:(NSString *)subType domain:(NSString *)domain;
 - (void)tapToRadar:(NSString*)alert
        description:(NSString*)description
@@ -44,14 +47,28 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+typedef NSMutableDictionary<NSString*, NSMutableSet<SFAnalyticsMatchingRule*>*> SFAMatchingRules;
+
+@interface SecSFAParsedCollection: NSObject
+@property SFAMatchingRules *matchingRules;
+@property NSMutableDictionary<NSString*,NSNumber*>* allowedEvents;
+@property (readwrite) BOOL excludedVersion;
+@end
+
 @interface SFAnalyticsCollection : NSObject
 
 - (instancetype)init;
-- (instancetype)initWithActionInterface:(id<SFAnalyticsCollectionAction>)action;
+- (instancetype)initWithActionInterface:(id<SFAnalyticsCollectionAction>)action
+                                product:(NSString *)product
+                                  build:(NSString *)build;
 
 - (void)loadCollection:(SFAnalytics *)logger;
 - (void)storeCollection:(NSData * _Nullable)data logger:(SFAnalytics *_Nullable)logger;
 - (void)stopMetricCollection;
+
++ (SECSFAVersion *_Nullable)parseVersion:(NSString *)build platform:(NSString *)platform;
++ (BOOL)isVersionSameOrNewer:(SECSFAVersion *)v1 than:(SECSFAVersion *)v2;
+
 
 - (SFAnalyticsMetricsHookActions)match:(NSString*)eventName
                             eventClass:(SFAnalyticsEventClass)eventClass
@@ -59,8 +76,14 @@ NS_ASSUME_NONNULL_BEGIN
                                 bucket:(SFAnalyticsTimestampBucket)timestampBucket
                                 logger:(SFAnalytics *)logger;
 
-- (NSMutableDictionary<NSString*, NSMutableSet<SFAnalyticsMatchingRule*>*>* _Nullable)parseCollection:(NSData *)data
-                                                                                               logger:(SFAnalytics *)logger;
+- (SecSFAParsedCollection *_Nullable)parseCollection:(NSData *)data
+                                        logger:(SFAnalytics *)logger;
+
+// only for testing
+@property (readonly) BOOL excludedVersion;
+@property (readonly) SFAMatchingRules *matchingRules;
+@property NSString *processName;
+- (void)drainSetupQueue;
 
 @end
 

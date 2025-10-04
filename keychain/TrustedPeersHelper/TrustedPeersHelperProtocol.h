@@ -36,7 +36,7 @@
 #import "keychain/ot/OTConstants.h"
 
 @class OTAccountSettings;
-@class OTEscrowMoveRequestContext;
+@class OTEscrowCheckCallResult;
 NS_ASSUME_NONNULL_BEGIN
 
 // Any client hoping to use the TrustedPeersHelperProtocol should have an entitlement
@@ -135,7 +135,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property bool resetOctagon;
 @property bool leaveTrust;
 @property bool reroll;
-@property (nullable) OTEscrowMoveRequestContext* moveRequest;
 @property uint64_t totalEscrowRecords;
 @property uint64_t collectableEscrowRecords;
 @property uint64_t collectedEscrowRecords;
@@ -155,7 +154,6 @@ NS_ASSUME_NONNULL_BEGIN
                          resetOctagon:(bool)resetOctagon
                            leaveTrust:(bool)leaveTrust
                                reroll:(bool)reroll
-                          moveRequest:(OTEscrowMoveRequestContext* _Nullable)moveRequest
                    totalEscrowRecords:(uint64_t)totalEscrowRecords
              collectableEscrowRecords:(uint64_t)collectableEscrowRecords
                collectedEscrowRecords:(uint64_t)collectedEscrowRecords
@@ -218,7 +216,18 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)pingWithReply:(void (^)(void))reply;
 
 - (void)dumpWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
-                       reply:(void (^)(NSDictionary * _Nullable, NSError * _Nullable))reply;
+              fileDescriptor:(xpc_object_t)xpcFd
+                       reply:(void (^)(NSError * _Nullable))reply;
+
+- (void)honorIDMSListChangesForSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                      reply:(void (^)(NSString * _Nullable, NSError * _Nullable))reply;
+
+- (void)octagonPeerIDGivenBottleIDWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                          bottleID:(NSString*)bottleID
+                                             reply:(void (^)(NSString * _Nullable, NSError * _Nullable))reply;
+
+- (void)trustedDeviceNamesByPeerIDWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                      reply:(void (^)(NSDictionary<NSString*, NSString*> * _Nullable, NSError * _Nullable))reply;
 
 - (void)departByDistrustingSelfWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                           reply:(void (^)(NSError * _Nullable))reply;
@@ -243,6 +252,9 @@ NS_ASSUME_NONNULL_BEGIN
               internalAccount:(bool)internalAccount
                   demoAccount:(bool)demoAccount
                         reply:(void (^)(NSError * _Nullable error))reply;
+
+- (void)performCKServerUnreadableDataRemovalWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                                       reply:(void (^)(NSError * _Nullable error))reply;
 
 - (void)localResetWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                              reply:(void (^)(NSError * _Nullable error))reply;
@@ -339,6 +351,10 @@ NS_ASSUME_NONNULL_BEGIN
                          ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)viewKeySets
                         tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
                   preapprovedKeys:(nullable NSArray<NSData*> *)preapprovedKeys
+                          altDSID:(NSString* _Nullable)altDSID
+                           flowID:(NSString* _Nullable)flowID
+                  deviceSessionID:(NSString* _Nullable)deviceSessionID
+                   canSendMetrics:(BOOL)canSendMetrics
                             reply:(void (^)(NSString * _Nullable peerID,
                                             NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                             TPSyncingPolicy* _Nullable syncingPolicy,
@@ -366,6 +382,10 @@ NS_ASSUME_NONNULL_BEGIN
 // If TPH had to refetch anything from the network, it will report that fact as refetchNeeded.
 - (void)preflightVouchWithBottleWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                         bottleID:(NSString*)bottleID
+                                         altDSID:(NSString* _Nullable)altDSID
+                                          flowID:(NSString* _Nullable)flowID
+                                 deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                  canSendMetrics:(BOOL)canSendMetrics
                                            reply:(void (^)(NSString* _Nullable peerID,
                                                            TPSyncingPolicy* _Nullable syncingPolicy,
                                                            BOOL refetchWasNeeded,
@@ -377,6 +397,10 @@ NS_ASSUME_NONNULL_BEGIN
                                 entropy:(NSData*)entropy
                              bottleSalt:(NSString*)bottleSalt
                               tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
+                                altDSID:(NSString* _Nullable)altDSID
+                                 flowID:(NSString* _Nullable)flowID
+                        deviceSessionID:(NSString* _Nullable)deviceSessionID
+                         canSendMetrics:(BOOL)canSendMetrics
                                   reply:(void (^)(NSData * _Nullable voucher,
                                                   NSData * _Nullable voucherSig,
                                                   NSArray<CKKSTLKShare*>* _Nullable newSelfTLKShares,
@@ -473,6 +497,10 @@ NS_ASSUME_NONNULL_BEGIN
                                       ckksKeys:(NSArray<CKKSKeychainBackedKeySet*> *)ckksKeys
                                      tlkShares:(NSArray<CKKSTLKShare*> *)tlkShares
                                preapprovedKeys:(nullable NSArray<NSData*> *)preapprovedKeys
+                                       altDSID:(NSString* _Nullable)altDSID
+                                        flowID:(NSString * _Nullable)flowID
+                               deviceSessionID:(NSString * _Nullable)deviceSessionID
+                                canSendMetrics:(BOOL)canSendMetrics
                                          reply:(void (^)(NSString * _Nullable peerID,
                                                          NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                                          TPSyncingPolicy* _Nullable syncingPolicy,
@@ -529,6 +557,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)fetchRecoverableTLKSharesWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                            peerID:(NSString* _Nullable)peerID
+                                          altDSID:(NSString* _Nullable)altDSID
+                                           flowID:(NSString* _Nullable)flowID
+                                  deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                   canSendMetrics:(BOOL)canSendMetrics
                                             reply:(void (^)(NSArray<CKRecord*>* _Nullable keyHierarchyRecords,
                                                             NSError * _Nullable error))reply;
 
@@ -577,10 +609,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)requestHealthCheckWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                        requiresEscrowCheck:(BOOL)requiresEscrowCheck
                                     repair:(BOOL)repair
+                       danglingPeerCleanup:(BOOL)danglingPeerCleanup
+                                updateIdMS:(BOOL)updateIdMS
                           knownFederations:(NSArray<NSString *> *)knownFederations
                                     flowID:(NSString* _Nullable )flowID
                            deviceSessionID:(NSString* _Nullable )deviceSessionID
                                      reply:(void (^)(TrustedPeersHelperHealthCheckResult* _Nullable result, NSError* _Nullable error))reply;
+
+- (void)requestEscrowCheckWithSpecificUser:(TPSpecificUser*)specificUser
+                       requiresEscrowCheck:(BOOL)requiresEscrowCheck
+                        passcodeGeneration:(UInt64)passcodeGeneration
+                          knownFederations:(NSArray<NSString *> *)knownFederations
+                         isBackgroundCheck:(BOOL)isBackgroundCheck
+                                    flowID:(NSString* _Nullable)flowID
+                           deviceSessionID:(NSString* _Nullable)deviceSessionID
+                                     reply:(void (^)(OTEscrowCheckCallResult* _Nullable result, NSError* _Nullable))reply;
 
 - (void)getSupportAppInfoWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                     reply:(void (^)(NSData * _Nullable, NSError * _Nullable))reply;
@@ -599,6 +642,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)fetchAccountSettingsWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                   forceFetch:(bool)forceFetch
+                                     altDSID:(NSString* _Nullable)altDSID
+                                      flowID:(NSString* _Nullable)flowID
+                             deviceSessionID:(NSString* _Nullable)deviceSessionID
+                              canSendMetrics:(BOOL)canSendMetrics
                                        reply:(void (^)(NSDictionary<NSString*, TPPBPeerStableInfoSetting *> * _Nullable setting,
                                                        NSError* _Nullable error))reply;
 
@@ -623,6 +670,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)fetchTrustedPeerCountWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                         reply:(void (^)(NSNumber* _Nullable count,
                                                         NSError* _Nullable error))reply;
+
+- (void)fetchTrustedFullPeerCountWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
+                                            reply:(void (^)(NSNumber* _Nullable count,
+                                                   NSError* _Nullable error))reply;
 
 - (void)octagonContainsDistrustedRecoveryKeysWithSpecificUser:(TPSpecificUser* _Nullable)specificUser
                                                         reply:(void (^)(BOOL containsDistrusted, NSError* _Nullable error))reply;

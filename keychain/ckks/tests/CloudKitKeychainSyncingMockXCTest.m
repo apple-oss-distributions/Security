@@ -129,7 +129,7 @@
     self.ckksViews = self.ckksViews ?: [NSMutableSet set];
     self.keys = self.keys ?: [[NSMutableDictionary alloc] init];
 
-    self.defaultCKKS.cuttlefishAdapter = [[CKKSMockCuttlefishAdapter alloc] init:self.zones zoneKeys:self.keys];
+    self.defaultCKKS.cuttlefishAdapter = [[CKKSMockCuttlefishAdapter alloc] init:self.zones zoneKeys:self.keys peerID:self.mockSOSAdapter.selfPeer.peerID];
     
     [SecMockAKS reset];
 
@@ -439,7 +439,7 @@
 
     CKKSKey* oldTLK = zonekeys.tlk;
     NSError* error = nil;
-    [oldTLK ensureKeyLoadedForContextID:self.defaultCKKS.operationDependencies.contextID error: &error];
+    [oldTLK ensureKeyLoadedForContextID:self.defaultCKKS.operationDependencies.contextID cache:nil error: &error];
     XCTAssertNil(error, "shouldn't error ensuring that the oldTLK has its key material");
 
     [self createFakeKeyHierarchy: zoneID oldTLK:oldTLK];
@@ -561,7 +561,7 @@
     XCTAssertNotNil(self.keys[zoneID].tlk, "Have a TLK to save for zone %@", zoneID);
 
     __block CFErrorRef cferror = NULL;
-    kc_with_dbt(true, &cferror, ^bool (SecDbConnectionRef dbt) {
+    kc_with_dbt(true, NULL , &cferror, ^bool (SecDbConnectionRef dbt) {
         bool ok = kc_transaction_type(dbt, kSecDbExclusiveRemoteSOSTransactionType, &cferror, ^bool {
             NSError* error = nil;
             [self.keys[zoneID].tlk saveKeyMaterialToKeychain: false error:&error];
@@ -630,7 +630,7 @@ static CFDictionaryRef SOSCreatePeerGestaltFromName(CFStringRef name)
 {
     __block NSMutableDictionary *piggybackdata = [[NSMutableDictionary alloc] init];
     __block CFErrorRef cferror = NULL;
-    kc_with_dbt(true, &cferror, ^bool (SecDbConnectionRef dbt) {
+    kc_with_dbt(true, NULL , &cferror, ^bool (SecDbConnectionRef dbt) {
         bool ok = kc_transaction_type(dbt, kSecDbExclusiveRemoteSOSTransactionType, &cferror, ^bool {
             piggybackdata[@"idents"] = [self SOSPiggyICloudIdentities];
             piggybackdata[@"tlk"] = SOSAccountGetAllTLKs();
@@ -647,7 +647,7 @@ static CFDictionaryRef SOSCreatePeerGestaltFromName(CFStringRef name)
 
 - (void)SOSPiggyBackAddToKeychain:(NSDictionary*)piggydata{
     __block CFErrorRef cferror = NULL;
-    kc_with_dbt(true, &cferror, ^bool (SecDbConnectionRef dbt) {
+    kc_with_dbt(true, NULL , &cferror, ^bool (SecDbConnectionRef dbt) {
         bool ok = kc_transaction_type(dbt, kSecDbExclusiveRemoteSOSTransactionType, &cferror, ^bool {
             NSError* error = nil;
             NSArray* icloudidentities = piggydata[@"idents"];
@@ -1245,7 +1245,7 @@ options:0];
 }
 
 
-- (CKRecord*)createFakeTombstoneRecord:(CKRecordZoneID*)zoneID recordName:(NSString*)recordName account:(NSString*)account {
+- (CKRecord*)createFakeKeychainTombstoneRecord:(CKRecordZoneID*)zoneID recordName:(NSString*)recordName account:(NSString*)account {
     NSMutableDictionary* item = [[self fakeRecordDictionary:account zoneID:zoneID] mutableCopy];
     item[@"tomb"] = @YES;
 
@@ -1573,7 +1573,7 @@ plaintextPCSServiceIdentifier:(NSNumber*)plaintextPCSServiceIdentifier plaintext
 
     __block size_t count = 0;
 
-    bool ok = kc_with_dbt(true, &cferror, ^(SecDbConnectionRef dbt) {
+    bool ok = kc_with_dbt(true, NULL , &cferror, ^(SecDbConnectionRef dbt) {
         return SecDbItemQuery(q, NULL, dbt, &cferror, ^(SecDbItemRef item, bool *stop) {
             count += 1;
 
@@ -1605,7 +1605,7 @@ plaintextPCSServiceIdentifier:(NSNumber*)plaintextPCSServiceIdentifier plaintext
 
     __block size_t count = 0;
 
-    bool ok = kc_with_dbt(true, &cferror, ^(SecDbConnectionRef dbt) {
+    bool ok = kc_with_dbt(true, NULL , &cferror, ^(SecDbConnectionRef dbt) {
         return SecDbItemQuery(q, NULL, dbt, &cferror, ^(SecDbItemRef item, bool *stop) {
             count += 1;
 
