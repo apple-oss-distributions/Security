@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2026 Apple Inc. All Rights Reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  *
@@ -23,28 +23,33 @@
 
 #if OCTAGON
 
+#import <TargetConditionals.h>
 #import <Foundation/Foundation.h>
-#import "keychain/ot/OctagonStateMachineHelpers.h"
 
-@class OTEscrowCheckCallResult;
-@class OTOperationDependencies;
-@class OTFollowup;
+#if !TARGET_OS_SIMULATOR
+#import <AppleKeyStore/AppleKeyStore.h>
+#else
+typedef enum {
+    kAKSFirstUnlockEvent,
+    kAKSLockStateChangeEvent,
+    kAKSMementoEffacedEvent,
+    kAKSBackgroundPoliciesInvalidated,
+    kAKSPasscodeThresholdMessage,
+    kAKSInactivityReboot,
+    kAKSCacheFlowEnabled,
+} AKSEventType;
+extern const CFStringRef kAKSInfoCacheFlowContext;
+typedef struct _AKSEvent AKSEvent;
+#endif
 
-@interface OTEscrowRepairOperation : CKKSGroupOperation <OctagonStateTransitionOperationProtocol>
+@protocol OTAppleKeyStoreAdapter
 
-@property OctagonState* nextState;
+- (AKSEvent*)eventsRegister:(dispatch_queue_t)queue callback:(void (^)(AKSEventType, CFDictionaryRef))callback;
+- (void)eventsUnregister:(AKSEvent*)ref;
 
-- (instancetype)init NS_UNAVAILABLE;
+@end
 
-- (instancetype)initWithDependencies:(OTOperationDependencies*)dependencies
-                       intendedState:(OctagonState*)intendedState
-                          errorState:(OctagonState*)errorState
-                     followupHandler:(OTFollowup*)followupHandler
-                         contextType:(AppleKeyStorePasscodeCacheReason)contextType
-                             entropy:(NSData*)entropy
-                            bottleID:(NSString*)bottleID
-                   escrowSigningSPKI:(NSData*)escrowSigningSPKI;
-
+@interface OTAppleKeyStoreActualAdapter : NSObject <OTAppleKeyStoreAdapter>
 @end
 
 #endif // OCTAGON
